@@ -1,3 +1,7 @@
 <Solution>
-  <Project Path="Yalla/Yalla.csproj" />
+  <Project Path="src/Yalla.Domain/Yalla.Domain.csproj" />
+  <Project Path="src/Yalla.Application/Yalla.Application.csproj" />
+  <Project Path="src/Yalla.Infrastructure/Yalla.Infrastructure.csproj" />
+  <Project Path="src/Yalla.Api/Yalla.Api.csproj" />
+  <Project Path="tests/Yalla.UnitTests/Yalla.UnitTests.csproj" />
 </Solution>
