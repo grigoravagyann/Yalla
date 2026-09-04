@@ -195,4 +195,71 @@ public sealed class Reservation : Entity
             stayHint,
             holdExpiresAtUtc);
     }
+
+    /// <summary>
+    /// Whether the party is late, computed rather than stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is why <see cref="ReservationStatus"/> has no <c>Late</c> member: the answer is a pure
+    /// function of the clock and the branch's <see cref="ReservationPolicy.GraceMinutes"/>, so
+    /// there is nothing for a timer to keep in sync and nothing to go stale after a cancellation.
+    /// </para>
+    /// <para>
+    /// Only a <see cref="ReservationStatus.Confirmed"/> booking can be late. A seated party has
+    /// arrived, and a cancelled or no-show booking is finished being interesting.
+    /// </para>
+    /// <para>
+    /// This answers "should the UI show this as late?". It does <b>not</b> decide whether to send
+    /// the late-nudge push - that is a scheduled action needing an outbox and a delivery record,
+    /// and is deliberately not built here.
+    /// </para>
+    /// </remarks>
+    public bool IsLateAt(DateTime nowUtc, int graceMinutes) =>
+        Status == ReservationStatus.Confirmed && nowUtc > StartUtc.AddMinutes(graceMinutes);
+
+    /// <summary>How far past the start time the party is, or null when they are not late yet.</summary>
+    public TimeSpan? LatenessAt(DateTime nowUtc, int graceMinutes) =>
+        IsLateAt(nowUtc, graceMinutes) ? nowUtc - StartUtc : null;
+
+    /// <summary>
+    /// The party arrived and was seated. Called in the same transaction as the table transition
+    /// and the session insert, so a seated table and an unseated booking cannot coexist.
+    /// </summary>
+    public void MarkSeated()
+    {
+        if (Status != ReservationStatus.Confirmed)
+        {
+            throw new InvalidOperationException(
+                $"Only a confirmed reservation can be seated; {Code} is {Status}.");
+        }
+
+        Status = ReservationStatus.Seated;
+    }
+
+    /// <summary>The session this booking produced has closed normally.</summary>
+    public void MarkCompleted()
+    {
+        if (Status != ReservationStatus.Seated)
+        {
+            throw new InvalidOperationException(
+                $"Only a seated reservation can be completed; {Code} is {Status}.");
+        }
+
+        Status = ReservationStatus.Completed;
+    }
+
+    /// <summary>Staff accepted a booking that needed approval.</summary>
+    public void Confirm(DateTime confirmedAtUtc)
+    {
+        if (Status != ReservationStatus.PendingApproval)
+        {
+            throw new InvalidOperationException(
+                $"Only a pending reservation can be confirmed; {Code} is {Status}.");
+        }
+
+        Status = ReservationStatus.Confirmed;
+        ConfirmedAtUtc = Guard.NotLocalTime(confirmedAtUtc, nameof(confirmedAtUtc));
+        HoldExpiresAtUtc = null;
+    }
 }

@@ -11,5 +11,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.9" />
   </ItemGroup>
+
+  <!-- Exposes the internal services (TableStateService, FloorQuery) to the unit tests. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Yalla.UnitTests" />
+  </ItemGroup>
+
 </Project>

@@ -59,9 +59,11 @@ canvas so the diner app can draw the room from above: `X`, `Y`, `Width`, `Height
 branch. `QrToken` is a stable, unguessable, unique string: it is what a walk-in scans, so it must
 survive the table being renamed or moved.
 
-`Status` (`Free | Held | Reserved | Occupied | OutOfService`) is a **denormalised cache** so the
-floor plan renders in one query rather than joining sessions and reservations for every square on
-the canvas. `TableSession` is authoritative; when the two disagree, the cache is wrong and is to
+`Status` (`Free | Held | Occupied | OutOfService`) holds only **physical** state — the states a
+person creates by doing something — and is a **denormalised cache** so the floor plan renders in
+one query rather than joining sessions and reservations for every square on the canvas. There is
+deliberately no `Reserved` member; see [Why `Reserved` and `Late` are derived, not
+stored](#why-reserved-and-late-are-derived-not-stored). `TableSession` is authoritative; when the two disagree, the cache is wrong and is to
 be recomputed. `CurrentSessionId` is a pointer, not a foreign key — `TableSession` already points
 at the table, and an opposing key would make the pair circular and uninsertable. `RowVersion`
 stops two waiters seating a walk-in on the same table at the same moment.
@@ -164,6 +166,55 @@ the argument that actually happens on a Friday night — "somebody gave away my 
 and it is the raw material for the turnover reporting sold to owners later: how long tables sat
 empty between covers, how often bookings were released as no-shows, which areas turn fastest.
 None of that can be backfilled, which is why the log starts on day one.
+
+`ClientCommandId` carries a **unique index** and is what makes state changes idempotent. The
+staff app queues commands locally when the cafe wifi drops and replays them on reconnect, so
+"seat table 7" will arrive twice; the second arrival is recognised by its id and returns the
+original result instead of seating the table again. The uniqueness lives in the database rather
+than in a service-layer check because two replays can race each other, and a check-then-insert
+would let both through. Every state change and its log row are written in one `SaveChanges`, so a
+transition can never exist without its audit row.
+
+## Why `Reserved` and `Late` are derived, not stored
+
+Stored status columns describe **physical** facts — states a person creates by doing something. A
+waiter seats a party, so the table is `Occupied`. Someone reports a broken chair, so it is
+`OutOfService`. Every stored member of `TableStatus` and `ReservationStatus` is the residue of an
+action, and every one of them has an actor and a timestamp in `TableStateChange`.
+
+`Reserved` and `Late` are not like that. They are **functions of the clock**, and nobody performs
+them:
+
+- A table becomes "reserved" at 19:45 because a booking starts at 20:00.
+- A booking becomes "late" at 20:10 because it started at 20:00 and the grace period is ten
+  minutes.
+
+Storing either would mean a background job flipping rows on a timer, and every failure mode of
+that job is a lie told to a venue at its busiest moment. The job stalls and tables stay sellable
+through their own bookings. A diner cancels and the row stays `Reserved`, so a free table looks
+taken all evening. The job's clock drifts from the tablet's and the floor disagrees with itself.
+Worse, the bug is invisible in tests — the row is correct when written and only rots later — and
+it is unfixable by retry, because by the time anyone notices, the wrong state has already been
+acted on.
+
+Derived at read time, all of that disappears. There is no job, nothing to stall, and no window in
+which the database contradicts the wall clock: the state is computed from `StartUtc` and `now` at
+the moment somebody looks, so it is right by construction. A cancellation takes effect the
+instant the row changes, because there is no cached copy to invalidate.
+
+The read model is `TableFloorState` — physical status plus a reservation overlay — presented
+through `DerivedTableState` (`Free | ReservedSoon | Held | Occupied | OutOfService`), carrying
+`NextReservationStartUtc` and the free-until window when a booking is upcoming. It costs nothing
+extra: the floor query already joins upcoming reservations to show each table's availability
+window, so the overlay rides along on a join that had to happen anyway. Lateness is
+`Reservation.IsLateAt(nowUtc, graceMinutes)`. The `ReservedSoon` threshold is the branch's own
+turnaround buffer, not a constant, so an owner can change it without a migration.
+
+Two consequences worth stating. The retired enum values (`TableStatus.Reserved`,
+`ReservationStatus.Late = 3`) are **permanently retired and not reused**, so old rows and old app
+builds can never be misread. And the **late nudge push** — the message at start + ten minutes —
+*is* a genuine scheduled action and will need an outbox job when it is built. That is a separate
+concern from display state: the nudge is a thing the system does, not a thing the system is.
 
 ## Why reservation, session and tab are three entities and not one
 

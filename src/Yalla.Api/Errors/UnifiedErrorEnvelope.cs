@@ -34,4 +34,16 @@ public sealed record UnifiedErrorEnvelope
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, string[]>? Errors { get; init; }
+
+    /// <summary>
+    /// Machine-readable facts about this particular failure, for the cases where the client has
+    /// to act on more than the code.
+    /// </summary>
+    /// <remarks>
+    /// The case this exists for is the lost table race: a 409 on seating carries the table's
+    /// <c>currentStatus</c> here, so the tablet can redraw table 7 as occupied and tell the
+    /// waiter what happened instead of showing a generic failure and leaving the floor stale.
+    /// </remarks>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, object?>? Details { get; init; }
 }

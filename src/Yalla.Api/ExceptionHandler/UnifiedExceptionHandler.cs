@@ -69,6 +69,7 @@ internal sealed class UnifiedExceptionHandler(
                 Status = mapped.Status,
                 Code = mapped.Code,
                 Message = mapped.Message,
+                Details = mapped.Details,
             },
             cancellationToken);
 

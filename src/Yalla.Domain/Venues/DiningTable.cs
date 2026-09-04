@@ -117,27 +117,85 @@ public sealed class DiningTable : Entity
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
     /// <summary>
-    /// Updates the cached occupancy. A table is <see cref="TableStatus.Occupied"/> exactly when a
-    /// session is sitting at it, which is the one thing this cache must never get wrong.
+    /// Seats a party: <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/> to
+    /// <see cref="TableStatus.Occupied"/>. Covers SeatWalkIn, SeatReservation and SeatHeldParty,
+    /// which differ only in what the caller records around them.
     /// </summary>
-    public void ApplyStatus(TableStatus status, Guid? currentSessionId = null)
+    public void Occupy(Guid sessionId)
     {
-        Guard.Defined(status, nameof(status));
+        Transition(TableStatus.Occupied);
+        CurrentSessionId = Guard.NotEmpty(sessionId, nameof(sessionId));
+    }
 
-        if (status == TableStatus.Occupied && currentSessionId is null)
+    /// <summary>HoldForLateParty: <see cref="TableStatus.Free"/> to <see cref="TableStatus.Held"/>.</summary>
+    public void PlaceHold() => Transition(TableStatus.Held);
+
+    /// <summary>ReleaseHold: <see cref="TableStatus.Held"/> back to <see cref="TableStatus.Free"/>.</summary>
+    public void ReleaseHold()
+    {
+        if (Status != TableStatus.Held)
         {
-            throw new ArgumentException(
-                "An occupied table must reference the session seated at it.", nameof(currentSessionId));
+            throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
         }
 
-        if (status != TableStatus.Occupied && currentSessionId is not null)
+        Transition(TableStatus.Free);
+        CurrentSessionId = null;
+    }
+
+    /// <summary>FreeTable: <see cref="TableStatus.Occupied"/> to <see cref="TableStatus.Free"/>.</summary>
+    public void Vacate()
+    {
+        if (Status != TableStatus.Occupied)
         {
-            throw new ArgumentException(
-                "Only an occupied table may reference a session.", nameof(currentSessionId));
+            throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
         }
 
-        Status = status;
-        CurrentSessionId = currentSessionId;
+        Transition(TableStatus.Free);
+        CurrentSessionId = null;
+    }
+
+    /// <summary>
+    /// MarkOutOfService: from <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/>.
+    /// </summary>
+    /// <remarks>
+    /// Refuses an occupied table. A table with diners at it cannot be marked broken - free it
+    /// first - because the alternative is a floor plan that shows nobody sitting where somebody
+    /// is sitting.
+    /// </remarks>
+    public void MarkOutOfService() => Transition(TableStatus.OutOfService);
+
+    /// <summary>ReturnToService: <see cref="TableStatus.OutOfService"/> to <see cref="TableStatus.Free"/>.</summary>
+    public void ReturnToService()
+    {
+        if (Status != TableStatus.OutOfService)
+        {
+            throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
+        }
+
+        Transition(TableStatus.Free);
+        CurrentSessionId = null;
+    }
+
+    /// <summary>
+    /// The single mutation point for <see cref="Status"/>, validated against
+    /// <see cref="TableStatusTransitions"/>. Private on purpose: a public
+    /// <c>SetStatus(status)</c> is how illegal states get in.
+    /// </summary>
+    private void Transition(TableStatus to)
+    {
+        if (!TableStatusTransitions.IsAllowed(Status, to))
+        {
+            throw new InvalidTableTransitionException(Id, Label, Status, to);
+        }
+
+        Status = to;
+
+        if (to != TableStatus.Occupied)
+        {
+            // A table is Occupied exactly when a session is sitting at it. Leaving a stale
+            // pointer behind is the one thing this cache must never do.
+            CurrentSessionId = null;
+        }
     }
 
     public void Relabel(string label) =>

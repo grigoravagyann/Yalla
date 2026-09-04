@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Domain.Staff;
+using Yalla.Domain.Venues;
 
 namespace Yalla.Api.Errors;
 
@@ -10,7 +12,13 @@ namespace Yalla.Api.Errors;
 /// False for failures that are part of normal operation - a rejected request, a lost concurrency
 /// race - so the error log stays a list of things that are actually wrong.
 /// </param>
-public readonly record struct MappedError(int Status, string Code, string Message, bool LogAsError);
+/// <param name="Details">Machine-readable facts the client needs in order to react.</param>
+public readonly record struct MappedError(
+    int Status,
+    string Code,
+    string Message,
+    bool LogAsError,
+    IReadOnlyDictionary<string, object?>? Details = null);
 
 /// <summary>
 /// Translates exceptions into <see cref="UnifiedErrorEnvelope"/> values.
@@ -28,6 +36,52 @@ internal static class ApiExceptionMapper
 
     public static MappedError Map(Exception exception) => exception switch
     {
+        // Somebody else changed the table first. 409 with the table's CURRENT state, so the
+        // client can redraw it and tell the user what actually happened rather than just failing.
+        // Expected under load - two people really do tap table 7 at the same moment.
+        TableStateConflictException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableStateConflict,
+            e.Message,
+            LogAsError: false,
+            Details: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["attemptedFromStatus"] = e.AttemptedFromStatus.ToString(),
+                ["currentStatus"] = e.CurrentStatus.ToString(),
+                ["currentSessionId"] = e.CurrentSessionId,
+            }),
+
+        // An impossible transition, not a race: freeing a table nobody is sitting at, or marking
+        // an occupied one broken. 422 - the request was understood and is semantically wrong.
+        InvalidTableTransitionException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.InvalidTableTransition,
+            e.Message,
+            LogAsError: false,
+            Details: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["fromStatus"] = e.FromStatus.ToString(),
+                ["attemptedToStatus"] = e.ToStatus.ToString(),
+                ["allowedFromHere"] = TableStatusTransitions.From(e.FromStatus)
+                    .Select(s => s.ToString())
+                    .ToArray(),
+            }),
+
+        StaffPermissionException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.Forbidden,
+            e.Message,
+            LogAsError: false,
+            Details: new Dictionary<string, object?>
+            {
+                ["operation"] = e.Operation,
+                ["requiredRole"] = e.RequiredRole.ToString(),
+            }),
+
         // The domain's own refusals. Guard and the entity constructors throw these with messages
         // written to be read, so they are safe and useful to pass back.
         ArgumentOutOfRangeException e => new MappedError(
@@ -43,7 +97,8 @@ internal static class ApiExceptionMapper
             "This record changed while you were working on it. Reload and try again.",
             LogAsError: false),
 
-        // "This session is already closed", "the settlement mode is locked".
+        // "This session is already closed", "the settlement mode is locked". Note this must stay
+        // BELOW InvalidTableTransitionException, which derives from it.
         InvalidOperationException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 
@@ -53,8 +108,8 @@ internal static class ApiExceptionMapper
             "You are not allowed to perform this action.",
             LogAsError: false),
 
-        KeyNotFoundException => new MappedError(
-            StatusCodes.Status404NotFound, ErrorCodes.NotFound, "Not found.", LogAsError: false),
+        KeyNotFoundException e => new MappedError(
+            StatusCodes.Status404NotFound, ErrorCodes.NotFound, e.Message, LogAsError: false),
 
         _ => new MappedError(
             StatusCodes.Status500InternalServerError,

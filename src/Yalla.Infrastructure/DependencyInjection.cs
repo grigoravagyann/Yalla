@@ -1,7 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Yalla.Application.Abstractions;
+using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Infrastructure.Services;
 using Yalla.Infrastructure.Time;
 
 namespace Yalla.Infrastructure;
@@ -10,8 +13,7 @@ namespace Yalla.Infrastructure;
 public static class DependencyInjection
 {
     /// <summary>
-    /// Wires up the database and the clock. Takes the connection string rather than
-    /// <c>IConfiguration</c> so this layer stays unaware of where configuration comes from.
+    /// Wires up the database, the clock and the domain services.
     /// </summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, string connectionString)
     {
@@ -24,6 +26,60 @@ public static class DependencyInjection
                 connectionString,
                 sql => sql.MigrationsAssembly(typeof(YallaDbContext).Assembly.GetName().Name)));
 
+        services.AddScoped<ITableStateService, TableStateService>();
+        services.AddScoped<IFloorQuery, FloorQuery>();
+
         return services;
+    }
+
+    /// <summary>
+    /// Registers the development actor stub and the seeder that gives it a real staff member.
+    /// </summary>
+    /// <remarks>
+    /// Call this from Development only. It is a no-op unless <c>DevActor:Enabled</c> is true, so
+    /// switching it on is always deliberate. When authentication arrives, the real
+    /// <see cref="ICurrentActor"/> registration replaces this call and nothing else changes.
+    /// </remarks>
+    public static IServiceCollection AddDevelopmentActor(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var section = configuration.GetSection(DevActorOptions.SectionName);
+
+        services.Configure<DevActorOptions>(section);
+
+        if (!section.GetValue<bool>("Enabled"))
+        {
+            return services;
+        }
+
+        services.AddSingleton<DevSeedRegistry>();
+        services.AddScoped<DevDataSeeder>();
+        services.AddScoped<ICurrentActor, DevCurrentActor>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Applies pending migrations and seeds development data. Returns false when the dev actor is
+    /// switched off, in which case nothing was touched.
+    /// </summary>
+    public static async Task<bool> InitialiseDevelopmentDataAsync(
+        this IServiceProvider services,
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = services.CreateScope();
+
+        var seeder = scope.ServiceProvider.GetService<DevDataSeeder>();
+        if (seeder is null)
+        {
+            return false;
+        }
+
+        var db = scope.ServiceProvider.GetRequiredService<YallaDbContext>();
+        await db.Database.MigrateAsync(cancellationToken);
+        await seeder.SeedAsync(cancellationToken);
+
+        return true;
     }
 }
