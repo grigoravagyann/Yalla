@@ -35,11 +35,24 @@ public static class DependencyInjectionExtension
                       + $"appsettings.Development.json carries the local connection string and is not read in '{environmentName}'."));
         }
 
-        builder.Services.AddInfrastructure(connectionString);
+        builder.Services.AddInfrastructure(connectionString, configuration);
 
         // Enums travel as strings on the wire and as ints in the database. A client reading
         // "Occupied" cannot silently mean something else after a member is inserted, while the
         // stored int keeps a rename from orphaning rows.
+        //
+        // This has to be said TWICE, and the second one is the one that matters here. AddJsonOptions
+        // configures MVC's serializer, which every endpoint in this app bypasses: they are all
+        // minimal APIs, and those read Microsoft.AspNetCore.Http.Json.JsonOptions instead. With
+        // only the MVC registration, the floor and availability endpoints were answering
+        // "state": 2 and "unavailableReason": 3 - numbers a client can only handle by hard-coding
+        // the enum's ordinals, which is exactly what naming them was meant to prevent.
+        builder.Services.ConfigureHttpJsonOptions(options =>
+        {
+            options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        });
+
         builder.Services
             .AddControllers()
             .AddJsonOptions(options =>

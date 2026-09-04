@@ -64,6 +64,7 @@ app.MapControllers();
 
 app.MapYallaHealthChecks();
 app.MapTableStateEndpoints();
+app.MapReservationEndpoints();
 
 // Migrates and seeds the demo branch so the dev actor stub has a real staff member to be.
 // Returns false, and does nothing at all, when DevActor:Enabled is off.

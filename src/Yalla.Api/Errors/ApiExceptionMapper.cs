@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Reservations;
 using Yalla.Domain;
+using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
 
@@ -71,6 +73,55 @@ internal static class ApiExceptionMapper
                     .Select(s => s.ToString())
                     .ToArray(),
             }),
+
+        // Somebody else took the table between the diner seeing it free and confirming. 409, not
+        // 422: the request was right when it was made and the world moved. The body carries the
+        // clashing window AND a fresh availability snapshot, so the app can redraw the floor and
+        // show what changed instead of firing a second request into the same contention.
+        TableAlreadyBookedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            TableAlreadyBookedException.ErrorCode,
+            e.Message,
+            LogAsError: false,
+            Details: new Dictionary<string, object?>
+            {
+                ["reason"] = e.Reason.ToString(),
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["requestedStartUtc"] = e.Requested.StartUtc,
+                ["requestedEndUtc"] = e.Requested.EndUtc,
+                ["conflictingStartUtc"] = e.Conflicting.StartUtc,
+                ["conflictingEndUtc"] = e.Conflicting.EndUtc,
+                ["conflictingReservationId"] = e.ConflictingReservationId,
+                ["availability"] = e.Availability,
+            }),
+
+        // Contention, not refusal. 503 with Retryable set, because the client's correct response
+        // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
+        // matter how often it is repeated. Collapsing the two would teach clients to retry
+        // conflicts, which is how a party ends up with two tables.
+        ReservationLockTimeoutException e => new MappedError(
+            StatusCodes.Status503ServiceUnavailable,
+            ReservationLockTimeoutException.ErrorCode,
+            e.Message,
+            LogAsError: false,
+            Details: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["timeoutMilliseconds"] = e.TimeoutMilliseconds,
+                ["retryable"] = e.Retryable,
+            }),
+
+        // One entry for the whole family of booking refusals, each answering with its own code
+        // and its own numbers. 422: understood, and semantically wrong. Adding a rule is a new
+        // exception type and a new constant - this mapper does not change.
+        ReservationRejectedException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            e.Code,
+            e.Message,
+            LogAsError: false,
+            Details: e.Details),
 
         StaffPermissionException e => new MappedError(
             StatusCodes.Status403Forbidden,

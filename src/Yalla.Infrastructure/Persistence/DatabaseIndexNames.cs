@@ -21,4 +21,16 @@ internal static class DatabaseIndexNames
     /// replayed concurrently with its original.
     /// </summary>
     public const string TableStateChangeClientCommand = "IX_TableStateChanges_ClientCommandId";
+
+    /// <summary>
+    /// Unique on the booking caller's command id. A violation means a diner's retry raced its own
+    /// original, and the loser answers with the booking that won rather than taking a second table.
+    /// </summary>
+    public const string ReservationClientCommand = "IX_Reservations_ClientCommandId";
+
+    /// <summary>
+    /// Unique on the short code the diner quotes at the door. A violation is a genuine random
+    /// collision, and the only sane response is to roll another code.
+    /// </summary>
+    public const string ReservationCode = "IX_Reservations_Code";
 }

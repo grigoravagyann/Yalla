@@ -29,6 +29,9 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.PartySize).IsRequired();
         builder.Property(r => r.Status).IsRequired();
         builder.Property(r => r.GraceExtensionsUsed).IsRequired();
+        builder.Property(r => r.CancelledAfterDeadline).IsRequired();
+
+        builder.Property(r => r.ClientCommandId).IsRequired();
 
         // The booked interval. Both ends are UTC instants (datetime2 by convention).
         builder.Property(r => r.StartUtc).IsRequired();
@@ -68,6 +71,18 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
 
         // The code the diner quotes at the door.
         builder.HasIndex(r => r.Code)
-            .IsUnique();
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.ReservationCode);
+
+        // The idempotency guarantee for booking creation, and the same argument as the one on
+        // TableStateChanges: a diner on a patchy connection taps Book twice, and only the database
+        // can settle a race between two retries. A check-then-insert in the service lets both
+        // through and the party ends up holding two tables.
+        builder.HasIndex(r => r.ClientCommandId)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.ReservationClientCommand);
+
+        // "What has this diner got booked?" - the /mine screen, and the rolling no-show count.
+        builder.HasIndex(r => new { r.DinerUserId, r.StartUtc });
     }
 }

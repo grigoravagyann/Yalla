@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Reservations;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
@@ -15,7 +16,10 @@ public static class DependencyInjection
     /// <summary>
     /// Wires up the database, the clock and the domain services.
     /// </summary>
-    public static IServiceCollection AddInfrastructure(this IServiceCollection services, string connectionString)
+    public static IServiceCollection AddInfrastructure(
+        this IServiceCollection services,
+        string connectionString,
+        IConfiguration? configuration = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
 
@@ -28,8 +32,29 @@ public static class DependencyInjection
 
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
+        services.AddScoped<IReservationService, ReservationService>();
+        services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
+
+        // Both are plain settings objects rather than IOptions: they are read on nearly every
+        // booking, they never change per request, and binding them once here keeps the
+        // application layer free of a configuration dependency.
+        services.AddSingleton(Bind<NoShowPolicy>(configuration, NoShowPolicy.SectionName));
+        services.AddSingleton(Bind<BookingLockOptions>(configuration, BookingLockOptions.SectionName));
 
         return services;
+    }
+
+    /// <summary>
+    /// Binds one settings section, or ships the defaults when there is no configuration - which is
+    /// what tests and the design-time factory get.
+    /// </summary>
+    private static T Bind<T>(IConfiguration? configuration, string sectionName)
+        where T : class, new()
+    {
+        var settings = new T();
+        configuration?.GetSection(sectionName).Bind(settings);
+
+        return settings;
     }
 
     /// <summary>
