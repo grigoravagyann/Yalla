@@ -1,6 +1,0 @@
-@Yalla_HostAddress = http://localhost:5165
-
-GET {{Yalla_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
