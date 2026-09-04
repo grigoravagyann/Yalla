@@ -155,8 +155,49 @@ and nullable columns here would simply stay empty while the app stayed unable to
 
 Someone who works for a venue and signs in to the tablet or the admin panel, with a coarse
 `Role` (`Owner | Manager | Waiter | Kitchen`). A null `BranchId` means all branches of the venue.
-Authentication is a later module; `PinHash` exists so the schema will not have to change when it
-arrives, and nothing reads it yet.
+
+One person, two credentials, on one row. `PinHash` (plus `PinFailedAttempts` and
+`PinLockedUntilUtc`) is what a waiter taps on a tablet; `Email` and `PasswordHash` are what an
+owner types into the admin panel; a manager uses both, on the same day. Splitting them across two
+tables would give one human two identities and quietly break the audit log that answers "who gave
+away my reserved table". Both are optional in practice — a kitchen hand has no email — and `Email`
+carries a unique index filtered on non-null rows, since most staff have none.
+
+### Identity tables
+
+Four identity types, described in full in [docs/auth.md](docs/auth.md).
+
+`DinerUser` — a diner who verified a phone number. `PhoneE164` is unique and is the account; there
+is deliberately no password column, because the number exists for booking reminders and no-show
+tracking and a password would only be a thing to forget.
+
+`PhoneVerificationCode` — six digits, five minutes, five attempts, single use, hashed at rest.
+Indexed on `(PhoneE164, ExpiresAtUtc)` filtered to unconsumed rows, which is the read the
+verification path makes.
+
+`StaffDevice` — an enrolled tablet, bound to one branch, with a name, a last-seen stamp and
+`RevokedAtUtc`. Revocation is a table rather than a claim because a tablet left in a taxi has to
+stop working immediately, and a year-long token cannot be withdrawn by waiting.
+
+`StaffEnrolmentCode` — the one-time code a manager reads out to a tablet. `RedeemedAtUtc` is an EF
+**concurrency token**, so two tablets racing for the same code cannot both win: the loser's update
+matches no rows and its whole transaction, device insert included, rolls back.
+
+`StaffSession` — one person's shift on one tablet. `LastActivityAtUtc` is what makes "thirty
+minutes of inactivity" mean what it says, which a JWT cannot express on its own, and
+`AbsoluteExpiresAtUtc` stops a polled tablet renewing forever.
+
+`RefreshToken` — rotating handles for diners and venue users, stored as hashes. `ChainId` groups
+every token descended from one sign-in; presenting an already-rotated token revokes the whole
+chain, because two parties then hold the same secret and there is no way to tell which is the
+thief.
+
+`PasswordResetToken` — single use, one hour, hashed. Consuming one revokes every refresh token the
+account holds.
+
+Note what is **not** here: there is no table for a tab participant's identity, because a walk-in
+who scans a QR code has no account. They get a `TabParticipant` row and a token scoped to that one
+tab, and that is the whole of it.
 
 ### TableStateChange
 

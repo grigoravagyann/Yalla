@@ -60,16 +60,30 @@ internal sealed class UnifiedExceptionHandler(
         }
 
         httpContext.Response.StatusCode = mapped.Status;
-        httpContext.Response.ContentType = "application/json";
+
+        // RFC 7807's media type, not application/json. It is what tells a generic client, a proxy
+        // or a browser devtools pane that this body is a problem document rather than the payload
+        // the endpoint normally returns.
+        httpContext.Response.ContentType = "application/problem+json";
+
+        // A 401 that does not say how to authenticate is not a 401 a client can act on.
+        if (mapped.Status == StatusCodes.Status401Unauthorized
+            && !httpContext.Response.Headers.ContainsKey("WWW-Authenticate"))
+        {
+            httpContext.Response.Headers.WWWAuthenticate = "Bearer";
+        }
 
         await httpContext.Response.WriteAsJsonAsync(
             new UnifiedErrorEnvelope
             {
-                TraceId = traceId,
+                Type = ErrorCodes.TypeFor(mapped.Code),
+                Title = ErrorCodes.TitleFor(mapped.Code),
                 Status = mapped.Status,
+                Detail = mapped.Message,
+                Instance = httpContext.Request.Path.Value,
                 Code = mapped.Code,
-                Message = mapped.Message,
-                Details = mapped.Details,
+                TraceId = traceId,
+                Context = mapped.Context,
             },
             cancellationToken);
 

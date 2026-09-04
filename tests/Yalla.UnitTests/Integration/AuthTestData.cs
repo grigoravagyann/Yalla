@@ -1,0 +1,131 @@
+using Microsoft.EntityFrameworkCore;
+using Yalla.Domain.Enums;
+using Yalla.Domain.Occupancy;
+using Yalla.Domain.Staff;
+using Yalla.Domain.Tabs;
+using Yalla.Infrastructure.Identity;
+using Yalla.Infrastructure.Persistence;
+
+namespace Yalla.UnitTests.Integration;
+
+/// <summary>Ids of one branch's worth of fixture data with real credentials attached.</summary>
+internal sealed record AuthBranch(
+    Guid VenueId,
+    Guid BranchId,
+    Guid WaiterId,
+    Guid ManagerId,
+    string ManagerEmail,
+    string ManagerPassword,
+    string WaiterPin,
+    IReadOnlyList<Guid> TableIds)
+{
+    public Guid FirstTableId => TableIds[0];
+}
+
+/// <summary>An open tab with a host participant already on it.</summary>
+internal sealed record AuthTab(Guid TabId, Guid TableId, Guid SessionId, Guid HostParticipantId, string JoinToken);
+
+/// <summary>
+/// Fixture data for the authentication tests: a branch whose staff have real hashed credentials,
+/// and tabs that a participant token can be minted against.
+/// </summary>
+/// <remarks>
+/// The credentials are hashed with the same <see cref="SecretHasher"/> the running API verifies
+/// against. Writing a placeholder string into <c>PinHash</c> would make every one of these tests
+/// pass or fail for the wrong reason.
+/// </remarks>
+internal static class AuthTestData
+{
+    public const string ManagerPassword = "correct-horse-battery-staple";
+    public const string WaiterPin = "4271";
+
+    public static async Task<AuthBranch> CreateBranchAsync(
+        YallaDbContext db,
+        int tableCount = 2,
+        CancellationToken cancellationToken = default)
+    {
+        var branch = await TestBranchBuilder.CreateAsync(
+            db, tableCount: tableCount, cancellationToken: cancellationToken);
+
+        var hasher = new SecretHasher();
+        var email = $"manager-{Guid.NewGuid():N}@example.test";
+
+        var waiter = await db.StaffMembers.FirstAsync(s => s.Id == branch.WaiterId, cancellationToken);
+        var manager = await db.StaffMembers.FirstAsync(s => s.Id == branch.ManagerId, cancellationToken);
+
+        waiter.SetPinHash(hasher.Hash(WaiterPin));
+
+        // The manager gets both credentials, which is the realistic case and the reason they live
+        // on one row: the same person taps a PIN on the floor and signs in to the panel at home,
+        // and the audit log has to name them once either way.
+        manager.SetPinHash(hasher.Hash("9182"));
+        manager.SetPasswordCredentials(email, hasher.Hash(ManagerPassword));
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new AuthBranch(
+            branch.VenueId,
+            branch.BranchId,
+            branch.WaiterId,
+            branch.ManagerId,
+            email,
+            ManagerPassword,
+            WaiterPin,
+            branch.TableIds);
+    }
+
+    /// <summary>
+    /// Seats a party at a table and opens a tab on it, with a host participant and a live
+    /// invitation token.
+    /// </summary>
+    /// <remarks>
+    /// Built directly rather than through the table state machine, because these tests are about
+    /// who may touch the tab, not about how it came to exist.
+    /// </remarks>
+    public static async Task<AuthTab> CreateOpenTabAsync(
+        YallaDbContext db,
+        AuthBranch branch,
+        Guid tableId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var table = await db.DiningTables.FirstAsync(t => t.Id == tableId, cancellationToken);
+
+        var session = TableSession.SeatWalkIn(
+            branch.BranchId, tableId, partySize: 2, seatedAtUtc: nowUtc, seatedByStaffId: branch.WaiterId);
+
+        db.TableSessions.Add(session);
+        table.Occupy(session.Id);
+
+        var tab = new Tab(
+            branchId: branch.BranchId,
+            diningTableId: tableId,
+            tableSessionId: session.Id,
+            openedAtUtc: nowUtc,
+            serviceChargePercentSnapshot: 10m);
+
+        db.Tabs.Add(tab);
+        session.AttachTab(tab.Id);
+
+        var host = new TabParticipant(
+            tab.Id,
+            "Host",
+            $"device-{Guid.NewGuid():N}",
+            ParticipantRole.Host,
+            ParticipantStatus.Approved,
+            nowUtc,
+            canOrder: true,
+            canSeeTableTotal: true,
+            canPay: true);
+
+        db.TabParticipants.Add(host);
+        tab.SetHostParticipant(host.Id);
+
+        var invitation = new TabJoinToken(tab.Id, host.Id, nowUtc);
+        db.TabJoinTokens.Add(invitation);
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new AuthTab(tab.Id, tableId, session.Id, host.Id, invitation.Token);
+    }
+}
