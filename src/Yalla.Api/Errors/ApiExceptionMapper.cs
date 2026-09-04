@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Domain;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
 
@@ -82,6 +83,16 @@ internal static class ApiExceptionMapper
                 ["requiredRole"] = e.RequiredRole.ToString(),
             }),
 
+        // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are
+        // built internally and never arrive over HTTP, so this is a bug in our code, not bad
+        // input, and no caller can act on it. Must stay ABOVE ArgumentException, which it derives
+        // from, or it would be answered as a 400 quoting an internal parameter name.
+        ArgumentNullException => new MappedError(
+            StatusCodes.Status500InternalServerError,
+            ErrorCodes.InternalError,
+            InternalErrorMessage,
+            LogAsError: true),
+
         // The domain's own refusals. Guard and the entity constructors throw these with messages
         // written to be read, so they are safe and useful to pass back.
         ArgumentOutOfRangeException e => new MappedError(
@@ -99,7 +110,14 @@ internal static class ApiExceptionMapper
 
         // "This session is already closed", "the settlement mode is locked". Note this must stay
         // BELOW InvalidTableTransitionException, which derives from it.
-        InvalidOperationException e => new MappedError(
+        //
+        // Deliberately DomainStateException and not InvalidOperationException. .NET raises the
+        // latter for a whole class of genuine bugs - an unresolved service, First() on an empty
+        // sequence, "sequence contains more than one element", EF's transient-failure wrapper -
+        // and catching it here reported every one of them as a 409 "you have a conflict", echoed
+        // the internal message to the caller, and logged none of it as an error. Those now fall
+        // through to the 500 below, where they are logged and say nothing about internals.
+        DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 
         UnauthorizedAccessException => new MappedError(

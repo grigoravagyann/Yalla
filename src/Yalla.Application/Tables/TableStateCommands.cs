@@ -37,13 +37,15 @@ public sealed record SeatWalkInCommand(
     Guid ClientCommandId,
     string? Reason = null) : ITableStateCommand;
 
-/// <summary>Seat a party against their booking, which also moves the booking to Seated.</summary>
+/// <summary>
+/// Seat a party against their booking, which also moves the booking to Seated. <c>PartySize</c>
+/// overrides the booked size when the number who turned up differs.
+/// </summary>
 public sealed record SeatReservationCommand(
     Guid BranchId,
     Guid TableId,
     Guid ReservationId,
     Guid ClientCommandId,
-    /// <summary>Overrides the booked party size when the number who turned up differs.</summary>
     int? PartySize = null,
     string? Reason = null) : ITableStateCommand;
 

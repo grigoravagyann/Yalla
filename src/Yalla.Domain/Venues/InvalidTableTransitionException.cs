@@ -12,7 +12,7 @@ namespace Yalla.Domain.Venues;
 /// distinguishable: one means "you asked for something impossible", the other means "you asked
 /// for something reasonable and lost".
 /// </remarks>
-public sealed class InvalidTableTransitionException : InvalidOperationException
+public sealed class InvalidTableTransitionException : DomainStateException
 {
     public InvalidTableTransitionException(Guid tableId, string tableLabel, TableStatus from, TableStatus to)
         : base($"Table {tableLabel} cannot go from {from} to {to}.")

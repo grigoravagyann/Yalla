@@ -86,7 +86,7 @@ public sealed class TabOrderLine : Entity
     {
         if (_shares.Any(s => s.TabParticipantId == tabParticipantId))
         {
-            throw new InvalidOperationException("That participant already shares this line.");
+            throw new DomainStateException("That participant already shares this line.");
         }
 
         var share = new TabOrderLineShare(Id, tabParticipantId);
@@ -98,7 +98,7 @@ public sealed class TabOrderLine : Entity
     {
         if (IsVoided)
         {
-            throw new InvalidOperationException("This line is already voided.");
+            throw new DomainStateException("This line is already voided.");
         }
 
         VoidedAtUtc = Guard.NotLocalTime(voidedAtUtc, nameof(voidedAtUtc));

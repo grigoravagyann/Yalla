@@ -105,7 +105,7 @@ public sealed class TabParticipant : Entity
     {
         if (Status == ParticipantStatus.Removed)
         {
-            throw new InvalidOperationException("A removed participant cannot be approved.");
+            throw new DomainStateException("A removed participant cannot be approved.");
         }
 
         Status = ParticipantStatus.Approved;

@@ -1,3 +1,4 @@
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 
@@ -46,7 +47,7 @@ public class TabTests
         tab.SetSettlementMode(SettlementMode.EveryonePaysOwnItems);
         tab.LockSettlementMode(OpenedAt.AddMinutes(50));
 
-        Assert.Throws<InvalidOperationException>(
+        Assert.Throws<DomainStateException>(
             () => tab.SetSettlementMode(SettlementMode.HostPaysEverything));
         Assert.Equal(SettlementMode.EveryonePaysOwnItems, tab.SettlementMode);
     }
@@ -115,7 +116,7 @@ public class TabOrderTests
 
         line.AddShare(participantId);
 
-        Assert.Throws<InvalidOperationException>(() => line.AddShare(participantId));
+        Assert.Throws<DomainStateException>(() => line.AddShare(participantId));
         Assert.Single(line.Shares);
     }
 }

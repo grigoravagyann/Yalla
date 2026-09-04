@@ -1,3 +1,4 @@
+using Yalla.Domain;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
@@ -135,7 +136,7 @@ public class ReservationLatenessTests
         var reservation = Confirmed();
         reservation.MarkSeated();
 
-        Assert.Throws<InvalidOperationException>(reservation.MarkSeated);
+        Assert.Throws<DomainStateException>(reservation.MarkSeated);
     }
 
     [Fact]

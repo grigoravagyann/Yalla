@@ -230,7 +230,7 @@ public sealed class Reservation : Entity
     {
         if (Status != ReservationStatus.Confirmed)
         {
-            throw new InvalidOperationException(
+            throw new DomainStateException(
                 $"Only a confirmed reservation can be seated; {Code} is {Status}.");
         }
 
@@ -242,7 +242,7 @@ public sealed class Reservation : Entity
     {
         if (Status != ReservationStatus.Seated)
         {
-            throw new InvalidOperationException(
+            throw new DomainStateException(
                 $"Only a seated reservation can be completed; {Code} is {Status}.");
         }
 
@@ -254,7 +254,7 @@ public sealed class Reservation : Entity
     {
         if (Status != ReservationStatus.PendingApproval)
         {
-            throw new InvalidOperationException(
+            throw new DomainStateException(
                 $"Only a pending reservation can be confirmed; {Code} is {Status}.");
         }
 

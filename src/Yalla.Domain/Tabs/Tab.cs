@@ -164,7 +164,7 @@ public sealed class Tab : Entity
     {
         if (SettlementModeLockedAtUtc is not null)
         {
-            throw new InvalidOperationException("The settlement mode is locked and can no longer be changed.");
+            throw new DomainStateException("The settlement mode is locked and can no longer be changed.");
         }
 
         SettlementMode = Guard.Defined(settlementMode, nameof(settlementMode));
@@ -189,12 +189,12 @@ public sealed class Tab : Entity
     {
         if (Status is TabStatus.Closed or TabStatus.Abandoned)
         {
-            throw new InvalidOperationException("This tab is already closed.");
+            throw new DomainStateException("This tab is already closed.");
         }
 
         if (RemainingAmd > 0L)
         {
-            throw new InvalidOperationException(
+            throw new DomainStateException(
                 $"This tab still has {RemainingAmd} AMD outstanding and cannot be closed.");
         }
 
@@ -215,7 +215,7 @@ public sealed class Tab : Entity
     {
         if (Status is TabStatus.Closed or TabStatus.Abandoned)
         {
-            throw new InvalidOperationException("This tab is already closed.");
+            throw new DomainStateException("This tab is already closed.");
         }
 
         Status = TabStatus.Abandoned;
@@ -227,7 +227,7 @@ public sealed class Tab : Entity
     {
         if (Status != TabStatus.Open)
         {
-            throw new InvalidOperationException($"A tab must be open to begin closing; this one is {Status}.");
+            throw new DomainStateException($"A tab must be open to begin closing; this one is {Status}.");
         }
 
         Status = TabStatus.Closing;

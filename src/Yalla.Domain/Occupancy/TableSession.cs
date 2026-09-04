@@ -136,7 +136,7 @@ public sealed class TableSession : Entity
     {
         if (TabId is not null && TabId != tabId)
         {
-            throw new InvalidOperationException("This session already has a different tab.");
+            throw new DomainStateException("This session already has a different tab.");
         }
 
         TabId = Guard.NotEmpty(tabId, nameof(tabId));
@@ -149,7 +149,7 @@ public sealed class TableSession : Entity
 
         if (ClosedAtUtc is not null)
         {
-            throw new InvalidOperationException("This session is already closed.");
+            throw new DomainStateException("This session is already closed.");
         }
 
         if (closedAtUtc < SeatedAtUtc)
