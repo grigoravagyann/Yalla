@@ -1,0 +1,19 @@
+<Project>
+
+  <!--
+    Shared build settings for every project in the TableMap solution.
+    Individual csproj files deliberately do NOT repeat TargetFramework / Nullable /
+    ImplicitUsings - change them here once.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Domain/Application carry XML docs but not on every member; don't fail the build for it. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

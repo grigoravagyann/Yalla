@@ -1,0 +1,11 @@
+@Yalla.Api_HostAddress = https://localhost:7289
+
+### Liveness plus a real database round-trip.
+GET {{Yalla.Api_HostAddress}}/health
+Accept: application/json
+
+### The generated OpenAPI document (Development and Staging only).
+GET {{Yalla.Api_HostAddress}}/swagger/v1/swagger.json
+Accept: application/json
+
+###

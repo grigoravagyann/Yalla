@@ -1,0 +1,81 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Yalla.Domain.Common;
+using Yalla.Domain.Venues;
+
+namespace Yalla.Infrastructure.Persistence.Configurations;
+
+internal sealed class BranchConfiguration : EntityConfiguration<Branch>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<Branch> builder)
+    {
+        builder.ToTable("Branches");
+
+        builder.Property(b => b.Name)
+            .HasMaxLength(FieldLengths.Name)
+            .IsRequired();
+
+        builder.Property(b => b.Slug)
+            .HasMaxLength(FieldLengths.Slug)
+            .IsRequired();
+
+        builder.Property(b => b.Address)
+            .HasMaxLength(FieldLengths.Address)
+            .IsRequired();
+
+        builder.Property(b => b.TimeZoneId)
+            .HasMaxLength(FieldLengths.TimeZoneId)
+            .IsRequired();
+
+        builder.Property(b => b.Latitude)
+            .IsRequired();
+
+        builder.Property(b => b.Longitude)
+            .IsRequired();
+
+        builder.Property(b => b.FloorWidth)
+            .IsRequired();
+
+        builder.Property(b => b.FloorHeight)
+            .IsRequired();
+
+        builder.Property(b => b.IsActive)
+            .IsRequired();
+
+        // The reservation policy is owned: it lives in extra columns on this table rather than in
+        // a table of its own, because a branch always has exactly one and it is never queried
+        // apart from its branch.
+        builder.OwnsOne(b => b.ReservationPolicy, policy =>
+        {
+            policy.Property(p => p.TurnTimeMinutes).IsRequired();
+            policy.Property(p => p.BufferMinutes).IsRequired();
+            policy.Property(p => p.GraceMinutes).IsRequired();
+            policy.Property(p => p.LateNudgeAfterMinutes).IsRequired();
+            policy.Property(p => p.GraceExtensionMinutes).IsRequired();
+            policy.Property(p => p.MinLeadMinutes).IsRequired();
+            policy.Property(p => p.BookingWindowDays).IsRequired();
+            policy.Property(p => p.CancellationDeadlineMinutes).IsRequired();
+            policy.Property(p => p.AutoConfirm).IsRequired();
+            policy.Property(p => p.PricesIncludeVat).IsRequired();
+
+            policy.Property(p => p.ServiceChargePercent)
+                .HasPrecision(5, 2)
+                .IsRequired();
+
+            // Null means "no limit" / "never", so these two stay nullable.
+            policy.Property(p => p.MaxSeatOverhang);
+            policy.Property(p => p.ApprovalRequiredAbovePartySize);
+        });
+
+        builder.Navigation(b => b.ReservationPolicy)
+            .IsRequired();
+
+        builder.HasOne(b => b.Venue)
+            .WithMany(v => v.Branches)
+            .HasForeignKey(b => b.VenueId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasIndex(b => new { b.VenueId, b.Slug })
+            .IsUnique();
+    }
+}
