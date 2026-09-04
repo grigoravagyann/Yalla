@@ -191,6 +191,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             clock,
             actor,
             CreateAvailabilityQuery(db, clock),
+            new AuthorizationQueries(db),
             noShowPolicy ?? new NoShowPolicy(),
             lockOptions ?? new BookingLockOptions(),
             NullLogger<ReservationService>.Instance);

@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
@@ -45,6 +46,7 @@ internal sealed class ReservationService(
     IClock clock,
     ICurrentActor actor,
     IAvailabilityQuery availabilityQuery,
+    IAuthorizationQueries authorization,
     NoShowPolicy noShowPolicy,
     BookingLockOptions lockOptions,
     ILogger<ReservationService> logger) : IReservationService
@@ -650,13 +652,10 @@ internal sealed class ReservationService(
             .Select(s => new { s.BranchId, s.VenueId, s.IsActive })
             .FirstOrDefaultAsync(cancellationToken);
 
-        var branchVenueId = await db.Branches
-            .AsNoTracking()
-            .Where(b => b.Id == branchId)
-            .Select(b => (Guid?)b.VenueId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (staff is not { IsActive: true } || branchVenueId != staff.VenueId)
+        // The same read the BranchScoped policy does, through the same interface, rather than a
+        // second copy of the query that could drift from it.
+        if (staff is not { IsActive: true }
+            || !await authorization.BranchBelongsToVenueAsync(branchId, staff.VenueId, cancellationToken))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }

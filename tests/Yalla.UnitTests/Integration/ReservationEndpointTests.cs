@@ -86,6 +86,54 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_tab_participant_is_a_diner_but_still_cannot_book()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        // The distinction PrincipalTypeHandler exists for. Somebody who scanned a QR code at a
+        // table is ActorType.Diner in the audit sense, so a check on the actor type would let them
+        // through - but they have no DinerUser row, so there would be nothing to list the booking
+        // under, nothing to telephone when they are late, and nothing to count a no-show against.
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        AuthTab tab;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+            tab = await AuthTestData.CreateOpenTabAsync(
+                db, branch, branch.FirstTableId, factory.Clock.UtcNow);
+        }
+
+        using var client = factory.CreateClient();
+
+        var joined = await client.PostAsJsonAsync(
+            "/api/auth/tab/join", new { joinToken = tab.JoinToken, displayName = "Ani", deviceId = "device-1" });
+
+        joined.EnsureSuccessStatusCode();
+
+        var token = (await joined.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("accessToken").GetString()!;
+
+        using var participant = factory.CreateClientWithToken(token);
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await participant.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch))).StatusCode);
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await participant.GetAsync("/api/reservations/mine")).StatusCode);
+
+        // And they get nowhere near the staff decisions either.
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await participant.PostAsJsonAsync(
+                $"/api/reservations/{Guid.CreateVersion7()}/approve", new { })).StatusCode);
+    }
+
+    [SkippableFact]
     public async Task A_verified_diner_books_and_a_retry_returns_the_same_booking()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
