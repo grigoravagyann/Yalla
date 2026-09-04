@@ -174,6 +174,58 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task Another_diners_command_id_is_a_collision_and_never_hands_back_their_booking()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        // The idempotency key is unique across the whole table, but a replay is the SAME diner
+        // sending the same command again. Answering a second diner with the booking that id already
+        // names would hand a stranger the door code, the guest's name and their phone number.
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var ani = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        using var stranger = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var commandId = Guid.CreateVersion7();
+        var booking = NewBooking(factory, branch, commandId: commandId);
+
+        var created = await ani.PostAsJsonAsync("/api/reservations", booking);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var aniBooking = await created.Content.ReadFromJsonAsync<JsonElement>();
+
+        // Ani's own retry still works, because it is genuinely hers.
+        var retry = await ani.PostAsJsonAsync("/api/reservations", booking);
+
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        Assert.True((await retry.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("wasReplay").GetBoolean());
+
+        // The stranger reusing it gets a plain collision - a different table, so nothing else could
+        // refuse it - and learns nothing about Ani's booking.
+        var collision = await stranger.PostAsJsonAsync(
+            "/api/reservations",
+            NewBooking(factory, branch, tableId: branch.TableIds[1], commandId: commandId));
+
+        Assert.Equal(HttpStatusCode.Conflict, collision.StatusCode);
+
+        var problem = await collision.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("client-command-id-in-use", problem.GetProperty("code").GetString());
+
+        var raw = problem.ToString();
+
+        Assert.DoesNotContain(aniBooking.GetProperty("code").GetString()!, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("Ani Test", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("+37411223344", raw, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task A_diner_sees_only_their_own_bookings_and_cannot_cancel_anyone_elses()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
@@ -383,7 +435,8 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
         YallaApiFactory factory,
         AuthBranch branch,
         Guid? tableId = null,
-        int partySize = 2)
+        int partySize = 2,
+        Guid? commandId = null)
     {
         var (date, time) = Slot(factory);
 
@@ -396,7 +449,7 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
             partySize,
             guestName = "Ani Test",
             guestPhone = "+37411223344",
-            clientCommandId = Guid.CreateVersion7(),
+            clientCommandId = commandId ?? Guid.CreateVersion7(),
         };
     }
 

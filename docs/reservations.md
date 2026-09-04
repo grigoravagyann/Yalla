@@ -182,6 +182,17 @@ diner on a patchy mobile connection taps Book, sees nothing happen, and taps aga
 a check-then-insert in the service — is what settles it, because two retries can race each other and
 a check-then-insert lets both through. The loser of that race answers with the booking that won.
 
+**The index is global; a replay is not.** A replay is *the same diner* sending *the same command*
+again, so every lookup that answers with an existing booking is scoped to the calling
+`DinerUserId`. Scoping only the index and not the lookup is a disclosure, not a subtlety: a second
+diner reusing the id would be handed the first one's booking — door code, guest name and telephone
+number — and the response would look like an ordinary successful retry.
+
+What is left over is a genuine collision between two callers, which is a client bug rather than a
+retry. It answers **409** `client-command-id-in-use`, saying only that the id is taken and nothing
+about the booking holding it. `ReservationEndpointTests` asserts the 409 body contains neither the
+other diner's code, name, nor phone.
+
 ---
 
 ## 4. The rules, and why none of them is a number in code
@@ -356,6 +367,7 @@ facts under `context`:
 | --- | --- | --- |
 | a branch rule refused it | 422 | one per rule, e.g. `reservation-party-exceeds-capacity` |
 | the table went first | 409 | `table-already-booked`, with the clashing window and a fresh floor |
+| the command id belongs to another caller | 409 | `client-command-id-in-use` |
 | the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |
 
 ---

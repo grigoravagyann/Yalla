@@ -89,6 +89,15 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: BookedContext(e)),
 
+        // Two callers minted the same idempotency key. Not a replay - a replay is the SAME caller
+        // sending the same command again - so the honest answer is that the id is taken, and
+        // nothing at all about the booking that holds it.
+        ClientCommandIdAlreadyUsedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ClientCommandIdInUse,
+            e.Message,
+            LogAsError: false),
+
         // Contention, not refusal. 503 with retryable set, because the client's correct response
         // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
         // matter how often it is repeated. Collapsing the two would teach clients to retry

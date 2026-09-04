@@ -61,6 +61,30 @@ public sealed class TableAlreadyBookedException(
 }
 
 /// <summary>
+/// The idempotency key on this booking request already belongs to somebody else's booking.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A <c>ClientCommandId</c> is unique across the whole table, but a <b>replay</b> is the same diner
+/// sending the same command again. Those are not the same statement, and conflating them is a leak:
+/// answering a second diner with the booking the id already names would hand them somebody else's
+/// door code, guest name and telephone number.
+/// </para>
+/// <para>
+/// So the replay lookup is scoped to the caller, and this is what is left over - a genuine
+/// collision between two callers, which is a client bug rather than a retry. <b>409</b>, saying
+/// plainly that the id is taken, and revealing nothing about the booking that holds it.
+/// </para>
+/// </remarks>
+public sealed class ClientCommandIdAlreadyUsedException(Guid clientCommandId)
+    : Exception(
+        "That clientCommandId already belongs to another booking. Generate a fresh one per booking, "
+        + "and reuse it only when retrying that same booking.")
+{
+    public Guid ClientCommandId { get; } = clientCommandId;
+}
+
+/// <summary>
 /// The booking could not get the lock on the table in time.
 /// </summary>
 /// <remarks>

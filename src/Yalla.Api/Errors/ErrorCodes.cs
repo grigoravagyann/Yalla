@@ -70,6 +70,13 @@ public static class ErrorCodes
     /// </summary>
     public const string ReservationLockTimeout = "reservation-lock-timeout";
 
+    /// <summary>
+    /// The <c>clientCommandId</c> on a booking request already belongs to another caller's booking.
+    /// HTTP 409. A client bug rather than a retry: generate one per booking, and reuse it only when
+    /// retrying that same booking.
+    /// </summary>
+    public const string ClientCommandIdInUse = "client-command-id-in-use";
+
     /// <summary>Too many requests in the window. HTTP 429.</summary>
     public const string RateLimited = "rate-limited";
 
@@ -119,6 +126,7 @@ public static class ErrorCodes
         InvalidTableTransition => "Invalid table transition",
         TableAlreadyBooked => "Table already booked",
         ReservationLockTimeout => "Reservation lock timeout",
+        ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",
         TooManyAttempts => "Too many attempts",

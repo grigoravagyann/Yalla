@@ -74,7 +74,7 @@ internal sealed class ReservationService(
 
         // Cheap path first: a retry that arrives after the original committed never reaches the
         // lock at all. The unique index below is what makes the racing case safe.
-        if (await FindByCommandIdAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await FindReplayAsync(command.ClientCommandId, dinerUserId, cancellationToken) is { } replay)
         {
             logger.LogInformation(
                 "Booking command {ClientCommandId} was already applied as {Code}; returning the original.",
@@ -118,7 +118,8 @@ internal sealed class ReservationService(
             stayHint: command.StayHint,
             clientCommandId: command.ClientCommandId);
 
-        var outcome = await InsertUnderTableLockAsync(reservation, table, proposed, policy, cancellationToken);
+        var outcome = await InsertUnderTableLockAsync(
+            reservation, table, proposed, policy, dinerUserId, cancellationToken);
 
         if (outcome.Replay is { } winner)
         {
@@ -243,6 +244,7 @@ internal sealed class ReservationService(
         DiningTable table,
         BookedInterval proposed,
         ReservationPolicy policy,
+        Guid dinerUserId,
         CancellationToken cancellationToken)
     {
         var timeoutMs = Math.Clamp(lockOptions.LockTimeoutMilliseconds, 100, 60_000);
@@ -272,7 +274,8 @@ internal sealed class ReservationService(
             // while the second waits on this lock. By the time the second gets here the first is
             // visible, and an overlap check run first would call the diner's own booking a
             // conflict and answer 409 for a table they already have.
-            if (await FindByCommandIdAsync(reservation.ClientCommandId, cancellationToken) is { } original)
+            if (await FindReplayAsync(
+                    reservation.ClientCommandId, dinerUserId, cancellationToken) is { } original)
             {
                 db.Entry(reservation).State = EntityState.Detached;
                 return InsertOutcome.Replayed(original);
@@ -287,7 +290,7 @@ internal sealed class ReservationService(
 
             db.Reservations.Add(reservation);
 
-            if (await SaveWithFreshCodeAsync(reservation, cancellationToken) is { } winner)
+            if (await SaveWithFreshCodeAsync(reservation, dinerUserId, cancellationToken) is { } winner)
             {
                 return InsertOutcome.Replayed(winner);
             }
@@ -358,6 +361,7 @@ internal sealed class ReservationService(
     /// <returns>The winning booking when this was a racing replay, otherwise null.</returns>
     private async Task<Reservation?> SaveWithFreshCodeAsync(
         Reservation reservation,
+        Guid dinerUserId,
         CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
@@ -375,10 +379,20 @@ internal sealed class ReservationService(
                 // check-then-insert would have let both through.
                 db.Entry(reservation).State = EntityState.Detached;
 
-                var winner = await FindByCommandIdAsync(reservation.ClientCommandId, cancellationToken)
-                             ?? throw new InvalidOperationException(
-                                 $"Booking command {reservation.ClientCommandId} violated the idempotency "
-                                 + "index but no booking was found.");
+                // Scoped to the caller. The index is unique across every diner, so the row that
+                // won may not be theirs at all - and handing it back would answer a stranger with
+                // somebody else's door code, guest name and telephone number.
+                var winner = await FindReplayAsync(
+                    reservation.ClientCommandId, dinerUserId, cancellationToken);
+
+                if (winner is null)
+                {
+                    logger.LogWarning(
+                        "Booking command {ClientCommandId} is already held by another diner's booking.",
+                        reservation.ClientCommandId);
+
+                    throw new ClientCommandIdAlreadyUsedException(reservation.ClientCommandId);
+                }
 
                 logger.LogInformation(
                     "Booking command {ClientCommandId} was applied concurrently; replaying {Code}.",
@@ -709,10 +723,24 @@ internal sealed class ReservationService(
         return reservation ?? throw new KeyNotFoundException($"Reservation {reservationId} was not found.");
     }
 
-    private Task<Reservation?> FindByCommandIdAsync(Guid clientCommandId, CancellationToken cancellationToken) =>
+    /// <summary>
+    /// The booking a previous attempt with this command id already made, <b>by this diner</b>.
+    /// </summary>
+    /// <remarks>
+    /// The diner is half the question, not a refinement of it. A replay is the same caller sending
+    /// the same command again; the same id from a different caller is a collision, and answering it
+    /// with the booking that holds the id would disclose that booking's door code, guest name and
+    /// phone number to somebody who only had to reuse a Guid.
+    /// </remarks>
+    private Task<Reservation?> FindReplayAsync(
+        Guid clientCommandId,
+        Guid dinerUserId,
+        CancellationToken cancellationToken) =>
         db.Reservations
             .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.ClientCommandId == clientCommandId, cancellationToken);
+            .FirstOrDefaultAsync(
+                r => r.ClientCommandId == clientCommandId && r.DinerUserId == dinerUserId,
+                cancellationToken);
 
     // ---------------------------------------------------------------- views
 
