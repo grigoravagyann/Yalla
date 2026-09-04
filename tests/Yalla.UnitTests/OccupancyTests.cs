@@ -119,15 +119,7 @@ public class DiningTableTests
     {
         var table = NewTable();
 
-        Assert.Throws<ArgumentException>(() => table.ApplyStatus(TableStatus.Occupied));
-    }
-
-    [Fact]
-    public void A_free_table_must_not_reference_a_session()
-    {
-        var table = NewTable();
-
-        Assert.Throws<ArgumentException>(() => table.ApplyStatus(TableStatus.Free, Guid.CreateVersion7()));
+        Assert.Throws<ArgumentException>(() => table.Occupy(Guid.Empty));
     }
 
     [Fact]
@@ -136,10 +128,22 @@ public class DiningTableTests
         var table = NewTable();
         var sessionId = Guid.CreateVersion7();
 
-        table.ApplyStatus(TableStatus.Occupied, sessionId);
+        table.Occupy(sessionId);
 
         Assert.Equal(TableStatus.Occupied, table.Status);
         Assert.Equal(sessionId, table.CurrentSessionId);
+    }
+
+    [Fact]
+    public void Vacating_clears_the_cached_session_pointer()
+    {
+        var table = NewTable();
+        table.Occupy(Guid.CreateVersion7());
+
+        table.Vacate();
+
+        Assert.Equal(TableStatus.Free, table.Status);
+        Assert.Null(table.CurrentSessionId);
     }
 
     [Fact]
@@ -153,9 +157,9 @@ public class DiningTableTests
         Assert.NotEqual(table.QrToken, NewTable().QrToken);
     }
 
-    private static DiningTable NewTable() => new(
+    internal static DiningTable NewTable(string label = "7") => new(
         branchId: Guid.CreateVersion7(),
-        label: "7",
+        label: label,
         seats: 4,
         x: 100,
         y: 200,

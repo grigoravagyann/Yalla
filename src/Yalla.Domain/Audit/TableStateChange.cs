@@ -9,7 +9,7 @@ namespace Yalla.Domain.Audit;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Cheap to write and hard to reconstruct after the fact. It answers the argument that actually
+/// Cheap to write and hard to reconstruct after the fact. It settles the argument that actually
 /// happens on a Friday night - "somebody gave away my reserved table" - with a row naming who
 /// changed what, when and why.
 /// </para>
@@ -17,6 +17,9 @@ namespace Yalla.Domain.Audit;
 /// It is also the raw material for the turnover reporting sold to owners later: how long tables
 /// sat empty between covers, how often bookings were released as no-shows, which areas turn
 /// fastest. None of that can be backfilled, which is why the log starts on day one.
+/// </para>
+/// <para>
+/// And it is the <b>idempotency ledger</b>. See <see cref="ClientCommandId"/>.
 /// </para>
 /// </remarks>
 public sealed class TableStateChange : Entity
@@ -52,6 +55,34 @@ public sealed class TableStateChange : Entity
     /// <summary>The tab involved, if the change was about one.</summary>
     public Guid? TabId { get; private set; }
 
+    /// <summary>
+    /// The occupancy this change opened or closed, if any.
+    /// </summary>
+    /// <remarks>
+    /// Recorded so a replayed command can return exactly the same answer as the original,
+    /// including the session id - not merely "this already happened". Without it, resolving the
+    /// session for a replay means guessing from timestamps.
+    /// </remarks>
+    public Guid? TableSessionId { get; private set; }
+
+    /// <summary>
+    /// The caller's own id for the command that produced this row. Unique across the table.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The staff tablet queues state changes locally when the cafe wifi drops and replays them on
+    /// reconnect, so "seat table 7" <i>will</i> arrive twice. This column, with its unique index,
+    /// is what makes the second arrival a no-op that returns the first one's result instead of a
+    /// second session and a second audit row.
+    /// </para>
+    /// <para>
+    /// The unique index is the real guarantee. A check-then-insert loses the race between two
+    /// simultaneous replays; the index does not, and the loser is caught and answered from the
+    /// existing row.
+    /// </para>
+    /// </remarks>
+    public Guid ClientCommandId { get; private set; }
+
     private TableStateChange()
     {
     }
@@ -64,9 +95,11 @@ public sealed class TableStateChange : Entity
         string reason,
         ActorType actorType,
         DateTime atUtc,
+        Guid clientCommandId,
         Guid? actorId = null,
         Guid? reservationId = null,
-        Guid? tabId = null)
+        Guid? tabId = null,
+        Guid? tableSessionId = null)
         : base(Guid.CreateVersion7())
     {
         BranchId = Guard.NotEmpty(branchId, nameof(branchId));
@@ -76,8 +109,10 @@ public sealed class TableStateChange : Entity
         Reason = Guard.NotBlank(reason, nameof(reason), FieldLengths.Reason);
         ActorType = Guard.Defined(actorType, nameof(actorType));
         AtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        ClientCommandId = Guard.NotEmpty(clientCommandId, nameof(clientCommandId));
         ReservationId = reservationId;
         TabId = tabId;
+        TableSessionId = tableSessionId;
 
         if (actorType != ActorType.System && actorId is null)
         {

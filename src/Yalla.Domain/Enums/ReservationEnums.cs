@@ -1,6 +1,27 @@
 namespace Yalla.Domain.Enums;
 
-/// <summary>Lifecycle of a booking, from request through to seated, completed or lost.</summary>
+/// <summary>
+/// Lifecycle of a booking. Every member is the result of somebody doing something.
+/// </summary>
+/// <remarks>
+/// <para>
+/// There is deliberately <b>no <c>Late</c></b> member. Lateness is a pure function of the clock -
+/// <c>now &gt; StartUtc + GraceMinutes</c> - computed from data already on the row and the
+/// branch's own policy. Storing it would need a timer flipping rows, which can stall, can
+/// disagree with the tablet's clock, and can leave a cancelled booking marked late forever. Use
+/// <c>Reservation.IsLateAt</c> instead.
+/// </para>
+/// <para>
+/// The <b>late nudge push</b> - the message sent to the diner at start + <c>LateNudgeAfterMinutes</c> -
+/// is a different concern and is <i>not</i> solved by deriving lateness. That is a genuine
+/// scheduled action with an at-most-once delivery obligation, so it needs an outbox job and its
+/// own delivery record. It is out of scope here; the two must not be conflated.
+/// </para>
+/// <para>
+/// Numeric values are not contiguous: <c>3</c> was <c>Late</c> and is permanently retired so it
+/// can never be reused and mean two things.
+/// </para>
+/// </remarks>
 public enum ReservationStatus
 {
     /// <summary>Awaiting a staff decision because the party is larger than the branch's approval threshold.</summary>
@@ -9,8 +30,7 @@ public enum ReservationStatus
     /// <summary>The table is held for the party for the booked interval.</summary>
     Confirmed = 2,
 
-    /// <summary>Start time has passed with nobody seated; the branch's grace window is running.</summary>
-    Late = 3,
+    // 3 was Late. Permanently retired - lateness is derived. Do not reuse.
 
     /// <summary>The party arrived and a <c>TableSession</c> was opened.</summary>
     Seated = 4,

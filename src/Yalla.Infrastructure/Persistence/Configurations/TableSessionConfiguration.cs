@@ -46,11 +46,21 @@ internal sealed class TableSessionConfiguration : EntityConfiguration<TableSessi
         // Occupancy history for one table, newest last: the turnover reporting reads this.
         builder.HasIndex(s => new { s.DiningTableId, s.SeatedAtUtc });
 
-        // Filtered on the open sessions only. The set of currently occupied tables is tiny next
-        // to the full history, and it is queried constantly - every floor plan refresh, every
-        // QR scan - so it gets its own narrow index instead of scanning years of closed rows.
-        builder.HasIndex(s => new { s.BranchId, s.DiningTableId })
-            .HasDatabaseName("IX_TableSessions_Open")
+        // At most one open session per table, enforced by the database rather than by service
+        // logic alone. This is the backstop for the double-seat: if the state machine is
+        // bypassed, or two writers get past the table's RowVersion somehow, SQL Server still
+        // refuses to have two parties sitting at table 7.
+        //
+        // Filtered, so it costs almost nothing: the set of currently open sessions is tiny next
+        // to years of closed history, and it is the set every floor refresh and QR scan reads.
+        builder.HasIndex(s => s.DiningTableId)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.OpenSessionPerTable)
+            .HasFilter("[ClosedAtUtc] IS NULL");
+
+        // Branch-wide "who is sitting down right now", for the floor query.
+        builder.HasIndex(s => s.BranchId)
+            .HasDatabaseName("IX_TableSessions_OpenByBranch")
             .HasFilter("[ClosedAtUtc] IS NULL");
     }
 }

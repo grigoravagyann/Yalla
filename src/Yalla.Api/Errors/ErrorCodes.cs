@@ -31,6 +31,19 @@ public static class ErrorCodes
     /// </summary>
     public const string ConcurrentUpdate = "concurrent-update";
 
+    /// <summary>
+    /// Somebody else changed this table first. HTTP 409, with the table's current state in
+    /// <c>details</c> so the client can redraw it. Never retried automatically: retrying would
+    /// seat a walk-in at a table the diner's booking just took.
+    /// </summary>
+    public const string TableStateConflict = "table-state-conflict";
+
+    /// <summary>
+    /// The requested transition is not one the state machine allows - freeing an empty table,
+    /// marking an occupied one broken. HTTP 422, with the legal transitions in <c>details</c>.
+    /// </summary>
+    public const string InvalidTableTransition = "invalid-table-transition";
+
     /// <summary>Too many requests in the window. HTTP 429.</summary>
     public const string RateLimited = "rate-limited";
 

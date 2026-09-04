@@ -26,6 +26,10 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
         builder.Property(c => c.ActorId);
         builder.Property(c => c.ReservationId);
         builder.Property(c => c.TabId);
+        builder.Property(c => c.TableSessionId);
+
+        builder.Property(c => c.ClientCommandId)
+            .IsRequired();
 
         builder.HasOne(c => c.Branch)
             .WithMany()
@@ -41,5 +45,12 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
         builder.HasIndex(c => new { c.DiningTableId, c.AtUtc });
 
         builder.HasIndex(c => new { c.BranchId, c.AtUtc });
+
+        // The idempotency guarantee. This unique index - not a check-then-insert in the service -
+        // is what makes a replayed offline command a no-op: two simultaneous replays both try to
+        // insert, one is rejected here, and the loser answers from the row that won.
+        builder.HasIndex(c => c.ClientCommandId)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.TableStateChangeClientCommand);
     }
 }

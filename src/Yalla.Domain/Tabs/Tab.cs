@@ -175,4 +175,61 @@ public sealed class Tab : Entity
         SettlementModeLockedAtUtc ??= Guard.NotLocalTime(lockedAtUtc, nameof(lockedAtUtc));
 
     public void SetHideTotalFromGuests(bool hide) => HideTotalFromGuests = hide;
+
+    /// <summary>
+    /// Settles and closes the tab. Refuses while anything is still owed.
+    /// </summary>
+    /// <remarks>
+    /// Note that this does not gate freeing the <i>table</i>. If the diners have left with a
+    /// balance outstanding the table is freed anyway and the tab stays open for staff to resolve -
+    /// physical state and financial state are independent on purpose, and a floor plan that lies
+    /// about who is sitting where costs more than an unpaid tab.
+    /// </remarks>
+    public void Close(DateTime closedAtUtc)
+    {
+        if (Status is TabStatus.Closed or TabStatus.Abandoned)
+        {
+            throw new InvalidOperationException("This tab is already closed.");
+        }
+
+        if (RemainingAmd > 0L)
+        {
+            throw new InvalidOperationException(
+                $"This tab still has {RemainingAmd} AMD outstanding and cannot be closed.");
+        }
+
+        Status = TabStatus.Closed;
+        ClosedAtUtc = Guard.NotLocalTime(closedAtUtc, nameof(closedAtUtc));
+    }
+
+    /// <summary>
+    /// Writes off an outstanding balance: the diners left without paying and the venue is
+    /// accepting the loss.
+    /// </summary>
+    /// <remarks>
+    /// The role check lives in the service layer, which is where the acting staff member is
+    /// known - this is manager-only, because it is a decision about money rather than about the
+    /// floor.
+    /// </remarks>
+    public void MarkAbandoned(DateTime abandonedAtUtc)
+    {
+        if (Status is TabStatus.Closed or TabStatus.Abandoned)
+        {
+            throw new InvalidOperationException("This tab is already closed.");
+        }
+
+        Status = TabStatus.Abandoned;
+        ClosedAtUtc = Guard.NotLocalTime(abandonedAtUtc, nameof(abandonedAtUtc));
+    }
+
+    /// <summary>The bill has been asked for; no new orders.</summary>
+    public void BeginClosing()
+    {
+        if (Status != TabStatus.Open)
+        {
+            throw new InvalidOperationException($"A tab must be open to begin closing; this one is {Status}.");
+        }
+
+        Status = TabStatus.Closing;
+    }
 }
