@@ -6,14 +6,13 @@ using Yalla.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configuration sources: the secret-free appsettings.json placeholder, then the environment's own
-// file, then environment variables - which is how real values (connection strings, keys) arrive
-// in a deployed environment.
-var configuration = builder.Configuration
-    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
-    .AddEnvironmentVariables()
-    .Build();
+// CreateBuilder has already loaded, in this order: appsettings.json, the secret-free
+// appsettings.{Environment}.json, user secrets in Development, environment variables and the
+// command line - which is how real values (connection strings, keys) arrive in a deployed
+// environment. Re-adding those sources here would register each file twice and, worse, calling
+// Build() would hand the rest of the app a second configuration root while Serilog kept reading
+// builder.Configuration - two sources of truth that can disagree. Use the one the host owns.
+var configuration = builder.Configuration;
 
 // Logging is configured entirely from the Serilog section, so sinks and levels change per
 // environment without a redeploy.

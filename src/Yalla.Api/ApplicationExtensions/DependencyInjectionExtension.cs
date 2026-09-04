@@ -18,9 +18,21 @@ public static class DependencyInjectionExtension
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             // Fail at startup, not on the first request that happens to touch the database.
+            //
+            // Naming the environment matters more than it looks: the usual cause of this is not a
+            // missing setting but an unexpected environment. ASPNETCORE_ENVIRONMENT unset means
+            // Production, which reads no appsettings.Development.json - so the connection string
+            // sitting right there in that file is simply never loaded.
+            var environmentName = builder.Environment.EnvironmentName;
+
             throw new InvalidOperationException(
-                "Connection string 'Yalla' is not configured. Set ConnectionStrings:Yalla in "
-                + "appsettings.{Environment}.json, or as the ConnectionStrings__Yalla environment variable.");
+                $"Connection string 'Yalla' is not configured for the '{environmentName}' environment. "
+                + $"Set ConnectionStrings:Yalla in appsettings.{environmentName}.json, or as the "
+                + "ConnectionStrings__Yalla environment variable. "
+                + (builder.Environment.IsDevelopment()
+                    ? "appsettings.Development.json is loaded but has no value for it."
+                    : $"If you meant to run locally, set ASPNETCORE_ENVIRONMENT=Development - "
+                      + $"appsettings.Development.json carries the local connection string and is not read in '{environmentName}'."));
         }
 
         builder.Services.AddInfrastructure(connectionString);
