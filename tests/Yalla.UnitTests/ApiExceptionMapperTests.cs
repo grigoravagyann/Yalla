@@ -156,8 +156,14 @@ public class ApiExceptionMapperTests
 
         Assert.Equal(StatusCodes.Status422UnprocessableEntity, mapped.Status);
         Assert.Equal(ErrorCodes.InvalidTableTransition, mapped.Code);
-        Assert.NotNull(mapped.Details);
-        Assert.Equal("7", mapped.Details!["tableLabel"]);
+        Assert.NotNull(mapped.Context);
+        Assert.Equal("7", mapped.Context!["tableLabel"]);
+
+        // Enum facts travel as their integer values, matching the schema and every other
+        // response. A client comparing this against its generated TableStatus must not have to
+        // know that this one place spelled it out in English.
+        Assert.Equal((int)TableStatus.Occupied, mapped.Context["fromStatus"]);
+        Assert.Equal((int)TableStatus.OutOfService, mapped.Context["attemptedToStatus"]);
     }
 
     [Fact]

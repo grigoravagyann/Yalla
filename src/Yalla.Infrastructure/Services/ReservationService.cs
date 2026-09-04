@@ -608,9 +608,11 @@ internal sealed class ReservationService(
     /// The calling diner.
     /// </summary>
     /// <remarks>
-    /// Reads identity from <see cref="ICurrentActor"/> and nowhere else, so replacing the
-    /// development stub with the real authentication handler is the whole change here. Staff
-    /// taking a booking over the phone is a separate operation and is not this one.
+    /// Reads identity from <see cref="ICurrentActor"/> and nowhere else, which is now the token's
+    /// claims by way of <c>ClaimsCurrentActor</c>. The <c>VerifiedDiner</c> policy on the route has
+    /// already refused anyone who is not a diner with an account; this is the second half of that
+    /// answer - the id the booking is filed under - and it fails closed if the two ever disagree.
+    /// Staff taking a booking over the phone is a separate operation and is not this one.
     /// </remarks>
     private Guid RequireDiner(string operation)
     {

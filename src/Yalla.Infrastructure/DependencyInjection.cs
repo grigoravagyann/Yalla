@@ -1,7 +1,10 @@
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
@@ -34,12 +37,73 @@ public static class DependencyInjection
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
+        services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
+        services.AddScoped<ITabQuery, TabQuery>();
 
         // Both are plain settings objects rather than IOptions: they are read on nearly every
         // booking, they never change per request, and binding them once here keeps the
         // application layer free of a configuration dependency.
         services.AddSingleton(Bind<NoShowPolicy>(configuration, NoShowPolicy.SectionName));
         services.AddSingleton(Bind<BookingLockOptions>(configuration, BookingLockOptions.SectionName));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the four sign-in flows, token minting and the development senders.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The signing key is validated here rather than on the first request that needs it. A
+    /// process that starts without a key would run happily until somebody tried to sign in, and
+    /// then fail in a way that looks like a client bug.
+    /// </para>
+    /// <para>
+    /// <paramref name="allowDevelopmentSecretsInResponses"/> is passed in by the host, not read
+    /// from configuration here, so that <c>Auth:ReturnVerificationCodeInResponse</c> cannot be
+    /// switched on outside Development by anyone with an environment variable.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddAuthenticationServices(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        bool allowDevelopmentSecretsInResponses)
+    {
+        var jwtSection = configuration.GetSection(JwtOptions.SectionName);
+        var signingKey = jwtSection.GetValue<string>("SigningKey");
+
+        if (string.IsNullOrWhiteSpace(signingKey) || Encoding.UTF8.GetByteCount(signingKey) < 32)
+        {
+            throw new InvalidOperationException(
+                "Jwt:SigningKey is missing or shorter than 32 bytes. It is a secret and must never "
+                + "be committed: set it with `dotnet user-secrets set \"Jwt:SigningKey\" \"<value>\"` "
+                + "for local work, or as the Jwt__SigningKey environment variable elsewhere. "
+                + "`openssl rand -base64 48` produces a suitable value.");
+        }
+
+        services.Configure<JwtOptions>(jwtSection);
+
+        services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.SectionName));
+        services.PostConfigure<AuthOptions>(options =>
+            options.ReturnVerificationCodeInResponse =
+                options.ReturnVerificationCodeInResponse && allowDevelopmentSecretsInResponses);
+
+        services.AddSingleton<SecretHasher>();
+        services.AddSingleton<PhoneCodeRateLimiter>();
+        services.AddScoped<TokenIssuer>();
+        services.AddScoped<RefreshTokenStore>();
+
+        services.AddScoped<IDinerAuthService, DinerAuthService>();
+        services.AddScoped<IStaffAuthService, StaffAuthService>();
+        services.AddScoped<IVenueUserAuthService, VenueUserAuthService>();
+        services.AddScoped<ITabParticipantAuthService, TabParticipantAuthService>();
+        services.AddScoped<ITokenRefreshService, TokenRefreshService>();
+
+        // The only implementations that ship. Both write a live credential to the log, which is
+        // what makes them useful locally and what makes replacing them a release blocker. They
+        // are registered with TryAdd so a real provider registered first simply wins.
+        services.TryAddScoped<IVerificationCodeSender, DevelopmentVerificationCodeSender>();
+        services.TryAddScoped<IPasswordResetSender, DevelopmentPasswordResetSender>();
 
         return services;
     }

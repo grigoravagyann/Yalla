@@ -37,9 +37,6 @@ public sealed class TableAlreadyBookedException(
         + $"{conflicting.EndUtc:HH:mm} UTC, which clashes with a "
         + $"{requested.StartUtc:HH:mm}-{requested.EndUtc:HH:mm} sitting once clearing time is allowed for.")
 {
-    /// <summary>The stable slug the client branches on.</summary>
-    public const string ErrorCode = "table-already-booked";
-
     public Guid BranchId { get; } = branchId;
 
     public Guid TableId { get; } = tableId;
@@ -85,9 +82,6 @@ public sealed class ReservationLockTimeoutException(Guid tableId, string tableLa
         $"Table {tableLabel} was busy with another booking for longer than {timeoutMilliseconds}ms. "
         + "Retry with the same clientCommandId.")
 {
-    /// <summary>The stable slug the client branches on.</summary>
-    public const string ErrorCode = "reservation-lock-timeout";
-
     public Guid TableId { get; } = tableId;
 
     public string TableLabel { get; } = tableLabel;

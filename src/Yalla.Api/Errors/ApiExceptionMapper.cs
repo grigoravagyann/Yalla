@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
@@ -15,13 +16,13 @@ namespace Yalla.Api.Errors;
 /// False for failures that are part of normal operation - a rejected request, a lost concurrency
 /// race - so the error log stays a list of things that are actually wrong.
 /// </param>
-/// <param name="Details">Machine-readable facts the client needs in order to react.</param>
+/// <param name="Context">Machine-readable facts the client needs in order to react.</param>
 public readonly record struct MappedError(
     int Status,
     string Code,
     string Message,
     bool LogAsError,
-    IReadOnlyDictionary<string, object?>? Details = null);
+    IReadOnlyDictionary<string, object?>? Context = null);
 
 /// <summary>
 /// Translates exceptions into <see cref="UnifiedErrorEnvelope"/> values.
@@ -47,12 +48,15 @@ internal static class ApiExceptionMapper
             ErrorCodes.TableStateConflict,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
-                ["attemptedFromStatus"] = e.AttemptedFromStatus.ToString(),
-                ["currentStatus"] = e.CurrentStatus.ToString(),
+                // The numeric enum values, matching what the schema declares and what every other
+                // response carries. A client comparing this to its generated TableStatus enum
+                // should not have to know that this one place spelled it out in English.
+                ["attemptedFromStatus"] = (int)e.AttemptedFromStatus,
+                ["currentStatus"] = (int)e.CurrentStatus,
                 ["currentSessionId"] = e.CurrentSessionId,
             }),
 
@@ -63,14 +67,14 @@ internal static class ApiExceptionMapper
             ErrorCodes.InvalidTableTransition,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
-                ["fromStatus"] = e.FromStatus.ToString(),
-                ["attemptedToStatus"] = e.ToStatus.ToString(),
+                ["fromStatus"] = (int)e.FromStatus,
+                ["attemptedToStatus"] = (int)e.ToStatus,
                 ["allowedFromHere"] = TableStatusTransitions.From(e.FromStatus)
-                    .Select(s => s.ToString())
+                    .Select(s => (int)s)
                     .ToArray(),
             }),
 
@@ -80,32 +84,21 @@ internal static class ApiExceptionMapper
         // show what changed instead of firing a second request into the same contention.
         TableAlreadyBookedException e => new MappedError(
             StatusCodes.Status409Conflict,
-            TableAlreadyBookedException.ErrorCode,
+            ErrorCodes.TableAlreadyBooked,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
-            {
-                ["reason"] = e.Reason.ToString(),
-                ["tableId"] = e.TableId,
-                ["tableLabel"] = e.TableLabel,
-                ["requestedStartUtc"] = e.Requested.StartUtc,
-                ["requestedEndUtc"] = e.Requested.EndUtc,
-                ["conflictingStartUtc"] = e.Conflicting.StartUtc,
-                ["conflictingEndUtc"] = e.Conflicting.EndUtc,
-                ["conflictingReservationId"] = e.ConflictingReservationId,
-                ["availability"] = e.Availability,
-            }),
+            Context: BookedContext(e)),
 
-        // Contention, not refusal. 503 with Retryable set, because the client's correct response
+        // Contention, not refusal. 503 with retryable set, because the client's correct response
         // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
         // matter how often it is repeated. Collapsing the two would teach clients to retry
         // conflicts, which is how a party ends up with two tables.
         ReservationLockTimeoutException e => new MappedError(
             StatusCodes.Status503ServiceUnavailable,
-            ReservationLockTimeoutException.ErrorCode,
+            ErrorCodes.ReservationLockTimeout,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -121,17 +114,46 @@ internal static class ApiExceptionMapper
             e.Code,
             e.Message,
             LogAsError: false,
-            Details: e.Details),
+            Context: e.Context),
+
+        // The account is locked, not the credential wrong. Must stay ABOVE the general
+        // authentication arm it derives from: reporting a lockout as a plain 401 leaves someone
+        // standing at a tablet retyping a PIN that was correct all along.
+        AccountLockedException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.AccountLocked,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["lockedUntilUtc"] = e.LockedUntilUtc,
+            }),
+
+        // A one-time credential is out of attempts. 429 rather than 401, because the useful
+        // signal to a client is "stop retrying and ask for a new code", not "try again".
+        TooManyAttemptsException e => new MappedError(
+            StatusCodes.Status429TooManyRequests,
+            ErrorCodes.TooManyAttempts,
+            e.Message,
+            LogAsError: false),
+
+        // Every other sign-in failure. The slug comes from the exception, which is deliberately
+        // never specific enough to say whether an account exists - see AuthenticationFailedException.
+        AuthenticationFailedException e => new MappedError(
+            StatusCodes.Status401Unauthorized,
+            e.ReasonCode,
+            e.Message,
+            LogAsError: false),
 
         StaffPermissionException e => new MappedError(
             StatusCodes.Status403Forbidden,
             ErrorCodes.Forbidden,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["operation"] = e.Operation,
-                ["requiredRole"] = e.RequiredRole.ToString(),
+                ["requiredRole"] = (int)e.RequiredRole,
             }),
 
         // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are
@@ -186,4 +208,36 @@ internal static class ApiExceptionMapper
             InternalErrorMessage,
             LogAsError: true),
     };
+
+    /// <summary>
+    /// The context of a lost race for a table.
+    /// </summary>
+    /// <remarks>
+    /// The availability snapshot is added only when there is one. It is best-effort - a floor that
+    /// could not be read must not turn a 409 the client can act on into a 500 it cannot - and
+    /// <c>DefaultIgnoreCondition</c> does not reach inside a dictionary, so an unconditional entry
+    /// would put a bare <c>"availability": null</c> on the wire for a generated client to trip over.
+    /// </remarks>
+    private static Dictionary<string, object?> BookedContext(TableAlreadyBookedException exception)
+    {
+        var context = new Dictionary<string, object?>
+        {
+            // Numeric, like every other enum on the wire and in the schema.
+            ["reason"] = (int)exception.Reason,
+            ["tableId"] = exception.TableId,
+            ["tableLabel"] = exception.TableLabel,
+            ["requestedStartUtc"] = exception.Requested.StartUtc,
+            ["requestedEndUtc"] = exception.Requested.EndUtc,
+            ["conflictingStartUtc"] = exception.Conflicting.StartUtc,
+            ["conflictingEndUtc"] = exception.Conflicting.EndUtc,
+            ["conflictingReservationId"] = exception.ConflictingReservationId,
+        };
+
+        if (exception.Availability is { } availability)
+        {
+            context["availability"] = availability;
+        }
+
+        return context;
+    }
 }

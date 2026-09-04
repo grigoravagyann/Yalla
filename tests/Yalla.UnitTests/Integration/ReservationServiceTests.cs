@@ -205,7 +205,7 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
 
             Assert.Equal(StatusCodes.Status422UnprocessableEntity, mapped.Status);
             Assert.Equal(f.Code, mapped.Code);
-            Assert.NotNull(mapped.Details);
+            Assert.NotNull(mapped.Context);
         });
     }
 

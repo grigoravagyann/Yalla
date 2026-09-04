@@ -26,6 +26,22 @@ internal sealed class StaffMemberConfiguration : EntityConfiguration<StaffMember
             .HasMaxLength(FieldLengths.PinHash)
             .IsRequired();
 
+        builder.Property(s => s.PinFailedAttempts).IsRequired();
+
+        // Null for the many staff who only ever tap a PIN: an email sign-in is for owners and
+        // managers working in the admin panel.
+        builder.Property(s => s.Email).HasMaxLength(FieldLengths.Email);
+
+        builder.Property(s => s.PasswordHash).HasMaxLength(FieldLengths.PasswordHash);
+
+        // One address, one account, across the whole system - the panel's sign-in form has no
+        // venue field to disambiguate with. Filtered, because most rows have no email at all and
+        // SQL Server would otherwise treat every null as a collision.
+        builder.HasIndex(s => s.Email)
+            .IsUnique()
+            .HasFilter("[Email] IS NOT NULL")
+            .HasDatabaseName(DatabaseIndexNames.StaffMemberEmail);
+
         builder.HasOne(s => s.Venue)
             .WithMany(v => v.Staff)
             .HasForeignKey(s => s.VenueId)

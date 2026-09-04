@@ -6,7 +6,7 @@ namespace Yalla.Domain.Occupancy;
 /// <remarks>
 /// <para>
 /// One derived type per rule, each with its own <see cref="Code"/> and its own
-/// <see cref="Details"/>. The alternative - a single exception carrying a message - forces every
+/// <see cref="Context"/>. The alternative - a single exception carrying a message - forces every
 /// client to either show server prose or match on English, and both are how a booking screen ends
 /// up saying "invalid booking" to somebody who only needed to pick a different table.
 /// </para>
@@ -38,20 +38,24 @@ public abstract class ReservationRejectedException : Exception
     /// The numbers behind the refusal, so the client can say "this table seats 4" rather than
     /// repeating the server's sentence.
     /// </summary>
-    public virtual IReadOnlyDictionary<string, object?> Details =>
-        new Dictionary<string, object?> { ["reason"] = Reason.ToString() };
+    /// <remarks>
+    /// Becomes the <c>context</c> extension member on the problem document. The reason travels as
+    /// its integer value, like every other enum on the wire and in the generated schema.
+    /// </remarks>
+    public virtual IReadOnlyDictionary<string, object?> Context =>
+        new Dictionary<string, object?> { ["reason"] = (int)Reason };
 
-    /// <summary>Builds <see cref="Details"/> with the reason already in it.</summary>
-    protected Dictionary<string, object?> DetailsWith(params (string Key, object? Value)[] values)
+    /// <summary>Builds <see cref="Context"/> with the reason already in it.</summary>
+    protected Dictionary<string, object?> ContextWith(params (string Key, object? Value)[] values)
     {
-        var details = new Dictionary<string, object?> { ["reason"] = Reason.ToString() };
+        var context = new Dictionary<string, object?> { ["reason"] = (int)Reason };
 
         foreach (var (key, value) in values)
         {
-            details[key] = value;
+            context[key] = value;
         }
 
-        return details;
+        return context;
     }
 }
 
@@ -73,7 +77,7 @@ public sealed class LeadTimeTooShortException(DateTime startUtc, DateTime earlie
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("requestedStartUtc", StartUtc),
         ("earliestStartUtc", EarliestStartUtc),
         ("minLeadMinutes", MinLeadMinutes));
@@ -97,7 +101,7 @@ public sealed class OutsideBookingWindowException(DateOnly localDate, DateOnly l
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("requestedDate", LocalDate.ToString("yyyy-MM-dd")),
         ("lastBookableDate", LastBookableDate.ToString("yyyy-MM-dd")),
         ("bookingWindowDays", BookingWindowDays));
@@ -120,7 +124,7 @@ public sealed class OutsideOpeningHoursException(DateOnly localDate, TimeOnly lo
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("localDate", LocalDate.ToString("yyyy-MM-dd")),
         ("localStartTime", LocalStart.ToString("HH\\:mm")),
         ("localEndTime", LocalEnd.ToString("HH\\:mm")));
@@ -144,7 +148,7 @@ public sealed class PartyExceedsTableCapacityException(Guid tableId, string tabl
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("tableId", TableId), ("tableLabel", TableLabel), ("partySize", PartySize), ("seats", Seats));
 }
 
@@ -175,7 +179,7 @@ public sealed class SeatOverhangExceededException(
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("tableId", TableId),
         ("tableLabel", TableLabel),
         ("partySize", PartySize),
@@ -198,8 +202,8 @@ public sealed class TableNotBookableException(Guid tableId, string tableLabel)
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details =>
-        DetailsWith(("tableId", TableId), ("tableLabel", TableLabel));
+    public override IReadOnlyDictionary<string, object?> Context =>
+        ContextWith(("tableId", TableId), ("tableLabel", TableLabel));
 }
 
 /// <summary>The table is withdrawn from service.</summary>
@@ -216,8 +220,8 @@ public sealed class TableOutOfServiceException(Guid tableId, string tableLabel)
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details =>
-        DetailsWith(("tableId", TableId), ("tableLabel", TableLabel));
+    public override IReadOnlyDictionary<string, object?> Context =>
+        ContextWith(("tableId", TableId), ("tableLabel", TableLabel));
 }
 
 /// <summary>
@@ -246,7 +250,7 @@ public sealed class LocalTimeDoesNotExistException(DateOnly localDate, TimeOnly 
 
     public override string Code => ErrorCode;
 
-    public override IReadOnlyDictionary<string, object?> Details => DetailsWith(
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith(
         ("localDate", LocalDate.ToString("yyyy-MM-dd")),
         ("localTime", LocalTime.ToString("HH\\:mm")),
         ("timeZoneId", TimeZoneId));

@@ -73,6 +73,70 @@ public static class ErrorCodes
     /// <summary>Too many requests in the window. HTTP 429.</summary>
     public const string RateLimited = "rate-limited";
 
+    /// <summary>
+    /// No usable credential was presented, or the one presented was rejected. HTTP 401.
+    /// </summary>
+    /// <remarks>
+    /// The specific sign-in failures replace this with their own slug - <c>pin-invalid</c>,
+    /// <c>verification-code-expired</c>, <c>refresh-token-reused</c> and so on - because those are
+    /// things the caller is entitled to know about their own credential. None of them ever
+    /// distinguishes "no such account" from "wrong secret".
+    /// </remarks>
+    public const string Unauthenticated = "unauthenticated";
+
+    /// <summary>
+    /// A one-time credential is out of attempts, or a per-identity limit is spent. HTTP 429.
+    /// Asking again immediately will not help; ask for a new code.
+    /// </summary>
+    public const string TooManyAttempts = "too-many-attempts";
+
+    /// <summary>
+    /// The account is locked, not the credential wrong. HTTP 403, with <c>lockedUntilUtc</c> in
+    /// <c>context</c>. For a staff PIN, the fix is a manager clearing it rather than trying again.
+    /// </summary>
+    public const string AccountLocked = "account-locked";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
+
+    /// <summary>
+    /// The stable, human-readable title for each slug.
+    /// </summary>
+    /// <remarks>
+    /// RFC 7807 wants <c>title</c> to describe the problem <i>type</i> and stay the same for every
+    /// occurrence, while <c>detail</c> carries the specifics. Keeping the mapping here means the
+    /// two cannot drift and no exception has to invent its own.
+    /// </remarks>
+    public static string TitleFor(string code) => code switch
+    {
+        InvalidRequest => "Invalid request",
+        ValidationFailed => "Validation failed",
+        Forbidden => "Forbidden",
+        NotFound => "Not found",
+        ConflictingState => "Conflicting state",
+        ConcurrentUpdate => "Concurrent update",
+        TableStateConflict => "Table state conflict",
+        InvalidTableTransition => "Invalid table transition",
+        TableAlreadyBooked => "Table already booked",
+        ReservationLockTimeout => "Reservation lock timeout",
+        RateLimited => "Rate limited",
+        Unauthenticated => "Not authenticated",
+        TooManyAttempts => "Too many attempts",
+        AccountLocked => "Account locked",
+        InternalError => "Internal error",
+
+        // Auth reason codes are minted by the domain and are already kebab-case sentences of a
+        // sort. Turning the slug into a title beats maintaining a second list that goes stale.
+        _ => Humanise(code),
+    };
+
+    /// <summary>The documentation URI for a slug, used as the problem document's <c>type</c>.</summary>
+    public static string TypeFor(string code) => $"https://docs.yalla.app/errors/{code}";
+
+    private static string Humanise(string code)
+    {
+        var words = code.Replace('-', ' ');
+
+        return words.Length == 0 ? code : char.ToUpperInvariant(words[0]) + words[1..];
+    }
 }

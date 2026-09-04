@@ -1,4 +1,4 @@
-using Yalla.Api.Errors;
+using Yalla.Api.Authorization;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
 
@@ -15,18 +15,57 @@ namespace Yalla.Api.Endpoints;
 /// else.
 /// </para>
 /// <para>
-/// Nothing is caught here either. <c>UnifiedExceptionHandler</c> maps centrally, so a lost race
-/// becomes 409 with the clashing window and a fresh floor, each branch rule becomes 422 with its
-/// own code, and a lock timeout becomes a retryable 503 - the same way no matter which endpoint
-/// raised it.
+/// Identity comes from the policies, not from the handlers. Booking, cancelling and the diner's own
+/// list carry <see cref="YallaPolicies.VerifiedDiner"/>; approving and rejecting carry
+/// <see cref="YallaPolicies.ManagerOrAbove"/>. Availability is the only anonymous endpoint outside
+/// the sign-in flows: somebody deciding whether to eat here must be able to see the room before
+/// they are asked who they are.
+/// </para>
+/// <para>
+/// Two boundaries the policies cannot draw are drawn in the service instead, deliberately.
+/// <b>Ownership</b> - a diner may only read and cancel their own bookings - is a fact about a row,
+/// not about a token. And <b>branch scope</b> on approve and reject cannot use
+/// <see cref="YallaPolicies.BranchScoped"/>, because that policy compares a claim against a
+/// <c>branchId</c> route value and these routes are addressed by reservation id; it fails closed
+/// when it cannot find one, which is the right behaviour and the reason not to apply it here. The
+/// service resolves the booking's branch and checks it against the acting staff member's own venue
+/// and branch.
+/// </para>
+/// <para>
+/// Exceptions are not caught here either. <c>UnifiedExceptionHandler</c> maps them centrally, so a
+/// lost race becomes 409 with the clashing window and a fresh floor, each branch rule becomes 422
+/// with its own code, and a lock timeout becomes a retryable 503 - the same way no matter which
+/// endpoint raised it.
 /// </para>
 /// </remarks>
 public static class ReservationEndpoints
 {
+    private const string ConflictDescription =
+        "Someone else took that table between the diner seeing it free and confirming. The body's "
+        + "`context` carries the clashing window and a fresh availability snapshot, so the app can "
+        + "redraw the floor and show what changed rather than only saying no. Never retried "
+        + "automatically: this answer will not change on a repeat.";
+
+    private const string RejectedDescription =
+        "A branch rule refused the booking. Each rule has its own `code` - "
+        + "`reservation-party-exceeds-capacity`, `reservation-outside-opening-hours` and so on - "
+        + "with the numbers behind it in `context`, so the app can say which table to pick instead "
+        + "rather than showing a generic failure.";
+
+    private const string LockTimeoutDescription =
+        "The table's booking lock could not be had in time. `context.retryable` is true: unlike the "
+        + "409, this one is worth retrying - with the same `clientCommandId`, so a retry that "
+        + "crosses with a late-committing original is recognised as a replay.";
+
+    private const string StateDescription =
+        "The booking is not in a state that permits this - cancelling one that is already seated, "
+        + "or approving one that was never pending.";
+
     public static IEndpointRouteBuilder MapReservationEndpoints(this IEndpointRouteBuilder app)
     {
         MapAvailability(app);
-        MapBookings(app);
+        MapDinerBookings(app);
+        MapStaffDecisions(app);
 
         return app;
     }
@@ -34,11 +73,12 @@ public static class ReservationEndpoints
     private static void MapAvailability(IEndpointRouteBuilder app)
     {
         app.MapGet("/api/branches/{branchId:guid}/availability", GetAvailabilityAsync)
-            .WithTags("Availability")
-            .WithName("GetBranchAvailability")
+            .WithTags(EndpointConventions.DinerTag)
+            .WithName("getBranchAvailability")
 
-            // Browsing needs no account. Somebody deciding whether to eat here must be able to see
-            // the room before they are asked who they are.
+            // Anonymous, alone among the endpoints that are not sign-in flows. Browsing needs no
+            // account: somebody deciding whether to eat here has to see the room before they are
+            // asked who they are.
             .AllowAnonymous()
             .WithSummary("Which tables a branch can offer for one slot")
             .WithDescription(
@@ -48,57 +88,84 @@ public static class ReservationEndpoints
                 + "query. Returns no guest names and no money. Omit date and time for 'now, at "
                 + "the branch'.")
             .Produces<BranchAvailability>()
-            .Produces(StatusCodes.Status404NotFound);
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
     }
 
-    private static void MapBookings(IEndpointRouteBuilder app)
+    private static void MapDinerBookings(IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/reservations")
-            .WithTags("Reservations");
+            .WithTags(EndpointConventions.DinerTag)
+            .RequireAuthorization(YallaPolicies.VerifiedDiner);
 
         // One place enforcing the idempotency key, exactly as the table group does. GET carries no
         // body, so the filter finds nothing to check.
         group.AddEndpointFilter<ClientCommandIdFilter>();
 
         group.MapPost("/", CreateAsync)
-            .WithName("CreateReservation")
+            .WithName("createReservation")
             .WithSummary("Book a table")
             .WithDescription(
-                "Requires a verified diner. Idempotent on clientCommandId: a retry returns the "
-                + "original booking and creates nothing. Answers 409 with the clashing window and "
-                + "a fresh availability snapshot when the table went first, 422 with a specific "
-                + "code when a branch rule refuses, and a retryable 503 when the table's lock "
-                + "could not be had in time.")
-            .Produces<ReservationView>()
-            .Produces<UnifiedErrorEnvelope>(StatusCodes.Status409Conflict)
-            .Produces<UnifiedErrorEnvelope>(StatusCodes.Status422UnprocessableEntity)
-            .Produces<UnifiedErrorEnvelope>(StatusCodes.Status503ServiceUnavailable);
+                "Idempotent on `clientCommandId`: a retry returns the original booking and creates "
+                + "nothing, answering 200 rather than 201. Lands as `Confirmed`, or "
+                + "`PendingApproval` when the branch approves every booking, the party is over the "
+                + "branch's threshold, or the diner is over the rolling no-show threshold.")
+            .Produces<ReservationView>(StatusCodes.Status201Created)
+            .Produces<ReservationView>(StatusCodes.Status200OK)
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
+            .ProducesProblemDetails(StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
 
         group.MapGet("/mine", GetMineAsync)
-            .WithName("GetMyReservations")
+            .WithName("getMyReservations")
             .WithSummary("The calling diner's own bookings, upcoming and past")
+            .WithDescription(
+                "Upcoming means still going to happen: not finished, and not already called off. A "
+                + "booking cancelled for tomorrow belongs in the history, not at the top of the "
+                + "screen.")
             .Produces<MyReservations>();
 
         group.MapPost("/{id:guid}/cancel", CancelAsync)
-            .WithName("CancelReservation")
+            .WithName("cancelReservation")
             .WithSummary("Cancel a booking")
             .WithDescription(
-                "A diner may only cancel their own. Free until the branch's cancellation deadline "
-                + "and still allowed after it - a late cancellation is far better than a no-show - "
-                + "with the lateness recorded on the booking.")
-            .Produces<ReservationView>();
+                "A diner may only cancel their own; anyone else's is 403. Free until the branch's "
+                + "cancellation deadline and still allowed after it - a late cancellation is far "
+                + "better than a no-show - with `cancelledAfterDeadline` recording which it was.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "This booking belongs to somebody else.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
+    }
+
+    private static void MapStaffDecisions(IEndpointRouteBuilder app)
+    {
+        // A separate group because the identity is different. ManagerOrAbove carries no route
+        // dependency, so it works on a route addressed by reservation id; BranchScoped would not,
+        // and the service does that half.
+        var group = app.MapGroup("/api/reservations")
+            .WithTags(EndpointConventions.StaffTag, EndpointConventions.AdminTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove);
 
         group.MapPost("/{id:guid}/approve", ApproveAsync)
-            .WithName("ApproveReservation")
+            .WithName("approveReservation")
             .WithSummary("Accept a booking that is waiting for approval")
-            .WithDescription($"Requires {ReservationPolicies.ManagerOrAbove}, scoped to the branch.")
-            .Produces<ReservationView>();
+            .WithDescription(
+                "Scoped to the acting staff member's own branch and venue. A manager of one venue "
+                + "cannot decide another's bookings by guessing an id.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
 
         group.MapPost("/{id:guid}/reject", RejectAsync)
-            .WithName("RejectReservation")
+            .WithName("rejectReservation")
             .WithSummary("Decline a booking that is waiting for approval")
-            .WithDescription($"Requires {ReservationPolicies.ManagerOrAbove}, scoped to the branch.")
-            .Produces<ReservationView>();
+            .WithDescription("Refuses a booking that was already confirmed: the diner has been told it is theirs.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
     }
 
     private static async Task<IResult> GetAvailabilityAsync(
@@ -107,7 +174,7 @@ public static class ReservationEndpoints
         CancellationToken cancellationToken,
         DateOnly? date = null,
         TimeOnly? time = null,
-        int partySize = ReservationPolicies.DefaultPartySize)
+        int partySize = DefaultPartySize)
     {
         var result = await availability.GetAvailabilityAsync(
             new AvailabilityRequest(branchId, partySize, date, time), cancellationToken);
@@ -168,36 +235,10 @@ public static class ReservationEndpoints
         CancellationToken cancellationToken) =>
         Results.Ok(await reservations.RejectAsync(
             new DecideReservationCommand(id, request?.Reason), cancellationToken));
-}
-
-/// <summary>
-/// The authorization policies these endpoints are meant to carry, named in one place.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Authentication is a parallel task and its policies are not registered in this build yet.
-/// Calling <c>RequireAuthorization</c> with a policy name nothing has registered fails at startup,
-/// so the endpoints enforce their rules through <c>ICurrentActor</c> in the service for now -
-/// a verified diner may only read and cancel their own bookings, and approve or reject is a
-/// manager or owner scoped to the branch. That check is the real one and does not move.
-/// </para>
-/// <para>
-/// When the policies land, attaching them is one <c>RequireAuthorization</c> per route using these
-/// constants. They are declared here so the intended surface is written down rather than
-/// remembered.
-/// </para>
-/// </remarks>
-public static class ReservationPolicies
-{
-    /// <summary>A diner whose account is verified. Booking, cancelling, and reading their own list.</summary>
-    public const string VerifiedDiner = "VerifiedDiner";
-
-    /// <summary>Manager or owner, scoped to the branch. Approving and rejecting.</summary>
-    public const string ManagerOrAbove = "ManagerOrAbove";
 
     /// <summary>
     /// The party size assumed when a browser does not say. Two is the commonest booking and the
     /// least restrictive useful default: it excludes nothing a larger party would have seen.
     /// </summary>
-    public const int DefaultPartySize = 2;
+    private const int DefaultPartySize = 2;
 }

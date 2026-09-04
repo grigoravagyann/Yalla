@@ -37,30 +37,27 @@ public static class DependencyInjectionExtension
 
         builder.Services.AddInfrastructure(connectionString, configuration);
 
-        // Enums travel as strings on the wire and as ints in the database. A client reading
-        // "Occupied" cannot silently mean something else after a member is inserted, while the
-        // stored int keeps a rename from orphaning rows.
+        // Enums are integers on the wire and integers in the database, and the two must agree.
         //
-        // This has to be said TWICE, and the second one is the one that matters here. AddJsonOptions
-        // configures MVC's serializer, which every endpoint in this app bypasses: they are all
-        // minimal APIs, and those read Microsoft.AspNetCore.Http.Json.JsonOptions instead. With
-        // only the MVC registration, the floor and availability endpoints were answering
-        // "state": 2 and "unavailableReason": 3 - numbers a client can only handle by hard-coding
-        // the enum's ordinals, which is exactly what naming them was meant to prevent.
-        builder.Services.ConfigureHttpJsonOptions(options =>
-        {
-            options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
-            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-        });
-
+        // They previously did not. The string converter here applied to MVC only, while the
+        // minimal APIs that serve every endpoint in this system used the framework default and
+        // wrote integers - and Swashbuckle reads MVC's options, so the generated schema described
+        // enums as strings that no endpoint ever produced. The frontend generates its TypeScript
+        // from that schema, so it would have been comparing `status === "Occupied"` against a 4.
+        //
+        // Integers are also the right answer on their own terms: the stored int keeps a renamed
+        // member from orphaning existing rows. What the schema owes the frontend instead is the
+        // meaning of each number, which EnumDescriptionSchemaFilter supplies as x-enum-varnames.
         builder.Services
             .AddControllers()
             .AddJsonOptions(options =>
-            {
-                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
                 options.JsonSerializerOptions.DefaultIgnoreCondition =
-                    JsonIgnoreCondition.WhenWritingNull;
-            });
+                    JsonIgnoreCondition.WhenWritingNull);
+
+        // The options the minimal APIs actually use. Set explicitly so the two pipelines cannot
+        // drift apart again.
+        builder.Services.ConfigureHttpJsonOptions(options =>
+            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull);
 
         // One failure shape for the whole API, one log point. See UnifiedExceptionHandler.
         builder.Services.AddExceptionHandler<UnifiedExceptionHandler>();

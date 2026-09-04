@@ -31,4 +31,29 @@ public static class FieldLengths
     public const int PortionSize = 100;
     public const int ProviderReference = 200;
     public const int PinHash = 256;
+
+    /// <summary>Password hash produced by <c>PasswordHasher&lt;T&gt;</c>, base64.</summary>
+    public const int PasswordHash = 256;
+
+    /// <summary>The practical maximum for an email address (RFC 3696 errata 1690).</summary>
+    public const int Email = 320;
+
+    /// <summary>
+    /// Hex SHA-256 of an opaque high-entropy secret - a refresh handle, an enrolment code, a
+    /// device secret. 64 characters today; the column is wider so a longer digest does not need a
+    /// migration.
+    /// </summary>
+    public const int TokenHash = 128;
+
+    /// <summary>A phone number in E.164, e.g. <c>+37411223344</c>.</summary>
+    public const int PhoneE164 = 20;
+
+    /// <summary>BCP 47 language tag, restricted here to <c>hy</c>, <c>ru</c> and <c>en</c>.</summary>
+    public const int LocaleCode = 16;
+
+    /// <summary>Name a manager gives an enrolled tablet, e.g. "Bar tablet".</summary>
+    public const int DeviceName = 100;
+
+    /// <summary>Client address recorded against a sign-in attempt, for diagnostics only.</summary>
+    public const int ClientAddress = 64;
 }

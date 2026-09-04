@@ -314,19 +314,49 @@ Each table also carries its derived state **at the requested instant** — not a
 
 ## 6. Endpoints
 
-| Endpoint | Who |
-| --- | --- |
-| `GET /api/branches/{branchId}/availability` | anonymous |
-| `POST /api/reservations` | verified diner; takes `clientCommandId` |
-| `POST /api/reservations/{id}/cancel` | the diner who made it |
-| `GET /api/reservations/mine` | the calling diner |
-| `POST /api/reservations/{id}/approve` · `/reject` | manager or owner, scoped to the branch |
+| Endpoint | Policy | Also enforced in the service |
+| --- | --- | --- |
+| `GET /api/branches/{branchId}/availability` | `AllowAnonymous` | — |
+| `POST /api/reservations` | `VerifiedDiner` | — |
+| `GET /api/reservations/mine` | `VerifiedDiner` | filtered to the caller's own `DinerUserId` |
+| `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
+| `POST /api/reservations/{id}/approve` · `/reject` | `ManagerOrAbove` | the booking's **branch and venue** must be theirs |
+
+Availability is the only anonymous endpoint outside the sign-in flows. Browsing needs no account:
+somebody deciding whether to eat here has to see the room before they are asked who they are.
+
+`VerifiedDiner` is deliberately narrower than "a diner". A tab participant — somebody who scanned a
+QR code at a table — is also `ActorType.Diner` in the audit sense, but has no `DinerUser` row by
+design, so there is nothing to list under "my bookings" and nothing to count a no-show against. The
+policy reads the explicit `ytyp` principal-type claim rather than inferring it.
+
+**Two boundaries the policies cannot draw**, and why they live in the service instead:
+
+- **Ownership.** "This booking is yours" is a fact about a row, not about a token. No claim can
+  express it, so `CancelAsync` compares `Reservation.DinerUserId` to the caller and answers 403.
+- **Branch scope on approve and reject.** These routes are addressed by *reservation* id, so there
+  is no `branchId` route value for `BranchScoped` to compare a claim against — and that policy
+  fails closed when it cannot find one, which is correct and is the reason not to apply it here.
+  The service resolves the booking's branch and checks it against the acting staff member's own
+  branch and venue. A manager of another venue gets 403, and `ReservationEndpointTests` proves it.
 
 Cancellation is free until `CancellationDeadlineMinutes` before the start and **still allowed after
 it**, with the lateness recorded on the booking as `CancelledAfterDeadline`. Refusing a late
 cancellation converts it into a no-show, which costs the venue the same table plus the chance to
 resell it. It is stored rather than derived because the deadline is a setting: an owner who shortens
 it next month must not retroactively reclassify last month's cancellations.
+
+### On the wire
+
+Enums travel as **integers**, matching the database and the OpenAPI document's `x-enum-varnames` —
+see [openapi.md](openapi.md). Failures are RFC 7807 problem documents with the machine-readable
+facts under `context`:
+
+| Failure | Status | `code` |
+| --- | --- | --- |
+| a branch rule refused it | 422 | one per rule, e.g. `reservation-party-exceeds-capacity` |
+| the table went first | 409 | `table-already-booked`, with the clashing window and a fresh floor |
+| the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |
 
 ---
 

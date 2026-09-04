@@ -81,6 +81,285 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("TableStateChanges", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerUser", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("LastSignInAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LocaleCode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("PhoneE164")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PhoneE164")
+                        .IsUnique()
+                        .HasDatabaseName("UX_DinerUsers_PhoneE164");
+
+                    b.ToTable("DinerUsers", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.PasswordResetToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ConsumedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("StaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StaffMemberId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_PasswordResetTokens_TokenHash");
+
+                    b.ToTable("PasswordResetTokens", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.PhoneVerificationCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTime?>("ConsumedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PhoneE164")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("RequestedFromAddress")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PhoneE164", "ExpiresAtUtc")
+                        .HasFilter("[ConsumedAtUtc] IS NULL");
+
+                    b.ToTable("PhoneVerificationCodes", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ChainId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ReplacedByTokenId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<DateTime?>("RotatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SubjectType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChainId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_RefreshTokens_TokenHash");
+
+                    b.HasIndex("SubjectType", "SubjectId");
+
+                    b.ToTable("RefreshTokens", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffDevice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastSeenAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("VenueId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId", "RevokedAtUtc");
+
+                    b.ToTable("StaffDevices", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffEnrolmentCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("CreatedByStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("RedeemedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("RedeemedByDeviceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("VenueId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
+
+                    b.HasIndex("CodeHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_StaffEnrolmentCodes_CodeHash");
+
+                    b.ToTable("StaffEnrolmentCodes", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("AbsoluteExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("EndedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("LastActivityAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RenewalTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid>("StaffDeviceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("StaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RenewalTokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_StaffSessions_RenewalTokenHash");
+
+                    b.HasIndex("StaffMemberId");
+
+                    b.HasIndex("StaffDeviceId", "EndedAtUtc");
+
+                    b.ToTable("StaffSessions", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.Property<Guid>("Id")
@@ -336,6 +615,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("Email")
+                        .HasMaxLength(320)
+                        .HasColumnType("nvarchar(320)");
+
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -344,15 +627,25 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
+                    b.Property<string>("PasswordHash")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<string>("Phone")
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<int>("PinFailedAttempts")
+                        .HasColumnType("int");
+
                     b.Property<string>("PinHash")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTime?>("PinLockedUntilUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<int>("Role")
                         .HasColumnType("int");
@@ -363,6 +656,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BranchId");
+
+                    b.HasIndex("Email")
+                        .IsUnique()
+                        .HasDatabaseName("UX_StaffMembers_Email")
+                        .HasFilter("[Email] IS NOT NULL");
 
                     b.HasIndex("VenueId", "IsActive");
 
@@ -926,6 +1224,58 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Branch");
 
                     b.Navigation("DiningTable");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.PasswordResetToken", b =>
+                {
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", "StaffMember")
+                        .WithMany()
+                        .HasForeignKey("StaffMemberId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("StaffMember");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffDevice", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffEnrolmentCode", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffSession", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.StaffDevice", "StaffDevice")
+                        .WithMany()
+                        .HasForeignKey("StaffDeviceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", "StaffMember")
+                        .WithMany()
+                        .HasForeignKey("StaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("StaffDevice");
+
+                    b.Navigation("StaffMember");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
