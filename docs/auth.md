@@ -214,13 +214,20 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `ManagerOrAbove` | Role is Manager or Owner |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner or manager acting inside their own venue |
+| `VerifiedDiner` | The token's principal type is `Diner` - a phone number was verified, so there is an account to hold bookings against. A tab participant is deliberately not one |
 
 Two of these are the real security of this system, and both have tests:
 
 - **A staff token for branch A must not act on branch B.** Chains have several branches and staff
-  belong to one. `BranchScoped` is combined with every staff endpoint, including the table-state
-  endpoints. The branch claim on a session is copied from the enrolled device, so there is nothing
-  a waiter can send that changes it.
+  belong to one. `BranchScoped` is combined with every staff endpoint **addressed by branch**,
+  including the table-state endpoints. The branch claim on a session is copied from the enrolled
+  device, so there is nothing a waiter can send that changes it.
+
+  Two booking routes are addressed by reservation id instead - `POST /api/reservations/{id}/approve`
+  and `/reject` - so there is no `branchId` route value for the policy to compare against, and it
+  fails closed rather than passing. They carry `ManagerOrAbove`, and the reservation service
+  resolves the booking's own branch and checks it against the acting staff member's branch and
+  venue. `ReservationEndpointTests` proves a manager of another venue is refused.
 - **A tab participant token must not touch any other tab.** Two adjacent tables must not be able to
   order on each other's bill.
 

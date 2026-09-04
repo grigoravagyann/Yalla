@@ -1,7 +1,7 @@
 namespace Yalla.Api.Authorization;
 
 /// <summary>
-/// The names of the six authorisation policies, so an endpoint cannot misspell one.
+/// The names of the authorisation policies, so an endpoint cannot misspell one.
 /// </summary>
 /// <remarks>
 /// A misspelled policy name is not a silent failure - ASP.NET Core throws when it cannot resolve
@@ -27,4 +27,14 @@ public static class YallaPolicies
 
     /// <summary>An owner or manager acting inside their own venue.</summary>
     public const string VenueScoped = "VenueScoped";
+
+    /// <summary>
+    /// A diner who verified a phone number, and therefore has an account.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not "any diner". A tab participant is a diner too, but has no account by
+    /// design - so there is nothing to list their bookings under and nothing to count a no-show
+    /// against. Booking needs the account, not just the person.
+    /// </remarks>
+    public const string VerifiedDiner = "VerifiedDiner";
 }

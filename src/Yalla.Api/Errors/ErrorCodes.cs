@@ -44,6 +44,39 @@ public static class ErrorCodes
     /// </summary>
     public const string InvalidTableTransition = "invalid-table-transition";
 
+    /// <summary>
+    /// A branch rule refused a booking. HTTP 422.
+    /// </summary>
+    /// <remarks>
+    /// <b>Never returned as-is.</b> Every refusal answers with its own slug -
+    /// <c>reservation-party-exceeds-capacity</c>, <c>reservation-outside-opening-hours</c>, and so
+    /// on, one per rule, declared on the exception that carries it. This constant only names the
+    /// family, because a client that cannot tell "the table seats four" from "we are shut" ends up
+    /// showing "invalid booking" to somebody who needed one sentence of help.
+    /// </remarks>
+    public const string ReservationRejectedPrefix = "reservation-";
+
+    /// <summary>
+    /// The table was booked by somebody else between the diner seeing it free and confirming.
+    /// HTTP 409, with the clashing window and a fresh availability snapshot in <c>details</c> so
+    /// the app can redraw the floor and show what changed.
+    /// </summary>
+    public const string TableAlreadyBooked = "table-already-booked";
+
+    /// <summary>
+    /// The booking could not get the table's lock in time. HTTP 503 and <b>retryable</b> - which
+    /// is what makes it different from <see cref="TableAlreadyBooked"/>: the question was never
+    /// asked, rather than answered no. Retry with the same <c>clientCommandId</c>.
+    /// </summary>
+    public const string ReservationLockTimeout = "reservation-lock-timeout";
+
+    /// <summary>
+    /// The <c>clientCommandId</c> on a booking request already belongs to another caller's booking.
+    /// HTTP 409. A client bug rather than a retry: generate one per booking, and reuse it only when
+    /// retrying that same booking.
+    /// </summary>
+    public const string ClientCommandIdInUse = "client-command-id-in-use";
+
     /// <summary>Too many requests in the window. HTTP 429.</summary>
     public const string RateLimited = "rate-limited";
 
@@ -91,6 +124,9 @@ public static class ErrorCodes
         ConcurrentUpdate => "Concurrent update",
         TableStateConflict => "Table state conflict",
         InvalidTableTransition => "Invalid table transition",
+        TableAlreadyBooked => "Table already booked",
+        ReservationLockTimeout => "Reservation lock timeout",
+        ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",
         TooManyAttempts => "Too many attempts",

@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
+using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
 
@@ -75,6 +77,53 @@ internal static class ApiExceptionMapper
                     .Select(s => (int)s)
                     .ToArray(),
             }),
+
+        // Somebody else took the table between the diner seeing it free and confirming. 409, not
+        // 422: the request was right when it was made and the world moved. The body carries the
+        // clashing window AND a fresh availability snapshot, so the app can redraw the floor and
+        // show what changed instead of firing a second request into the same contention.
+        TableAlreadyBookedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableAlreadyBooked,
+            e.Message,
+            LogAsError: false,
+            Context: BookedContext(e)),
+
+        // Two callers minted the same idempotency key. Not a replay - a replay is the SAME caller
+        // sending the same command again - so the honest answer is that the id is taken, and
+        // nothing at all about the booking that holds it.
+        ClientCommandIdAlreadyUsedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ClientCommandIdInUse,
+            e.Message,
+            LogAsError: false),
+
+        // Contention, not refusal. 503 with retryable set, because the client's correct response
+        // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
+        // matter how often it is repeated. Collapsing the two would teach clients to retry
+        // conflicts, which is how a party ends up with two tables.
+        ReservationLockTimeoutException e => new MappedError(
+            StatusCodes.Status503ServiceUnavailable,
+            ErrorCodes.ReservationLockTimeout,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["timeoutMilliseconds"] = e.TimeoutMilliseconds,
+                ["retryable"] = e.Retryable,
+            }),
+
+        // One entry for the whole family of booking refusals, each answering with its own code
+        // and its own numbers. 422: understood, and semantically wrong. Adding a rule is a new
+        // exception type and a new constant - this mapper does not change.
+        ReservationRejectedException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            e.Code,
+            e.Message,
+            LogAsError: false,
+            Context: e.Context),
 
         // The account is locked, not the credential wrong. Must stay ABOVE the general
         // authentication arm it derives from: reporting a lockout as a plain 401 leaves someone
@@ -168,4 +217,36 @@ internal static class ApiExceptionMapper
             InternalErrorMessage,
             LogAsError: true),
     };
+
+    /// <summary>
+    /// The context of a lost race for a table.
+    /// </summary>
+    /// <remarks>
+    /// The availability snapshot is added only when there is one. It is best-effort - a floor that
+    /// could not be read must not turn a 409 the client can act on into a 500 it cannot - and
+    /// <c>DefaultIgnoreCondition</c> does not reach inside a dictionary, so an unconditional entry
+    /// would put a bare <c>"availability": null</c> on the wire for a generated client to trip over.
+    /// </remarks>
+    private static Dictionary<string, object?> BookedContext(TableAlreadyBookedException exception)
+    {
+        var context = new Dictionary<string, object?>
+        {
+            // Numeric, like every other enum on the wire and in the schema.
+            ["reason"] = (int)exception.Reason,
+            ["tableId"] = exception.TableId,
+            ["tableLabel"] = exception.TableLabel,
+            ["requestedStartUtc"] = exception.Requested.StartUtc,
+            ["requestedEndUtc"] = exception.Requested.EndUtc,
+            ["conflictingStartUtc"] = exception.Conflicting.StartUtc,
+            ["conflictingEndUtc"] = exception.Conflicting.EndUtc,
+            ["conflictingReservationId"] = exception.ConflictingReservationId,
+        };
+
+        if (exception.Availability is { } availability)
+        {
+            context["availability"] = availability;
+        }
+
+        return context;
+    }
 }

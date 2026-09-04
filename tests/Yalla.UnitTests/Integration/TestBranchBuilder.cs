@@ -30,11 +30,25 @@ internal sealed record TestBranch(
 /// </remarks>
 internal static class TestBranchBuilder
 {
+    /// <summary>
+    /// Opening hours a booking test can rely on: open every day, wide enough for any sitting the
+    /// default policies produce.
+    /// </summary>
+    public static readonly IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)> AllDayEveryDay =
+        [(new TimeOnly(10, 0), new TimeOnly(23, 0), false)];
+
+    /// <summary>A venue open past midnight, for the <c>ClosesNextDay</c> cases.</summary>
+    public static readonly IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)> LateNightEveryDay =
+        [(new TimeOnly(10, 0), new TimeOnly(1, 0), true)];
+
     public static async Task<TestBranch> CreateAsync(
         YallaDbContext db,
         VenueType venueType = VenueType.Restaurant,
         int tableCount = 3,
         string timeZoneId = "Asia/Yerevan",
+        int seatsPerTable = 4,
+        ReservationPolicy? policy = null,
+        IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null,
         CancellationToken cancellationToken = default)
     {
         var unique = Guid.NewGuid().ToString("N")[..12];
@@ -51,9 +65,20 @@ internal static class TestBranchBuilder
             longitude: 44.51,
             timeZoneId: timeZoneId,
             floorWidth: 1000,
-            floorHeight: 700);
+            floorHeight: 700,
+            reservationPolicy: policy);
 
         db.Branches.Add(branch);
+
+        // Every day of the week, so a test can pick any date without first working out which
+        // weekday it lands on.
+        foreach (var (opens, closes, closesNextDay) in openingHours ?? AllDayEveryDay)
+        {
+            foreach (var day in Enum.GetValues<DayOfWeek>())
+            {
+                db.OpeningHours.Add(new OpeningHours(branch.Id, day, opens, closes, closesNextDay));
+            }
+        }
 
         var waiter = new StaffMember(venue.Id, "Test Waiter", $"+3741{unique[..7]}", StaffRole.Waiter, "hash", branch.Id);
         var manager = new StaffMember(venue.Id, "Test Manager", $"+3742{unique[..7]}", StaffRole.Manager, "hash", branch.Id);
@@ -66,7 +91,7 @@ internal static class TestBranchBuilder
             .Select(i => new DiningTable(
                 branch.Id,
                 label: i.ToString(),
-                seats: 4,
+                seats: seatsPerTable,
                 x: 50 * i,
                 y: 100,
                 width: 90,
@@ -81,6 +106,35 @@ internal static class TestBranchBuilder
 
         return new TestBranch(
             venue.Id, branch.Id, waiter.Id, manager.Id, tables.Select(t => t.Id).ToList(), timeZoneId);
+    }
+
+    /// <summary>
+    /// Adds one table with its own seat count or bookability, for the rules that are about the
+    /// table rather than the party - seat overhang, bar stools, tables out of service.
+    /// </summary>
+    public static async Task<DiningTable> AddTableAsync(
+        YallaDbContext db,
+        TestBranch branch,
+        string label,
+        int seats,
+        bool isBookable = true,
+        CancellationToken cancellationToken = default)
+    {
+        var table = new DiningTable(
+            branch.BranchId,
+            label: label,
+            seats: seats,
+            x: 500,
+            y: 400,
+            width: 120,
+            height: 120,
+            shape: TableShape.Rectangle,
+            isBookable: isBookable);
+
+        db.DiningTables.Add(table);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return table;
     }
 
     /// <summary>Adds a confirmed booking on a table, so the reservation overlay has something to find.</summary>

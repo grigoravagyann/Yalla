@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
@@ -31,10 +32,34 @@ namespace Yalla.UnitTests.Integration;
 /// </remarks>
 public sealed class SqlServerFixture : IAsyncLifetime
 {
-    private const string MasterConnectionString =
-        "Server=localhost;Database=master;Trusted_Connection=True;TrustServerCertificate=True";
+    /// <summary>
+    /// Environment variable naming the server to test against, e.g. <c>localhost\SQLEXPRESS</c>.
+    /// </summary>
+    /// <remarks>
+    /// Set this in CI. Locally the probe below usually finds the right one on its own.
+    /// </remarks>
+    public const string ServerEnvironmentVariable = "YALLA_TEST_SQL_SERVER";
+
+    /// <summary>
+    /// Where a developer machine actually keeps SQL Server, in the order worth trying.
+    /// </summary>
+    /// <remarks>
+    /// The fixture used to hard-code <c>localhost</c>, which is the default instance. A machine
+    /// with SQL Server Express installed - the common case on Windows - has a <i>named</i> instance
+    /// and no default one, so every integration test skipped and the suite reported green while
+    /// proving nothing about the two things only a real server can prove: rowversion tokens and
+    /// the locking these bookings depend on.
+    /// </remarks>
+    private static readonly string[] CandidateServers =
+    [
+        "localhost",
+        @"localhost\SQLEXPRESS",
+        @"(localdb)\MSSQLLocalDB",
+    ];
 
     private readonly string _databaseName = $"Yalla_Tests_{Guid.NewGuid():N}";
+
+    private string _server = string.Empty;
 
     public bool IsAvailable { get; private set; }
 
@@ -44,25 +69,60 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        ConnectionString =
-            $"Server=localhost;Database={_databaseName};Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True";
+        var attempts = new List<string>();
 
-        try
+        foreach (var server in Candidates())
         {
-            await using var connection = new SqlConnection(MasterConnectionString);
-            await connection.OpenAsync();
+            try
+            {
+                await using var connection = new SqlConnection(MasterConnectionString(server));
+                await connection.OpenAsync();
+
+                _server = server;
+                break;
+            }
+            catch (Exception ex)
+                when (ex is SqlException or InvalidOperationException or PlatformNotSupportedException)
+            {
+                attempts.Add($"{server}: {ex.Message.Split('\n')[0]}");
+            }
         }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException or PlatformNotSupportedException)
+
+        if (_server.Length == 0)
         {
-            SkipReason = $"No SQL Server reachable on localhost: {ex.Message}";
+            SkipReason =
+                $"No SQL Server reachable. Set {ServerEnvironmentVariable} to one. Tried - "
+                + string.Join(" | ", attempts);
             return;
         }
+
+        ConnectionString =
+            $"Server={_server};Database={_databaseName};Trusted_Connection=True;"
+            + "TrustServerCertificate=True;MultipleActiveResultSets=True";
 
         await using var db = CreateContext(new TestClock(DateTime.UtcNow));
         await db.Database.MigrateAsync();
 
         IsAvailable = true;
     }
+
+    private static IEnumerable<string> Candidates()
+    {
+        var configured = Environment.GetEnvironmentVariable(ServerEnvironmentVariable);
+
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            yield return configured;
+        }
+
+        foreach (var server in CandidateServers)
+        {
+            yield return server;
+        }
+    }
+
+    private static string MasterConnectionString(string server) =>
+        $"Server={server};Database=master;Trusted_Connection=True;TrustServerCertificate=True;Connect Timeout=5";
 
     public async Task DisposeAsync()
     {
@@ -74,7 +134,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         // Force it closed first: a lingering pooled connection makes DROP DATABASE hang.
         SqlConnection.ClearAllPools();
 
-        await using var connection = new SqlConnection(MasterConnectionString);
+        await using var connection = new SqlConnection(MasterConnectionString(_server));
         await connection.OpenAsync();
 
         await using var command = connection.CreateCommand();
@@ -109,6 +169,32 @@ public sealed class SqlServerFixture : IAsyncLifetime
         new(db, clock, actor, NullLogger<TableStateService>.Instance);
 
     internal FloorQuery CreateFloorQuery(YallaDbContext db, IClock clock) => new(db, clock);
+
+    internal AvailabilityQuery CreateAvailabilityQuery(YallaDbContext db, IClock clock) => new(db, clock);
+
+    /// <summary>
+    /// The booking service over one context.
+    /// </summary>
+    /// <remarks>
+    /// Each concurrency test builds two of these over <b>separate</b> contexts and therefore
+    /// separate connections, which is the only way to make two transactions genuinely race. Two
+    /// services sharing one context would serialise on the context itself and prove nothing.
+    /// </remarks>
+    internal ReservationService CreateReservationService(
+        YallaDbContext db,
+        IClock clock,
+        ICurrentActor actor,
+        NoShowPolicy? noShowPolicy = null,
+        BookingLockOptions? lockOptions = null) =>
+        new(
+            db,
+            clock,
+            actor,
+            CreateAvailabilityQuery(db, clock),
+            new AuthorizationQueries(db),
+            noShowPolicy ?? new NoShowPolicy(),
+            lockOptions ?? new BookingLockOptions(),
+            NullLogger<ReservationService>.Instance);
 }
 
 /// <summary>Groups the integration tests so the database is created once, not per class.</summary>
@@ -127,13 +213,14 @@ public sealed class TestClock(DateTime utcNow) : IClock
 }
 
 /// <summary>A stand-in actor, so permission paths can be exercised without authentication.</summary>
-public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? role) : ICurrentActor
+public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? role, Guid? dinerUserId = null)
+    : ICurrentActor
 {
     public ActorType Type { get; } = type;
 
     public Guid? StaffMemberId { get; } = staffMemberId;
 
-    public Guid? DinerUserId => null;
+    public Guid? DinerUserId { get; } = dinerUserId;
 
     public StaffRole? Role { get; } = role;
 
@@ -141,5 +228,10 @@ public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? ro
 
     public static TestActor Manager(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Manager);
 
-    public static TestActor Diner() => new(ActorType.Diner, null, null);
+    /// <summary>
+    /// A diner. An id is supplied by default because booking requires a <i>verified</i> one, and a
+    /// test that wants the anonymous case should say so by passing null.
+    /// </summary>
+    public static TestActor Diner(Guid? dinerUserId = null) =>
+        new(ActorType.Diner, null, null, dinerUserId ?? Guid.CreateVersion7());
 }

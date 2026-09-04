@@ -105,3 +105,8 @@ generated types.
 **JWT bearer security definition**, so Swagger UI has a working Authorize button. Get a token from
 one of the four flows under `/api/auth` - see [auth.md](auth.md) - and paste it without the
 `Bearer` prefix.
+
+Outside `/api/auth`, exactly one operation needs no token: `getBranchAvailability`. Browsing needs
+no account, so a generated client should not assume every non-auth operation carries one. Every
+other operation answers **401** without a token and **403** with the wrong kind of one - a staff
+token on a diner route, or a tab participant on either.

@@ -71,6 +71,7 @@ internal sealed class DevDataSeeder(
         var manager = await EnsureStaffAsync(venue.Id, branch.Id, "Nune Manager", ManagerPhone, StaffRole.Manager, cancellationToken);
 
         await EnsureFloorAsync(branch, cancellationToken);
+        await EnsureOpeningHoursAsync(branch, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -103,6 +104,42 @@ internal sealed class DevDataSeeder(
         db.StaffMembers.Add(staff);
 
         return staff;
+    }
+
+    /// <summary>
+    /// Gives the demo branch a week of opening hours.
+    /// </summary>
+    /// <remarks>
+    /// Not decoration. Every booking rule checks that the whole sitting falls inside an opening
+    /// block, so a branch with no hours at all refuses <i>every</i> booking with
+    /// <c>OutsideOpeningHours</c> - which looks exactly like a broken booking endpoint rather than
+    /// like missing seed data.
+    /// </remarks>
+    private async Task EnsureOpeningHoursAsync(Branch branch, CancellationToken cancellationToken)
+    {
+        var hasHours = branch.OpeningHours.Count > 0
+                       || await db.OpeningHours.AnyAsync(h => h.BranchId == branch.Id, cancellationToken);
+
+        if (hasHours)
+        {
+            return;
+        }
+
+        // 09:00 to midnight on weekdays; Friday and Saturday run to 01:00, which is what makes the
+        // ClosesNextDay path reachable from the demo data rather than only from a test.
+        foreach (var day in Enum.GetValues<DayOfWeek>())
+        {
+            var closesNextDay = day is DayOfWeek.Friday or DayOfWeek.Saturday;
+
+            db.OpeningHours.Add(new OpeningHours(
+                branch.Id,
+                day,
+                opensAt: new TimeOnly(9, 0),
+                closesAt: closesNextDay ? new TimeOnly(1, 0) : new TimeOnly(23, 59),
+                closesNextDay: closesNextDay));
+        }
+
+        logger.LogInformation("Seeding development opening hours for branch {Slug}.", BranchSlug);
     }
 
     private async Task EnsureFloorAsync(Branch branch, CancellationToken cancellationToken)

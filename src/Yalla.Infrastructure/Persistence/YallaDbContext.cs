@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Common;
@@ -86,8 +87,16 @@ public sealed class YallaDbContext : DbContext
         // convention means no configuration class can quietly forget it. DateOnly and TimeOnly
         // (opening hours, the local date and time on a booking) are wall-clock values and map to
         // date and time - they are deliberately not instants and are never converted to UTC.
+        //
+        // The conversion is what makes that true on the way BACK. datetime2 stores no offset, so
+        // SQL Server hands every instant back as DateTimeKind.Unspecified - which System.Text.Json
+        // then serialises without a trailing Z, and a client parses as its own local time. A
+        // booking read from the database was going out as "2026-09-11T15:00:00" next to one
+        // computed in memory as "2026-09-11T15:00:00Z", four hours apart in Yerevan and identical
+        // to the eye. Stamping the kind on read costs nothing and removes the ambiguity entirely.
         configurationBuilder.Properties<DateTime>()
-            .HaveColumnType("datetime2");
+            .HaveColumnType("datetime2")
+            .HaveConversion<UtcDateTimeConverter>();
 
         // Enums persist as int, which is EF Core's default and is left in place deliberately:
         // storing them as strings would let a member rename orphan existing rows. No

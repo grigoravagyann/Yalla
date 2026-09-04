@@ -35,7 +35,7 @@ public static class DependencyInjectionExtension
                       + $"appsettings.Development.json carries the local connection string and is not read in '{environmentName}'."));
         }
 
-        builder.Services.AddInfrastructure(connectionString);
+        builder.Services.AddInfrastructure(connectionString, configuration);
 
         // Enums are integers on the wire and integers in the database, and the two must agree.
         //

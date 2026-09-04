@@ -10,7 +10,7 @@ using Yalla.Infrastructure.Identity;
 namespace Yalla.Api.ApplicationExtensions;
 
 /// <summary>
-/// JWT bearer authentication and the six authorisation policies.
+/// JWT bearer authentication and the seven authorisation policies.
 /// </summary>
 public static class AuthenticationExtensions
 {
@@ -101,6 +101,7 @@ public static class AuthenticationExtensions
         services.AddHttpContextAccessor();
 
         services.AddSingleton<IAuthorizationHandler, StaffRoleHandler>();
+        services.AddSingleton<IAuthorizationHandler, PrincipalTypeHandler>();
         services.AddScoped<IAuthorizationHandler, TabParticipantHandler>();
         services.AddScoped<IAuthorizationHandler, BranchScopedHandler>();
         services.AddScoped<IAuthorizationHandler, VenueScopedHandler>();
@@ -130,7 +131,12 @@ public static class AuthenticationExtensions
 
             .AddPolicy(YallaPolicies.VenueScoped, policy => policy
                 .RequireAuthenticatedUser()
-                .AddRequirements(new VenueScopedRequirement()));
+                .AddRequirements(new VenueScopedRequirement()))
+
+            .AddPolicy(YallaPolicies.VerifiedDiner, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PrincipalTypeRequirement(
+                    new HashSet<PrincipalType> { PrincipalType.Diner })));
 
         return services;
     }

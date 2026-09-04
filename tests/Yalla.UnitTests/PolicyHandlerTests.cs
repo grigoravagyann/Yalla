@@ -16,7 +16,7 @@ namespace Yalla.UnitTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Four of the six policies are exercised end to end by the boundary and staff tests, which is
+/// Five of the seven policies are exercised end to end by the boundary and staff tests, which is
 /// the right way round: what matters about a policy is whether it is actually attached to a
 /// route.
 /// </para>
