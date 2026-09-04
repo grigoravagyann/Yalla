@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Common;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Menus;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
@@ -61,6 +62,20 @@ public sealed class YallaDbContext : DbContext
     public DbSet<StaffMember> StaffMembers => Set<StaffMember>();
 
     public DbSet<TableStateChange> TableStateChanges => Set<TableStateChange>();
+
+    public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
+
+    public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();
+
+    public DbSet<StaffDevice> StaffDevices => Set<StaffDevice>();
+
+    public DbSet<StaffEnrolmentCode> StaffEnrolmentCodes => Set<StaffEnrolmentCode>();
+
+    public DbSet<StaffSession> StaffSessions => Set<StaffSession>();
+
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder) =>
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(YallaDbContext).Assembly);

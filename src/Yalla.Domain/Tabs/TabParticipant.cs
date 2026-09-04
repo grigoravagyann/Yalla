@@ -101,6 +101,17 @@ public sealed class TabParticipant : Entity
         CanPay = canPay;
     }
 
+    /// <summary>
+    /// Renames this person on the tab, so the host sees "Ani" rather than "Guest 3".
+    /// </summary>
+    /// <remarks>
+    /// This is a profile field on the participant, not an account. A walk-in who scanned the QR
+    /// has no user row and never will; letting them put a name on the tab is the entire extent of
+    /// their "profile", and it costs them nothing to skip.
+    /// </remarks>
+    public void SetDisplayName(string displayName) =>
+        DisplayName = Guard.NotBlank(displayName, nameof(displayName), FieldLengths.DisplayName);
+
     public void Approve(DateTime approvedAtUtc)
     {
         if (Status == ParticipantStatus.Removed)

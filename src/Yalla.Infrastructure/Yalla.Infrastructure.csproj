@@ -12,6 +12,32 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.9" />
+
+    <!--
+      The per-phone verification-code limiter. Same primitive the pipeline rate limiter uses,
+      applied inside the service because the phone number is in the request body.
+    -->
+    <PackageReference Include="System.Threading.RateLimiting" Version="9.0.9" />
+
+    <!--
+      PasswordHasher<T> only. ASP.NET Core Identity itself is deliberately NOT used: three of the
+      four identity types in this product (device tokens, PINs, phone-only diners) do not fit its
+      user/role model, and its table set would be almost entirely dead weight. See docs/auth.md.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="9.0.6" />
+
+    <!-- Token minting. Validation lives in the API project, with the JwtBearer handler. -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.0.1" />
+  </ItemGroup>
+
+  <!--
+    Verification and reset messages, one file per language. Embedded rather than generated: the
+    ResourceManager is asked for them by name, so there is no designer class to keep in sync.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Update="Resources\AuthMessages*.resx">
+      <Generator></Generator>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- Exposes the internal services (TableStateService, FloorQuery) to the unit tests. -->

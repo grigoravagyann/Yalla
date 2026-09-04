@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
 
@@ -13,13 +14,13 @@ namespace Yalla.Api.Errors;
 /// False for failures that are part of normal operation - a rejected request, a lost concurrency
 /// race - so the error log stays a list of things that are actually wrong.
 /// </param>
-/// <param name="Details">Machine-readable facts the client needs in order to react.</param>
+/// <param name="Context">Machine-readable facts the client needs in order to react.</param>
 public readonly record struct MappedError(
     int Status,
     string Code,
     string Message,
     bool LogAsError,
-    IReadOnlyDictionary<string, object?>? Details = null);
+    IReadOnlyDictionary<string, object?>? Context = null);
 
 /// <summary>
 /// Translates exceptions into <see cref="UnifiedErrorEnvelope"/> values.
@@ -45,12 +46,15 @@ internal static class ApiExceptionMapper
             ErrorCodes.TableStateConflict,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
-                ["attemptedFromStatus"] = e.AttemptedFromStatus.ToString(),
-                ["currentStatus"] = e.CurrentStatus.ToString(),
+                // The numeric enum values, matching what the schema declares and what every other
+                // response carries. A client comparing this to its generated TableStatus enum
+                // should not have to know that this one place spelled it out in English.
+                ["attemptedFromStatus"] = (int)e.AttemptedFromStatus,
+                ["currentStatus"] = (int)e.CurrentStatus,
                 ["currentSessionId"] = e.CurrentSessionId,
             }),
 
@@ -61,26 +65,55 @@ internal static class ApiExceptionMapper
             ErrorCodes.InvalidTableTransition,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
-                ["fromStatus"] = e.FromStatus.ToString(),
-                ["attemptedToStatus"] = e.ToStatus.ToString(),
+                ["fromStatus"] = (int)e.FromStatus,
+                ["attemptedToStatus"] = (int)e.ToStatus,
                 ["allowedFromHere"] = TableStatusTransitions.From(e.FromStatus)
-                    .Select(s => s.ToString())
+                    .Select(s => (int)s)
                     .ToArray(),
             }),
+
+        // The account is locked, not the credential wrong. Must stay ABOVE the general
+        // authentication arm it derives from: reporting a lockout as a plain 401 leaves someone
+        // standing at a tablet retyping a PIN that was correct all along.
+        AccountLockedException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.AccountLocked,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["lockedUntilUtc"] = e.LockedUntilUtc,
+            }),
+
+        // A one-time credential is out of attempts. 429 rather than 401, because the useful
+        // signal to a client is "stop retrying and ask for a new code", not "try again".
+        TooManyAttemptsException e => new MappedError(
+            StatusCodes.Status429TooManyRequests,
+            ErrorCodes.TooManyAttempts,
+            e.Message,
+            LogAsError: false),
+
+        // Every other sign-in failure. The slug comes from the exception, which is deliberately
+        // never specific enough to say whether an account exists - see AuthenticationFailedException.
+        AuthenticationFailedException e => new MappedError(
+            StatusCodes.Status401Unauthorized,
+            e.ReasonCode,
+            e.Message,
+            LogAsError: false),
 
         StaffPermissionException e => new MappedError(
             StatusCodes.Status403Forbidden,
             ErrorCodes.Forbidden,
             e.Message,
             LogAsError: false,
-            Details: new Dictionary<string, object?>
+            Context: new Dictionary<string, object?>
             {
                 ["operation"] = e.Operation,
-                ["requiredRole"] = e.RequiredRole.ToString(),
+                ["requiredRole"] = (int)e.RequiredRole,
             }),
 
         // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are

@@ -37,17 +37,27 @@ public static class DependencyInjectionExtension
 
         builder.Services.AddInfrastructure(connectionString);
 
-        // Enums travel as strings on the wire and as ints in the database. A client reading
-        // "Occupied" cannot silently mean something else after a member is inserted, while the
-        // stored int keeps a rename from orphaning rows.
+        // Enums are integers on the wire and integers in the database, and the two must agree.
+        //
+        // They previously did not. The string converter here applied to MVC only, while the
+        // minimal APIs that serve every endpoint in this system used the framework default and
+        // wrote integers - and Swashbuckle reads MVC's options, so the generated schema described
+        // enums as strings that no endpoint ever produced. The frontend generates its TypeScript
+        // from that schema, so it would have been comparing `status === "Occupied"` against a 4.
+        //
+        // Integers are also the right answer on their own terms: the stored int keeps a renamed
+        // member from orphaning existing rows. What the schema owes the frontend instead is the
+        // meaning of each number, which EnumDescriptionSchemaFilter supplies as x-enum-varnames.
         builder.Services
             .AddControllers()
             .AddJsonOptions(options =>
-            {
-                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
                 options.JsonSerializerOptions.DefaultIgnoreCondition =
-                    JsonIgnoreCondition.WhenWritingNull;
-            });
+                    JsonIgnoreCondition.WhenWritingNull);
+
+        // The options the minimal APIs actually use. Set explicitly so the two pipelines cannot
+        // drift apart again.
+        builder.Services.ConfigureHttpJsonOptions(options =>
+            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull);
 
         // One failure shape for the whole API, one log point. See UnifiedExceptionHandler.
         builder.Services.AddExceptionHandler<UnifiedExceptionHandler>();

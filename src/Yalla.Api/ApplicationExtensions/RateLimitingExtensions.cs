@@ -16,8 +16,28 @@ namespace Yalla.Api.ApplicationExtensions;
 /// </remarks>
 public static class RateLimitingExtensions
 {
-    /// <summary>Policy name for the tighter limit that later authentication endpoints will use.</summary>
+    /// <summary>Policy name for the general authentication endpoints.</summary>
     public const string AuthPolicy = "auth";
+
+    /// <summary>
+    /// Tighter policy for <c>request-code</c>.
+    /// </summary>
+    /// <remarks>
+    /// Codes cost money to send once a real provider is wired in, so an unlimited request endpoint
+    /// is an invoice generator. This is the per-address half of the limit; the per-number half
+    /// lives in <c>PhoneCodeRateLimiter</c>, because the number is in the request body and this
+    /// middleware runs long before anything has read it.
+    /// </remarks>
+    public const string CodeRequestPolicy = "auth-code-request";
+
+    /// <summary>
+    /// Tighter policy for the PIN exchange.
+    /// </summary>
+    /// <remarks>
+    /// Complements, rather than replaces, the per-staff-member lockout: this one throttles a
+    /// tablet grinding through staff ids, the lockout protects one person's four digits.
+    /// </remarks>
+    public const string PinPolicy = "auth-pin";
 
     /// <summary>
     /// Whether rate limiting is switched on for this environment. Both the registration and the
@@ -43,6 +63,10 @@ public static class RateLimitingExtensions
         var globalWindowSeconds = section.GetValue<int?>("GlobalWindowSeconds") ?? 60;
         var authPermitLimit = section.GetValue<int?>("AuthPermitLimit") ?? 10;
         var authWindowSeconds = section.GetValue<int?>("AuthWindowSeconds") ?? 60;
+        var codeRequestPermitLimit = section.GetValue<int?>("CodeRequestPermitLimit") ?? 5;
+        var codeRequestWindowSeconds = section.GetValue<int?>("CodeRequestWindowSeconds") ?? 300;
+        var pinPermitLimit = section.GetValue<int?>("PinPermitLimit") ?? 10;
+        var pinWindowSeconds = section.GetValue<int?>("PinWindowSeconds") ?? 60;
 
         services.AddRateLimiter(options =>
         {
@@ -68,6 +92,26 @@ public static class RateLimitingExtensions
                         QueueLimit = 0,
                     }));
 
+            options.AddPolicy(CodeRequestPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = codeRequestPermitLimit,
+                        Window = TimeSpan.FromSeconds(codeRequestWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            options.AddPolicy(PinPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = pinPermitLimit,
+                        Window = TimeSpan.FromSeconds(pinWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
             // A rejection answers in the same envelope as every other failure, rather than an
             // empty 429 the clients would each have to special-case.
             options.OnRejected = async (context, cancellationToken) =>
@@ -78,16 +122,23 @@ public static class RateLimitingExtensions
                         ((int)retryAfter.TotalSeconds).ToString(CultureInfo.InvariantCulture);
                 }
 
-                context.HttpContext.Response.ContentType = "application/json";
+                context.HttpContext.Response.ContentType = "application/problem+json";
 
                 await context.HttpContext.Response.WriteAsync(
+                    // Web defaults, so this envelope is camelCase like every other response. The
+                    // default serializer options are PascalCase, which would hand the clients a
+                    // 429 body they cannot parse with the same reader as every other error.
                     JsonSerializer.Serialize(new UnifiedErrorEnvelope
                     {
-                        TraceId = context.HttpContext.TraceIdentifier,
+                        Type = ErrorCodes.TypeFor(ErrorCodes.RateLimited),
+                        Title = ErrorCodes.TitleFor(ErrorCodes.RateLimited),
                         Status = StatusCodes.Status429TooManyRequests,
+                        Detail = "Too many requests. Try again shortly.",
+                        Instance = context.HttpContext.Request.Path.Value,
                         Code = ErrorCodes.RateLimited,
-                        Message = "Too many requests. Try again shortly.",
-                    }),
+                        TraceId = context.HttpContext.TraceIdentifier,
+                    },
+                    JsonSerializerOptions.Web),
                     cancellationToken);
             };
         });
