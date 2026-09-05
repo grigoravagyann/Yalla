@@ -73,3 +73,63 @@ public enum PaymentStatus
     /// <summary>The hold was given back to the tab's remaining balance without being charged.</summary>
     Released = 4,
 }
+
+/// <summary>Why money is coming off a bill.</summary>
+/// <remarks>
+/// Two words a manager uses differently, so they are two values rather than one "reduction".
+/// A <see cref="Discount"/> is commercial - a regular, a voucher, a slow Tuesday. A
+/// <see cref="Comp"/> is an apology: the dish was wrong, the wait was long. Reporting that cannot
+/// tell them apart cannot answer the only question worth asking, which is how much the venue is
+/// giving away because something went wrong.
+/// </remarks>
+public enum AdjustmentKind
+{
+    Discount = 1,
+    Comp = 2,
+}
+
+/// <summary>What a table is asking for. Presets only - see <c>docs/tabs.md</c>.</summary>
+/// <remarks>
+/// Deliberately not free text with a preset alongside. A text box creates the expectation of a
+/// reply, and during the Friday rush nobody answers it; a fixed list is a signal a waiter can act
+/// on at a glance from across the room.
+/// </remarks>
+public enum ServiceRequestPreset
+{
+    Napkins = 1,
+    Water = 2,
+    TheBill = 3,
+    Other = 4,
+}
+
+/// <summary>
+/// What happened on a tab, for the catch-up stream.
+/// </summary>
+/// <remarks>
+/// Numbers are persisted and pinned, like every other enum here - see <c>SCHEMA.md</c>. A client
+/// that does not recognise a type must ignore it and keep its sequence position rather than
+/// failing: new types will be added, and an old app build must not break on a tab that used one.
+/// </remarks>
+public enum TabEventType
+{
+    TabOpened = 1,
+    ParticipantJoined = 2,
+    ParticipantApproved = 3,
+    ParticipantRejected = 4,
+    ParticipantRemoved = 5,
+    ParticipantPermissionsChanged = 6,
+    ParticipantRenamed = 7,
+    HostReassigned = 8,
+    SettlementModeChanged = 9,
+    OrderPlaced = 10,
+    OrderStatusChanged = 11,
+    LineVoided = 12,
+    AdjustmentAdded = 13,
+    AdjustmentVoided = 14,
+    PaymentRecorded = 15,
+    ServiceRequested = 16,
+    ServiceRequestAcknowledged = 17,
+    TabClosing = 18,
+    TabClosed = 19,
+    TabAbandoned = 20,
+}

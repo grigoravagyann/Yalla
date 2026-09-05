@@ -30,6 +30,18 @@ internal sealed class TabOrderConfiguration : EntityConfiguration<TabOrder>
             .HasForeignKey(o => o.PlacedByStaffId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Only ever set alongside PlacedByStaffId: the waiter said who the spoken order was for.
+        builder.HasOne(o => o.OnBehalfOfParticipant)
+            .WithMany()
+            .HasForeignKey(o => o.OnBehalfOfParticipantId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Property(o => o.EstimatedReadyAtUtc);
+
+        builder.Property(o => o.ClientCommandId).IsRequired();
+
+        builder.Ignore(o => o.OwningParticipantId);
+
         // The kitchen queue: everything outstanding on this tab, oldest first.
         builder.HasIndex(o => new { o.TabId, o.Status });
     }

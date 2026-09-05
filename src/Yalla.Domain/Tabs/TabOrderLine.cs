@@ -39,6 +39,23 @@ public sealed class TabOrderLine : Entity
     /// </summary>
     public bool IsShared { get; private set; }
 
+    /// <summary>
+    /// True when nobody owns this line: a waiter keyed in a spoken order and could not say who
+    /// asked for it.
+    /// </summary>
+    /// <remarks>
+    /// It splits across everyone present, exactly like a shared line, and carries its own snapshot
+    /// rows for the same reason. The flag exists so the difference stays visible: "the table shared
+    /// a bottle" and "we do not know who ordered this" produce identical arithmetic and mean
+    /// completely different things. This is the seam where paper-ordering habits leak into the
+    /// data, and a venue whose bills are full of table-attributed lines has a training problem the
+    /// numbers should be able to show them.
+    /// </remarks>
+    public bool IsTableAttributed { get; private set; }
+
+    /// <summary>What the guest asked for: no onions, extra hot. Goes to the kitchen, not the bill.</summary>
+    public string? Note { get; private set; }
+
     public DateTime? VoidedAtUtc { get; private set; }
 
     public Guid? VoidedByStaffId { get; private set; }
@@ -55,7 +72,16 @@ public sealed class TabOrderLine : Entity
     public bool IsVoided => VoidedAtUtc is not null;
 
     /// <summary>Line total in whole dram, ignoring the service charge. Zero once voided.</summary>
+    /// <remarks>
+    /// Zero rather than absent, because a voided line <b>stays on the bill and stays visible to the
+    /// diner</b>, labelled as removed by staff. Nothing may silently disappear from a bill somebody
+    /// is watching on their phone: a line that vanishes reads as the venue editing the bill, and the
+    /// guest has no way to tell that apart from one.
+    /// </remarks>
     public long LineTotalAmd => IsVoided ? 0L : UnitPriceAmdSnapshot * Quantity;
+
+    /// <summary>True when this line splits across the participants snapshotted on it, for either reason.</summary>
+    public bool IsSplitAcrossParticipants => IsShared || IsTableAttributed;
 
     private TabOrderLine()
     {
@@ -67,9 +93,13 @@ public sealed class TabOrderLine : Entity
         string nameSnapshot,
         long unitPriceAmdSnapshot,
         int quantity,
-        bool isShared)
+        bool isShared,
+        bool isTableAttributed = false,
+        string? note = null)
         : base(Guid.CreateVersion7())
     {
+        IsTableAttributed = isTableAttributed;
+        Note = Guard.OptionalText(note, nameof(note), FieldLengths.OrderNote);
         TabOrderId = Guard.NotEmpty(tabOrderId, nameof(tabOrderId));
         MenuItemId = Guard.NotEmpty(menuItemId, nameof(menuItemId));
         NameSnapshot = Guard.NotBlank(nameSnapshot, nameof(nameSnapshot), FieldLengths.Name);

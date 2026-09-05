@@ -186,9 +186,19 @@ public sealed record FloorTableView(
     bool IsBookable,
     bool IsActive,
     string QrToken,
-    TableStatus Status);
+    TableStatus Status,
+    bool IsDeletable);
 
-/// <summary>Canvas size, areas, and every table with its geometry. Inactive tables are included, flagged.</summary>
+/// <summary>
+/// Canvas size, areas, and every table with its geometry.
+/// </summary>
+/// <remarks>
+/// <b>Inactive tables are included</b>, flagged by <c>isActive</c>. The editor has to be able to
+/// show a table someone just tried to delete as deactivated; dropping it from the response would
+/// look like the delete succeeded, and the next save would recreate it under a new id and a new QR
+/// code. The diner-facing reads - availability and floor state - exclude them, which is the
+/// opposite requirement on the same flag and the reason both directions have a test.
+/// </remarks>
 public sealed record FloorPlanView(
     Guid BranchId,
     int FloorWidth,

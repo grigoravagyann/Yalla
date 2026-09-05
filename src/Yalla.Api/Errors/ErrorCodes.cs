@@ -75,6 +75,21 @@ public static class ErrorCodes
     /// is what makes it different from <see cref="TableAlreadyBooked"/>: the question was never
     /// asked, rather than answered no. Retry with the same <c>clientCommandId</c>.
     /// </summary>
+    /// <summary>A dish on the order has sold out. The context names it, so the client can too.</summary>
+    public const string MenuItemUnavailable = "menu-item-unavailable";
+
+    /// <summary>The bill has been asked for; the app should show it rather than the menu.</summary>
+    public const string TabNotAcceptingOrders = "tab-not-accepting-orders";
+
+    /// <summary>Removing this line would reverse money already taken. That is a refund.</summary>
+    public const string LineAlreadyPaid = "line-already-paid";
+
+    /// <summary>More was offered than is owed. The context carries the current balance.</summary>
+    public const string PaymentExceedsRemaining = "payment-exceeds-remaining";
+
+    /// <summary>This table has asked for too many things too quickly.</summary>
+    public const string ServiceRequestRateLimited = "service-request-rate-limited";
+
     public const string ReservationLockTimeout = "reservation-lock-timeout";
 
     /// <summary>
@@ -179,6 +194,11 @@ public static class ErrorCodes
         InvalidTableTransition => "Invalid table transition",
         TableAlreadyBooked => "Table already booked",
         TableCurrentlyOccupied => "Table currently occupied",
+        MenuItemUnavailable => "Item unavailable",
+        TabNotAcceptingOrders => "Tab not accepting orders",
+        LineAlreadyPaid => "Line already paid for",
+        PaymentExceedsRemaining => "Payment exceeds the balance",
+        ServiceRequestRateLimited => "Too many requests from this table",
         ReservationLockTimeout => "Reservation lock timeout",
         TableLockTimeout => "Table busy",
         ClientCommandIdInUse => "Command id already used",

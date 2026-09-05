@@ -14,6 +14,10 @@ internal sealed class PaymentConfiguration : EntityConfiguration<Payment>
         // Whole Armenian dram, so bigint.
         builder.Property(p => p.AmountAmd).IsRequired();
 
+        // Outside the balance on purpose - see Payment.TipAmd. Stored here because the drawer has
+        // to reconcile against it, not because the bill knows about it.
+        builder.Property(p => p.TipAmd).IsRequired();
+
         builder.Property(p => p.Method).IsRequired();
         builder.Property(p => p.Status).IsRequired();
         builder.Property(p => p.CompletedAtUtc);
@@ -37,5 +41,13 @@ internal sealed class PaymentConfiguration : EntityConfiguration<Payment>
 
         // Reconciliation against a provider's own report.
         builder.HasIndex(p => p.ProviderReference);
+
+        // What makes a double-tap on "take cash" safe. The index is the guarantee, not a check in
+        // the service: two taps can race, and a check-then-insert would let both through.
+        builder.Property(p => p.ClientCommandId).IsRequired();
+
+        builder.HasIndex(p => p.ClientCommandId)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.PaymentClientCommand);
     }
 }

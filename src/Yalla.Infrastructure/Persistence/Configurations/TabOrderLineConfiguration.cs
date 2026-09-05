@@ -22,6 +22,9 @@ internal sealed class TabOrderLineConfiguration : EntityConfiguration<TabOrderLi
 
         builder.Property(l => l.Quantity).IsRequired();
         builder.Property(l => l.IsShared).IsRequired();
+        builder.Property(l => l.IsTableAttributed).IsRequired();
+
+        builder.Property(l => l.Note).HasMaxLength(FieldLengths.OrderNote);
         builder.Property(l => l.VoidedAtUtc);
 
         builder.Property(l => l.VoidReason)
@@ -29,6 +32,7 @@ internal sealed class TabOrderLineConfiguration : EntityConfiguration<TabOrderLi
 
         builder.Ignore(l => l.IsVoided);
         builder.Ignore(l => l.LineTotalAmd);
+        builder.Ignore(l => l.IsSplitAcrossParticipants);
 
         // Cascade: a line has no meaning apart from its order.
         builder.HasOne(l => l.TabOrder)

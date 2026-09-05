@@ -119,6 +119,73 @@ internal static class ApiExceptionMapper
             e.Message,
             LogAsError: false),
 
+        // A dish sold out. 409 with the item NAMED, because the client has to be able to say which
+        // one - "your order could not be placed" sends the diner back to a waiter to find out what
+        // went wrong, which is the question the whole feature exists to remove.
+        MenuItemUnavailableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.MenuItemUnavailable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["menuItemId"] = e.MenuItemId,
+                ["itemName"] = e.ItemName,
+            }),
+
+        // The bill has been asked for. Its own code rather than a generic refusal, because the
+        // client's response differs: show the bill, not the menu.
+        TabNotAcceptingOrdersException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TabNotAcceptingOrders,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["status"] = (int)e.Status,
+            }),
+
+        // Taking this off would reverse money that has already changed hands, which is a refund.
+        LineAlreadyPaidException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.LineAlreadyPaid,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["lineId"] = e.LineId,
+            }),
+
+        // The waiter is standing at the table holding notes, so the balance goes in the body. The
+        // usual cause is somebody settling in the app while the waiter was typing.
+        PaymentExceedsRemainingException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PaymentExceedsRemaining,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["requestedAmd"] = e.RequestedAmd,
+                ["remainingAmd"] = e.RemainingAmd,
+            }),
+
+        // 429 rather than 409: this is a rate limit, and a client should back off rather than
+        // change what it is asking for.
+        ServiceRequestRateLimitedException e => new MappedError(
+            StatusCodes.Status429TooManyRequests,
+            ErrorCodes.ServiceRequestRateLimited,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["limit"] = e.Limit,
+                ["windowMinutes"] = e.WindowMinutes,
+            }),
+
         // Contention, not refusal. 503 with retryable set, because the client's correct response
         // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
         // matter how often it is repeated. Collapsing the two would teach clients to retry

@@ -68,6 +68,12 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<ProcessedCommand> ProcessedCommands => Set<ProcessedCommand>();
 
+    public DbSet<TabAdjustment> TabAdjustments => Set<TabAdjustment>();
+
+    public DbSet<ServiceRequest> ServiceRequests => Set<ServiceRequest>();
+
+    public DbSet<TabEvent> TabEvents => Set<TabEvent>();
+
     public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
 
     public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();
