@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Messaging;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
@@ -31,6 +32,7 @@ internal sealed class TabOrderService(
     IClock clock,
     ICurrentActor actor,
     TabLedger ledger,
+    IOutbox outbox,
     ILogger<TabOrderService> logger) : ITabOrderService
 {
     /// <summary>
@@ -385,8 +387,9 @@ internal sealed class TabOrderService(
         var order = await db.TabOrders
             .Include(o => o.Lines)
             .ThenInclude(l => l.Shares)
-            .Include(o => o.Tab)
-            .ThenInclude(t => t.DiningTable)
+            .Include(o => o.Tab).ThenInclude(t => t.DiningTable)
+            .Include(o => o.Tab).ThenInclude(t => t.Branch)
+            .Include(o => o.Tab).ThenInclude(t => t.Participants)
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
             ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
 
@@ -395,6 +398,31 @@ internal sealed class TabOrderService(
 
         var from = order.Status;
         order.MoveTo(next);
+
+        // Food is up. Per-branch and off by default: noisy in a cafe where a waiter carries the
+        // plate ten feet, useful in a canteen where the diner collects it. Defaulting it on would
+        // train a city to switch our notifications off, taking the reminder and the nudge with them.
+        if (next == TabOrderStatus.Ready && order.Tab.Branch.NotifyOnOrderReady)
+        {
+            var recipient = order.OwningParticipantId is { } participantId
+                ? order.Tab.Participants.FirstOrDefault(p => p.Id == participantId)
+                : null;
+
+            if (recipient?.UserId is { } dinerUserId)
+            {
+                outbox.Enqueue(
+                    OutboxMessageTypes.OrderReady,
+                    new
+                    {
+                        tabId = order.TabId,
+                        participantId = recipient.Id,
+                        dinerUserId,
+                        tableLabel = order.Tab.DiningTable.Label,
+                    },
+                    clock.UtcNow,
+                    OutboxMessageTypes.KeyFor("order", order.Id, "ready"));
+            }
+        }
 
         ledger.Append(order.TabId, TabEventType.OrderStatusChanged, new
         {

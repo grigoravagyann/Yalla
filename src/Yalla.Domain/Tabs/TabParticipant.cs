@@ -18,11 +18,28 @@ public sealed class TabParticipant : Entity
 
     public string DisplayName { get; private set; } = null!;
 
-    /// <summary>The diner's account, when they have one. Identity is a later module, so no navigation.</summary>
+    /// <summary>
+    /// The diner's account, when they have one. Usually they do not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A tab participant is account-less by design: scanning a table and ordering must not require
+    /// signing up for anything, and that stays true. This is recorded when the scanning phone
+    /// <i>happens</i> to be carrying a diner token - somebody who books through the app and then
+    /// scans a table.
+    /// </para>
+    /// <para>
+    /// Prompt 9 gave it a second job. It is the only address a push has: a device id from the tab
+    /// flow and a push token from the diner app are separate identifier spaces with nothing joining
+    /// them, so "the host approved you" reaches exactly the participants who have one of these and
+    /// nobody else. No navigation - identity is its own module.
+    /// </para>
+    /// </remarks>
     public Guid? UserId { get; private set; }
 
     /// <summary>The phone that joined, so an anonymous QR guest can be recognised again.</summary>
     public string DeviceId { get; private set; } = null!;
+
 
     public ParticipantRole Role { get; private set; }
 

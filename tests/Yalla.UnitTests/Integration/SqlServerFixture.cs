@@ -211,6 +211,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             tokens,
             Microsoft.Extensions.Options.Options.Create(new TabOptions()),
             CreateLedger(db, clock, actor),
+            CreateOutbox(db, clock),
             NullLogger<TabService>.Instance);
     }
 
@@ -222,7 +223,8 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     /// <summary>Ordering, voiding and adjusting, over one context.</summary>
     internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<TabOrderService>.Instance);
+        new(db, clock, actor, CreateLedger(db, clock, actor), CreateOutbox(db, clock),
+            NullLogger<TabOrderService>.Instance);
 
     /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
     internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
@@ -304,6 +306,32 @@ public sealed class SqlServerFixture : IAsyncLifetime
     internal Outbox CreateOutbox(YallaDbContext db, IClock clock) =>
         new(db, clock, NullLogger<Outbox>.Instance);
 
+    /// <summary>
+    /// Empties the outbox table, for a test that is about to drive the dispatcher.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every other kind of test gets its isolation from a fresh branch, because everything else in
+    /// the system is scoped to one. The dispatcher is not: it claims whatever is due, whoever wrote
+    /// it, which is the whole point of it. So "it sent two messages" is only a statement about this
+    /// test if the table held only this test's messages.
+    /// </para>
+    /// <para>
+    /// Scoping the assertions to our own keys instead would be weaker - it would say our message was
+    /// handled, and say nothing about a dispatcher that also sent somebody else's twice. The
+    /// integration collection runs sequentially, so nothing else is mid-flight when this runs.
+    /// </para>
+    /// <para>
+    /// Call it <b>before</b> creating the bookings whose messages the test is about.
+    /// </para>
+    /// </remarks>
+    internal async Task ClearOutboxAsync(IClock clock)
+    {
+        await using var db = CreateContext(clock);
+
+        await db.OutboxMessages.ExecuteDeleteAsync();
+    }
+
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
     internal ReservationWriter CreateReservationWriter(
         YallaDbContext db,
@@ -323,6 +351,26 @@ public sealed class SqlServerFixture : IAsyncLifetime
 public sealed class SqlServerCollection : ICollectionFixture<SqlServerFixture>
 {
     public const string Name = "SqlServer";
+}
+
+/// <summary>
+/// A clock backed by a <see cref="Microsoft.Extensions.Time.Testing.FakeTimeProvider"/>, so the
+/// domain's clock and the scheduler's timer are the same clock.
+/// </summary>
+/// <remarks>
+/// Two independent fakes is how a scheduler test passes while the thing it schedules never fires:
+/// the test advances one, the <c>PeriodicTimer</c> reads the other, and nothing ticks. Advancing
+/// this moves both.
+/// </remarks>
+public sealed class FakeClock(DateTime utcNow) : IClock
+{
+    public Microsoft.Extensions.Time.Testing.FakeTimeProvider Provider { get; } =
+        new(new DateTimeOffset(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc)));
+
+    public DateTime UtcNow => Provider.GetUtcNow().UtcDateTime;
+
+    /// <summary>Moves time forward, for the domain and for any timer built from the provider.</summary>
+    public void Advance(TimeSpan by) => Provider.Advance(by);
 }
 
 /// <summary>A clock the tests drive, so "reserved soon" is deterministic.</summary>

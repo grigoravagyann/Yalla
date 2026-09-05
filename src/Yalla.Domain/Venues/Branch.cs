@@ -53,6 +53,19 @@ public sealed class Branch : Entity
     /// perfectly usable before somebody has taken a photograph of the room, which is not true of a
     /// menu item: a dish with no picture is the thing the diner then asks a waiter about.
     /// </remarks>
+    /// <summary>
+    /// Whether diners are pushed when their order is ready. <b>Off by default.</b>
+    /// </summary>
+    /// <remarks>
+    /// Noisy in a cafe where a waiter carries the plate ten feet, and genuinely useful in a canteen
+    /// where the diner collects it. Defaulting it on would train a whole city to switch our
+    /// notifications off, and the ones that matter - the reminder and the nudge - would go with them.
+    /// </remarks>
+    public bool NotifyOnOrderReady { get; private set; }
+
+    /// <summary>Turns the order-ready push on or off for this branch.</summary>
+    public void SetNotifyOnOrderReady(bool notify) => NotifyOnOrderReady = notify;
+
     public Guid? CoverPhotoId { get; private set; }
 
     public Media.Photo? CoverPhoto { get; private set; }
