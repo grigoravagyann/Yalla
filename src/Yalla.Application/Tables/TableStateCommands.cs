@@ -1,3 +1,5 @@
+using Yalla.Domain.Enums;
+
 namespace Yalla.Application.Tables;
 
 /// <summary>
@@ -15,11 +17,27 @@ public interface ITableStateCommand
 
     Guid TableId { get; }
 
-    /// <summary>Caller-generated id. A replay with the same value is a no-op.</summary>
+    /// <summary>Caller-generated id. A replay with the same value returns the original answer.</summary>
     Guid ClientCommandId { get; }
 
     /// <summary>Free text for the audit log. Defaulted per transition when omitted.</summary>
     string? Reason { get; }
+
+    /// <summary>
+    /// True when this came off the tablet's offline queue rather than from a live tap.
+    /// </summary>
+    /// <remarks>
+    /// The distinction matters because a queued command may be <i>stale</i>: tapped at 20:05 with
+    /// the wifi down, synced at 20:40. Idempotency stops it being applied twice and says nothing
+    /// about it being out of date, so a queued command must say what the waiter was looking at.
+    /// </remarks>
+    bool Queued { get; }
+
+    /// <summary>
+    /// The status the table had when the waiter tapped. Required for a queued command; optional
+    /// for a live one made from a fresh read, where the row version already guards the race.
+    /// </summary>
+    TableStatus? ExpectedFromStatus { get; }
 }
 
 /// <summary>A transition that needs nothing beyond the table itself.</summary>
@@ -27,7 +45,9 @@ public sealed record TableStateCommand(
     Guid BranchId,
     Guid TableId,
     Guid ClientCommandId,
-    string? Reason = null) : ITableStateCommand;
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
 
 /// <summary>Seat a party with no booking. The common case in a cafe.</summary>
 public sealed record SeatWalkInCommand(
@@ -35,7 +55,9 @@ public sealed record SeatWalkInCommand(
     Guid TableId,
     int PartySize,
     Guid ClientCommandId,
-    string? Reason = null) : ITableStateCommand;
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat a party against their booking, which also moves the booking to Seated. <c>PartySize</c>
@@ -47,7 +69,9 @@ public sealed record SeatReservationCommand(
     Guid ReservationId,
     Guid ClientCommandId,
     int? PartySize = null,
-    string? Reason = null) : ITableStateCommand;
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat the party a hold was placed for. <see cref="ReservationId"/> is set when the hold was
@@ -59,7 +83,9 @@ public sealed record SeatHeldPartyCommand(
     int PartySize,
     Guid ClientCommandId,
     Guid? ReservationId = null,
-    string? Reason = null) : ITableStateCommand;
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat the party that just scanned the table's QR code. The one transition no staff member
@@ -75,7 +101,9 @@ public sealed record SeatQrScanCommand(
     Guid TableId,
     int PartySize,
     Guid ClientCommandId,
-    string? Reason = null) : ITableStateCommand;
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
 
 /// <summary>Write off an outstanding balance. Manager-only.</summary>
 public sealed record AbandonTabCommand(

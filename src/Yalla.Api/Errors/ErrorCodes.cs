@@ -136,6 +136,19 @@ public static class ErrorCodes
     /// </summary>
     public const string BranchUnavailable = "branch-unavailable";
 
+    /// <summary>
+    /// A queued command arrived describing a table that has since moved. HTTP 409, with the
+    /// expected and current status in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately distinct from <see cref="TableStateConflict"/>, which both the client and this
+    /// codebase treat differently: a live race gets an immediate "that table just went" while the
+    /// waiter is holding the tablet, and a stale replay goes into a conflict list to resolve later.
+    /// Collapsing the two would put an hour-old tap in front of somebody as though it had just
+    /// happened.
+    /// </remarks>
+    public const string PreconditionFailed = "precondition-failed";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -156,6 +169,7 @@ public static class ErrorCodes
         ConflictingState => "Conflicting state",
         ConcurrentUpdate => "Concurrent update",
         TableStateConflict => "Table state conflict",
+        PreconditionFailed => "Precondition failed",
         InvalidTableTransition => "Invalid table transition",
         TableAlreadyBooked => "Table already booked",
         TableCurrentlyOccupied => "Table currently occupied",

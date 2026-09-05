@@ -66,6 +66,8 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<PlatformAuditLog> PlatformAuditLogs => Set<PlatformAuditLog>();
 
+    public DbSet<ProcessedCommand> ProcessedCommands => Set<ProcessedCommand>();
+
     public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
 
     public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();

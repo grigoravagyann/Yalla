@@ -57,6 +57,9 @@ public static class FieldLengths
     /// <summary>Client address recorded against a sign-in attempt, for diagnostics only.</summary>
     public const int ClientAddress = 64;
 
+    /// <summary>A command type slug, e.g. <c>table.seat-walk-in</c>.</summary>
+    public const int CommandType = 100;
+
     /// <summary>A platform audit action slug, e.g. <c>venue.suspend</c>.</summary>
     public const int AuditAction = 100;
 

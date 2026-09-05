@@ -226,6 +226,23 @@ internal static class ApiExceptionMapper
             LogAsError: false),
 
         // "This session is already closed", "the settlement mode is locked". Note this must stay
+        // A queued command that has gone stale. Must stay ABOVE DomainStateException, which it
+        // derives from, and distinct from TableStateConflictException: the client shows one
+        // immediately and files the other for later.
+        CommandPreconditionFailedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreconditionFailed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["expectedFromStatus"] = (int)e.ExpectedFromStatus,
+                ["currentStatus"] = (int)e.CurrentStatus,
+                ["clientCommandId"] = e.ClientCommandId,
+            }),
+
         // BELOW InvalidTableTransitionException, which derives from it.
         //
         // Deliberately DomainStateException and not InvalidOperationException. .NET raises the
