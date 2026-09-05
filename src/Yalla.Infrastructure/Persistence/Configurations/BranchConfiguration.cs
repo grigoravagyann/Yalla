@@ -43,9 +43,14 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .IsRequired();
 
         // Per branch, never per venue: a chain with four locations is four paying customers.
+        //
+        // The database default exists for the rows that predate the column. The sentinel is 0,
+        // which is not a defined tier and which the entity never holds, so every insert writes the
+        // tier explicitly and the default is used when, and only when, nothing was set.
         builder.Property(b => b.SubscriptionTier)
             .IsRequired()
-            .HasDefaultValue(Yalla.Domain.Enums.SubscriptionTier.Free);
+            .HasDefaultValue(Yalla.Domain.Enums.SubscriptionTier.Free)
+            .HasSentinel((Yalla.Domain.Enums.SubscriptionTier)0);
 
         builder.Ignore(b => b.IsPaid);
 

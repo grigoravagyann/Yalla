@@ -77,7 +77,13 @@ if (!app.Environment.IsDevelopment() && !app.Environment.IsStaging())
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+// In Development the API also serves plain HTTP on the LAN for phones, which cannot trust the dev
+// certificate; redirecting them to HTTPS would defeat the point. Everywhere else HTTPS is the rule.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
 app.UseYallaCors();
 
 app.UseRouting();
@@ -101,6 +107,10 @@ app.MapAdminDeviceEndpoints();
 app.MapReservationEndpoints();
 app.MapPlatformEndpoints();
 app.MapVenueAdminEndpoints();
+
+// Development only: on start, log the LAN address with both ports - the value that goes into the
+// frontend config - so nobody hunts for it in ipconfig.
+app.LogLanAddresses();
 
 // Migrates and seeds the demo branch so the dev actor stub has a real staff member to be.
 // Returns false, and does nothing at all, when DevActor:Enabled is off.
