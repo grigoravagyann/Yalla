@@ -61,10 +61,17 @@ internal sealed class DevDataSeeder(
                 longitude: 44.5150,
                 timeZoneId: "Asia/Yerevan",
                 floorWidth: 1000,
-                floorHeight: 700);
+                floorHeight: 700,
+                subscriptionTier: SubscriptionTier.Paid);
 
             db.Branches.Add(branch);
             logger.LogInformation("Seeding development branch {Slug}.", BranchSlug);
+        }
+
+        // The demo branch exists to exercise tabs and ordering, which are paid features.
+        if (!branch.IsPaid)
+        {
+            branch.SetSubscriptionTier(SubscriptionTier.Paid);
         }
 
         var waiter = await EnsureStaffAsync(venue.Id, branch.Id, "Aram Waiter", WaiterPhone, StaffRole.Waiter, cancellationToken);

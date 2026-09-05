@@ -39,6 +39,13 @@ internal sealed class AuthorizationQueries(YallaDbContext db) : IAuthorizationQu
         return branchId;
     }
 
+    public async Task<Guid?> GetTableBranchIdAsync(Guid tableId, CancellationToken cancellationToken = default) =>
+        await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == tableId)
+            .Select(t => (Guid?)t.BranchId)
+            .FirstOrDefaultAsync(cancellationToken);
+
     public Task<bool> BranchBelongsToVenueAsync(
         Guid branchId,
         Guid venueId,

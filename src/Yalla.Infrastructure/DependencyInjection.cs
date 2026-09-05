@@ -5,7 +5,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Application.BranchSettings;
+using Yalla.Application.Menus;
+using Yalla.Application.Platform;
 using Yalla.Application.Reservations;
+using Yalla.Application.Staff;
 using Yalla.Application.Tabs;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
@@ -41,6 +45,13 @@ public static class DependencyInjection
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
         services.AddScoped<ITabQuery, TabQuery>();
         services.AddScoped<ITabService, TabService>();
+
+        // The platform tier and venue configuration: everything needed to onboard a venue through
+        // the API instead of by hand in SQL.
+        services.AddScoped<IPlatformService, PlatformService>();
+        services.AddScoped<IBranchSettingsService, BranchSettingsService>();
+        services.AddScoped<IMenuService, MenuService>();
+        services.AddScoped<IStaffManagementService, StaffManagementService>();
 
         // The share-link template. Optional in configuration; the default points at the local
         // diner app, which is what a developer with no settings gets.
@@ -119,6 +130,67 @@ public static class DependencyInjection
         services.TryAddScoped<IPasswordResetSender, DevelopmentPasswordResetSender>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the first platform admin's configuration and the seeder that creates them.
+    /// </summary>
+    /// <remarks>
+    /// With <paramref name="requireConfiguration"/> - Development - a missing or blank
+    /// <c>PlatformAdmin:Email</c> / <c>PlatformAdmin:Password</c> fails startup with instructions,
+    /// rather than silently creating a default account that ends up in production.
+    /// </remarks>
+    public static IServiceCollection AddPlatformAdminSeeding(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        bool requireConfiguration)
+    {
+        var section = configuration.GetSection(PlatformAdminOptions.SectionName);
+        var options = section.Get<PlatformAdminOptions>() ?? new PlatformAdminOptions();
+
+        if (requireConfiguration && !options.IsConfigured)
+        {
+            throw new InvalidOperationException(
+                "PlatformAdmin:Email and PlatformAdmin:Password are not configured. There would be no way in "
+                + "to a fresh database. They are secrets: set them with "
+                + "`dotnet user-secrets set \"PlatformAdmin:Email\" \"you@yalla.app\" --project src/Yalla.Api` and "
+                + "`dotnet user-secrets set \"PlatformAdmin:Password\" \"<long random value>\" --project src/Yalla.Api`, "
+                + "or as the PlatformAdmin__Email / PlatformAdmin__Password environment variables elsewhere.");
+        }
+
+        services.Configure<PlatformAdminOptions>(section);
+        services.AddScoped<PlatformAdminSeeder>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Creates the configured platform admin if they do not exist. Returns false when seeding is
+    /// switched off or nothing is configured.
+    /// </summary>
+    public static async Task<bool> SeedPlatformAdminAsync(
+        this IServiceProvider services,
+        bool applyMigrations,
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = services.CreateScope();
+
+        var options = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PlatformAdminOptions>>().Value;
+
+        if (!options.SeedOnStartup || !options.IsConfigured)
+        {
+            return false;
+        }
+
+        if (applyMigrations)
+        {
+            var db = scope.ServiceProvider.GetRequiredService<YallaDbContext>();
+            await db.Database.MigrateAsync(cancellationToken);
+        }
+
+        var seeder = scope.ServiceProvider.GetRequiredService<PlatformAdminSeeder>();
+
+        return await seeder.SeedAsync(cancellationToken) is not null;
     }
 
     /// <summary>

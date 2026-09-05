@@ -81,7 +81,35 @@ public sealed class MenuItem : Entity
         IsAvailable = true;
     }
 
+    /// <summary>
+    /// Changes the price. Order lines already placed snapshotted the price they were ordered at
+    /// and are untouched by this - a price rise tomorrow cannot change a bill presented today.
+    /// </summary>
     public void SetPrice(long priceAmd) => PriceAmd = Guard.NotNegativeAmd(priceAmd, nameof(priceAmd));
+
+    /// <summary>
+    /// Edits the descriptive fields together. All of them stay required: an edit cannot blank out
+    /// what creation insisted on.
+    /// </summary>
+    public void UpdateDetails(
+        string name,
+        string description,
+        string photoUrl,
+        string ingredients,
+        string allergens,
+        string portionSize,
+        int prepMinutes,
+        SpiceLevel spiceLevel)
+    {
+        Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
+        Description = Guard.NotBlank(description, nameof(description), FieldLengths.Description);
+        PhotoUrl = Guard.NotBlank(photoUrl, nameof(photoUrl), FieldLengths.Url);
+        Ingredients = Guard.NotBlank(ingredients, nameof(ingredients), FieldLengths.Ingredients);
+        Allergens = Guard.NotBlank(allergens, nameof(allergens), FieldLengths.Allergens);
+        PortionSize = Guard.NotBlank(portionSize, nameof(portionSize), FieldLengths.PortionSize);
+        PrepMinutes = Guard.Positive(prepMinutes, nameof(prepMinutes));
+        SpiceLevel = Guard.Defined(spiceLevel, nameof(spiceLevel));
+    }
 
     public void SetAvailable(bool isAvailable) => IsAvailable = isAvailable;
 

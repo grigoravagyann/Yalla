@@ -8,6 +8,19 @@ namespace Yalla.Domain.Venues;
 /// A brand. A venue owns one or more <see cref="Branch"/>es and the staff accounts that work
 /// across them. Nothing is operated or billed at this level - see <see cref="Branch"/>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// A venue is <b>never hard-deleted</b>. Reservations, tabs and payments hang off its branches,
+/// and those are financial and occupancy records that must outlive the customer relationship.
+/// <see cref="SoftDelete"/> stamps <see cref="DeletedAtUtc"/> and switches the venue off; the
+/// rows stay.
+/// </para>
+/// <para>
+/// <see cref="Suspend"/> is the lighter state, for a venue that has stopped paying: it disappears
+/// from diner browsing but keeps every row and stays visible to its owner, who can see exactly
+/// what they would get back by paying.
+/// </para>
+/// </remarks>
 public sealed class Venue : Entity
 {
     private readonly List<Branch> _branches = [];
@@ -25,6 +38,22 @@ public sealed class Venue : Entity
     public string Slug { get; private set; } = null!;
 
     public bool IsActive { get; private set; }
+
+    /// <summary>Set while the venue is suspended - typically for non-payment. Cleared by <see cref="Reactivate"/>.</summary>
+    public DateTime? SuspendedAtUtc { get; private set; }
+
+    /// <summary>Set when the venue was soft-deleted. Never cleared.</summary>
+    public DateTime? DeletedAtUtc { get; private set; }
+
+    public bool IsSuspended => SuspendedAtUtc is not null;
+
+    public bool IsDeleted => DeletedAtUtc is not null;
+
+    /// <summary>
+    /// Whether a diner may find this venue at all. Active, not suspended, not deleted. The owner's
+    /// own view is not gated by this - see the class remarks.
+    /// </summary>
+    public bool IsBrowsable => IsActive && !IsSuspended && !IsDeleted;
 
     public IReadOnlyCollection<Branch> Branches => _branches;
 
@@ -45,5 +74,46 @@ public sealed class Venue : Entity
 
     public void Rename(string name) => Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
 
-    public void SetActive(bool isActive) => IsActive = isActive;
+    public void SetType(VenueType type) => Type = Guard.Defined(type, nameof(type));
+
+    public void SetSlug(string slug) => Slug = SlugText.Normalise(slug, nameof(slug));
+
+    public void SetActive(bool isActive)
+    {
+        RequireNotDeleted();
+        IsActive = isActive;
+    }
+
+    /// <summary>Takes the venue out of diner browsing while keeping everything. What non-payment does.</summary>
+    public void Suspend(DateTime atUtc)
+    {
+        RequireNotDeleted();
+        SuspendedAtUtc ??= Guard.NotLocalTime(atUtc, nameof(atUtc));
+    }
+
+    /// <summary>Puts a suspended venue back.</summary>
+    public void Reactivate()
+    {
+        RequireNotDeleted();
+        SuspendedAtUtc = null;
+    }
+
+    /// <summary>
+    /// Marks the venue deleted. The row and everything under it stay; the venue stops being
+    /// browsable and stops being active. Irreversible.
+    /// </summary>
+    public void SoftDelete(DateTime atUtc)
+    {
+        RequireNotDeleted();
+        DeletedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        IsActive = false;
+    }
+
+    private void RequireNotDeleted()
+    {
+        if (IsDeleted)
+        {
+            throw new DomainStateException($"Venue '{Name}' has been deleted and cannot be changed.");
+        }
+    }
 }

@@ -56,4 +56,10 @@ public static class FieldLengths
 
     /// <summary>Client address recorded against a sign-in attempt, for diagnostics only.</summary>
     public const int ClientAddress = 64;
+
+    /// <summary>A platform audit action slug, e.g. <c>venue.suspend</c>.</summary>
+    public const int AuditAction = 100;
+
+    /// <summary>The entity type a platform audit row is about, e.g. <c>Venue</c>.</summary>
+    public const int AuditTargetType = 100;
 }

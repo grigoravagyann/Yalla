@@ -142,6 +142,117 @@ public class PolicyHandlerTests
         Assert.True(context.HasSucceeded);
     }
 
+    // ------------------------------------------------------------ the platform tier
+
+    /// <summary>
+    /// Test case 2. A platform admin belongs to no venue and no branch, and passes BranchScoped for
+    /// a branch they have no relationship to. Decided inside the handler - no call site checks a role.
+    /// </summary>
+    [Fact]
+    public async Task BranchScoped_admits_a_platform_admin_for_a_branch_they_have_no_relationship_to()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.PlatformAdmin, tokenVenueId: null, tokenBranchId: null,
+            routeBranchId: Guid.CreateVersion7(), branchVenueId: Guid.CreateVersion7());
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    /// <summary>...and a manager of some other venue does not. The same handler, the same route.</summary>
+    [Fact]
+    public async Task BranchScoped_refuses_a_manager_for_a_branch_outside_their_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.Manager, tokenVenueId: VenueId, tokenBranchId: null,
+            routeBranchId: Guid.CreateVersion7(), branchVenueId: Guid.CreateVersion7());
+
+        Assert.False(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task BranchScoped_still_admits_a_manager_for_a_branch_of_their_own_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.Manager, tokenVenueId: VenueId, tokenBranchId: null,
+            routeBranchId: BranchId, branchVenueId: VenueId);
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    /// <summary>
+    /// The passthrough reads the principal type as well as the role. A role claim saying
+    /// PlatformAdmin on a staff-session token - which no sign-in flow issues - is not enough.
+    /// </summary>
+    [Fact]
+    public async Task BranchScoped_does_not_trust_a_platform_admin_role_on_a_staff_session_token()
+    {
+        var principal = Principal(
+            PrincipalType.StaffSession,
+            (YallaClaims.Role, StaffRole.PlatformAdmin.ToString()),
+            (YallaClaims.BranchId, BranchId.ToString()));
+
+        var handler = new BranchScopedHandler(
+            Accessor(principal, ("branchId", Guid.CreateVersion7().ToString())),
+            new StubQueries(null),
+            NullLogger<BranchScopedHandler>.Instance);
+
+        var context = new AuthorizationHandlerContext([new BranchScopedRequirement()], principal, resource: null);
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task VenueScoped_admits_a_platform_admin_for_any_venue()
+    {
+        var principal = Principal(
+            PrincipalType.VenueUser,
+            (YallaClaims.Role, StaffRole.PlatformAdmin.ToString()));
+
+        var handler = new VenueScopedHandler(
+            Accessor(principal, ("venueId", Guid.CreateVersion7().ToString())),
+            new StubQueries(null));
+
+        var context = new AuthorizationHandlerContext([new VenueScopedRequirement()], principal, resource: null);
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    private static async Task<AuthorizationHandlerContext> EvaluateBranchAsync(
+        StaffRole role,
+        Guid? tokenVenueId,
+        Guid? tokenBranchId,
+        Guid routeBranchId,
+        Guid branchVenueId)
+    {
+        var claims = new List<(string, string)> { (YallaClaims.Role, role.ToString()) };
+
+        if (tokenVenueId is { } venue)
+        {
+            claims.Add((YallaClaims.VenueId, venue.ToString()));
+        }
+
+        if (tokenBranchId is { } branch)
+        {
+            claims.Add((YallaClaims.BranchId, branch.ToString()));
+        }
+
+        var principal = Principal(PrincipalType.VenueUser, [.. claims]);
+
+        var handler = new BranchScopedHandler(
+            Accessor(principal, ("branchId", routeBranchId.ToString())),
+            new StubQueries(null, branchVenueId: branchVenueId),
+            NullLogger<BranchScopedHandler>.Instance);
+
+        var requirement = new BranchScopedRequirement();
+        var context = new AuthorizationHandlerContext([requirement], principal, resource: null);
+
+        await handler.HandleAsync(context);
+
+        return context;
+    }
+
     private static async Task<AuthorizationHandlerContext> EvaluateTabAsync(
         bool mustOrder,
         bool canOrder,
@@ -253,6 +364,9 @@ public class PolicyHandlerTests
             Task.FromResult(access);
 
         public Task<Guid?> GetTabBranchIdAsync(Guid tabId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Guid?>(access?.BranchId);
+
+        public Task<Guid?> GetTableBranchIdAsync(Guid tableId, CancellationToken cancellationToken = default) =>
             Task.FromResult<Guid?>(access?.BranchId);
 
         public Task<bool> BranchBelongsToVenueAsync(

@@ -178,6 +178,20 @@ internal static class ApiExceptionMapper
 
         // The domain's own refusals. Guard and the entity constructors throw these with messages
         // written to be read, so they are safe and useful to pass back.
+        // A floor plan that cannot be applied, with the offending tables named so the editor can
+        // highlight them. Must stay ABOVE ArgumentException, which it derives from.
+        FloorPlanInvalidException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.FloorPlanInvalid,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["errors"] = e.Errors,
+                ["tablesOutsideCanvas"] = e.TablesOutsideCanvas,
+                ["duplicateLabels"] = e.DuplicateLabels,
+            }),
+
         ArgumentOutOfRangeException e => new MappedError(
             StatusCodes.Status400BadRequest, ErrorCodes.InvalidRequest, e.Message, LogAsError: false),
 
@@ -200,6 +214,33 @@ internal static class ApiExceptionMapper
         // and catching it here reported every one of them as a 409 "you have a conflict", echoed
         // the internal message to the caller, and logged none of it as an error. Those now fall
         // through to the 500 below, where they are logged and say nothing about internals.
+        // Both derive from DomainStateException and must stay ABOVE it.
+        //
+        // Not a 403. The caller is allowed to be here; the branch has not paid for what they
+        // asked. The code is what the apps branch on to show "ask the venue to enable ordering".
+        FeatureNotEnabledException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.FeatureNotEnabled,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["feature"] = e.Feature,
+                ["branchId"] = e.BranchId,
+                ["currentTier"] = e.CurrentTier,
+            }),
+
+        VenueDeletionBlockedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.VenueDeletionBlocked,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["openTabs"] = e.OpenTabs,
+                ["futureReservations"] = e.FutureReservations,
+            }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 

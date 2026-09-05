@@ -58,6 +58,13 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         // Off unless a test asks for it. Throttling is not what most of these tests are about,
         // and a shared fixed window would make them order-dependent.
         ["RateLimiting:Enabled"] = "false",
+
+        // Development refuses to start without a platform admin configured, which is the point of
+        // that rule. The values are present so startup passes; seeding at startup is off because
+        // most tests never open a database, and the ones that need an admin create one directly.
+        ["PlatformAdmin:Email"] = "platform@test.yalla",
+        ["PlatformAdmin:Password"] = "platform-admin-test-password",
+        ["PlatformAdmin:SeedOnStartup"] = "false",
     };
 
     /// <summary>Overrides one configuration value. Chainable, and applied before the host starts.</summary>

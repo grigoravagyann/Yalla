@@ -46,6 +46,12 @@ internal static class DatabaseIndexNames
     /// </summary>
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
+    /// <summary>Unique on a venue's slug. A violation means the platform admin picked a taken slug.</summary>
+    public const string VenueSlug = "IX_Venues_Slug";
+
+    /// <summary>Unique on (branch, label). A violation means a floor plan reused a table label.</summary>
+    public const string TableLabelPerBranch = "IX_DiningTables_BranchId_Label";
+
     /// <summary>Unique on the verified phone number: the number <i>is</i> the diner's account.</summary>
     public const string DinerUserPhone = "UX_DinerUsers_PhoneE164";
 

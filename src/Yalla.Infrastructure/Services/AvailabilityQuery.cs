@@ -96,7 +96,14 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             // It belongs here rather than at the call site so the SQL-reporting path cannot
             // diverge from the path that actually runs.
             .AsNoTracking()
-            .Where(b => b.Id == request.BranchId)
+
+            // Diner browsing. A suspended or deleted venue does not exist here - it keeps every
+            // row and stays visible to its owner through the admin surface, but a diner must not
+            // be able to find it or book it.
+            .Where(b => b.Id == request.BranchId
+                        && b.Venue.IsActive
+                        && b.Venue.SuspendedAtUtc == null
+                        && b.Venue.DeletedAtUtc == null)
             .Select(b => new AvailabilityRow
             {
                 BranchId = b.Id,

@@ -60,6 +60,12 @@ public interface IAuthorizationQueries
     Task<Guid?> GetTabBranchIdAsync(Guid tabId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The branch a table belongs to, or null when there is no such table. Lets <c>BranchScoped</c>
+    /// guard a route addressed by table id - <c>/api/tables/{tableId}/regenerate-qr</c>.
+    /// </summary>
+    Task<Guid?> GetTableBranchIdAsync(Guid tableId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Whether a branch belongs to a venue. Lets an owner or manager act on any branch of their
     /// own venue without holding a branch claim, while a staff member with a branch claim is
     /// still confined to it.

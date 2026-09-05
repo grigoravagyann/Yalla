@@ -1,4 +1,5 @@
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Menus;
 
 namespace Yalla.Domain.Venues;
@@ -9,7 +10,8 @@ namespace Yalla.Domain.Venues;
 /// <remarks>
 /// The branch is the operational and commercial unit. A chain with four locations is four paying
 /// customers, so every table, booking, tab and payment carries a <c>BranchId</c> from day one
-/// rather than being retrofitted when the first multi-branch customer arrives.
+/// rather than being retrofitted when the first multi-branch customer arrives - and the
+/// <see cref="SubscriptionTier"/> lives here for the same reason.
 /// </remarks>
 public sealed class Branch : Entity
 {
@@ -48,6 +50,16 @@ public sealed class Branch : Entity
     /// <summary>Height of the floor-plan canvas the tables are positioned on, in design units.</summary>
     public int FloorHeight { get; private set; }
 
+    /// <summary>
+    /// What this branch pays for. <see cref="Enums.SubscriptionTier.Free"/> gets the floor plan and
+    /// reservations; <see cref="Enums.SubscriptionTier.Paid"/> adds tabs, ordering and payments.
+    /// A flag that gates features - billing is out of scope.
+    /// </summary>
+    public SubscriptionTier SubscriptionTier { get; private set; }
+
+    /// <summary>Whether tabs, ordering and payments are switched on here.</summary>
+    public bool IsPaid => SubscriptionTier == SubscriptionTier.Paid;
+
     /// <summary>Owned value: persisted as extra columns on this row, never as its own table.</summary>
     public ReservationPolicy ReservationPolicy { get; private set; } = null!;
 
@@ -73,7 +85,8 @@ public sealed class Branch : Entity
         string timeZoneId,
         int floorWidth,
         int floorHeight,
-        ReservationPolicy? reservationPolicy = null)
+        ReservationPolicy? reservationPolicy = null,
+        SubscriptionTier subscriptionTier = SubscriptionTier.Free)
         : base(Guid.CreateVersion7())
     {
         ArgumentNullException.ThrowIfNull(venue);
@@ -88,12 +101,26 @@ public sealed class Branch : Entity
         FloorWidth = Guard.Positive(floorWidth, nameof(floorWidth));
         FloorHeight = Guard.Positive(floorHeight, nameof(floorHeight));
         ReservationPolicy = reservationPolicy ?? ReservationPolicy.DefaultFor(venue.Type);
+        SubscriptionTier = Guard.Defined(subscriptionTier, nameof(subscriptionTier));
         IsActive = true;
     }
 
     public void Rename(string name) => Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
 
     public void SetActive(bool isActive) => IsActive = isActive;
+
+    public void SetSubscriptionTier(SubscriptionTier tier) =>
+        SubscriptionTier = Guard.Defined(tier, nameof(tier));
+
+    /// <summary>Moves the branch: a new address and coordinates together, since one without the other is wrong.</summary>
+    public void Relocate(string address, double latitude, double longitude)
+    {
+        Address = Guard.NotBlank(address, nameof(address), FieldLengths.Address);
+        Latitude = InRange(latitude, -90d, 90d, nameof(latitude));
+        Longitude = InRange(longitude, -180d, 180d, nameof(longitude));
+    }
+
+    public void SetTimeZone(string timeZoneId) => TimeZoneId = NormaliseTimeZoneId(timeZoneId);
 
     /// <summary>Replaces the whole policy. The admin panel edits it as one form.</summary>
     public void UpdateReservationPolicy(ReservationPolicy policy)

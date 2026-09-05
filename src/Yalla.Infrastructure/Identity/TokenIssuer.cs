@@ -122,7 +122,7 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     /// </remarks>
     public (string Token, DateTime ExpiresAtUtc) IssueVenueUserToken(
         Guid staffMemberId,
-        Guid venueId,
+        Guid? venueId,
         Guid? branchId,
         StaffRole role)
     {
@@ -132,10 +132,16 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         {
             new(YallaClaims.PrincipalType, ((int)PrincipalType.VenueUser).ToString(CultureInfo.InvariantCulture)),
             new(YallaClaims.StaffMemberId, staffMemberId.ToString()),
-            new(YallaClaims.VenueId, venueId.ToString()),
             new(YallaClaims.Role, role.ToString()),
             new(JwtRegisteredClaimNames.Sub, staffMemberId.ToString()),
         };
+
+        // A platform admin has no venue. The scope handlers recognise the role and pass them for
+        // every venue; an absent claim is how the token says "none in particular".
+        if (venueId is { } venue)
+        {
+            claims.Add(new Claim(YallaClaims.VenueId, venue.ToString()));
+        }
 
         if (branchId is { } branch)
         {

@@ -115,15 +115,22 @@ public static class AuthenticationExtensions
                 .RequireAuthenticatedUser()
                 .AddRequirements(new TabParticipantRequirement(MustBeAbleToOrder: true)))
 
+            // The platform tier is "above" in every role set: what an owner may do at their venue,
+            // a platform admin may do at any venue. The scope handlers pass them for every branch.
             .AddPolicy(YallaPolicies.WaiterOrAbove, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new StaffRoleRequirement(
-                    new HashSet<StaffRole> { StaffRole.Waiter, StaffRole.Manager, StaffRole.Owner })))
+                    new HashSet<StaffRole> { StaffRole.Waiter, StaffRole.Manager, StaffRole.Owner, StaffRole.PlatformAdmin })))
 
             .AddPolicy(YallaPolicies.ManagerOrAbove, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new StaffRoleRequirement(
-                    new HashSet<StaffRole> { StaffRole.Manager, StaffRole.Owner })))
+                    new HashSet<StaffRole> { StaffRole.Manager, StaffRole.Owner, StaffRole.PlatformAdmin })))
+
+            .AddPolicy(YallaPolicies.PlatformAdminOnly, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new StaffRoleRequirement(
+                    new HashSet<StaffRole> { StaffRole.PlatformAdmin })))
 
             .AddPolicy(YallaPolicies.BranchScoped, policy => policy
                 .RequireAuthenticatedUser()

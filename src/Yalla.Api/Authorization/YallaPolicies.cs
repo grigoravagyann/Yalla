@@ -16,11 +16,14 @@ public static class YallaPolicies
     /// <summary>As <see cref="TabParticipant"/>, and the participant may add items to the tab.</summary>
     public const string TabParticipantCanOrder = "TabParticipantCanOrder";
 
-    /// <summary>A live staff session whose role is Waiter, Manager or Owner.</summary>
+    /// <summary>A live staff session whose role is Waiter, Manager, Owner or PlatformAdmin.</summary>
     public const string WaiterOrAbove = "WaiterOrAbove";
 
-    /// <summary>A live staff or admin-panel session whose role is Manager or Owner.</summary>
+    /// <summary>A live staff or admin-panel session whose role is Manager, Owner or PlatformAdmin.</summary>
     public const string ManagerOrAbove = "ManagerOrAbove";
+
+    /// <summary>The people who run Yalla. Nobody at any venue passes this.</summary>
+    public const string PlatformAdminOnly = "PlatformAdminOnly";
 
     /// <summary>The token's <c>branchId</c> claim matches the branch in the route.</summary>
     public const string BranchScoped = "BranchScoped";

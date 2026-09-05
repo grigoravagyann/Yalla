@@ -216,6 +216,15 @@ public sealed class DiningTable : Entity
 
     public void SetSeats(int seats) => Seats = Guard.Positive(seats, nameof(seats));
 
+    public void SetShape(TableShape shape) => Shape = Guard.Defined(shape, nameof(shape));
+
+    /// <summary>
+    /// Replaces the QR token. <b>Never called from an edit.</b> The code printed on the physical
+    /// table must keep working when the table is renamed, moved or resized, so this is a separate,
+    /// deliberate, audited action for the one case where the code is compromised.
+    /// </summary>
+    public void RegenerateQrToken() => QrToken = GenerateQrToken();
+
     public void AssignToArea(Guid? floorAreaId) => FloorAreaId = floorAreaId;
 
     public void SetBookable(bool isBookable) => IsBookable = isBookable;

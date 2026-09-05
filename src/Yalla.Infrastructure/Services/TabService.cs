@@ -93,6 +93,8 @@ internal sealed class TabService(
                 .FirstOrDefaultAsync(t => t.QrToken == qrToken && t.IsActive, cancellationToken)
                 ?? throw new KeyNotFoundException("That QR code does not belong to a table in service.");
 
+            RequirePaid(table.Branch);
+
             if (table.Status == TableStatus.OutOfService)
             {
                 throw new DomainStateException(
@@ -564,15 +566,32 @@ internal sealed class TabService(
 
     private async Task<Tab> LoadTabAsync(Guid tabId, CancellationToken cancellationToken, bool includeJoinTokens = false)
     {
-        IQueryable<Tab> tabs = db.Tabs.Include(t => t.Participants);
+        IQueryable<Tab> tabs = db.Tabs.Include(t => t.Participants).Include(t => t.Branch);
 
         if (includeJoinTokens)
         {
             tabs = tabs.Include(t => t.JoinTokens);
         }
 
-        return await tabs.FirstOrDefaultAsync(t => t.Id == tabId, cancellationToken)
-               ?? throw new KeyNotFoundException($"Tab {tabId} was not found.");
+        var tab = await tabs.FirstOrDefaultAsync(t => t.Id == tabId, cancellationToken)
+                  ?? throw new KeyNotFoundException($"Tab {tabId} was not found.");
+
+        RequirePaid(tab.Branch);
+
+        return tab;
+    }
+
+    /// <summary>
+    /// Tabs and ordering are a paid feature, per branch. Checked in the service so it holds for
+    /// every caller; the answer is "not enabled for this branch", not a 403 - the caller is
+    /// allowed to be here, the branch has not paid for what they asked.
+    /// </summary>
+    private static void RequirePaid(Branch branch)
+    {
+        if (!branch.IsPaid)
+        {
+            throw new FeatureNotEnabledException("Tabs and ordering", branch.Id, branch.SubscriptionTier);
+        }
     }
 
     private Task<Tab?> LoadTabBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
