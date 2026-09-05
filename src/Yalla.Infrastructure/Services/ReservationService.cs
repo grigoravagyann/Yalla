@@ -1,5 +1,3 @@
-using System.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
@@ -48,22 +46,9 @@ internal sealed class ReservationService(
     IAvailabilityQuery availabilityQuery,
     IAuthorizationQueries authorization,
     NoShowPolicy noShowPolicy,
-    BookingLockOptions lockOptions,
+    ReservationWriter reservations,
     ILogger<ReservationService> logger) : IReservationService
 {
-    /// <summary>SQL Server: "Lock request time out period exceeded."</summary>
-    private const int LockTimeoutErrorNumber = 1222;
-
-    /// <summary>
-    /// How many times to re-roll a colliding reservation code before giving up.
-    /// </summary>
-    /// <remarks>
-    /// One in ~887 million per attempt, so three is already superstition. It exists because the
-    /// unique index - not the generator - is what guarantees the code is unique, and a system that
-    /// relies on an index must have an answer for the index firing.
-    /// </remarks>
-    private const int CodeAttempts = 3;
-
     public async Task<ReservationView> CreateAsync(
         CreateReservationCommand command,
         CancellationToken cancellationToken = default)
@@ -74,7 +59,8 @@ internal sealed class ReservationService(
 
         // Cheap path first: a retry that arrives after the original committed never reaches the
         // lock at all. The unique index below is what makes the racing case safe.
-        if (await FindReplayAsync(command.ClientCommandId, dinerUserId, cancellationToken) is { } replay)
+        if (await reservations.FindReplayAsync(command.ClientCommandId, dinerUserId, cancellationToken)
+            is { } replay)
         {
             logger.LogInformation(
                 "Booking command {ClientCommandId} was already applied as {Code}; returning the original.",
@@ -124,12 +110,22 @@ internal sealed class ReservationService(
             stayHint: command.StayHint,
             clientCommandId: command.ClientCommandId);
 
-        var outcome = await InsertUnderTableLockAsync(
+        // The one way a booking row is created. Everything above this line is validation and
+        // everything below it is presentation; the concurrency-critical part is all in there.
+        var outcome = await InsertUnderTheTableLockAsync(
             reservation, table, proposed, policy, dinerUserId, cancellationToken);
 
         if (outcome.Replay is { } winner)
         {
             return await ToViewAsync(winner, branch, table, wasReplay: true, trigger: null, cancellationToken);
+        }
+
+        if (outcome.Occupied is { } sitting)
+        {
+            // Outside the lock, like the booking conflict below: assembling the floor snapshot is
+            // a wide read and holding the table's lock through it would queue every other booker
+            // behind a response body.
+            throw await OccupiedAsync(command, table, proposed, sitting, policy, cancellationToken);
         }
 
         if (outcome.Conflict is { } conflict)
@@ -145,6 +141,33 @@ internal sealed class ReservationService(
             table.Label, branch.Id, command.PartySize, reservation.Code, reservation.Status);
 
         return await ToViewAsync(reservation, branch, table, wasReplay: false, status.Trigger, cancellationToken);
+    }
+
+    /// <summary>
+    /// Delegates to the writer and re-labels a lock timeout as the booking-specific one.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TableLockTimeoutException"/> is shared with the table state machine, but a diner
+    /// booking on their phone and a waiter seating a walk-in need different words and different
+    /// error codes for the same underlying wait. The retryable-503 shape is identical either way.
+    /// </remarks>
+    private async Task<InsertOutcome> InsertUnderTheTableLockAsync(
+        Reservation reservation,
+        DiningTable table,
+        BookedInterval proposed,
+        ReservationPolicy policy,
+        Guid dinerUserId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reservations.InsertUnderTableLockAsync(
+                reservation, table, proposed, policy, dinerUserId, cancellationToken);
+        }
+        catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
+        {
+            throw new ReservationLockTimeoutException(ex.TableId, ex.TableLabel, ex.TimeoutMilliseconds);
+        }
     }
 
     public async Task<ReservationView> CancelAsync(
@@ -228,216 +251,49 @@ internal sealed class ReservationService(
         return new MyReservations(upcoming, past);
     }
 
-    // ---------------------------------------------------------------- the lock
-
     /// <summary>
-    /// The whole concurrency-critical section: lock the table, re-check, insert, commit.
+    /// Builds the "somebody is sitting there" refusal, with a fresh floor snapshot attached.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The re-check happens <b>inside</b> the lock and never before it. A check taken before the
-    /// lock proves only that the table was free at some earlier moment, which is precisely the
-    /// window the lock exists to close.
-    /// </para>
-    /// <para>
-    /// <c>SET LOCK_TIMEOUT</c> bounds the wait so one stuck transaction cannot hang every booking
-    /// for that table. Hitting it is reported as a retryable failure, distinct from losing the
-    /// slot - the caller should try again, whereas a real conflict will never succeed.
-    /// </para>
+    /// Mirrors <see cref="ConflictAsync"/> deliberately - same shape, same best-effort snapshot -
+    /// because the two refusals differ in what they mean to the diner, not in how they are built.
     /// </remarks>
-    private async Task<InsertOutcome> InsertUnderTableLockAsync(
-        Reservation reservation,
+    private async Task<TableCurrentlyOccupiedException> OccupiedAsync(
+        CreateReservationCommand command,
         DiningTable table,
         BookedInterval proposed,
+        TableSession sitting,
         ReservationPolicy policy,
-        Guid dinerUserId,
         CancellationToken cancellationToken)
     {
-        var timeoutMs = Math.Clamp(lockOptions.LockTimeoutMilliseconds, 100, 60_000);
+        var projected = SessionOccupancy.ProjectedInterval(sitting.SeatedAtUtc, policy.TurnTimeMinutes);
 
-        await using var transaction =
-            await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        logger.LogInformation(
+            "Table {TableLabel} has been occupied since {SeatedAt:o}; the sitting runs into the {Start:o} booking.",
+            table.Label, sitting.SeatedAtUtc, proposed.StartUtc);
+
+        BranchAvailability? availability = null;
 
         try
         {
-            // SET LOCK_TIMEOUT takes a literal and will not accept a parameter, so this is the one
-            // place the value is formatted into the statement. It is an int, clamped just above,
-            // and never touches user input - there is nothing here to inject.
-#pragma warning disable EF1002 // Risk of vulnerability to SQL injection.
-            await db.Database.ExecuteSqlRawAsync($"SET LOCK_TIMEOUT {timeoutMs};", cancellationToken);
-#pragma warning restore EF1002
-
-            // UPDLOCK serialises bookers against each other without blocking readers; HOLDLOCK
-            // keeps it to the end of the transaction rather than releasing it the instant the
-            // statement finishes, which is what makes the re-check below meaningful.
-            await db.Database.ExecuteSqlRawAsync(
-                "SELECT Id FROM DiningTables WITH (UPDLOCK, HOLDLOCK) WHERE Id = @tableId",
-                [new SqlParameter("@tableId", table.Id)],
+            availability = await availabilityQuery.GetAvailabilityAsync(
+                new AvailabilityRequest(command.BranchId, command.PartySize, command.LocalDate, command.LocalTime),
                 cancellationToken);
-
-            // The command id is re-checked here, and before the overlap check, for a reason that
-            // is easy to get backwards. Two retries of the SAME booking race: the first commits
-            // while the second waits on this lock. By the time the second gets here the first is
-            // visible, and an overlap check run first would call the diner's own booking a
-            // conflict and answer 409 for a table they already have.
-            if (await FindReplayAsync(
-                    reservation.ClientCommandId, dinerUserId, cancellationToken) is { } original)
-            {
-                db.Entry(reservation).State = EntityState.Detached;
-                return InsertOutcome.Replayed(original);
-            }
-
-            if (await FindConflictAsync(table.Id, proposed, policy, cancellationToken) is { } conflict)
-            {
-                // Nothing was written. Leave the transaction and build the answer outside it.
-                db.Entry(reservation).State = EntityState.Detached;
-                return InsertOutcome.Conflicted(conflict);
-            }
-
-            db.Reservations.Add(reservation);
-
-            if (await SaveWithFreshCodeAsync(reservation, dinerUserId, cancellationToken) is { } winner)
-            {
-                return InsertOutcome.Replayed(winner);
-            }
-
-            await transaction.CommitAsync(cancellationToken);
-
-            return InsertOutcome.Inserted;
         }
-        catch (SqlException ex) when (ex.Number == LockTimeoutErrorNumber)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            db.Entry(reservation).State = EntityState.Detached;
-
-            logger.LogWarning(
-                "Timed out after {TimeoutMs}ms waiting for the booking lock on table {TableLabel}.",
-                timeoutMs, table.Label);
-
-            throw new ReservationLockTimeoutException(table.Id, table.Label, timeoutMs);
+            logger.LogWarning(ex, "Could not attach an availability snapshot to the occupancy conflict.");
         }
-        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: LockTimeoutErrorNumber })
-        {
-            db.Entry(reservation).State = EntityState.Detached;
 
-            throw new ReservationLockTimeoutException(table.Id, table.Label, timeoutMs);
-        }
-        finally
-        {
-            await ResetLockTimeoutAsync(cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// The overlap re-check, as one indexed range read.
-    /// </summary>
-    /// <remarks>
-    /// The range predicate is the overlap rule rearranged so SQL Server can seek it - see
-    /// <see cref="ReservationOverlap.SearchWindow"/> - and every row it returns is then put through
-    /// <see cref="ReservationOverlap"/> itself. The rule proved at its boundaries by the unit tests
-    /// is therefore the rule that decides the insert, and the SQL is only an index-friendly way of
-    /// narrowing the candidates.
-    /// </remarks>
-    private async Task<Reservation?> FindConflictAsync(
-        Guid tableId,
-        BookedInterval proposed,
-        ReservationPolicy policy,
-        CancellationToken cancellationToken)
-    {
-        var (searchFromUtc, searchToUtc) = ReservationOverlap.SearchWindow(proposed, policy.BufferMinutes);
-
-        var candidates = await db.Reservations
-            .AsNoTracking()
-            .Where(r => r.DiningTableId == tableId
-                        && (r.Status == ReservationStatus.Confirmed
-                            || r.Status == ReservationStatus.PendingApproval
-                            || r.Status == ReservationStatus.Seated)
-                        && r.EndUtc > searchFromUtc
-                        && r.StartUtc < searchToUtc)
-            .OrderBy(r => r.StartUtc)
-            .ToListAsync(cancellationToken);
-
-        return candidates.FirstOrDefault(r => ReservationOverlap.Conflicts(
-            proposed, BookedInterval.Of(r), r.Status, policy.BufferMinutes));
-    }
-
-    /// <summary>
-    /// Saves the booking, re-rolling the door code if it collides, and answering a lost
-    /// idempotency race with the booking that won.
-    /// </summary>
-    /// <returns>The winning booking when this was a racing replay, otherwise null.</returns>
-    private async Task<Reservation?> SaveWithFreshCodeAsync(
-        Reservation reservation,
-        Guid dinerUserId,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                await db.SaveChangesAsync(cancellationToken);
-                return null;
-            }
-            catch (DbUpdateException ex)
-                when (UniqueViolation.IsOn(ex, DatabaseIndexNames.ReservationClientCommand))
-            {
-                // Two retries of the same offline command raced each other. The other one did the
-                // work; this one answers from its row. The index is what makes this safe - a
-                // check-then-insert would have let both through.
-                db.Entry(reservation).State = EntityState.Detached;
-
-                // Scoped to the caller. The index is unique across every diner, so the row that
-                // won may not be theirs at all - and handing it back would answer a stranger with
-                // somebody else's door code, guest name and telephone number.
-                var winner = await FindReplayAsync(
-                    reservation.ClientCommandId, dinerUserId, cancellationToken);
-
-                if (winner is null)
-                {
-                    logger.LogWarning(
-                        "Booking command {ClientCommandId} is already held by another diner's booking.",
-                        reservation.ClientCommandId);
-
-                    throw new ClientCommandIdAlreadyUsedException(reservation.ClientCommandId);
-                }
-
-                logger.LogInformation(
-                    "Booking command {ClientCommandId} was applied concurrently; replaying {Code}.",
-                    reservation.ClientCommandId, winner.Code);
-
-                return winner;
-            }
-            catch (DbUpdateException ex)
-                when (attempt < CodeAttempts && UniqueViolation.IsOn(ex, DatabaseIndexNames.ReservationCode))
-            {
-                logger.LogWarning(
-                    "Reservation code {Code} was already taken; generating another.", reservation.Code);
-
-                reservation.ReplaceCode(ReservationCode.Generate());
-            }
-        }
-    }
-
-    /// <summary>
-    /// Puts the connection's lock timeout back.
-    /// </summary>
-    /// <remarks>
-    /// <c>SET LOCK_TIMEOUT</c> is a property of the connection, and connections are pooled. The
-    /// pool's reset would clear it eventually, but the same context goes on to serve the rest of
-    /// this request first - and a stray five-second timeout on an unrelated query is the kind of
-    /// bug that only appears under load.
-    /// </remarks>
-    private async Task ResetLockTimeoutAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            await db.Database.ExecuteSqlRawAsync("SET LOCK_TIMEOUT -1;", cancellationToken);
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            // The connection is already gone or the transaction is doomed. Nothing to restore,
-            // and throwing here would replace the real failure with a meaningless one.
-            logger.LogDebug(ex, "Could not restore the connection's lock timeout.");
-        }
+        return new TableCurrentlyOccupiedException(
+            command.BranchId,
+            table.Id,
+            table.Label,
+            proposed,
+            sitting.SeatedAtUtc,
+            projected.EndUtc,
+            sitting.Id,
+            availability);
     }
 
     private async Task<TableAlreadyBookedException> ConflictAsync(
@@ -741,25 +597,6 @@ internal sealed class ReservationService(
         return reservation ?? throw new KeyNotFoundException($"Reservation {reservationId} was not found.");
     }
 
-    /// <summary>
-    /// The booking a previous attempt with this command id already made, <b>by this diner</b>.
-    /// </summary>
-    /// <remarks>
-    /// The diner is half the question, not a refinement of it. A replay is the same caller sending
-    /// the same command again; the same id from a different caller is a collision, and answering it
-    /// with the booking that holds the id would disclose that booking's door code, guest name and
-    /// phone number to somebody who only had to reuse a Guid.
-    /// </remarks>
-    private Task<Reservation?> FindReplayAsync(
-        Guid clientCommandId,
-        Guid dinerUserId,
-        CancellationToken cancellationToken) =>
-        db.Reservations
-            .AsNoTracking()
-            .FirstOrDefaultAsync(
-                r => r.ClientCommandId == clientCommandId && r.DinerUserId == dinerUserId,
-                cancellationToken);
-
     // ---------------------------------------------------------------- views
 
     /// <summary>
@@ -841,15 +678,5 @@ internal sealed class ReservationService(
         public string TimeZoneId { get; init; } = null!;
 
         public string TableLabel { get; init; } = null!;
-    }
-
-    /// <summary>What came out of the locked section.</summary>
-    private readonly record struct InsertOutcome(Reservation? Conflict, Reservation? Replay)
-    {
-        public static InsertOutcome Inserted => new(null, null);
-
-        public static InsertOutcome Conflicted(Reservation conflict) => new(conflict, null);
-
-        public static InsertOutcome Replayed(Reservation winner) => new(null, winner);
     }
 }

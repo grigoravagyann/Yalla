@@ -64,11 +64,24 @@ public static class ErrorCodes
     public const string TableAlreadyBooked = "table-already-booked";
 
     /// <summary>
+    /// A party is seated at the table now and their sitting runs into the requested slot. HTTP 409,
+    /// with the seating and projected finish times in <c>details</c>. Distinct from
+    /// <see cref="TableAlreadyBooked"/>: nobody booked it, and it may free up early.
+    /// </summary>
+    public const string TableCurrentlyOccupied = "table-currently-occupied";
+
+    /// <summary>
     /// The booking could not get the table's lock in time. HTTP 503 and <b>retryable</b> - which
     /// is what makes it different from <see cref="TableAlreadyBooked"/>: the question was never
     /// asked, rather than answered no. Retry with the same <c>clientCommandId</c>.
     /// </summary>
     public const string ReservationLockTimeout = "reservation-lock-timeout";
+
+    /// <summary>
+    /// A table write waited too long for another writer. Retryable, and deliberately not a
+    /// conflict: nothing was decided, so the same request will very likely succeed.
+    /// </summary>
+    public const string TableLockTimeout = "table-lock-timeout";
 
     /// <summary>
     /// The <c>clientCommandId</c> on a booking request already belongs to another caller's booking.
@@ -129,6 +142,19 @@ public static class ErrorCodes
     /// </summary>
     public const string BranchUnavailable = "branch-unavailable";
 
+    /// <summary>
+    /// A queued command arrived describing a table that has since moved. HTTP 409, with the
+    /// expected and current status in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately distinct from <see cref="TableStateConflict"/>, which both the client and this
+    /// codebase treat differently: a live race gets an immediate "that table just went" while the
+    /// waiter is holding the tablet, and a stale replay goes into a conflict list to resolve later.
+    /// Collapsing the two would put an hour-old tap in front of somebody as though it had just
+    /// happened.
+    /// </remarks>
+    public const string PreconditionFailed = "precondition-failed";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -149,9 +175,12 @@ public static class ErrorCodes
         ConflictingState => "Conflicting state",
         ConcurrentUpdate => "Concurrent update",
         TableStateConflict => "Table state conflict",
+        PreconditionFailed => "Precondition failed",
         InvalidTableTransition => "Invalid table transition",
         TableAlreadyBooked => "Table already booked",
+        TableCurrentlyOccupied => "Table currently occupied",
         ReservationLockTimeout => "Reservation lock timeout",
+        TableLockTimeout => "Table busy",
         ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",

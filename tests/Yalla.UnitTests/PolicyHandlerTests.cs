@@ -142,6 +142,48 @@ public class PolicyHandlerTests
         Assert.True(context.HasSucceeded);
     }
 
+    /// <summary>
+    /// Test 17. A tab being settled can be read but not changed - somebody who has paid their share
+    /// and left must not find it moving behind them.
+    /// </summary>
+    [Fact]
+    public async Task A_closing_tab_can_be_read_but_not_mutated()
+    {
+        var readable = await EvaluateTabAsync(
+            mustOrder: false, canOrder: true, tabStatus: TabStatus.Closing);
+
+        Assert.True(readable.HasSucceeded);
+
+        var mutating = await EvaluateTabAsync(
+            mustOrder: false, canOrder: true, mustMutate: true, tabStatus: TabStatus.Closing);
+
+        Assert.False(mutating.HasSucceeded);
+
+        // While it is open, the same request is fine.
+        var open = await EvaluateTabAsync(
+            mustOrder: false, canOrder: true, mustMutate: true, tabStatus: TabStatus.Open);
+
+        Assert.True(open.HasSucceeded);
+    }
+
+    /// <summary>
+    /// Test 15, at the policy. A removed participant keeps the token they were issued; the approval
+    /// flow only means something if that token stops working.
+    /// </summary>
+    [Fact]
+    public async Task A_removed_participant_is_refused_reads_and_mutations_alike()
+    {
+        var read = await EvaluateTabAsync(
+            mustOrder: false, canOrder: true, participantStatus: ParticipantStatus.Removed);
+
+        Assert.False(read.HasSucceeded);
+
+        var order = await EvaluateTabAsync(
+            mustOrder: true, canOrder: true, participantStatus: ParticipantStatus.Removed);
+
+        Assert.False(order.HasSucceeded);
+    }
+
     // ------------------------------------------------------------ the platform tier
 
     /// <summary>
@@ -288,14 +330,16 @@ public class PolicyHandlerTests
         bool canOrder,
         ParticipantStatus participantStatus = ParticipantStatus.Approved,
         DateTime? nowUtc = null,
-        DateTime? tabClosedAtUtc = null)
+        DateTime? tabClosedAtUtc = null,
+        bool mustMutate = false,
+        TabStatus? tabStatus = null)
     {
         var now = nowUtc ?? new DateTime(2026, 9, 4, 20, 0, 0, DateTimeKind.Utc);
 
         var access = new TabParticipantAccess(
             TabId,
             BranchId,
-            tabClosedAtUtc is null ? TabStatus.Open : TabStatus.Closed,
+            tabStatus ?? (tabClosedAtUtc is null ? TabStatus.Open : TabStatus.Closed),
             tabClosedAtUtc,
             participantStatus,
             ParticipantRole.Guest,
@@ -311,14 +355,21 @@ public class PolicyHandlerTests
 
         var accessor = Accessor(principal, ("tabId", TabId.ToString()));
 
+        // The real authority check over stub reads, so the lifecycle rules themselves - removed
+        // participants, a closing tab, the receipt grace period - are exercised rather than mocked.
+        var authority = new Yalla.Infrastructure.Services.TokenAuthorityCheck(
+            new StubQueries(access),
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+            new Integration.TestClock(now),
+            Options.Create(new JwtOptions()));
+
         var handler = new TabParticipantHandler(
             accessor,
-            new StubQueries(access),
-            new Integration.TestClock(now),
-            Options.Create(new JwtOptions()),
+            authority,
             NullLogger<TabParticipantHandler>.Instance);
 
-        var requirement = new TabParticipantRequirement(mustOrder);
+        var requirement = new TabParticipantRequirement(mustOrder, mustMutate);
         var context = new AuthorizationHandlerContext([requirement], principal, resource: null);
 
         await handler.HandleAsync(context);

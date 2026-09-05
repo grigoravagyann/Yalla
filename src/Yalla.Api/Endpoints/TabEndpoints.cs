@@ -107,9 +107,17 @@ public static class TabEndpoints
     // ---------------------------------------------------------------------------------------
     private static void MapParticipantSurface(IEndpointRouteBuilder app)
     {
+        // Reads carry the plain policy: a participant may look at a tab that is being settled.
         var group = app.MapGroup("/api/tabs/{tabId:guid}")
             .WithTags(EndpointConventions.DinerTag)
             .RequireAuthorization(YallaPolicies.TabParticipant);
+
+        // Changes carry the stricter one. Once staff mark the tab closing the bill is being
+        // settled, and somebody who has paid their share and left must not find it altered behind
+        // them - reading it is still fine, which is the whole point of the split.
+        var mutating = app.MapGroup("/api/tabs/{tabId:guid}")
+            .WithTags(EndpointConventions.DinerTag)
+            .RequireAuthorization(YallaPolicies.TabParticipantMutating);
 
         group.MapGet("/", GetTabAsync)
             .WithName("getTab")
@@ -129,7 +137,7 @@ public static class TabEndpoints
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such tab.");
 
-        group.MapPost("/display-name", SetDisplayNameAsync)
+        mutating.MapPost("/display-name", SetDisplayNameAsync)
             .WithName("setTabDisplayName")
             .WithSummary("Set what the host sees you called")
             .WithDescription(
@@ -139,7 +147,7 @@ public static class TabEndpoints
             .Produces<TabParticipantView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription);
 
-        group.MapPost("/join-tokens", CreateJoinTokenAsync)
+        mutating.MapPost("/join-tokens", CreateJoinTokenAsync)
             .WithName("createTabJoinToken")
             .WithSummary("Host: create or refresh the invitation")
             .WithDescription(
@@ -153,20 +161,20 @@ public static class TabEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict, "The tab is being settled; nobody new can join it.");
 
-        HostAction(group, "/participants/{participantId:guid}/approve", ApproveAsync, "approveTabParticipant")
+        HostAction(mutating, "/participants/{participantId:guid}/approve", ApproveAsync, "approveTabParticipant")
             .WithSummary("Host: let a pending joiner on");
 
-        HostAction(group, "/participants/{participantId:guid}/reject", RejectAsync, "rejectTabParticipant")
+        HostAction(mutating, "/participants/{participantId:guid}/reject", RejectAsync, "rejectTabParticipant")
             .WithSummary("Host: turn a pending joiner away");
 
-        HostAction(group, "/participants/{participantId:guid}/remove", RemoveAsync, "removeTabParticipant")
+        HostAction(mutating, "/participants/{participantId:guid}/remove", RemoveAsync, "removeTabParticipant")
             .WithSummary("Host: take someone off the tab")
             .WithDescription(
                 "A status change, never a delete. Their items and any payment they made are "
                 + "financial records and survive them leaving. The host cannot remove themself; staff "
                 + "reassign the host first.");
 
-        HostAction(group, "/participants/{participantId:guid}/permissions", SetPermissionsAsync, "setTabParticipantPermissions")
+        HostAction(mutating, "/participants/{participantId:guid}/permissions", SetPermissionsAsync, "setTabParticipantPermissions")
             .WithSummary("Host: set one person's three flags")
             .WithDescription(
                 "`canOrder`, `canSeeTableTotal` and `canPay`, together. **`canPay` requires "
@@ -175,7 +183,7 @@ public static class TabEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status400BadRequest, "`canPay` is true while `canSeeTableTotal` is false.");
 
-        group.MapPost("/settlement-mode", SetSettlementModeAsync)
+        mutating.MapPost("/settlement-mode", SetSettlementModeAsync)
             .WithName("setTabSettlementMode")
             .WithSummary("Host: change how the bill will be split")
             .WithDescription(

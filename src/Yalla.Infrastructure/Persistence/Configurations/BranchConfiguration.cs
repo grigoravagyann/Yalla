@@ -68,6 +68,12 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             policy.Property(p => p.BookingWindowDays).IsRequired();
             policy.Property(p => p.CancellationDeadlineMinutes).IsRequired();
             policy.Property(p => p.AutoConfirm).IsRequired();
+
+            // Added in Prompt 7. Existing rows take the shipped default rather than 0, which would
+            // mean "never warn" - the opposite of what the setting is for.
+            policy.Property(p => p.WalkInHoldbackMinutes)
+                .IsRequired()
+                .HasDefaultValue(30);
             policy.Property(p => p.PricesIncludeVat).IsRequired();
 
             policy.Property(p => p.ServiceChargePercent)

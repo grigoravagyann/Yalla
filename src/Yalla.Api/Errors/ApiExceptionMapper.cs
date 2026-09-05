@@ -83,6 +83,26 @@ internal static class ApiExceptionMapper
         // 422: the request was right when it was made and the world moved. The body carries the
         // clashing window AND a fresh availability snapshot, so the app can redraw the floor and
         // show what changed instead of firing a second request into the same contention.
+        // Someone is sitting there now. A different sentence from "already booked", because the
+        // table may free up early and the diner can act on that.
+        TableCurrentlyOccupiedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableCurrentlyOccupied,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reason"] = (int)e.Reason,
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["requestedStartUtc"] = e.Requested.StartUtc,
+                ["requestedEndUtc"] = e.Requested.EndUtc,
+                ["seatedAtUtc"] = e.SeatedAtUtc,
+                ["projectedFreeAtUtc"] = e.ProjectedFreeAtUtc,
+                ["tableSessionId"] = e.TableSessionId,
+                ["availability"] = e.Availability,
+            }),
+
         TableAlreadyBookedException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.TableAlreadyBooked,
@@ -106,6 +126,22 @@ internal static class ApiExceptionMapper
         ReservationLockTimeoutException e => new MappedError(
             StatusCodes.Status503ServiceUnavailable,
             ErrorCodes.ReservationLockTimeout,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["timeoutMilliseconds"] = e.TimeoutMilliseconds,
+                ["retryable"] = e.Retryable,
+            }),
+
+        // The same contention reached from the floor screen instead of a diner's phone: a waiter
+        // seating a walk-in while a booking holds the table. Below the arm above, because the
+        // booking-specific type derives from this one and would otherwise never be reached.
+        TableLockTimeoutException e => new MappedError(
+            StatusCodes.Status503ServiceUnavailable,
+            ErrorCodes.TableLockTimeout,
             e.Message,
             LogAsError: false,
             Context: new Dictionary<string, object?>
@@ -206,6 +242,23 @@ internal static class ApiExceptionMapper
             LogAsError: false),
 
         // "This session is already closed", "the settlement mode is locked". Note this must stay
+        // A queued command that has gone stale. Must stay ABOVE DomainStateException, which it
+        // derives from, and distinct from TableStateConflictException: the client shows one
+        // immediately and files the other for later.
+        CommandPreconditionFailedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreconditionFailed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["expectedFromStatus"] = (int)e.ExpectedFromStatus,
+                ["currentStatus"] = (int)e.CurrentStatus,
+                ["clientCommandId"] = e.ClientCommandId,
+            }),
+
         // BELOW InvalidTableTransitionException, which derives from it.
         //
         // Deliberately DomainStateException and not InvalidOperationException. .NET raises the

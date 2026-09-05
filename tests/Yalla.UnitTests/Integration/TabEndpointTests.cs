@@ -246,9 +246,11 @@ public class TabEndpointTests(SqlServerFixture fixture)
             "/api/tabs/open", new { qrToken = qrTokens[0], deviceId = "phone-stranger", clientCommandId = Guid.CreateVersion7() });
         Assert.Equal(HttpStatusCode.Conflict, byScan.StatusCode);
 
-        // Nor can the host issue a new invitation.
+        // Nor can the host issue a new invitation. Refused by the policy now rather than by the
+        // service: a tab being settled takes no changes at all, so the request never reaches the
+        // code that would have explained which particular change was refused.
         var reinvite = await hostClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/join-tokens", new { });
-        Assert.Equal(HttpStatusCode.Conflict, reinvite.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, reinvite.StatusCode);
 
         // The host may still read the tab, and is told they may not order.
         var view = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");

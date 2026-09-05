@@ -276,6 +276,103 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/platform/venues")).StatusCode);
     }
 
+    // ------------------------------------------------------------ 21. the tier is per branch
+
+    /// <summary>
+    /// Billing is per branch, so one branch of a chain can pilot ordering while the others do not.
+    /// A venue-level flag would make that impossible, which is why the rollup is a read and the
+    /// flag lives on the branch.
+    /// </summary>
+    [SkippableFact]
+    public async Task One_branch_of_a_venue_can_be_paid_while_another_stays_free()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
+        var marker = Guid.NewGuid().ToString("N")[..8];
+
+        var created = await platform.PostAsJsonAsync("/api/platform/venues", new
+        {
+            name = $"Chain {marker}",
+            type = VenueType.Cafe,
+            slug = $"chain-{marker}",
+            firstBranch = NewBranch("paid", subscriptionTier: SubscriptionTier.Paid),
+        });
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var venue = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var venueId = venue.GetProperty("venue").GetProperty("venueId").GetGuid();
+        var paidBranchId = venue.GetProperty("branches")[0].GetProperty("branchId").GetGuid();
+
+        var second = await platform.PostAsJsonAsync(
+            $"/api/platform/venues/{venueId}/branches", NewBranch("free", SubscriptionTier.Free));
+
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        var freeBranchId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("branchId").GetGuid();
+
+        // The venue rolls up to Free, because not every branch is paid - and says how many are.
+        var detail = await platform.GetFromJsonAsync<JsonElement>($"/api/platform/venues/{venueId}");
+        Assert.Equal((int)SubscriptionTier.Free, detail.GetProperty("venue").GetProperty("subscriptionTier").GetInt32());
+        Assert.Equal(1, detail.GetProperty("venue").GetProperty("paidBranchCount").GetInt32());
+
+        // What actually matters: the gate follows the branch, not the venue.
+        string paidQr;
+        string freeQr;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            paidQr = await QrTokenAsync(db, paidBranchId);
+            freeQr = await QrTokenAsync(db, freeBranchId);
+        }
+
+        using var anonymous = factory.CreateClient();
+
+        var onPaid = await anonymous.PostAsJsonAsync(
+            "/api/tabs/open", new { qrToken = paidQr, deviceId = "phone-a", clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.OK, onPaid.StatusCode);
+
+        var onFree = await anonymous.PostAsJsonAsync(
+            "/api/tabs/open", new { qrToken = freeQr, deviceId = "phone-b", clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.Conflict, onFree.StatusCode);
+        Assert.Equal(
+            "feature-not-enabled",
+            (await onFree.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    private static object NewBranch(string slugPart, SubscriptionTier subscriptionTier) => new
+    {
+        name = $"Branch {slugPart}",
+        slug = $"{slugPart}-{Guid.NewGuid():N}"[..24],
+        address = "1 Test Street, Yerevan",
+        latitude = 40.18,
+        longitude = 44.51,
+        timeZoneId = "Asia/Yerevan",
+        floorWidth = 1000,
+        floorHeight = 700,
+        subscriptionTier,
+    };
+
+    private static async Task<string> QrTokenAsync(Yalla.Infrastructure.Persistence.YallaDbContext db, Guid branchId)
+    {
+        // A branch created through the API has no tables, so give it one to scan.
+        var table = new Yalla.Domain.Venues.DiningTable(
+            branchId, label: "1", seats: 2, x: 10, y: 10, width: 90, height: 90,
+            shape: Yalla.Domain.Enums.TableShape.Round);
+
+        db.DiningTables.Add(table);
+        await db.SaveChangesAsync();
+
+        return table.QrToken;
+    }
+
     // ------------------------------------------------------------ helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    partial class YallaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260905185410_ChangeLogSequence")]
+    partial class ChangeLogSequence
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -60,44 +63,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("TargetType", "TargetId", "AtUtc");
 
                     b.ToTable("PlatformAuditLogs", (string)null);
-                });
-
-            modelBuilder.Entity("Yalla.Domain.Audit.ProcessedCommand", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("ActorId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("ActorType")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("ClientCommandId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("CommandType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("ResponseJson")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("StatusCode")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ClientCommandId")
-                        .IsUnique()
-                        .HasDatabaseName("UX_ProcessedCommands_ClientCommandId");
-
-                    b.ToTable("ProcessedCommands", (string)null);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Audit.TableStateChange", b =>

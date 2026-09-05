@@ -19,7 +19,8 @@ public sealed record ReservationPolicyView(
     decimal ServiceChargePercent,
     bool PricesIncludeVat,
     int? MaxSeatOverhang,
-    int? ApprovalRequiredAbovePartySize)
+    int? ApprovalRequiredAbovePartySize,
+    int WalkInHoldbackMinutes)
 {
     public static ReservationPolicyView From(ReservationPolicy p) => new(
         p.TurnTimeMinutes,
@@ -34,7 +35,8 @@ public sealed record ReservationPolicyView(
         p.ServiceChargePercent,
         p.PricesIncludeVat,
         p.MaxSeatOverhang,
-        p.ApprovalRequiredAbovePartySize);
+        p.ApprovalRequiredAbovePartySize,
+        p.WalkInHoldbackMinutes);
 }
 
 /// <summary>Every field of the policy, as written. The whole form is replaced at once.</summary>
@@ -51,7 +53,8 @@ public sealed record ReservationPolicyCommand(
     decimal ServiceChargePercent,
     bool PricesIncludeVat,
     int? MaxSeatOverhang,
-    int? ApprovalRequiredAbovePartySize)
+    int? ApprovalRequiredAbovePartySize,
+    int WalkInHoldbackMinutes = 30)
 {
     /// <summary>Builds the policy, applying the constructor's own checks and then the editing bounds.</summary>
     public ReservationPolicy ToPolicy()
@@ -69,7 +72,8 @@ public sealed record ReservationPolicyCommand(
             ServiceChargePercent,
             PricesIncludeVat,
             MaxSeatOverhang,
-            ApprovalRequiredAbovePartySize);
+            ApprovalRequiredAbovePartySize,
+            WalkInHoldbackMinutes);
 
         ReservationPolicyLimits.Validate(policy);
 

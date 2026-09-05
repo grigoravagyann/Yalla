@@ -40,6 +40,17 @@ public static class RateLimitingExtensions
     public const string PinPolicy = "auth-pin";
 
     /// <summary>
+    /// The availability query: anonymous, and the hottest endpoint in the product.
+    /// </summary>
+    /// <remarks>
+    /// A diner sliding the time picker re-asks with every change, and the endpoint takes no token,
+    /// so there is nothing else standing between one phone and the branch's whole floor read. The
+    /// limit is deliberately generous - a person browsing genuinely does make a burst of these -
+    /// but finite, which is the difference between a busy endpoint and an open one.
+    /// </remarks>
+    public const string AvailabilityPolicy = "availability";
+
+    /// <summary>
     /// Whether rate limiting is switched on for this environment. Both the registration and the
     /// middleware read this one decision - asking the configuration twice is how you end up
     /// calling <c>UseRateLimiter</c> without the services behind it.
@@ -62,6 +73,8 @@ public static class RateLimitingExtensions
         var globalPermitLimit = section.GetValue<int?>("GlobalPermitLimit") ?? 300;
         var globalWindowSeconds = section.GetValue<int?>("GlobalWindowSeconds") ?? 60;
         var authPermitLimit = section.GetValue<int?>("AuthPermitLimit") ?? 10;
+        var availabilityPermitLimit = section.GetValue<int?>("AvailabilityPermitLimit") ?? 60;
+        var availabilityWindowSeconds = section.GetValue<int?>("AvailabilityWindowSeconds") ?? 60;
         var authWindowSeconds = section.GetValue<int?>("AuthWindowSeconds") ?? 60;
         var codeRequestPermitLimit = section.GetValue<int?>("CodeRequestPermitLimit") ?? 5;
         var codeRequestWindowSeconds = section.GetValue<int?>("CodeRequestWindowSeconds") ?? 300;
@@ -99,6 +112,16 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = codeRequestPermitLimit,
                         Window = TimeSpan.FromSeconds(codeRequestWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            options.AddPolicy(AvailabilityPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = availabilityPermitLimit,
+                        Window = TimeSpan.FromSeconds(availabilityWindowSeconds),
                         QueueLimit = 0,
                     }));
 

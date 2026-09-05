@@ -42,6 +42,17 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
             .OnDelete(DeleteBehavior.Restrict);
 
         // "What happened to table 7 last night", and the raw feed for turnover reporting.
+        // The database assigns it. ValueGeneratedOnAdd alone would let EF think it owns the
+        // value; UseIdentityColumn is what makes SQL Server hand out the monotonic run.
+        builder.Property(c => c.Sequence)
+            .ValueGeneratedOnAdd()
+            .UseIdentityColumn();
+
+        // The stream read: "everything at this branch after N, in order". Covering, so catching up
+        // after a dropped connection is a range seek rather than a scan of the branch's history.
+        builder.HasIndex(c => new { c.BranchId, c.Sequence })
+            .HasDatabaseName("IX_TableStateChanges_BranchId_Sequence");
+
         builder.HasIndex(c => new { c.DiningTableId, c.AtUtc });
 
         builder.HasIndex(c => new { c.BranchId, c.AtUtc });

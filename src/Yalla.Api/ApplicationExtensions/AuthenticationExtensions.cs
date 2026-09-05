@@ -74,6 +74,33 @@ public static class AuthenticationExtensions
     private static async Task RejectRevokedDevicesAsync(TokenValidatedContext context)
     {
         var principalType = context.Principal?.PrincipalType();
+        var authority = context.HttpContext.RequestServices.GetRequiredService<ITokenAuthorityCheck>();
+
+        // A tab that has closed. The token was minted before anybody knew when that would be, so
+        // its own expiry cannot express it. Failing here rather than in a policy is deliberate: it
+        // produces a 401 carrying a reason the app can render as "this tab is closed", instead of a
+        // bare 403 that looks like a permissions bug.
+        if (principalType == PrincipalType.TabParticipant)
+        {
+            var tabId = context.Principal?.Guid(YallaClaims.TabId);
+            var participantId = context.Principal?.Guid(YallaClaims.ParticipantId);
+
+            if (tabId is null || participantId is null)
+            {
+                context.Fail("Tab participant token is incomplete.");
+                return;
+            }
+
+            var standing = await authority.GetParticipantAuthorityAsync(
+                tabId.Value, participantId.Value, context.HttpContext.RequestAborted);
+
+            if (standing?.Revoked is { } revoked)
+            {
+                context.Fail(revoked.Message);
+            }
+
+            return;
+        }
 
         if (principalType is not (PrincipalType.StaffDevice or PrincipalType.StaffSession))
         {
@@ -88,9 +115,7 @@ public static class AuthenticationExtensions
             return;
         }
 
-        var queries = context.HttpContext.RequestServices.GetRequiredService<IAuthorizationQueries>();
-
-        if (!await queries.IsStaffDeviceActiveAsync(deviceId.Value, context.HttpContext.RequestAborted))
+        if (!await authority.IsDeviceActiveAsync(deviceId.Value, context.HttpContext.RequestAborted))
         {
             context.Fail("This tablet is no longer enrolled.");
         }
@@ -114,6 +139,11 @@ public static class AuthenticationExtensions
             .AddPolicy(YallaPolicies.TabParticipantCanOrder, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new TabParticipantRequirement(MustBeAbleToOrder: true)))
+
+            .AddPolicy(YallaPolicies.TabParticipantMutating, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new TabParticipantRequirement(
+                    MustBeAbleToOrder: false, MustBeAbleToMutate: true)))
 
             // The platform tier is "above" in every role set: what an owner may do at their venue,
             // a platform admin may do at any venue. The scope handlers pass them for every branch.

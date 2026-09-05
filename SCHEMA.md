@@ -20,7 +20,7 @@ Two facts shape everything below:
 | Money | `long` count of whole Armenian dram, every property suffixed `Amd`. The dram has no subunit in practice, and decimal or floating-point money invites rounding drift across a split bill. |
 | Instants | UTC `datetime2`, applied as a model-wide convention so no configuration class can forget it. |
 | Wall-clock values | `DateOnly` / `TimeOnly` (`date` / `time`), stored *alongside* the UTC instant and never converted to it. Opening hours and the local date and time on a booking must not move when a time zone setting changes. `Branch.TimeZoneId` holds the IANA zone (`Asia/Yerevan`). |
-| Enums | `int`. Strings would let a member rename orphan existing rows. |
+| Enums | `int`, with **every value written out explicitly** and retired numbers never reused. Strings would let a member rename orphan existing rows; implicit values let a *reordering* do the same thing, silently. See [Why enum values are pinned](#why-enum-values-are-pinned-with-gaps-in-them). |
 | Mapping | One `IEntityTypeConfiguration<T>` per entity in `Yalla.Infrastructure`, applied by `ApplyConfigurationsFromAssembly`. No data annotations, no fluent configuration inline in `OnModelCreating`, and no EF Core dependency in `Yalla.Domain`. |
 | Deletes | `Restrict` everywhere except four genuinely dependent child collections. Historical financial and occupancy records must not disappear because someone deactivated a branch. |
 
@@ -215,6 +215,75 @@ original result instead of seating the table again. The uniqueness lives in the 
 than in a service-layer check because two replays can race each other, and a check-then-insert
 would let both through. Every state change and its log row are written in one `SaveChanges`, so a
 transition can never exist without its audit row.
+
+## Why enum values are pinned, with gaps in them
+
+Every enum in `Yalla.Domain.Enums` writes its numbers out:
+
+```csharp
+public enum ReservationStatus
+{
+    PendingApproval = 1,
+    Confirmed = 2,
+    // 3 was Late. Retired: lateness is a function of the clock, not a stored state.
+    Seated = 4,
+    Completed = 5,
+    ...
+}
+```
+
+**The number is the contract, not the name.** It is what sits in the column, what a shipped mobile
+build compares against, and what a year of `TableStateChange` rows means. C# will happily assign
+those numbers for you {M} and will just as happily reassign them when somebody inserts a member in
+the middle or sorts the list alphabetically. That edit compiles, passes review as a tidy-up, and
+silently redefines every existing row: yesterday's `Confirmed` bookings are now `Seated`, and there
+is no error anywhere to notice it by. Writing the values out makes that edit impossible rather than
+merely discouraged.
+
+### The gaps are load-bearing
+
+`TableStatus.Reserved` and `ReservationStatus.Late = 3` were removed once it became clear both are
+[derived from the clock](#why-reserved-and-late-are-derived-not-stored) rather than stored. **3 stays
+empty forever.** Reusing it would give a new meaning to a number that old rows and old app builds
+already use, which is the same corruption as renumbering, only slower to find.
+
+So a gap in these enums is not untidiness to be cleaned up. It is a record of something that used to
+be there, and the comment beside it says what.
+
+### The test that enforces it
+
+`PersistedEnumValueTests` asserts **every member of every domain enum against its literal number**,
+which turns an accidental renumbering from a silent data-meaning change into a failed build. It also
+asserts that nothing has moved into the retired numbers, and {M} the part that keeps the test honest
+{M} that every enum in the namespace is covered, by comparing the declared type list against the
+covered one. A new enum added without a test fails the suite that would otherwise have quietly
+stopped protecting it.
+
+### Seniority is a declared map, not an ordinal
+
+`StaffRole` is the one enum whose *order* used to carry meaning: `Outranks` compared the underlying
+integers, so `Owner < Manager < Waiter` decided who could act on whom. That coupled a permission rule
+to a declaration order, where adding `Kitchen` in the wrong position would have handed it authority
+over managers with nothing in the diff to suggest a permission change.
+
+`StaffRoleRules.Seniority` now holds the ranking as an explicit dictionary, and `RankOf` throws for a
+role missing from it:
+
+```csharp
+throw new ArgumentOutOfRangeException(
+    nameof(role), role, "This role has no place in the seniority map. Add it deliberately.");
+```
+
+A new role therefore cannot be added without someone stating, in one line, where it sits. The enum's
+numbers stay a persistence concern; seniority is a business rule and reads like one.
+
+### What the Prompt 7 audit found
+
+The history was checked before anything was changed: no enum in this codebase has ever been
+renumbered, and no persisted value has ever changed meaning. The pinning migration was therefore a
+**no-op for data** {M} the values were already correct, and were written out and covered by tests to
+keep them that way. Nothing was remapped, because remapping live rows to satisfy a tidier numbering
+would have been risk taken for no benefit.
 
 ## Why `Reserved` and `Late` are derived, not stored
 

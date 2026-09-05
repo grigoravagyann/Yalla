@@ -62,6 +62,17 @@ public sealed class ReservationPolicy
     /// <summary>Party size above which a booking needs staff approval. Null means never.</summary>
     public int? ApprovalRequiredAbovePartySize { get; private set; }
 
+    /// <summary>
+    /// How close to a confirmed booking a walk-in may still be seated at that table before staff
+    /// are warned.
+    /// </summary>
+    /// <remarks>
+    /// A warning, never a block. The waiter can see that the party is two people who want a quick
+    /// coffee, and that the booking is forty minutes away; the system cannot. What it can do is
+    /// make sure nobody seats them by accident.
+    /// </remarks>
+    public int WalkInHoldbackMinutes { get; private set; }
+
     private ReservationPolicy()
     {
     }
@@ -79,8 +90,11 @@ public sealed class ReservationPolicy
         decimal serviceChargePercent,
         bool pricesIncludeVat,
         int? maxSeatOverhang,
-        int? approvalRequiredAbovePartySize)
+        int? approvalRequiredAbovePartySize,
+        int walkInHoldbackMinutes = 30)
     {
+        WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));
+
         TurnTimeMinutes = Positive(turnTimeMinutes, nameof(turnTimeMinutes));
         BufferMinutes = NotNegative(bufferMinutes, nameof(bufferMinutes));
         GraceMinutes = NotNegative(graceMinutes, nameof(graceMinutes));
@@ -138,7 +152,8 @@ public sealed class ReservationPolicy
         serviceChargePercent: 10m,
         pricesIncludeVat: true,
         maxSeatOverhang: 2,
-        approvalRequiredAbovePartySize: 8);
+        approvalRequiredAbovePartySize: 8,
+        walkInHoldbackMinutes: 30);
 
     private static int Positive(int value, string paramName) =>
         value <= 0

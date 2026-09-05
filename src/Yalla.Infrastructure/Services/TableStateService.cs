@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
@@ -43,6 +44,7 @@ internal sealed class TableStateService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    TableLock tableLock,
     ILogger<TableStateService> logger) : ITableStateService
 {
     public async Task<TableStateChangeResult> SeatWalkInAsync(
@@ -51,12 +53,18 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Seat walk-in");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
@@ -79,7 +87,8 @@ internal sealed class TableStateService(
                 table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
                 tableSessionId: session.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> SeatQrScanAsync(
@@ -93,12 +102,18 @@ internal sealed class TableStateService(
         // traceable to a phone.
         var (actorType, actorId) = ResolveActor();
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
@@ -131,7 +146,8 @@ internal sealed class TableStateService(
                 table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
                 tableSessionId: session.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> SeatReservationAsync(
@@ -140,12 +156,18 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Seat reservation");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken);
 
         var nowUtc = clock.UtcNow;
@@ -184,7 +206,8 @@ internal sealed class TableStateService(
                 tableSessionId: session.Id,
                 reservationId: reservation.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> HoldForLatePartyAsync(
@@ -193,12 +216,13 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Hold table");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
@@ -225,12 +249,13 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Release hold");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
@@ -255,12 +280,18 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Seat held party");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
 
@@ -297,7 +328,8 @@ internal sealed class TableStateService(
                 tableSessionId: session.Id,
                 reservationId: reservation?.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> FreeTableAsync(
@@ -306,12 +338,13 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Free table");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
 
@@ -406,12 +439,13 @@ internal sealed class TableStateService(
         // through a manager makes the floor state go stale exactly when accuracy matters most.
         var staffId = RequireStaff("Mark out of service");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
 
@@ -438,12 +472,13 @@ internal sealed class TableStateService(
     {
         var staffId = RequireStaff("Return to service");
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
-            return await BuildReplayResultAsync(replay, cancellationToken);
+            return replayed;
         }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
@@ -519,12 +554,37 @@ internal sealed class TableStateService(
         TableStatus attemptedFromStatus,
         Guid clientCommandId,
         Func<TableStateChangeResult> buildResult,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TableLockScope? locked = null,
+        [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
         try
         {
+            // Built before the save, not after, so the answer can be stored in the same
+            // SaveChanges as the work it describes. There is then no state in which the command
+            // happened and the record of what it answered did not - which is the whole point: a
+            // replayed seat-walk-in has to be able to return the session id it created, and the
+            // audit row alone never knew it.
+            var result = buildResult();
+            RecordProcessedCommand(clientCommandId, CommandTypeFor(caller), result);
+
             await db.SaveChangesAsync(cancellationToken);
-            return buildResult();
+
+            // Seatings hold the table's write lock; everything else runs in EF's implicit
+            // transaction and has nothing to commit here.
+            if (locked is not null)
+            {
+                await locked.CommitAsync(cancellationToken);
+            }
+
+            return result;
+        }
+        catch (Exception ex) when (locked is not null && TableLock.IsTimeout(ex))
+        {
+            // Contention, not refusal: this writer never got its turn, so nothing was decided and
+            // the same command sent again will very likely work. Kept distinct from the conflict
+            // below, which will never succeed no matter how often it is repeated.
+            throw new TableLockTimeoutException(locked.TableId, locked.TableLabel, locked.TimeoutMilliseconds);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -538,7 +598,8 @@ internal sealed class TableStateService(
             throw await ConflictAsync(table, attemptedFromStatus, cancellationToken);
         }
         catch (DbUpdateException ex)
-            when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TableStateChangeClientCommand))
+            when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TableStateChangeClientCommand)
+                  || UniqueViolation.IsOn(ex, DatabaseIndexNames.ProcessedCommandId))
         {
             // Two replays of the same offline command raced. The other one won and did the work;
             // this one reports its result.
@@ -546,11 +607,11 @@ internal sealed class TableStateService(
                 "Command {ClientCommandId} was applied concurrently by another request; replaying its result.",
                 clientCommandId);
 
-            var winner = await FindReplayAsync(clientCommandId, cancellationToken)
-                         ?? throw new InvalidOperationException(
-                             $"Command {clientCommandId} violated the idempotency index but no row was found.");
+            db.ChangeTracker.Clear();
 
-            return await BuildReplayResultAsync(winner, cancellationToken);
+            return await TryReplayAsync(clientCommandId, cancellationToken)
+                   ?? throw new InvalidOperationException(
+                       $"Command {clientCommandId} violated the idempotency index but no record was found.");
         }
     }
 
@@ -720,6 +781,100 @@ internal sealed class TableStateService(
     /// The next booking that still matters for this table. This lookup is the whole reason
     /// <c>TableStatus</c> needs no stored <c>Reserved</c> member.
     /// </summary>
+    /// <summary>
+    /// The answer this command was already given, if it has been applied before.
+    /// </summary>
+    /// <remarks>
+    /// The stored body is returned rather than a recomputed one. Recomputing would answer with the
+    /// world as it is now, which is not what the caller asked: a tablet replaying its offline queue
+    /// wants the result of the command it sent, and "the table is Free now" is a different fact
+    /// from "your seating succeeded". Only <c>WasReplay</c> is changed, so the caller can tell.
+    /// </remarks>
+    private async Task<TableStateChangeResult?> TryReplayAsync(
+        Guid clientCommandId,
+        CancellationToken cancellationToken)
+    {
+        var processed = await db.ProcessedCommands
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.ClientCommandId == clientCommandId, cancellationToken);
+
+        if (processed is not null)
+        {
+            var stored = JsonSerializer.Deserialize<TableStateChangeResult>(processed.ResponseJson, ResponseJson);
+
+            if (stored is not null)
+            {
+                logger.LogInformation(
+                    "Command {ClientCommandId} was already applied; returning the stored answer.", clientCommandId);
+
+                return stored with { WasReplay = true };
+            }
+        }
+
+        // Commands applied before this store existed have only their audit row. Recomputing from it
+        // is worse than the stored answer and better than refusing, so it stays as a fallback.
+        return await FindReplayAsync(clientCommandId, cancellationToken) is { } audited
+            ? await BuildReplayResultAsync(audited, cancellationToken)
+            : null;
+    }
+
+    /// <summary>Adds the answer to the unit of work, alongside the change it describes.</summary>
+    private void RecordProcessedCommand(Guid clientCommandId, string commandType, TableStateChangeResult result)
+    {
+        var (actorType, actorId) = ResolveActor();
+
+        db.ProcessedCommands.Add(new ProcessedCommand(
+            clientCommandId,
+            commandType,
+            actorType,
+            actorId,
+            JsonSerializer.Serialize(result, ResponseJson),
+            StatusCodes.Ok,
+            clock.UtcNow));
+    }
+
+    /// <summary>
+    /// Refuses a queued command that describes a table which has since moved.
+    /// </summary>
+    /// <remarks>
+    /// Idempotency stops a command being applied twice and says nothing about it being stale. A
+    /// queued command must therefore say what the waiter was looking at; a live one need not,
+    /// because it was made from a fresh read and the table's row version already guards the race.
+    /// </remarks>
+    private static void RequirePrecondition(ITableStateCommand command, DiningTable table)
+    {
+        if (command.ExpectedFromStatus is not { } expected)
+        {
+            if (command.Queued)
+            {
+                throw new ArgumentException(
+                    "A queued command must carry the status the table had when it was tapped, so a "
+                    + "stale replay can be told from a live one.",
+                    nameof(command));
+            }
+
+            return;
+        }
+
+        if (table.Status != expected)
+        {
+            throw new CommandPreconditionFailedException(
+                table.Id, table.Label, expected, table.Status, command.ClientCommandId);
+        }
+    }
+
+    /// <summary>
+    /// The command slug recorded against a processed command, derived from the method that ran it
+    /// so the two can never disagree.
+    /// </summary>
+    private static string CommandTypeFor(string caller)
+    {
+        var name = caller.EndsWith("Async", StringComparison.Ordinal) ? caller[..^5] : caller;
+        var slug = string.Concat(name.Select((c, i) => char.IsUpper(c) && i > 0 ? "-" + char.ToLowerInvariant(c) : char.ToLowerInvariant(c).ToString()));
+
+        return $"table.{slug}";
+    }
+
     private async Task<NextReservation> FindNextReservationAsync(
         Guid tableId,
         DateTime nowUtc,
@@ -734,10 +889,24 @@ internal sealed class TableStateService(
                             || r.Status == ReservationStatus.PendingApproval)
                         && (excludingReservationId == null || r.Id != excludingReservationId))
             .OrderBy(r => r.StartUtc)
-            .Select(r => new { r.Id, r.StartUtc })
+            .Select(r => new { r.Id, r.StartUtc, r.PartySize })
             .FirstOrDefaultAsync(cancellationToken);
 
-        return next is null ? NextReservation.None : new NextReservation(next.Id, next.StartUtc);
+        return next is null
+            ? NextReservation.None
+            : new NextReservation(next.Id, next.StartUtc, next.PartySize);
+    }
+
+    /// <summary>
+    /// How a stored response is written and read. Fixed here so a replay deserialises what was
+    /// serialised however the host's own JSON options change later.
+    /// </summary>
+    private static readonly JsonSerializerOptions ResponseJson = new(JsonSerializerDefaults.Web);
+
+    /// <summary>The status a successful transition answers with, stored alongside its body.</summary>
+    private static class StatusCodes
+    {
+        public const int Ok = 200;
     }
 
     // ---------------------------------------------------------------- results
@@ -823,6 +992,19 @@ internal sealed class TableStateService(
                 $"table {table.Label} reserved {FormatBranchLocalTime(next.StartUtc!.Value, table.Branch.TimeZoneId)}"));
         }
 
+        // The tighter window: the booked party is nearly here. Carries the time and the size,
+        // because "reserved 20:00 for 6" is what a waiter can actually act on - they know whether
+        // six people will fit around the party they are about to seat.
+        if (SessionOccupancy.WithinWalkInHoldback(next.StartUtc, nowUtc, policy.WalkInHoldbackMinutes))
+        {
+            var at = FormatBranchLocalTime(next.StartUtc!.Value, table.Branch.TimeZoneId);
+            var forParty = next.PartySize is { } size ? $" for {size}" : string.Empty;
+
+            warnings.Add(new TableStateWarning(
+                TableStateWarning.WalkInHoldback,
+                $"table {table.Label} reserved {at}{forParty}, within {policy.WalkInHoldbackMinutes} minutes"));
+        }
+
         return warnings;
     }
 
@@ -848,8 +1030,12 @@ internal sealed class TableStateService(
     }
 
     /// <summary>The next relevant booking for a table, or none.</summary>
-    private readonly record struct NextReservation(Guid? ReservationId, DateTime? StartUtc)
+    /// <remarks>
+    /// <c>PartySize</c> is carried so the holdback warning can say "reserved 20:00 for 4" - the
+    /// number is most of what a waiter needs to judge whether the seating is safe.
+    /// </remarks>
+    private readonly record struct NextReservation(Guid? ReservationId, DateTime? StartUtc, int? PartySize)
     {
-        public static NextReservation None => new(null, null);
+        public static NextReservation None => new(null, null, null);
     }
 }

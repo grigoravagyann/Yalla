@@ -201,6 +201,61 @@ possession of a live session, and that is as likely to be the attacker.
 Staff sessions deliberately do not use this mechanism. They expire on inactivity rather than
 rotating for thirty days, which is a different thing, so they have their own record.
 
+## Why a stateless token still needs an authority check
+
+A JWT is a **signed statement about the past**. It says who this was, and that nobody has tampered
+with the claim since. It cannot say whether that is still true, and for three of the four identities
+here it stops being true well inside the token's own lifetime:
+
+- A tab closes. The token stays valid for the two-hour receipt grace, and the participant should be
+  able to *read* the bill for those two hours {M} and add nothing to it.
+- A manager revokes a stolen tablet. Its device token still has months to run.
+- A participant is removed from a tab, or has their ordering taken away. The claim minted at join
+  time says nothing about it.
+
+Signature validation alone would let all three keep working. "The token is short-lived" is not an
+answer either: fifteen minutes is a long time to hold a tablet somebody just reported stolen, and
+the tab grace is deliberately hours long.
+
+So `ITokenAuthorityCheck` runs **on token validation**, before any handler, and is what turns a
+revoked device or a closed tab into a 401 carrying a reason (`device-revoked`, `tab-closed`) rather
+than a confusing 403 from a policy further down.
+
+### What gets cached, and what deliberately does not
+
+Checking the database on every request would put a round trip in front of every read of a busy tab,
+so the check caches for **five seconds**. What it caches matters:
+
+> The **read** is cached. The **decision** is not.
+
+`TabParticipantAccess` {M} the tab's status, the participant's status, their `CanOrder` flag {M} is a
+database fact that changes when somebody changes it. The decision that follows depends on the clock:
+whether a closed tab is still inside its receipt grace is a different answer at 20:00 and at 22:01.
+Caching the decision froze that grace for five seconds at a time, which the token-authority tests
+caught: a tab whose grace had just expired went on accepting reads.
+
+Five seconds is chosen against the thing being protected. A revoked tablet is not usable for five
+seconds by anyone who is not already holding it, and the alternative {M} a database read per request
+per participant {M} costs a busy venue far more than that window is worth. Where the delay is *not*
+acceptable, the cache is invalidated directly instead of waited out:
+
+| Event | Invalidation |
+|---|---|
+| A device is revoked | `InvalidateDevice` on the revoking path {M} immediate, not five seconds later |
+| A participant is approved, removed, or loses `CanOrder` | `InvalidateParticipant` |
+| A tab is closed or moved to closing | `InvalidateTab`, which drops **every** participant's entry through a per-tab `CancellationChangeToken` |
+
+The last one is the subtle case. A tab has many participants and closing it changes the answer for
+all of them at once; without a per-tab token, each entry would expire on its own schedule and the
+table would disagree with itself for a few seconds. Both of these were real bugs found by tests
+rather than reasoning, which is the argument for the tests existing.
+
+### Read and mutate are separate policies
+
+`TabParticipant` and `TabParticipantMutating` exist because the receipt grace is precisely a window
+where reading is right and writing is not. Splitting them puts that distinction in the route table,
+where it can be seen, instead of inside seven handlers that each have to remember it.
+
 ## Authorization policies
 
 Named policies, applied to endpoints. **Nothing re-checks identity inside a handler** - a check
@@ -210,6 +265,8 @@ inside a handler is a check the next handler can forget, and the failure is sile
 |---|---|
 | `TabParticipant` | The token's `tabId` claim matches the route's tab id, the participant is still approved, and the tab has not closed beyond the grace period |
 | `TabParticipantCanOrder` | The above, plus the participant's `CanOrder` flag |
+| `TabParticipantMutating` | The above, and the tab is genuinely open {M} the receipt grace allows reading a closed tab, never adding to it |
+| `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
 | `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager or Owner |
 | `ManagerOrAbove` | Role is Manager or Owner |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |

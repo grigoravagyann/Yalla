@@ -46,6 +46,12 @@ internal static class DatabaseIndexNames
     /// </summary>
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
+    /// <summary>
+    /// Unique on the caller's command id across every command type. A violation means the same
+    /// command is being applied concurrently with its original; the store answers with the original.
+    /// </summary>
+    public const string ProcessedCommandId = "UX_ProcessedCommands_ClientCommandId";
+
     /// <summary>Unique on a venue's slug. A violation means the platform admin picked a taken slug.</summary>
     public const string VenueSlug = "IX_Venues_Slug";
 

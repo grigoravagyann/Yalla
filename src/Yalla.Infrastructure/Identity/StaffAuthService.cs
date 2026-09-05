@@ -22,6 +22,7 @@ internal sealed class StaffAuthService(
     IClock clock,
     TokenIssuer tokens,
     SecretHasher hasher,
+    ITokenAuthorityCheck authority,
     IOptions<AuthOptions> authOptions,
     ILogger<StaffAuthService> logger) : IStaffAuthService
 {
@@ -335,6 +336,10 @@ internal sealed class StaffAuthService(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+
+        // Before returning, so the very next request from that tablet is refused. The cache in
+        // front of the authority check exists to save a round trip, not to delay a revocation.
+        authority.InvalidateDevice(device.Id);
 
         logger.LogWarning(
             "Device {DeviceId} revoked at branch {BranchId}. {SessionCount} open session(s) ended.",

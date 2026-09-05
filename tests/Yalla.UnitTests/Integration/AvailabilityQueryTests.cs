@@ -59,10 +59,13 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
             Assert.True(t.IsAvailable);
             Assert.Null(t.UnavailableReason);
 
-            // Nothing booked after them at all, so nothing closes the window. Null is the answer
-            // a diner would rather have.
-            Assert.Null(t.AvailableUntilUtc);
-            Assert.False(t.LimitedByNextBooking);
+            // Nothing booked after them at all, so nothing closes the window. Said outright
+            // rather than left for the client to infer from a null.
+            Assert.NotNull(t.Window);
+            Assert.True(t.Window!.HasNoLaterBooking);
+            Assert.Null(t.Window.AvailableUntilUtc);
+            Assert.Null(t.Window.WindowMinutes);
+            Assert.False(t.Window.IsShorterThanTurnTime);
         });
     }
 
@@ -89,24 +92,28 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var limited = availability.Tables.Single(t => t.TableId == branch.TableIds[0]);
 
         Assert.True(limited.IsAvailable);
-        Assert.True(limited.LimitedByNextBooking);
         Assert.Equal(later.Id, limited.NextReservationId);
         Assert.Equal(later.StartUtc, limited.NextReservationStartUtc);
 
-        Assert.Equal(availability.RequestedStartUtc, limited.AvailableFromUtc);
-        Assert.Equal(later.StartUtc.AddMinutes(-availability.BufferMinutes), limited.AvailableUntilUtc);
+        var window = limited.Window!;
+        Assert.False(window.HasNoLaterBooking);
+        Assert.Equal(availability.RequestedStartUtc, window.AvailableFromUtc);
+        Assert.Equal(later.StartUtc.AddMinutes(-availability.BufferMinutes), window.AvailableUntilUtc);
 
         // 18:00 to 19:45, as the diner reads it off the screen before confirming.
-        Assert.Equal(SixPm, limited.AvailableFromLocal);
-        Assert.Equal(new TimeOnly(19, 45), limited.AvailableUntilLocal);
-        Assert.Equal(105, limited.AvailableMinutes);
+        Assert.Equal(SixPm, window.AvailableFromLocal);
+        Assert.Equal(new TimeOnly(19, 45), window.AvailableUntilLocal);
+        Assert.Equal(105, window.WindowMinutes);
+
+        // 105 minutes against a 90-minute turn time is not short, so the sheet says nothing.
+        Assert.False(window.IsShorterThanTurnTime);
 
         // The other table has no limit, which is exactly the comparison the screen exists to let
         // a diner make.
         var unlimited = availability.Tables.Single(t => t.TableId == branch.TableIds[1]);
 
-        Assert.False(unlimited.LimitedByNextBooking);
-        Assert.Null(unlimited.AvailableUntilUtc);
+        Assert.True(unlimited.Window!.HasNoLaterBooking);
+        Assert.Null(unlimited.Window.AvailableUntilUtc);
     }
 
     [SkippableFact]
@@ -131,9 +138,9 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.False(taken.IsAvailable);
         Assert.Equal(ReservationRejectionReason.TableAlreadyBooked, taken.UnavailableReason);
 
-        // No window, because there is no offer to make - rather than a window too short to use.
-        Assert.Null(taken.AvailableUntilUtc);
-        Assert.Null(taken.AvailableFromUtc);
+        // No window at all, because there is no offer to make - rather than a window too short
+        // to use, which is what a zero-length one would read as.
+        Assert.Null(taken.Window);
     }
 
     [SkippableFact]

@@ -43,6 +43,10 @@ public static class DependencyInjection
         services.AddScoped<IReservationService, ReservationService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
+
+        // The lifecycle checks a stateless token cannot make about itself, cached for seconds.
+        services.AddMemoryCache();
+        services.AddScoped<ITokenAuthorityCheck, TokenAuthorityCheck>();
         services.AddScoped<ITabQuery, TabQuery>();
         services.AddScoped<ITabService, TabService>();
 
@@ -66,6 +70,11 @@ public static class DependencyInjection
         // application layer free of a configuration dependency.
         services.AddSingleton(Bind<NoShowPolicy>(configuration, NoShowPolicy.SectionName));
         services.AddSingleton(Bind<BookingLockOptions>(configuration, BookingLockOptions.SectionName));
+
+        // The table lock and the one writer allowed to insert a booking. Scoped, because both hold
+        // the request's DbContext and the lock lives inside that context's connection.
+        services.AddScoped<TableLock>();
+        services.AddScoped<ReservationWriter>();
 
         return services;
     }

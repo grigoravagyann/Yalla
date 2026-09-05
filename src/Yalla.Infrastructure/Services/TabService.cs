@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Application.Tabs;
@@ -48,6 +49,7 @@ internal sealed class TabService(
     ICurrentActor actor,
     ITableStateService tableState,
     ITabQuery query,
+    ITokenAuthorityCheck authority,
     TabParticipantTokens tokens,
     IOptions<TabOptions> options,
     ILogger<TabService> logger) : ITabService
@@ -413,6 +415,11 @@ internal sealed class TabService(
         change(target, clock.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
+        // Their standing just changed, so the cached answer about it is wrong. A participant the
+        // host has just removed must be refused on their next call, not on the one after the cache
+        // lapses - the approval flow is the whole reason the token is not enough on its own.
+        authority.InvalidateParticipant(tab.Id, target.Id);
+
         logger.LogInformation(
             "{Operation} on tab {TabId}: participant {ParticipantId} is now {Status}.",
             operation, tab.Id, target.Id, target.Status);
@@ -491,6 +498,10 @@ internal sealed class TabService(
         var nowUtc = clock.UtcNow;
 
         tab.BeginClosing();
+
+        // Every participant on this tab may now read it but not change it, so the cached answers
+        // about all of them are wrong. Dropped together rather than one at a time.
+        authority.InvalidateTab(tab.Id);
 
         // No new participants means no live invitation either.
         foreach (var live in tab.JoinTokens.Where(t => t.IsUsableAt(nowUtc)))
