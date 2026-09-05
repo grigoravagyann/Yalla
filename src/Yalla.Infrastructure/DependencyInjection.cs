@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
+using Yalla.Application.Tabs;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
@@ -39,6 +40,15 @@ public static class DependencyInjection
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
         services.AddScoped<ITabQuery, TabQuery>();
+        services.AddScoped<ITabService, TabService>();
+
+        // The share-link template. Optional in configuration; the default points at the local
+        // diner app, which is what a developer with no settings gets.
+        services.AddOptions<TabOptions>();
+        if (configuration is not null)
+        {
+            services.Configure<TabOptions>(configuration.GetSection(TabOptions.SectionName));
+        }
 
         // Both are plain settings objects rather than IOptions: they are read on nearly every
         // booking, they never change per request, and binding them once here keeps the
@@ -96,8 +106,11 @@ public static class DependencyInjection
         services.AddScoped<IDinerAuthService, DinerAuthService>();
         services.AddScoped<IStaffAuthService, StaffAuthService>();
         services.AddScoped<IVenueUserAuthService, VenueUserAuthService>();
-        services.AddScoped<ITabParticipantAuthService, TabParticipantAuthService>();
         services.AddScoped<ITokenRefreshService, TokenRefreshService>();
+
+        // Identity type 1 has no sign-in flow of its own: the tab-scoped token is minted by the tab
+        // service when somebody scans a table or redeems an invitation. This is the minting.
+        services.AddScoped<TabParticipantTokens>();
 
         // The only implementations that ship. Both write a live credential to the log, which is
         // what makes them useful locally and what makes replacing them a release blocker. They

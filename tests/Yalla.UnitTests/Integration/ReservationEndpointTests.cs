@@ -109,12 +109,12 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
         using var client = factory.CreateClient();
 
         var joined = await client.PostAsJsonAsync(
-            "/api/auth/tab/join", new { joinToken = tab.JoinToken, displayName = "Ani", deviceId = "device-1" });
+            "/api/tabs/join", new { joinToken = tab.JoinToken, displayName = "Ani", deviceId = "device-1" });
 
         joined.EnsureSuccessStatusCode();
 
         var token = (await joined.Content.ReadFromJsonAsync<JsonElement>())
-            .GetProperty("accessToken").GetString()!;
+            .GetProperty("token").GetProperty("accessToken").GetString()!;
 
         using var participant = factory.CreateClientWithToken(token);
 

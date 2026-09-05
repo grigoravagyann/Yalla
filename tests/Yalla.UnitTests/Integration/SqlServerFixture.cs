@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
+using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 
@@ -169,6 +170,41 @@ public sealed class SqlServerFixture : IAsyncLifetime
         new(db, clock, actor, NullLogger<TableStateService>.Instance);
 
     internal FloorQuery CreateFloorQuery(YallaDbContext db, IClock clock) => new(db, clock);
+
+    /// <summary>
+    /// The tab service over one context, acting as the given caller.
+    /// </summary>
+    /// <remarks>
+    /// It composes the real table state machine and the real read model over the same context, so
+    /// opening a tab exercises the actual seating transition and its concurrency handling rather
+    /// than a stand-in. The two concurrency tests build two of these over <b>separate</b> contexts,
+    /// which is the only way to make two commits genuinely race.
+    /// </remarks>
+    internal TabService CreateTabService(YallaDbContext db, IClock clock, ICurrentActor actor)
+    {
+        var jwt = Microsoft.Extensions.Options.Options.Create(new JwtOptions
+        {
+            // Participant tokens are minted for real here; an empty key cannot sign one.
+            SigningKey = "test-signing-key-that-is-comfortably-longer-than-thirty-two-bytes",
+        });
+        var issuer = new TokenIssuer(jwt, clock);
+        var tokens = new TabParticipantTokens(issuer, clock, jwt);
+        var tableState = CreateService(db, clock, actor);
+        var query = new TabQuery(db);
+
+        return new TabService(
+            db,
+            clock,
+            actor,
+            tableState,
+            query,
+            tokens,
+            Microsoft.Extensions.Options.Options.Create(new TabOptions()),
+            NullLogger<TabService>.Instance);
+    }
+
+    /// <summary>The tab read model over one context, for asserting on a projected view directly.</summary>
+    internal TabQuery CreateTabQuery(YallaDbContext db) => new(db);
 
     internal AvailabilityQuery CreateAvailabilityQuery(YallaDbContext db, IClock clock) => new(db, clock);
 

@@ -10,14 +10,20 @@ namespace Yalla.Application.Auth;
 /// <param name="TabStatus">1 Open, 2 Closing, 3 Closed, 4 Abandoned.</param>
 /// <param name="TabClosedAtUtc">When the tab closed, if it has.</param>
 /// <param name="ParticipantStatus">1 PendingApproval, 2 Approved, 3 Removed.</param>
-/// <param name="CanOrder">Whether this participant may add items to the tab.</param>
+/// <param name="Role">1 Host, 2 Guest.</param>
+/// <param name="CanOrder">Whether the host allows this participant to add items.</param>
+/// <param name="CanSeeTableTotal">Whether they may see the table aggregate.</param>
+/// <param name="CanPay">Whether they may settle against the tab.</param>
 public sealed record TabParticipantAccess(
     Guid TabId,
     Guid BranchId,
     TabStatus TabStatus,
     DateTime? TabClosedAtUtc,
     ParticipantStatus ParticipantStatus,
-    bool CanOrder);
+    ParticipantRole Role,
+    bool CanOrder,
+    bool CanSeeTableTotal,
+    bool CanPay);
 
 /// <summary>
 /// The reads the authorisation policies do, kept behind an interface so the policy handlers do
@@ -25,7 +31,7 @@ public sealed record TabParticipantAccess(
 /// </summary>
 /// <remarks>
 /// <para>
-/// Yes, two of the six policies touch the database. That is deliberate: a revoked device, a
+/// Yes, some of the policies touch the database. That is deliberate: a revoked device, a
 /// removed participant and a closed tab all have to stop working <i>now</i>, and a claim in a
 /// token cannot express "now". The alternative - trusting the token until it expires - is how a
 /// tablet left in a taxi keeps taking orders for the rest of the day.
@@ -45,6 +51,13 @@ public interface IAuthorizationQueries
         Guid tabId,
         Guid participantId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The branch a tab belongs to, or null when there is no such tab. Lets <c>BranchScoped</c>
+    /// guard a staff route addressed by tab id - <c>/api/tabs/{tabId}/closing</c> - by resolving
+    /// the branch the route implies rather than failing closed for want of a <c>branchId</c>.
+    /// </summary>
+    Task<Guid?> GetTabBranchIdAsync(Guid tabId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Whether a branch belongs to a venue. Lets an owner or manager act on any branch of their

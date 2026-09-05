@@ -4,6 +4,7 @@ using Yalla.Domain;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
+using Yalla.Domain.Tabs;
 using Yalla.Domain.Venues;
 
 namespace Yalla.Api.Errors;
@@ -201,6 +202,19 @@ internal static class ApiExceptionMapper
         // through to the 500 below, where they are logged and say nothing about internals.
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
+
+        // On the tab, but not allowed this: a guest approving a joiner, a diner reassigning the
+        // host. The message names the missing role. Must stay ABOVE the general arm it derives from.
+        TabPermissionException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.Forbidden,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["operation"] = e.Operation,
+                ["requirement"] = e.Requirement,
+            }),
 
         UnauthorizedAccessException => new MappedError(
             StatusCodes.Status403Forbidden,

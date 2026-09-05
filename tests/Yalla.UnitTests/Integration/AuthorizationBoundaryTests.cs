@@ -105,8 +105,8 @@ public class AuthorizationBoundaryTests(SqlServerFixture fixture)
         var neighboursTab = await diner.GetAsync($"/api/tabs/{tableEight.TabId}");
         Assert.Equal(HttpStatusCode.Forbidden, neighboursTab.StatusCode);
 
-        var rename = await diner.PutAsJsonAsync(
-            $"/api/tabs/{tableEight.TabId}/me/display-name", new { displayName = "Not mine" });
+        var rename = await diner.PostAsJsonAsync(
+            $"/api/tabs/{tableEight.TabId}/display-name", new { displayName = "Not mine" });
 
         Assert.Equal(HttpStatusCode.Forbidden, rename.StatusCode);
     }
@@ -187,12 +187,12 @@ public class AuthorizationBoundaryTests(SqlServerFixture fixture)
         using var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
-            "/api/auth/tab/join",
+            "/api/tabs/join",
             new { joinToken, deviceId = $"device-{Guid.NewGuid():N}", displayName = "Ani" });
 
         response.EnsureSuccessStatusCode();
 
         return (await response.Content.ReadFromJsonAsync<JsonElement>())
-            .GetProperty("accessToken").GetString()!;
+            .GetProperty("token").GetProperty("accessToken").GetString()!;
     }
 }

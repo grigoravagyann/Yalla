@@ -82,6 +82,58 @@ internal sealed class TableStateService(
             cancellationToken);
     }
 
+    public async Task<TableStateChangeResult> SeatQrScanAsync(
+        SeatQrScanCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        // Deliberately no RequireStaff. This is the one seating a diner performs, from their own
+        // phone, and usually with no account at all - the walk-in who scanned the code on table 7.
+        // The audit row names whoever the token says is acting, or the system when nobody is yet
+        // known; the tab that follows, and the host participant on it, are what make the scan
+        // traceable to a phone.
+        var (actorType, actorId) = ResolveActor();
+
+        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        {
+            return await BuildReplayResultAsync(replay, cancellationToken);
+        }
+
+        var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        var nowUtc = clock.UtcNow;
+        var fromStatus = table.Status;
+        var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
+
+        // A walk-in seating with no waiter behind it. Free or Held to Occupied, like every other
+        // seating; Occupied and OutOfService are refused by the entity and the tab service turns
+        // the occupied case into "join the existing tab" before it ever gets here.
+        var session = TableSession.SeatWalkIn(table.BranchId, table.Id, command.PartySize, nowUtc);
+
+        table.Occupy(session.Id);
+
+        db.TableSessions.Add(session);
+        db.TableStateChanges.Add(new TableStateChange(
+            table.BranchId,
+            table.Id,
+            fromStatus,
+            TableStatus.Occupied,
+            command.Reason ?? "opened by QR scan",
+            actorType,
+            nowUtc,
+            command.ClientCommandId,
+            actorId,
+            tableSessionId: session.Id));
+
+        return await CommitAsync(
+            table,
+            fromStatus,
+            command.ClientCommandId,
+            () => Success(
+                table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
+                tableSessionId: session.Id,
+                warnings: SeatingWarnings(table, nowUtc, next)),
+            cancellationToken);
+    }
+
     public async Task<TableStateChangeResult> SeatReservationAsync(
         SeatReservationCommand command,
         CancellationToken cancellationToken = default)
@@ -590,6 +642,19 @@ internal sealed class TableStateService(
 
         return staffId;
     }
+
+    /// <summary>
+    /// Who the audit row should name for a transition anyone may perform. A staff member or a
+    /// diner with an account is named; a tab participant has no account by design and a request
+    /// with no token has nobody, so both are recorded as the system - which is what the audit
+    /// row's invariant allows a null actor for.
+    /// </summary>
+    private (ActorType Type, Guid? Id) ResolveActor() => actor.Type switch
+    {
+        ActorType.Staff when actor.StaffMemberId is { } staffId => (ActorType.Staff, staffId),
+        ActorType.Diner when actor.DinerUserId is { } dinerId => (ActorType.Diner, dinerId),
+        _ => (ActorType.System, null),
+    };
 
     /// <summary>Managers and owners. Waiters and kitchen staff do not move money.</summary>
     private void RequireManager(string operation)

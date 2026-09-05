@@ -46,6 +46,12 @@ public sealed class TabParticipant : Entity
     /// </summary>
     public bool CanPay { get; private set; }
 
+    public bool IsHost => Role == ParticipantRole.Host;
+
+    public bool IsApproved => Status == ParticipantStatus.Approved;
+
+    public bool IsRemoved => Status == ParticipantStatus.Removed;
+
     private TabParticipant()
     {
     }
@@ -76,13 +82,65 @@ public sealed class TabParticipant : Entity
     }
 
     /// <summary>
+    /// The first scanner: approved on the spot, may pay, may see everything. There is nobody
+    /// else on the tab to approve them.
+    /// </summary>
+    public static TabParticipant Host(
+        Guid tabId,
+        string displayName,
+        string deviceId,
+        DateTime joinedAtUtc,
+        Guid? userId = null) =>
+        new(
+            tabId,
+            displayName,
+            deviceId,
+            ParticipantRole.Host,
+            ParticipantStatus.Approved,
+            joinedAtUtc,
+            userId,
+            canOrder: true,
+            canSeeTableTotal: true,
+            canPay: true);
+
+    /// <summary>
+    /// Everyone after the first: pending until the host taps approve, with the tab's defaults.
+    /// </summary>
+    /// <remarks>
+    /// <c>CanPay</c> starts false - the host is often treating, and letting a stranger who joined
+    /// the wrong table put money toward it is a refund nobody wants to process.
+    /// <c>CanSeeTableTotal</c> follows the tab's <c>HideTotalFromGuests</c>, which is the table
+    /// default the host chose.
+    /// </remarks>
+    public static TabParticipant Guest(
+        Guid tabId,
+        string displayName,
+        string deviceId,
+        DateTime joinedAtUtc,
+        bool hideTotalFromGuests,
+        Guid? userId = null) =>
+        new(
+            tabId,
+            displayName,
+            deviceId,
+            ParticipantRole.Guest,
+            ParticipantStatus.PendingApproval,
+            joinedAtUtc,
+            userId,
+            canOrder: true,
+            canSeeTableTotal: !hideTotalFromGuests,
+            canPay: false);
+
+    /// <summary>
     /// Sets the three permissions together, because they are not independent: nobody pays toward
     /// a total they are not allowed to see.
     /// </summary>
     /// <remarks>
     /// <c>CanPay</c> implies <c>CanSeeTableTotal</c> is enforced here as a domain invariant rather
     /// than in the apps. Three clients consume this API and a rule that lives only in a UI is a
-    /// rule that one of them will forget.
+    /// rule that one of them will forget. The refusal is a refusal - the flags are not silently
+    /// corrected, because a host who tapped "may pay" and got "may see the total" without being
+    /// told has been surprised, and their next tap is made on the wrong assumption.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="canPay"/> is true while <paramref name="canSeeTableTotal"/> is false.
@@ -123,9 +181,59 @@ public sealed class TabParticipant : Entity
         ApprovedAtUtc ??= Guard.NotLocalTime(approvedAtUtc, nameof(approvedAtUtc));
     }
 
+    /// <summary>
+    /// The host turns a pending joiner away. Ends as <see cref="ParticipantStatus.Removed"/>,
+    /// because "was never let on" and "was taken off" leave the same thing behind: a row that no
+    /// longer acts, kept so anything that referenced it still resolves.
+    /// </summary>
+    public void Reject(DateTime rejectedAtUtc)
+    {
+        if (Status != ParticipantStatus.PendingApproval)
+        {
+            throw new DomainStateException(
+                $"Only a pending participant can be rejected; this one is {Status}.");
+        }
+
+        Status = ParticipantStatus.Removed;
+        RemovedAtUtc ??= Guard.NotLocalTime(rejectedAtUtc, nameof(rejectedAtUtc));
+    }
+
+    /// <summary>
+    /// Takes an accidental joiner off the tab. A status change, never a delete: their order lines
+    /// and any payment they made are financial records and must survive them leaving.
+    /// </summary>
     public void Remove(DateTime removedAtUtc)
     {
+        if (IsHost)
+        {
+            throw new DomainStateException(
+                "The host cannot be removed from their own tab. Reassign the host first.");
+        }
+
         Status = ParticipantStatus.Removed;
         RemovedAtUtc ??= Guard.NotLocalTime(removedAtUtc, nameof(removedAtUtc));
     }
+
+    /// <summary>
+    /// Becomes the host. Hosting means approving joiners, choosing the split and, often, paying -
+    /// so the role brings sight of the total and the right to pay with it.
+    /// </summary>
+    public void BecomeHost()
+    {
+        if (Status != ParticipantStatus.Approved)
+        {
+            throw new DomainStateException(
+                $"Only an approved participant can become the host; this one is {Status}.");
+        }
+
+        Role = ParticipantRole.Host;
+        SetPermissions(CanOrder, canSeeTableTotal: true, canPay: true);
+    }
+
+    /// <summary>
+    /// Steps down to guest when the host role is moved to somebody else. Their permissions are
+    /// left as they were: the person who opened the tab is still at the table and still allowed
+    /// what they were allowed.
+    /// </summary>
+    public void BecomeGuest() => Role = ParticipantRole.Guest;
 }

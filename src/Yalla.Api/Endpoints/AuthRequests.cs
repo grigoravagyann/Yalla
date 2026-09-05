@@ -31,33 +31,6 @@ public sealed record VerifyDinerCodeRequest(
 /// </param>
 public sealed record RefreshTokenRequest([Required] string RefreshToken);
 
-/// <summary>Body of <c>POST /api/auth/tab/scan</c>.</summary>
-/// <param name="QrToken">The token printed in the QR code on the table.</param>
-/// <param name="DeviceId">
-/// A stable identifier the app generates once per install. Not an account and not a login - it is
-/// what lets someone who re-scans after their phone locked land back on the same participant
-/// instead of appearing twice on the bill.
-/// </param>
-/// <param name="DisplayName">Optional. What the host sees; defaults to a numbered guest.</param>
-public sealed record ScanTableQrRequest(
-    [Required] string QrToken,
-    [Required] string DeviceId,
-    string? DisplayName = null);
-
-/// <summary>Body of <c>POST /api/auth/tab/join</c>.</summary>
-/// <param name="JoinToken">The invitation passed round the table. Short-lived.</param>
-/// <param name="DeviceId">See <see cref="ScanTableQrRequest.DeviceId"/>.</param>
-/// <param name="DisplayName">Optional display name.</param>
-public sealed record JoinTabRequest(
-    [Required] string JoinToken,
-    [Required] string DeviceId,
-    string? DisplayName = null);
-
-/// <summary>Body of <c>PUT /api/tabs/{tabId}/me/display-name</c>.</summary>
-/// <param name="DisplayName">What the host should see instead of "Guest 3".</param>
-public sealed record SetDisplayNameRequest(
-    [Required][StringLength(100, MinimumLength = 1)] string DisplayName);
-
 /// <summary>Body of <c>POST /api/auth/staff/enrol</c>.</summary>
 /// <param name="Code">The one-time enrolment code a manager generated for this branch.</param>
 /// <param name="DeviceName">

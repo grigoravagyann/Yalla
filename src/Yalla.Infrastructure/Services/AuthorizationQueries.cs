@@ -5,7 +5,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The three reads the authorisation policies need, each a single indexed lookup.
+/// The reads the authorisation policies need, each a single indexed lookup.
 /// </summary>
 internal sealed class AuthorizationQueries(YallaDbContext db) : IAuthorizationQueries
 {
@@ -22,8 +22,22 @@ internal sealed class AuthorizationQueries(YallaDbContext db) : IAuthorizationQu
                 p.Tab.Status,
                 p.Tab.ClosedAtUtc,
                 p.Status,
-                p.CanOrder))
+                p.Role,
+                p.CanOrder,
+                p.CanSeeTableTotal,
+                p.CanPay))
             .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<Guid?> GetTabBranchIdAsync(Guid tabId, CancellationToken cancellationToken = default)
+    {
+        var branchId = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.Id == tabId)
+            .Select(t => (Guid?)t.BranchId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return branchId;
+    }
 
     public Task<bool> BranchBelongsToVenueAsync(
         Guid branchId,

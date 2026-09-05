@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
 
@@ -10,8 +11,9 @@ namespace Yalla.Api.Authorization;
 /// Requires a tab participant token whose tab matches the one in the route.
 /// </summary>
 /// <param name="MustBeAbleToOrder">
-/// Also requires the participant's <c>CanOrder</c> flag - the difference between the
-/// <c>TabParticipant</c> and <c>TabParticipantCanOrder</c> policies.
+/// Also requires that the participant may order <i>right now</i> - approved, allowed to order,
+/// and the tab still open. The difference between the <c>TabParticipant</c> and
+/// <c>TabParticipantCanOrder</c> policies.
 /// </param>
 public sealed record TabParticipantRequirement(bool MustBeAbleToOrder) : IAuthorizationRequirement;
 
@@ -27,8 +29,15 @@ public sealed record TabParticipantRequirement(bool MustBeAbleToOrder) : IAuthor
 /// <para>
 /// The claim-to-route comparison alone would be enough to stop a participant addressing another
 /// tab. The database read on top of it covers what a claim cannot express: a participant removed
-/// from the tab five minutes ago, and a tab that has since closed. A token is a statement about
-/// the past; those two questions are about now.
+/// from the tab five minutes ago, a tab that has since closed, a tab that staff have marked
+/// closing so nobody may order. A token is a statement about the past; those are questions about
+/// now.
+/// </para>
+/// <para>
+/// A <b>pending</b> participant passes the plain policy. They may read their own state - and,
+/// through the menu endpoints, the menu - and the projection gives them nothing else. What they
+/// may not do is order, which the <c>CanOrder</c> variant refuses through the same
+/// <see cref="TabPermissions"/> rule the projection uses to tell the client so.
 /// </para>
 /// </remarks>
 internal sealed class TabParticipantHandler(
@@ -68,7 +77,7 @@ internal sealed class TabParticipantHandler(
         var access = await queries.GetTabParticipantAccessAsync(
             routeTabId.Value, participantId.Value, accessor.HttpContext?.RequestAborted ?? default);
 
-        if (access is null || access.ParticipantStatus != ParticipantStatus.Approved)
+        if (access is null || !TabPermissions.MayReadTab(access.ParticipantStatus))
         {
             return;
         }
@@ -81,7 +90,8 @@ internal sealed class TabParticipantHandler(
             return;
         }
 
-        if (requirement.MustBeAbleToOrder && !access.CanOrder)
+        if (requirement.MustBeAbleToOrder
+            && !TabPermissions.MayOrder(access.ParticipantStatus, access.CanOrder, access.TabStatus))
         {
             return;
         }

@@ -67,7 +67,26 @@ public sealed class Tab : Entity
     /// When true, guests see only their own items. A host paying for a business dinner does not
     /// necessarily want the table reading the total.
     /// </summary>
+    /// <remarks>
+    /// This is the <i>table default</i> for a guest's <c>CanSeeTableTotal</c> flag: it is read
+    /// when a participant joins and copied onto their row. The host can then override any one
+    /// person individually, so changing this later does not retroactively re-flag people who are
+    /// already on the tab.
+    /// </remarks>
     public bool HideTotalFromGuests { get; private set; }
+
+    /// <summary>
+    /// The caller's own id for the command that opened this tab. Unique across the table.
+    /// </summary>
+    /// <remarks>
+    /// A phone on cafe wifi scans a QR code, sees nothing, and scans again. Without this the
+    /// second scan would open a second tab - or, once the first one has landed, land the same
+    /// person on their own tab as a pending guest. The unique index on this column is what makes
+    /// the retry return the first scan's answer instead: a check-then-insert loses the race
+    /// between two simultaneous retries, and the index does not. Tabs opened by code paths with
+    /// no caller command - fixtures, seeding - take a fresh id so the index still holds.
+    /// </remarks>
+    public Guid ClientCommandId { get; private set; }
 
     /// <summary>
     /// Sum of the non-voided order lines, in whole Armenian dram.
@@ -110,6 +129,16 @@ public sealed class Tab : Entity
 
     public IReadOnlyCollection<Payment> Payments => _payments;
 
+    /// <summary>
+    /// Whether somebody new may still be put on this tab. Only while it is <see cref="TabStatus.Open"/>:
+    /// once staff mark it closing, someone who already paid their share must not find a
+    /// stranger's dessert added after they have left.
+    /// </summary>
+    public bool AcceptsNewParticipants => Status == TabStatus.Open;
+
+    /// <summary>Whether the tab is still live in any sense - open or settling.</summary>
+    public bool IsActive => Status is TabStatus.Open or TabStatus.Closing;
+
     private Tab()
     {
     }
@@ -121,7 +150,8 @@ public sealed class Tab : Entity
         DateTime openedAtUtc,
         decimal serviceChargePercentSnapshot,
         SettlementMode settlementMode = SettlementMode.AnyonePaysAnyAmount,
-        bool hideTotalFromGuests = false)
+        bool hideTotalFromGuests = false,
+        Guid? clientCommandId = null)
         : base(Guid.CreateVersion7())
     {
         BranchId = Guard.NotEmpty(branchId, nameof(branchId));
@@ -131,6 +161,12 @@ public sealed class Tab : Entity
         SettlementMode = Guard.Defined(settlementMode, nameof(settlementMode));
         HideTotalFromGuests = hideTotalFromGuests;
         Status = TabStatus.Open;
+
+        // A caller that has no command id - a fixture, a seeder - gets a synthetic one, so the
+        // unique index still holds. A caller that HAS one must not pass Guid.Empty and mean it.
+        ClientCommandId = clientCommandId is { } id
+            ? Guard.NotEmpty(id, nameof(clientCommandId))
+            : Guid.CreateVersion7();
 
         if (serviceChargePercentSnapshot < 0m || serviceChargePercentSnapshot > 100m)
         {
@@ -159,6 +195,33 @@ public sealed class Tab : Entity
 
     public void SetHostParticipant(Guid participantId) =>
         HostParticipantId = Guard.NotEmpty(participantId, nameof(participantId));
+
+    /// <summary>
+    /// Moves the host role to another person on the tab. A staff action: the host has left early
+    /// or their phone has died, and without this the tab is stuck with nobody able to approve
+    /// joiners or change the split.
+    /// </summary>
+    /// <remarks>
+    /// The role change on the two participant rows is done by the caller, which has them loaded;
+    /// this records which row the tab now answers to. It refuses a tab that is no longer live -
+    /// there is nothing to host on a closed bill.
+    /// </remarks>
+    public void ReassignHost(Guid newHostParticipantId)
+    {
+        if (!IsActive)
+        {
+            throw new DomainStateException($"This tab is {Status}; a closed tab has no host to reassign.");
+        }
+
+        Guard.NotEmpty(newHostParticipantId, nameof(newHostParticipantId));
+
+        if (HostParticipantId == newHostParticipantId)
+        {
+            throw new DomainStateException("That participant is already the host.");
+        }
+
+        HostParticipantId = newHostParticipantId;
+    }
 
     public void SetSettlementMode(SettlementMode settlementMode)
     {
@@ -222,7 +285,7 @@ public sealed class Tab : Entity
         ClosedAtUtc = Guard.NotLocalTime(abandonedAtUtc, nameof(abandonedAtUtc));
     }
 
-    /// <summary>The bill has been asked for; no new orders.</summary>
+    /// <summary>The bill has been asked for; no new orders and no new participants.</summary>
     public void BeginClosing()
     {
         if (Status != TabStatus.Open)
