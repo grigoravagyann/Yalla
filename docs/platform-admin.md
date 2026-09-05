@@ -71,12 +71,13 @@ a change that rolled back cannot either.
 | Action | Endpoint | Notes |
 | --- | --- | --- |
 | Create a venue **with its first branch** | `POST /api/platform/venues` | A venue with no branch is useless. One `SaveChanges`: venue, branch and both audit rows commit together or not at all. |
-| List venues | `GET /api/platform/venues?search=&page=&pageSize=` | Branch count, table count, paid-branch count, tier rollup. |
+| List venues | `GET /api/platform/venues?search=&page=&pageSize=&includeDeleted=` | Branch count, table count, paid-branch count, tier rollup. Deleted venues are hidden unless `includeDeleted=true`. |
+| Read one venue | `GET /api/platform/venues/{id}` | The venue and every branch under it. |
 | Edit a venue | `PATCH /api/platform/venues/{id}` | Name, type, slug, active flag. |
 | **Suspend** / reactivate | `POST .../suspend`, `.../reactivate` | What non-payment does. The venue disappears from diner browsing but keeps every row and stays visible to its owner. |
 | **Soft-delete** | `DELETE /api/platform/venues/{id}` | Never a hard delete. Refused, naming the blockers, while any tab is open or any confirmed booking is still in the future. |
 | Add a branch | `POST /api/platform/venues/{id}/branches` | |
-| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, canvas size, active flag, **subscription tier**. |
+| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, canvas size, active flag, **subscription tier**. Refused for a branch of a deleted venue, and a downgrade to `Free` is refused while any tab is open (see below). |
 
 An owner can do none of these. An owner configures the venue they have; the platform decides
 which venues exist and what each branch pays for.
@@ -97,15 +98,33 @@ mutation. A `Free` branch answers **409 `feature-not-enabled`** with the branch 
 in `context` — not a 403, because the caller is allowed to be there; the branch has not paid for
 what they asked. Nothing here bills anybody; it is a flag that gates features.
 
+Because the gate covers reads and settlement as well as ordering, **a downgrade waits for the open
+tabs.** Moving a branch to `Free` while a party is mid-meal would hide a live bill from the people
+who owe it, so the request is refused and names the tables — the same shape as refusing to delete a
+venue with an open tab. Upgrades are never blocked.
+
 ### Suspended versus deleted
 
-| | Diner browsing | Owner's admin surface | Data | Reversible |
-| --- | --- | --- | --- | --- |
-| **Suspended** | gone (availability answers 404) | intact | intact | yes, `reactivate` |
-| **Deleted** | gone | venue refuses every change | intact, `DeletedAtUtc` stamped | no |
+| | Diner browsing | New bookings and tabs | Existing tabs | Owner's admin surface | Data | Reversible |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Suspended** | gone (availability answers 404) | refused, `409 branch-unavailable` | readable and settleable | intact | intact | yes, `reactivate` |
+| **Deleted** | gone | refused | readable and settleable | venue refuses every change | intact, `DeletedAtUtc` stamped | no |
 
-Reservations, tabs and payments hang off a venue's branches and are financial and occupancy
-records. They outlive the customer relationship, which is why there is no hard delete anywhere.
+**Hiding the venue is not the whole lever.** A diner's app caches branch ids and the QR sticker
+stays on the table long after the invoice stops being paid, so the *entry points* refuse as well:
+`POST /api/reservations` and `POST /api/tabs/open` and `/join` answer **409 `branch-unavailable`**
+with the branch id and a readable reason. Without that, a booking made after a soft delete would
+break the very invariant the delete had just checked.
+
+What is deliberately **not** gated is an existing tab: reading it and settling it keep working.
+Taking payment away from a party that is already seated strands real money on a real table and
+punishes the diners for the venue's unpaid invoice. The same gate covers a branch whose own
+`IsActive` is false, which is what that flag means.
+
+A deleted venue refuses **every** change — name, type, slug, active flag, adding a branch, and
+editing any branch it owns. Reservations, tabs and payments hang off a venue's branches and are
+financial and occupancy records. They outlive the customer relationship, which is why there is no
+hard delete anywhere.
 
 ## 3. Configuring a venue — what an owner or manager does
 
@@ -145,8 +164,20 @@ which role is one table, `StaffRoleRules`:
 | Owner | Owner, Manager, Waiter, Kitchen |
 | Platform admin | any venue role — never another platform admin |
 
-Nobody changes their **own** role or deactivates their own account. The service decides from the
+Nobody changes their **own** role, deactivates their own account, or **changes their own branch
+assignment** — a branch-confined manager who could clear their own branch would sign in on every
+branch's tablets, which is the same escalation by another route. The service decides from the
 acting staff member's *stored* row, not from the token's claim.
+
+**Only an owner or a manager may hold an email and password.** A password mints a `VenueUser`
+token, and that identity is venue-scoped rather than branch-scoped: giving one to a waiter would
+hand them, from a browser with no enrolled tablet, the branches their PIN on the floor is
+deliberately refused at. A waiter or kitchen hand taps a PIN on a device a manager enrolled. For
+the same reason the venue-wide widening in `BranchScopedHandler` applies to `Owner` and `Manager`
+only, not to every venue-user token.
+
+One address is one account across the whole system, so a duplicate email is refused with a message
+rather than a database error.
 
 ## 4. The floor plan — and why a table is deactivated, not deleted
 
@@ -163,6 +194,13 @@ not thirty individual table updates, and a partially applied plan is a broken ro
 | Overlapping tables | **warning**, not an error. Real rooms have benches against tables and stools tucked under bars; the plan is a map, not a physics simulation |
 | Geometry changes | always safe, always allowed — moving table 7 across the room does not affect its bookings |
 | Tables match by `id`, then by `label` | an editor that lost the ids still edits the same tables, so their QR codes survive |
+| Two tables trading labels | **allowed** — renumbering a room is normal. The unique index is checked per statement, so the movers are parked on throwaway labels and renamed in a second pass, both inside one transaction |
+| A table with a party seated at it | **error** — it cannot be dropped from the plan. A floor view that stops showing an occupied table is the failure the state machine exists to prevent; free it first |
+| A table or area with no label or name | **error** naming how many, rather than a fault |
+
+Areas can also be edited one at a time, which is what the editor's sidebar does:
+`POST /api/branches/{id}/floor-areas`, `PATCH .../floor-areas/{areaId}`, `DELETE .../floor-areas/{areaId}`.
+Deleting an area **keeps its tables** — they simply stop belonging to a zone.
 
 ### Why deletion deactivates
 
@@ -174,10 +212,15 @@ long did the party stay", "what did they owe". Deleting the table would orphan t
 So a table left out of the plan, or sent to `DELETE /api/branches/{id}/tables/{tableId}`, is
 handled by its history:
 
-| Has any reservation, session or tab | What happens | Response |
+| Has any reservation, session, tab **or state-change audit row** | What happens | Response |
 | --- | --- | --- |
 | **No** — never used | removed outright | `deleted: true` |
 | **Yes** | `IsActive = false`; it leaves the floor plan and takes no bookings, and every record that points at it still resolves | `deactivated: true`, and the message says why |
+
+The audit log counts, and it is the easy one to forget. A table that was held for a late party, or
+marked out of service for a wobbly leg, has no reservation, no session and no tab — but it does
+have `TableStateChange` rows, and that foreign key restricts. Leaving it out of the history check
+would turn a delete into a database constraint error nobody can act on.
 
 Nothing is lost either way, and the editor is told which happened rather than having to guess.
 
@@ -189,7 +232,12 @@ it. Nothing in the replace path writes the token.
 
 The one way it changes is `POST /api/tables/{tableId}/regenerate-qr`, for the case where a code
 is compromised. It is explicit, `ManagerOrAbove` and branch-scoped (the branch is resolved from
-the table), and **audited** to `PlatformAuditLog` with the old and new values, whoever did it.
+the table), and **audited** to `PlatformAuditLog`, whoever did it.
+
+The audit row records the **previous** token only. That one is dead the moment the change commits,
+and recording it is what lets somebody answer "which code stopped working". The new token is a live
+credential — anyone holding it can open a tab on that table anonymously — so it does not go into an
+append-only log that reporting and backups can reach.
 
 ## Out of scope
 

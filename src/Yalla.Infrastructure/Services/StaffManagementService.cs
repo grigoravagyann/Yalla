@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Staff;
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 using Yalla.Infrastructure.Identity;
@@ -69,11 +70,13 @@ internal sealed class StaffManagementService(
                 throw new ArgumentException("An admin-panel sign-in needs both an email address and a password.", nameof(command));
             }
 
+            RequireCanHoldPassword(command.Role, acting.Role);
+
             staff.SetPasswordCredentials(command.Email, hasher.Hash(ValidPassword(command.Password)));
         }
 
         db.StaffMembers.Add(staff);
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveAsync(cancellationToken);
 
         logger.LogInformation(
             "Staff member {StaffMemberId} ({Role}) created in venue {VenueId} by {ActorId}.",
@@ -127,6 +130,15 @@ internal sealed class StaffManagementService(
 
         if (command.SetBranch)
         {
+            // Nobody widens their own scope. A manager confined to one branch who could clear their
+            // own branch would sign in on every branch's tablets, which is the same escalation the
+            // own-role rule exists to stop.
+            if (staff.Id == acting.Id && staff.BranchId != command.BranchId)
+            {
+                throw new StaffPermissionException(
+                    "Changing your own branch assignment", acting.Role, StaffRole.PlatformAdmin);
+            }
+
             if (command.BranchId is { } branchId
                 && !await db.Branches.AnyAsync(b => b.Id == branchId && b.VenueId == venueId, cancellationToken))
             {
@@ -146,7 +158,7 @@ internal sealed class StaffManagementService(
             staff.SetActive(active);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveAsync(cancellationToken);
 
         return ToView(staff, clock.UtcNow);
     }
@@ -210,6 +222,48 @@ internal sealed class StaffManagementService(
     private async Task<StaffMember> LoadStaffAsync(Guid venueId, Guid staffMemberId, CancellationToken cancellationToken) =>
         await db.StaffMembers.FirstOrDefaultAsync(s => s.Id == staffMemberId && s.VenueId == venueId, cancellationToken)
         ?? throw new KeyNotFoundException($"Staff member {staffMemberId} was not found in this venue.");
+
+    /// <summary>
+    /// Commits, turning the unique-email violation into an answer the panel can show.
+    /// </summary>
+    /// <remarks>
+    /// One address, one account, across the whole system - the sign-in form has no venue field to
+    /// disambiguate with. Relying on the index rather than a check-then-insert is what makes two
+    /// managers adding the same address at once safe.
+    /// </remarks>
+    private async Task SaveAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.StaffMemberEmail))
+        {
+            db.ChangeTracker.Clear();
+
+            throw new DomainStateException(
+                "That email address already has an account. Every address signs in to one account, "
+                + "so use a different one - or edit the existing account instead.");
+        }
+    }
+
+    /// <summary>
+    /// Only the roles that actually use the admin panel may hold an email and password.
+    /// </summary>
+    /// <remarks>
+    /// Not cosmetic. A password mints a <c>VenueUser</c> token, and that identity is venue-scoped
+    /// rather than branch-scoped: giving one to a waiter would hand them, off a browser and with no
+    /// enrolled tablet, the whole venue that their PIN on the floor deliberately does not reach.
+    /// A waiter or kitchen hand taps a PIN on a device a manager enrolled; that is the whole flow.
+    /// </remarks>
+    private static void RequireCanHoldPassword(StaffRole target, StaffRole actorRole)
+    {
+        if (target is not (StaffRole.Owner or StaffRole.Manager))
+        {
+            throw new StaffPermissionException(
+                $"Giving a {target} an admin-panel sign-in", actorRole, StaffRole.Manager);
+        }
+    }
 
     /// <summary>The lowest rank that may assign or manage <paramref name="target"/>, for the error message.</summary>
     private static StaffRole RequiredRoleFor(StaffRole target) => target switch

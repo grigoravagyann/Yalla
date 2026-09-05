@@ -87,6 +87,12 @@ internal sealed class ReservationService(
         }
 
         var branch = await LoadBranchAsync(command.BranchId, cancellationToken);
+
+        // A venue that stopped paying, or one that was deleted, takes no new bookings - a diner
+        // whose app cached the branch id must not get past the fact that it vanished from search.
+        // Only creation is gated: cancelling and seating an existing booking still work.
+        VenueGate.RequireOpenForBusiness(branch);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
         var zone = BranchZone.For(branch.TimeZoneId);
@@ -699,6 +705,7 @@ internal sealed class ReservationService(
     {
         var branch = await db.Branches
             .Include(b => b.OpeningHours)
+            .Include(b => b.Venue)
             .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken);
 
         return branch ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");

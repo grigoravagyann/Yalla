@@ -111,10 +111,23 @@ public static class OpeningHoursRules
     /// 18:00 to 01:00 - which is the only reading that is not bad data. Two blocks on one day may
     /// touch (12:00-15:00 then 15:00-23:00) but not overlap.
     /// </remarks>
-    /// <exception cref="ArgumentException">Two blocks on the same day overlap.</exception>
+    /// <exception cref="ArgumentException">
+    /// Two blocks on the same day overlap, or a block opens and closes at the same minute.
+    /// </exception>
     public static IReadOnlyList<OpeningHoursView> Normalise(IReadOnlyList<OpeningHoursBlock> blocks)
     {
         ArgumentNullException.ThrowIfNull(blocks);
+
+        // Equal times would derive as "closes after midnight" and then be refused by the entity
+        // with a message about after-midnight closing, which is not what the caller got wrong.
+        // A branch that never shuts says 00:00-23:59; there is no 24-hour block.
+        foreach (var same in blocks.Where(b => b.OpensAt == b.ClosesAt))
+        {
+            throw new ArgumentException(
+                $"Opening and closing time are both {same.OpensAt:HH\\:mm} on {same.Day}. A block must have a "
+                + "length; for a branch that never closes use 00:00 to 23:59.",
+                nameof(blocks));
+        }
 
         var normalised = blocks
             .Select(b => new OpeningHoursView(b.Day, b.OpensAt, b.ClosesAt, ClosesNextDay: b.ClosesAt <= b.OpensAt))
@@ -260,9 +273,18 @@ public static class FloorPlanRules
             errors.Add("The canvas must have a positive width and height.");
         }
 
+        // Checked before anything dereferences a label: a table object with no "label" member
+        // binds to null, and the service would otherwise fault on it rather than say what is wrong.
+        var unlabelled = tables.Count(t => string.IsNullOrWhiteSpace(t.Label));
+
+        if (unlabelled > 0)
+        {
+            errors.Add($"{unlabelled} table(s) in the plan have no label. Every table needs the label printed on it.");
+        }
+
         var duplicates = tables
             .GroupBy(t => (t.Label ?? string.Empty).Trim(), StringComparer.OrdinalIgnoreCase)
-            .Where(g => g.Count() > 1)
+            .Where(g => g.Count() > 1 && g.Key.Length > 0)
             .Select(g => g.Key)
             .ToList();
 

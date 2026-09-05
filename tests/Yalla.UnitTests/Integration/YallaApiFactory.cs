@@ -75,6 +75,36 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         return this;
     }
 
+    /// <summary>Removes a configuration value entirely, so the host sees it as absent.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="With(string, string?)"/> with null: the startup guards ask whether
+    /// a setting is configured at all, and a key present with a null value is the same thing only
+    /// by accident. This makes "genuinely missing" testable.
+    /// </remarks>
+    public YallaApiFactory Without(string key)
+    {
+        _settings.Remove(key);
+
+        return this;
+    }
+
+    /// <summary>
+    /// Runs the host as another environment.
+    /// </summary>
+    /// <remarks>
+    /// The environment decides real behaviour here - the CORS policy, HTTPS redirection, whether
+    /// the platform-admin configuration is mandatory - so the branches that are not Development
+    /// are only reachable in a test through this.
+    /// </remarks>
+    public YallaApiFactory WithEnvironment(string environmentName)
+    {
+        _environment = environmentName;
+
+        return this;
+    }
+
+    private string _environment = Environments.Development;
+
     /// <summary>Points the API at a test database.</summary>
     public YallaApiFactory WithDatabase(string connectionString) =>
         With("ConnectionStrings:Yalla", connectionString);
@@ -114,7 +144,7 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment(Environments.Development);
+        builder.UseEnvironment(_environment);
         builder.UseContentRoot(ApiContentRoot());
 
         // UseSetting, not only ConfigureAppConfiguration.

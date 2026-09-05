@@ -214,6 +214,20 @@ internal static class ApiExceptionMapper
         // and catching it here reported every one of them as a 409 "you have a conflict", echoed
         // the internal message to the caller, and logged none of it as an error. Those now fall
         // through to the 500 below, where they are logged and say nothing about internals.
+        // The venue stopped paying, or was deleted, and this is a new booking or a new tab. Not a
+        // 403 and not a 404: the branch is real and the caller is welcome, it is simply shut.
+        // Must stay ABOVE the general DomainStateException arm it derives from.
+        BranchUnavailableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.BranchUnavailable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["reason"] = e.Reason,
+            }),
+
         // Both derive from DomainStateException and must stay ABOVE it.
         //
         // Not a 403. The caller is allowed to be here; the branch has not paid for what they

@@ -122,6 +122,13 @@ public static class ErrorCodes
     /// </summary>
     public const string FloorPlanInvalid = "floor-plan-invalid";
 
+    /// <summary>
+    /// The branch is not open for business: its venue is suspended or deleted, or the branch is
+    /// switched off. HTTP 409. Distinct from <see cref="FeatureNotEnabled"/>, which is about what a
+    /// branch pays for rather than whether it is trading at all.
+    /// </summary>
+    public const string BranchUnavailable = "branch-unavailable";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -151,6 +158,7 @@ public static class ErrorCodes
         TooManyAttempts => "Too many attempts",
         AccountLocked => "Account locked",
         FeatureNotEnabled => "Feature not enabled for this branch",
+        BranchUnavailable => "Branch not open for business",
         VenueDeletionBlocked => "Venue cannot be deleted",
         FloorPlanInvalid => "Floor plan invalid",
         InternalError => "Internal error",

@@ -20,6 +20,35 @@ public sealed class FeatureNotEnabledException(string feature, Guid branchId, Su
 }
 
 /// <summary>
+/// The branch exists but is not open for business: its venue is suspended or deleted, or the
+/// branch itself is switched off.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Suspension is what happens when a venue stops paying, and it has to mean more than
+/// disappearing from search. A diner who cached a branch id, or who scans a QR sticker that is
+/// still on the table, must not be able to start new business there - otherwise the lever does
+/// not work and, worse, a booking made after a soft delete breaks the very invariant the delete
+/// just checked.
+/// </para>
+/// <para>
+/// It deliberately blocks only the <i>entry points</i>: a new booking, a new tab, a new person on
+/// a tab. Parties already seated keep reading and settling their bill, because taking payment away
+/// from a venue mid-service would strand real money on a real table.
+/// </para>
+/// </remarks>
+public sealed class BranchUnavailableException(Guid branchId, string reason)
+    : DomainStateException(
+        $"This branch is not currently open for bookings or orders: {reason} "
+        + "Anyone already seated can still see and settle their bill.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    /// <summary>Why, in a sentence a diner can read: the venue is suspended, deleted, or the branch is closed.</summary>
+    public string Reason { get; } = reason;
+}
+
+/// <summary>
 /// The venue cannot be deleted while people are still eating there or still booked to.
 /// </summary>
 /// <remarks>

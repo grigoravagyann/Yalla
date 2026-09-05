@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.BranchSettings;
+using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
@@ -279,6 +280,231 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         Assert.Contains(tables[0].Label, warning);
         Assert.Contains(tables[1].Label, warning);
         Assert.Equal(tables[0].X + 20, result.Plan.Tables.Single(t => t.Label == tables[1].Label).X);
+    }
+
+    /// <summary>
+    /// A table that was only ever held or taken out of service has no reservation, no session and
+    /// no tab - but it does have audit rows, and that foreign key restricts. Deleting it would fail
+    /// in the database rather than here.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_table_whose_only_history_is_the_audit_log_is_deactivated_not_deleted()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var tableId = branch.FirstTableId;
+
+        // Out of service and back: two TableStateChange rows, no session, no booking, no bill.
+        var machine = fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId));
+        await machine.MarkOutOfServiceAsync(new TableStateCommand(branch.BranchId, tableId, Guid.CreateVersion7()));
+        await machine.ReturnToServiceAsync(new TableStateCommand(branch.BranchId, tableId, Guid.CreateVersion7()));
+
+        await using var editDb = fixture.CreateContext(clock);
+        var service = fixture.CreateBranchSettingsService(editDb, clock, TestActor.Manager(branch.ManagerId));
+
+        var result = await service.DeleteTableAsync(branch.BranchId, tableId);
+
+        Assert.False(result.Deleted);
+        Assert.True(result.Deactivated);
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.False((await verify.DiningTables.AsNoTracking().FirstAsync(t => t.Id == tableId)).IsActive);
+        Assert.True(await verify.TableStateChanges.AnyAsync(c => c.DiningTableId == tableId));
+    }
+
+    /// <summary>The same rule through the whole-plan path, which is how the editor removes a table.</summary>
+    [SkippableFact]
+    public async Task A_plan_that_omits_an_audited_table_deactivates_it_rather_than_failing()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var auditedId = branch.FirstTableId;
+
+        var machine = fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId));
+        await machine.HoldForLatePartyAsync(new TableStateCommand(branch.BranchId, auditedId, Guid.CreateVersion7()));
+        await machine.ReleaseHoldAsync(new TableStateCommand(branch.BranchId, auditedId, Guid.CreateVersion7()));
+
+        await using var editDb = fixture.CreateContext(clock);
+        var service = fixture.CreateBranchSettingsService(editDb, clock, TestActor.Manager(branch.ManagerId));
+        var plan = await service.GetFloorPlanAsync(branch.BranchId);
+
+        var kept = plan.Tables.Where(t => t.Id != auditedId).Select(Input).ToList();
+        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept));
+
+        Assert.Equal([plan.Tables.Single(t => t.Id == auditedId).Label], result.DeactivatedTables);
+        Assert.Empty(result.RemovedTables);
+    }
+
+    /// <summary>
+    /// A table with diners at it must not disappear from the plan. The one-at-a-time delete already
+    /// refuses this; leaving the table out of a plan is the same act.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_plan_that_omits_an_occupied_table_is_rejected_and_nothing_changes()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var occupiedId = branch.FirstTableId;
+
+        await fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, occupiedId, PartySize: 2, Guid.CreateVersion7()));
+
+        await using var editDb = fixture.CreateContext(clock);
+        var service = fixture.CreateBranchSettingsService(editDb, clock, TestActor.Manager(branch.ManagerId));
+        var plan = await service.GetFloorPlanAsync(branch.BranchId);
+        var label = plan.Tables.Single(t => t.Id == occupiedId).Label;
+
+        var kept = plan.Tables.Where(t => t.Id != occupiedId).Select(Input).ToList();
+
+        var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept)));
+
+        Assert.Contains(label, refused.Message);
+        Assert.Contains("seated", refused.Message, StringComparison.OrdinalIgnoreCase);
+
+        await using var verify = fixture.CreateContext(clock);
+        var still = await verify.DiningTables.AsNoTracking().FirstAsync(t => t.Id == occupiedId);
+        Assert.True(still.IsActive);
+        Assert.Equal(TableStatus.Occupied, still.Status);
+    }
+
+    /// <summary>
+    /// Renumbering a room swaps labels between existing tables. It is a legal plan, and one a
+    /// single pass cannot write - the unique index is checked per statement.
+    /// </summary>
+    [SkippableFact]
+    public async Task Two_tables_can_trade_labels_in_one_plan()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var first = before.Tables[0];
+        var second = before.Tables[1];
+
+        var tables = before.Tables.Select(Input).ToList();
+        tables[0] = tables[0] with { Label = second.Label };
+        tables[1] = tables[1] with { Label = first.Label };
+
+        var result = await service.ReplaceFloorPlanAsync(
+            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables));
+
+        Assert.Equal(second.Label, result.Plan.Tables.Single(t => t.Id == first.Id).Label);
+        Assert.Equal(first.Label, result.Plan.Tables.Single(t => t.Id == second.Id).Label);
+
+        // Swapped, not recreated: the QR codes on both tables still work.
+        Assert.Equal(first.QrToken, result.Plan.Tables.Single(t => t.Id == first.Id).QrToken);
+        Assert.Equal(second.QrToken, result.Plan.Tables.Single(t => t.Id == second.Id).QrToken);
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.DoesNotContain(
+            await verify.DiningTables.AsNoTracking().Where(t => t.BranchId == branch.BranchId).Select(t => t.Label).ToListAsync(),
+            l => l.StartsWith('~'));
+    }
+
+    /// <summary>A payload missing a required member answers with the missing member, not a fault.</summary>
+    [SkippableFact]
+    public async Task A_plan_with_an_unlabelled_table_or_unnamed_area_is_rejected_cleanly()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var unlabelled = new List<FloorTableInput>
+        {
+            new(null, null!, 4, 10, 10, 90, 90, 0d, TableShape.Round),
+        };
+
+        var noLabel = await Assert.ThrowsAsync<FloorPlanInvalidException>(
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], unlabelled)));
+
+        Assert.Contains("no label", noLabel.Message, StringComparison.OrdinalIgnoreCase);
+
+        var noName = await Assert.ThrowsAsync<FloorPlanInvalidException>(
+            () => service.ReplaceFloorPlanAsync(
+                branch.BranchId,
+                new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, null!, 0)], [])));
+
+        Assert.Contains("no name", noName.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The incremental area endpoints, and the promise that deleting an area keeps its tables.</summary>
+    [SkippableFact]
+    public async Task Floor_areas_can_be_added_renamed_and_removed_without_touching_the_tables()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var created = await service.CreateFloorAreaAsync(branch.BranchId, new FloorAreaCommand("Terrace", 1));
+        Assert.Equal("Terrace", created.Name);
+
+        var renamed = await service.UpdateFloorAreaAsync(branch.BranchId, created.Id, new FloorAreaCommand("Garden", 2));
+        Assert.Equal("Garden", renamed.Name);
+        Assert.Equal(2, renamed.DisplayOrder);
+
+        // The builder's tables live in "Windows"; deleting it must leave them on the floor.
+        var plan = await service.GetFloorPlanAsync(branch.BranchId);
+        var windows = plan.Areas.Single(a => a.Name == "Windows");
+        var inWindows = plan.Tables.Count(t => t.FloorAreaId == windows.Id);
+        Assert.True(inWindows > 0);
+
+        await service.DeleteFloorAreaAsync(branch.BranchId, windows.Id);
+
+        var after = await service.GetFloorPlanAsync(branch.BranchId);
+        Assert.DoesNotContain(after.Areas, a => a.Id == windows.Id);
+        Assert.Equal(plan.Tables.Count, after.Tables.Count);
+        Assert.All(after.Tables, t => Assert.NotEqual(windows.Id, t.FloorAreaId));
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => service.DeleteFloorAreaAsync(branch.BranchId, Guid.CreateVersion7()));
+    }
+
+    /// <summary>
+    /// Equal opening and closing times would derive as "closes after midnight" and then be refused
+    /// with a message about after-midnight closing, which is not what the caller got wrong.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_block_that_opens_and_closes_at_the_same_minute_is_refused_by_its_own_name()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var refused = await Assert.ThrowsAsync<ArgumentException>(
+            () => service.ReplaceOpeningHoursAsync(
+                branch.BranchId, [new OpeningHoursBlock(DayOfWeek.Monday, new TimeOnly(0, 0), new TimeOnly(0, 0))]));
+
+        Assert.Contains("00:00", refused.Message);
+        Assert.Contains("23:59", refused.Message);
+
+        // And the week it suggests instead is accepted.
+        var allDay = await service.ReplaceOpeningHoursAsync(
+            branch.BranchId, [new OpeningHoursBlock(DayOfWeek.Monday, new TimeOnly(0, 0), new TimeOnly(23, 59))]);
+
+        Assert.False(Assert.Single(allDay).ClosesNextDay);
     }
 
     // ------------------------------------------------------------ helpers

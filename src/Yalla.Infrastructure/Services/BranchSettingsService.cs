@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.BranchSettings;
@@ -175,6 +176,20 @@ internal sealed class BranchSettingsService(
 
         var errors = validation.Errors.ToList();
 
+        var unnamedAreas = areasInput.Count(a => string.IsNullOrWhiteSpace(a.Name));
+
+        if (unnamedAreas > 0)
+        {
+            errors.Add($"{unnamedAreas} area(s) in the plan have no name.");
+        }
+
+        // Shape problems are thrown before anything below reads a label or a name, so a payload
+        // with a missing field answers "that field is missing" rather than faulting on it.
+        if (errors.Count > 0)
+        {
+            throw new FloorPlanInvalidException(errors, validation.TablesOutsideCanvas, validation.DuplicateLabels);
+        }
+
         var duplicateAreas = areasInput
             .GroupBy(a => a.Name.Trim(), StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
@@ -274,6 +289,22 @@ internal sealed class BranchSettingsService(
                 + "Those tables are deactivated, not deleted, and keep their labels - reuse them by keeping the table (with its id) instead.");
         }
 
+        // A table with diners at it must not vanish from the plan. DeleteTableAsync already refuses
+        // this one table at a time; a plan that leaves the table out is the same act, and a floor
+        // view that stops showing an occupied table is the failure the whole state machine exists
+        // to prevent.
+        var seated = omitted
+            .Where(t => t.Status == TableStatus.Occupied)
+            .Select(t => t.Label)
+            .ToList();
+
+        if (seated.Count > 0)
+        {
+            errors.Add(
+                $"Table(s) {string.Join(", ", seated)} have a party seated at them and cannot be removed from the plan. "
+                + "Free them first, or keep them in the plan.");
+        }
+
         if (errors.Count > 0)
         {
             db.ChangeTracker.Clear();
@@ -302,6 +333,33 @@ internal sealed class BranchSettingsService(
                 db.DiningTables.Remove(table);
                 removed.Add(table.Label);
             }
+        }
+
+        // Two tables trading labels - renumbering a room during onboarding - is a legal plan that a
+        // single pass cannot write: the unique index on (branch, label) is checked per statement, so
+        // "table A becomes B" lands while the real B still holds the name. Park the movers on
+        // throwaway labels, flush, then write the real ones. One transaction either way, so a plan
+        // still applies whole or not at all.
+        var currentLabels = existingTables.ToDictionary(t => t.Id, t => t.Label);
+
+        var movers = updatedTables
+            .Where(u => !string.Equals(currentLabels[u.Table.Id], u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Where(u => existingTables.Any(other => other.Id != u.Table.Id
+                                                   && string.Equals(other.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        IDbContextTransaction? transaction = null;
+
+        if (movers.Count > 0)
+        {
+            transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            foreach (var (_, table) in movers)
+            {
+                table.Relabel(StagingLabel());
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
         }
 
         foreach (var (input, table) in updatedTables)
@@ -350,12 +408,26 @@ internal sealed class BranchSettingsService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
         }
         catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TableLabelPerBranch))
         {
             db.ChangeTracker.Clear();
             throw new FloorPlanInvalidException(
                 ["A table label in this plan is already used by another table in the branch."], [], []);
+        }
+        finally
+        {
+            // Disposing an uncommitted transaction rolls it back, so a failure between the two
+            // phases leaves the staging labels nowhere.
+            if (transaction is not null)
+            {
+                await transaction.DisposeAsync();
+            }
         }
 
         logger.LogInformation(
@@ -465,12 +537,15 @@ internal sealed class BranchSettingsService(
 
         // The printed code on the physical table just stopped working. That is worth a record of
         // who did it and when, whatever their role.
+        // The previous token only - it is dead the moment this commits, and recording it is what
+        // lets someone answer "which code stopped working". The NEW token is a live credential:
+        // anyone who can read it can open a tab on that table anonymously, so it does not go into
+        // an append-only log that reporting and backups can reach.
         PlatformAudit.Record(db, actor, clock, "table.regenerate-qr", "DiningTable", table.Id, new
         {
             table.BranchId,
             table.Label,
             previousQrToken = previous,
-            newQrToken = table.QrToken,
         });
 
         await db.SaveChangesAsync(cancellationToken);
@@ -492,17 +567,31 @@ internal sealed class BranchSettingsService(
         await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
         ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
-    /// <summary>Which of these tables anything ever happened at: a booking, a seating or a bill.</summary>
+    /// <summary>
+    /// Which of these tables anything ever happened at: a booking, a seating, a bill - or an entry
+    /// in the state-change log.
+    /// </summary>
+    /// <remarks>
+    /// The audit log counts, and it is the easy one to forget. A table that was held for a late
+    /// party, or marked out of service for a wobbly leg, has no reservation, no session and no tab,
+    /// but it does have <c>TableStateChange</c> rows - and that foreign key is <c>Restrict</c>, so
+    /// deleting the table would fail in the database with a constraint error nobody can act on
+    /// instead of quietly deactivating it here.
+    /// </remarks>
     private async Task<HashSet<Guid>> TablesWithHistoryAsync(IReadOnlyList<Guid> tableIds, CancellationToken cancellationToken)
     {
         var reserved = db.Reservations.Where(r => tableIds.Contains(r.DiningTableId)).Select(r => r.DiningTableId);
         var seated = db.TableSessions.Where(s => tableIds.Contains(s.DiningTableId)).Select(s => s.DiningTableId);
         var billed = db.Tabs.Where(t => tableIds.Contains(t.DiningTableId)).Select(t => t.DiningTableId);
+        var audited = db.TableStateChanges.Where(c => tableIds.Contains(c.DiningTableId)).Select(c => c.DiningTableId);
 
-        var used = await reserved.Union(seated).Union(billed).Distinct().ToListAsync(cancellationToken);
+        var used = await reserved.Union(seated).Union(billed).Union(audited).Distinct().ToListAsync(cancellationToken);
 
         return [.. used];
     }
+
+    /// <summary>A label nothing else can be holding, for the middle of a two-phase rename.</summary>
+    private static string StagingLabel() => $"~{Guid.NewGuid():N}"[..9];
 
     private static Guid? AreaId(Dictionary<string, FloorArea> areasByName, string? areaName) =>
         areaName is null ? null : areasByName[areaName.Trim()].Id;

@@ -219,6 +219,36 @@ public class PolicyHandlerTests
         Assert.True(context.HasSucceeded);
     }
 
+    /// <summary>
+    /// The venue-wide widening is for the accounts whose job is every branch. A waiter who was
+    /// given an admin-panel password holds a VenueUser token too, and must not inherit it - their
+    /// PIN on a tablet is confined to one branch, and a password must not be a way around that.
+    /// </summary>
+    [Theory]
+    [InlineData(StaffRole.Waiter)]
+    [InlineData(StaffRole.Kitchen)]
+    public async Task BranchScoped_does_not_widen_a_venue_user_token_below_manager(StaffRole role)
+    {
+        var context = await EvaluateBranchAsync(
+            role: role, tokenVenueId: VenueId, tokenBranchId: BranchId,
+            routeBranchId: Guid.CreateVersion7(), branchVenueId: VenueId);
+
+        Assert.False(context.HasSucceeded);
+    }
+
+    /// <summary>...while their own branch still works, so the refusal above is the widening and not the token.</summary>
+    [Theory]
+    [InlineData(StaffRole.Waiter)]
+    [InlineData(StaffRole.Manager)]
+    public async Task BranchScoped_admits_any_role_on_the_branch_its_own_claim_names(StaffRole role)
+    {
+        var context = await EvaluateBranchAsync(
+            role: role, tokenVenueId: VenueId, tokenBranchId: BranchId,
+            routeBranchId: BranchId, branchVenueId: VenueId);
+
+        Assert.True(context.HasSucceeded);
+    }
+
     private static async Task<AuthorizationHandlerContext> EvaluateBranchAsync(
         StaffRole role,
         Guid? tokenVenueId,

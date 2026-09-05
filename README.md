@@ -50,10 +50,20 @@ In Development the API listens on **all interfaces**, on two ports:
 in the console. It lists every adapter, real wifi first, with virtual adapters (VirtualBox,
 Hyper-V, WSL, Docker) flagged so you do not paste one of those into a phone.
 
-Both endpoints are configured in `appsettings.Development.json` under `Kestrel:Endpoints`, and that
-file is loaded in Development **only**. No other environment binds `0.0.0.0` or serves plain HTTP;
-they take their addresses from `ASPNETCORE_URLS`, and HTTPS redirection is on everywhere except
-Development.
+Both addresses come from `applicationUrl` in `Properties/launchSettings.json`, which is **never
+published** — so no deployed environment can inherit a `0.0.0.0` binding or a plain-HTTP endpoint
+from a config file. Deployments take their addresses from `ASPNETCORE_URLS` or
+`ASPNETCORE_HTTP_PORTS`, and HTTPS redirection is on everywhere except Development.
+
+| Profile | Binds | Notes |
+| --- | --- | --- |
+| `Yalla.Api` (default) | `http://0.0.0.0:5086` and `https://0.0.0.0:7289` | The usual one. Needs the ASP.NET dev certificate for the HTTPS port. |
+| `http` | `http://0.0.0.0:5086` | HTTP only, so it runs on a machine with no dev certificate. |
+| `Docker` | the container's own `8080`/`8081` | Untouched by the above. |
+
+A run with **no profile at all** — the built executable started directly — falls back to
+`http://0.0.0.0:5086`, so it is still reachable from a phone. Anything explicit
+(`ASPNETCORE_URLS`, `ASPNETCORE_HTTP_PORTS`, a `Kestrel:Endpoints` section) always wins.
 
 ### What to put in the frontend configs
 

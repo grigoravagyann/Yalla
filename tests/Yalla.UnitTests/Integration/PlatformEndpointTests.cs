@@ -110,12 +110,38 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var tabId = body.GetProperty("tab").GetProperty("tabId").GetGuid();
         var token = body.GetProperty("token").GetProperty("accessToken").GetString()!;
 
-        // Downgrade again: the participant's own tab is now unreachable, with the same code.
         using var diner = factory.CreateClientWithToken(token);
         Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/tabs/{tabId}")).StatusCode);
 
-        (await platform.PatchAsJsonAsync(
-            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Free })).EnsureSuccessStatusCode();
+        // Downgrading now would switch the tab endpoints off under a party that is still eating,
+        // hiding a live bill from the people who owe it - so it waits, and says which table.
+        var strand = await platform.PatchAsJsonAsync(
+            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Free });
+
+        Assert.Equal(HttpStatusCode.Conflict, strand.StatusCode);
+        Assert.Contains("open tab", (await strand.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("detail").GetString()!);
+
+        // The refusal changed nothing: the tab is still readable and the branch is still Paid.
+        Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/tabs/{tabId}")).StatusCode);
+
+        await using (var verify = fixture.CreateContext(factory.Clock))
+        {
+            Assert.Equal(
+                SubscriptionTier.Paid,
+                await verify.Branches.Where(b => b.Id == branch.BranchId).Select(b => b.SubscriptionTier).FirstAsync());
+        }
+
+        // A branch with nothing outstanding downgrades, and the gate applies from then on.
+        await using (var settle = fixture.CreateContext(factory.Clock))
+        {
+            var tab = await settle.Tabs.FirstAsync(t => t.Id == tabId);
+            tab.Close(factory.Clock.UtcNow);
+            await settle.SaveChangesAsync();
+        }
+
+        var downgraded = await platform.PatchAsJsonAsync(
+            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Free });
+        Assert.Equal(HttpStatusCode.OK, downgraded.StatusCode);
 
         var gated = await diner.GetAsync($"/api/tabs/{tabId}");
         Assert.Equal(HttpStatusCode.Conflict, gated.StatusCode);

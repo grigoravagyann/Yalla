@@ -110,7 +110,11 @@ internal sealed class BranchScopedHandler(
             return;
         }
 
-        if (context.User.PrincipalType() != PrincipalType.VenueUser)
+        // The widening below is for the accounts whose job is every branch. It is NOT enough to be
+        // a venue-user token: a waiter given an admin-panel password would otherwise reach branches
+        // their PIN on a tablet is refused at, which is the boundary this handler exists to hold.
+        if (context.User.PrincipalType() != PrincipalType.VenueUser
+            || context.User.StaffRole() is not (StaffRole.Owner or StaffRole.Manager))
         {
             logger.LogWarning(
                 "Staff token scoped to branch {ClaimedBranchId} refused on branch {RouteBranchId}.",

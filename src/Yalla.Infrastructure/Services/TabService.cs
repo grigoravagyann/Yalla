@@ -90,9 +90,13 @@ internal sealed class TabService(
         {
             var table = await db.DiningTables
                 .Include(t => t.Branch)
+                    .ThenInclude(b => b.Venue)
                 .FirstOrDefaultAsync(t => t.QrToken == qrToken && t.IsActive, cancellationToken)
                 ?? throw new KeyNotFoundException("That QR code does not belong to a table in service.");
 
+            // The sticker on the table outlives the business relationship. A suspended or deleted
+            // venue seats nobody new, whatever is still printed on the furniture.
+            VenueGate.RequireOpenForBusiness(table.Branch);
             RequirePaid(table.Branch);
 
             if (table.Status == TableStatus.OutOfService)
@@ -226,6 +230,11 @@ internal sealed class TabService(
         }
 
         var tab = await LoadTabAsync(invitation.TabId, cancellationToken);
+
+        // Nobody new joins at a venue that is no longer open for business. The people already on
+        // the tab keep reading and settling it - LoadTabAsync deliberately does not gate on this.
+        VenueGate.RequireOpenForBusiness(tab.Branch);
+
         var participant = await JoinExistingAsync(tab, device, command.DisplayName, cancellationToken);
 
         return await ResultAsync(tab, participant, TabOpenOutcome.JoinedExistingTab, wasReplay: false, cancellationToken);
@@ -566,7 +575,10 @@ internal sealed class TabService(
 
     private async Task<Tab> LoadTabAsync(Guid tabId, CancellationToken cancellationToken, bool includeJoinTokens = false)
     {
-        IQueryable<Tab> tabs = db.Tabs.Include(t => t.Participants).Include(t => t.Branch);
+        IQueryable<Tab> tabs = db.Tabs
+            .Include(t => t.Participants)
+            .Include(t => t.Branch)
+                .ThenInclude(b => b.Venue);
 
         if (includeJoinTokens)
         {
