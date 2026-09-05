@@ -166,8 +166,16 @@ public sealed class SqlServerFixture : IAsyncLifetime
             clock);
 
     /// <summary>The state machine wired over one context, acting as the given staff member.</summary>
-    internal TableStateService CreateService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, NullLogger<TableStateService>.Instance);
+    /// <remarks>
+    /// <paramref name="lockOptions"/> is how a test asks for a short wait. The default five seconds
+    /// is right for a venue and far too long for a test that wants to prove a writer gives up.
+    /// </remarks>
+    internal TableStateService CreateService(
+        YallaDbContext db,
+        IClock clock,
+        ICurrentActor actor,
+        BookingLockOptions? lockOptions = null) =>
+        new(db, clock, actor, CreateTableLock(db, lockOptions), NullLogger<TableStateService>.Instance);
 
     internal FloorQuery CreateFloorQuery(YallaDbContext db, IClock clock) => new(db, clock);
 
@@ -259,8 +267,21 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateAvailabilityQuery(db, clock),
             new AuthorizationQueries(db),
             noShowPolicy ?? new NoShowPolicy(),
-            lockOptions ?? new BookingLockOptions(),
+            CreateReservationWriter(db, lockOptions),
             NullLogger<ReservationService>.Instance);
+
+    /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
+    internal ReservationWriter CreateReservationWriter(
+        YallaDbContext db,
+        BookingLockOptions? lockOptions = null) =>
+        new(db, CreateTableLock(db, lockOptions), NullLogger<ReservationWriter>.Instance);
+
+    /// <summary>
+    /// The per-table write lock. Tests that want to <i>hold</i> it - to prove another writer waits
+    /// and then gives up - take a scope from this directly.
+    /// </summary>
+    internal TableLock CreateTableLock(YallaDbContext db, BookingLockOptions? lockOptions = null) =>
+        new(db, lockOptions ?? new BookingLockOptions(), NullLogger<TableLock>.Instance);
 }
 
 /// <summary>Groups the integration tests so the database is created once, not per class.</summary>

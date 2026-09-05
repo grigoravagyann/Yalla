@@ -136,6 +136,22 @@ internal static class ApiExceptionMapper
                 ["retryable"] = e.Retryable,
             }),
 
+        // The same contention reached from the floor screen instead of a diner's phone: a waiter
+        // seating a walk-in while a booking holds the table. Below the arm above, because the
+        // booking-specific type derives from this one and would otherwise never be reached.
+        TableLockTimeoutException e => new MappedError(
+            StatusCodes.Status503ServiceUnavailable,
+            ErrorCodes.TableLockTimeout,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["timeoutMilliseconds"] = e.TimeoutMilliseconds,
+                ["retryable"] = e.Retryable,
+            }),
+
         // One entry for the whole family of booking refusals, each answering with its own code
         // and its own numbers. 422: understood, and semantically wrong. Adding a rule is a new
         // exception type and a new constant - this mapper does not change.

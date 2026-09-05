@@ -1,3 +1,4 @@
+using Yalla.Domain.Venues;
 using Yalla.Domain.Occupancy;
 
 namespace Yalla.Application.Reservations;
@@ -158,16 +159,9 @@ public sealed class ClientCommandIdAlreadyUsedException(Guid clientCommandId)
 /// </para>
 /// </remarks>
 public sealed class ReservationLockTimeoutException(Guid tableId, string tableLabel, int timeoutMilliseconds)
-    : Exception(
+    : TableLockTimeoutException(
+        tableId,
+        tableLabel,
+        timeoutMilliseconds,
         $"Table {tableLabel} was busy with another booking for longer than {timeoutMilliseconds}ms. "
-        + "Retry with the same clientCommandId.")
-{
-    public Guid TableId { get; } = tableId;
-
-    public string TableLabel { get; } = tableLabel;
-
-    public int TimeoutMilliseconds { get; } = timeoutMilliseconds;
-
-    /// <summary>Always true. Stated on the wire so no client has to know which codes are retryable.</summary>
-    public bool Retryable => true;
-}
+        + "Retry with the same clientCommandId.");

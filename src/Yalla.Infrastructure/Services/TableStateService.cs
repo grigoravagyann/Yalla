@@ -44,6 +44,7 @@ internal sealed class TableStateService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    TableLock tableLock,
     ILogger<TableStateService> logger) : ITableStateService
 {
     public async Task<TableStateChangeResult> SeatWalkInAsync(
@@ -56,6 +57,11 @@ internal sealed class TableStateService(
         {
             return replayed;
         }
+
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
@@ -81,7 +87,8 @@ internal sealed class TableStateService(
                 table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
                 tableSessionId: session.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> SeatQrScanAsync(
@@ -99,6 +106,11 @@ internal sealed class TableStateService(
         {
             return replayed;
         }
+
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
@@ -134,7 +146,8 @@ internal sealed class TableStateService(
                 table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
                 tableSessionId: session.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> SeatReservationAsync(
@@ -147,6 +160,11 @@ internal sealed class TableStateService(
         {
             return replayed;
         }
+
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
@@ -188,7 +206,8 @@ internal sealed class TableStateService(
                 tableSessionId: session.Id,
                 reservationId: reservation.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> HoldForLatePartyAsync(
@@ -266,6 +285,11 @@ internal sealed class TableStateService(
             return replayed;
         }
 
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
@@ -304,7 +328,8 @@ internal sealed class TableStateService(
                 tableSessionId: session.Id,
                 reservationId: reservation?.Id,
                 warnings: SeatingWarnings(table, nowUtc, next)),
-            cancellationToken);
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> FreeTableAsync(
@@ -530,6 +555,7 @@ internal sealed class TableStateService(
         Guid clientCommandId,
         Func<TableStateChangeResult> buildResult,
         CancellationToken cancellationToken,
+        TableLockScope? locked = null,
         [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
         try
@@ -544,7 +570,21 @@ internal sealed class TableStateService(
 
             await db.SaveChangesAsync(cancellationToken);
 
+            // Seatings hold the table's write lock; everything else runs in EF's implicit
+            // transaction and has nothing to commit here.
+            if (locked is not null)
+            {
+                await locked.CommitAsync(cancellationToken);
+            }
+
             return result;
+        }
+        catch (Exception ex) when (locked is not null && TableLock.IsTimeout(ex))
+        {
+            // Contention, not refusal: this writer never got its turn, so nothing was decided and
+            // the same command sent again will very likely work. Kept distinct from the conflict
+            // below, which will never succeed no matter how often it is repeated.
+            throw new TableLockTimeoutException(locked.TableId, locked.TableLabel, locked.TimeoutMilliseconds);
         }
         catch (DbUpdateConcurrencyException)
         {

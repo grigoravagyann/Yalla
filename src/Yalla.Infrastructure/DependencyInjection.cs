@@ -71,6 +71,11 @@ public static class DependencyInjection
         services.AddSingleton(Bind<NoShowPolicy>(configuration, NoShowPolicy.SectionName));
         services.AddSingleton(Bind<BookingLockOptions>(configuration, BookingLockOptions.SectionName));
 
+        // The table lock and the one writer allowed to insert a booking. Scoped, because both hold
+        // the request's DbContext and the lock lives inside that context's connection.
+        services.AddScoped<TableLock>();
+        services.AddScoped<ReservationWriter>();
+
         return services;
     }
 

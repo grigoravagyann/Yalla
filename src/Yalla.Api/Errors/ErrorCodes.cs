@@ -78,6 +78,12 @@ public static class ErrorCodes
     public const string ReservationLockTimeout = "reservation-lock-timeout";
 
     /// <summary>
+    /// A table write waited too long for another writer. Retryable, and deliberately not a
+    /// conflict: nothing was decided, so the same request will very likely succeed.
+    /// </summary>
+    public const string TableLockTimeout = "table-lock-timeout";
+
+    /// <summary>
     /// The <c>clientCommandId</c> on a booking request already belongs to another caller's booking.
     /// HTTP 409. A client bug rather than a retry: generate one per booking, and reuse it only when
     /// retrying that same booking.
@@ -174,6 +180,7 @@ public static class ErrorCodes
         TableAlreadyBooked => "Table already booked",
         TableCurrentlyOccupied => "Table currently occupied",
         ReservationLockTimeout => "Reservation lock timeout",
+        TableLockTimeout => "Table busy",
         ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",
