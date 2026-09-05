@@ -17,6 +17,33 @@ for conflicts and is deliberately **not** baked into `EndUtc`, so:
 - the stored interval stays the one the diner booked and sees on their confirmation, and
 - an owner can change the turnaround tomorrow without rewriting history.
 
+### A sitting is an interval too
+
+A booking says when it starts and the policy says how long it lasts. A **`TableSession`** — the party
+physically at the table — says when it started and *nothing at all* about when it ends, because
+nobody knows. It closes when a waiter taps Free, which may be twenty minutes later or ninety.
+
+An open sitting is therefore projected forward by the branch's **current** turn time, in
+`SessionOccupancy.ProjectedInterval`:
+
+```
+sittingStart = SeatedAtUtc
+sittingEnd   = SeatedAtUtc + TurnTimeMinutes   (an estimate, not a fact)
+```
+
+Two consequences follow, and both are deliberate:
+
+- **The projection is re-derived on every read, never stored.** A manager who shortens the turn time
+  at four o'clock changes what every table in the room is projected to do at five. A stored end would
+  have frozen yesterday's policy onto today's sittings.
+- **The estimate is stated as an estimate.** `TableCurrentlyOccupiedException` ends with *"They may
+  leave sooner — the finish time is an estimate from the branch's turn time."* A refusal whose
+  reasoning a diner cannot see reads as a broken system rather than a full table.
+
+Until Prompt 7 the conflict rule could not see sittings at all: a waiter seating a walk-in at seven
+did not stop a phone booking the same table for eight, and the diner arrived to find it still
+occupied. Walk-ins are most of a cafe's traffic, so this was the common case, not the edge one.
+
 ## 2. The rule
 
 Two bookings on one table conflict when:
@@ -104,7 +131,8 @@ This is the part worth reading twice.
 
 Two waiters seating a walk-in both **`UPDATE` the same `DiningTables` row**. Its `RowVersion` catches
 the race for free — no locks, no hints, and the loser gets `TableStateConflictException` carrying
-the table's current state. That is the right tool when writers collide on one row.
+the table's current state. That is the right tool when writers collide on one row, and it is still
+how two seatings settle between themselves.
 
 ### The same tool is silently wrong here
 
@@ -123,7 +151,7 @@ could understand. A venue's whole business is booking the same table three times
 **Test 12 is the test that fails if somebody reaches for that.** Two concurrent bookings for the
 same table at non-overlapping times must both succeed.
 
-### So: serialise bookers per table
+### So: serialise writers per table
 
 ```
 BEGIN TRANSACTION (READ COMMITTED)
@@ -134,7 +162,8 @@ BEGIN TRANSACTION (READ COMMITTED)
     -- inside the lock, never before it:
     1. re-check ClientCommandId   (a racing retry of this same booking)
     2. re-check for overlaps      (the range predicate + the pure rule)
-    3. INSERT the reservation
+    3. re-check for an open sitting (the projected interval)
+    4. INSERT the reservation
 COMMIT
 ```
 
@@ -149,12 +178,61 @@ COMMIT
 A second booker waits, re-reads, and then either succeeds — different slot — or is told the table
 went. Both are the right answer.
 
+### Seating takes the same lock, and step 3 is why
+
+Step 3 is new in Prompt 7, and adding it changed who has to hold the lock. The moment booking's
+re-check started **reading `TableSessions`**, a seating that wrote one *without* taking the lock could
+commit in the window between that read and the booking's commit. Both then succeed — the exact
+double-booking step 3 was added to prevent.
+
+So the four seating commands — `SeatWalkIn`, `SeatQrScan`, `SeatReservation`, `SeatHeldParty` — take
+the table lock, load the table **inside** it, and commit inside it. `RowVersion` still settles two
+seatings against each other; the lock is what settles a seating against a booking.
+
+Freeing, holding and taking a table out of service do **not** take it. They only ever *narrow* what a
+booking would find — a booking that saw a sitting which was about to close refuses a slot that would
+have been fine, a worse answer but never a wrong one — and locking every tap on the floor screen
+would put the room's whole write traffic through one queue per table for no gain.
+
+### The lock is a convention, not a constraint
+
+This is the uncomfortable part, and it is the reason `ReservationWriter` exists.
+
+PostgreSQL has `EXCLUDE USING gist (table_id WITH =, during WITH &&)`, which makes overlapping
+intervals *unrepresentable*: no application code can produce one, however it is written. **SQL Server
+has no interval exclusion constraint.** A filtered unique index cannot express "these two ranges must
+not intersect", and a `CHECK` constraint cannot see other rows.
+
+So **nothing in the database catches a booking that skipped the lock.** No violation, no error, no
+repair job that finds it afterwards — just two confirmations and two parties at one table. The
+protocol above is the entire guarantee, and a protocol anyone can bypass by typing
+`db.Reservations.Add` in the next feature is not a guarantee at all.
+
+The insert therefore lives behind exactly one method:
+
+```csharp
+ReservationWriter.InsertUnderTableLockAsync(...)   // the only db.Reservations.Add in the codebase
+```
+
+`ReservationService` validates, decides approval and builds the refusals; it cannot insert. The rule
+is enforced by there being one door — weaker than a constraint, and the strongest thing this database
+offers. **If a second `db.Reservations.Add` appears in a diff, that is the bug**, not whatever it was
+added to do.
+
+What the database *does* guarantee is worth naming, because those are the backstops the code leans
+on: `TableSessions` carries a filtered unique index allowing at most one open session per table, and
+`Reservations.ClientCommandId` is unique. Both are real constraints.
+
 ### Order inside the lock
 
 The command-id re-check runs **before** the overlap check, and the order is easy to get backwards.
 Two retries of the *same* booking race: the first commits while the second waits on the lock. By the
 time the second gets in, the first is visible — and an overlap check run first would call the
 diner's own booking a conflict and answer 409 for a table they already have.
+
+Bookings are checked before sittings for a smaller reason: a clash with a booking is a firmer fact
+than a clash with a projection, so when both are true the diner is told the one that will still be
+true in an hour.
 
 ### The lock is held for the shortest possible span
 
@@ -170,10 +248,15 @@ table. The two outcomes are deliberately different answers:
 | | Meaning | HTTP | Retry? |
 | --- | --- | --- | --- |
 | `TableAlreadyBookedException` | the answer is no, and will stay no | **409** + clashing window + fresh availability | never |
-| `ReservationLockTimeoutException` | the question was never asked | **503** + `retryable: true` | yes, with the same `clientCommandId` |
+| `TableCurrentlyOccupiedException` | somebody is sitting there; the finish time is an estimate | **409** + projected free time + fresh availability | not for this slot |
+| `TableStateConflictException` | another waiter changed the table first | **409** + the table's current state | never |
+| `ReservationLockTimeoutException` | the question was never asked | **503** `reservation-lock-timeout` + `retryable: true` | yes, with the same `clientCommandId` |
+| `TableLockTimeoutException` | the same wait, reached from the floor screen | **503** `table-lock-timeout` + `retryable: true` | yes |
 
 Collapsing them into one code would teach clients to retry conflicts, which is how a party ends up
-holding two tables.
+holding two tables. `ReservationLockTimeoutException` derives from `TableLockTimeoutException`: one
+underlying wait, two sets of words, because a diner on a phone and a waiter on a tablet need
+different ones.
 
 ### Idempotency
 

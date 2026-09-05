@@ -78,18 +78,21 @@ internal sealed class TableLock(
     /// <see cref="TimeoutMilliseconds"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Everything the caller re-checks must be read <b>inside</b> the returned scope and never
     /// before it: a check taken before the lock proves only that the table was free at some earlier
     /// moment, which is precisely the window the lock exists to close.
+    /// </para>
+    /// <para>
+    /// <paramref name="tableLabel"/> is optional: pass it when the caller already has the table,
+    /// and omit it when the caller reads the table <i>inside</i> the lock, as it should. The label
+    /// only ever words the timeout message, so looking it up on that rare path beats a round trip
+    /// on every seating.
+    /// </para>
     /// </remarks>
     /// <exception cref="TableLockTimeoutException">
     /// Another writer held the lock for longer than the wait allows. Nothing was changed.
     /// </exception>
-    /// <param name="tableLabel">
-    /// The table's label if the caller already has it. Omit it when the caller reads the table
-    /// <i>inside</i> the lock, as it should: the label is only ever used to word the timeout, and
-    /// looking it up on that rare path is better than a round trip on every seating.
-    /// </param>
     public async Task<TableLockScope> AcquireAsync(
         Guid tableId,
         string? tableLabel,

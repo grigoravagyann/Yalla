@@ -1030,10 +1030,10 @@ internal sealed class TableStateService(
     }
 
     /// <summary>The next relevant booking for a table, or none.</summary>
-    /// <param name="PartySize">
-    /// How many the booking is for. Carried so the holdback warning can say "reserved 20:00 for 4"
-    /// - the number is most of what the waiter needs to judge whether the seating is safe.
-    /// </param>
+    /// <remarks>
+    /// <c>PartySize</c> is carried so the holdback warning can say "reserved 20:00 for 4" - the
+    /// number is most of what a waiter needs to judge whether the seating is safe.
+    /// </remarks>
     private readonly record struct NextReservation(Guid? ReservationId, DateTime? StartUtc, int? PartySize)
     {
         public static NextReservation None => new(null, null, null);
