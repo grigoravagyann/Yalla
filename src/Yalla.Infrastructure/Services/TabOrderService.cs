@@ -33,6 +33,15 @@ internal sealed class TabOrderService(
     TabLedger ledger,
     ILogger<TabOrderService> logger) : ITabOrderService
 {
+    /// <summary>
+    /// How many attempts the last totals recomputation needed.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the concurrency test can assert the retry is doing real work rather than being
+    /// dead code that happens never to fire.
+    /// </remarks>
+    internal int RetryAttemptsUsed => ledger.LastAttemptCount;
+
     // ---------------------------------------------------------------- placing
 
     public async Task<OrderView> PlaceOrderAsync(
@@ -313,9 +322,11 @@ internal sealed class TabOrderService(
                     "An adjustment is either a percentage or a flat amount.", nameof(command)),
                 command.Reason, staffId, clock.UtcNow);
 
-        db.TabAdjustments.Add(adjustment);
-
+        // Before the Add, not after: Compute reads the change tracker, so an adjustment already
+        // sitting in Local is already reflected and "what did this take off" would come out zero.
         var before = ledger.Compute(tab).SubtotalAmd;
+
+        db.TabAdjustments.Add(adjustment);
 
         ledger.Append(tab.Id, TabEventType.AdjustmentAdded, new
         {

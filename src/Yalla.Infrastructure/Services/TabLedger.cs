@@ -73,18 +73,31 @@ internal sealed class TabLedger(
     }
 
     /// <summary>
-    /// Computes the bill from the tracked graph, including rows added in this unit of work.
+    /// Computes the bill from the change tracker, including rows added in this unit of work.
     /// </summary>
     /// <remarks>
-    /// Deliberately not a database query. The caller has just added an order that has not been
-    /// saved yet, and a query would compute a total that is already out of date by the time it is
-    /// stored. Reading the change tracker is what lets the mutation and its total go in together.
+    /// <para>
+    /// Deliberately not a database query. The caller has just added an order that has not been saved
+    /// yet, and a query would compute a total that is already stale by the time it is stored.
+    /// Reading the tracker is what lets the mutation and its total go in together.
+    /// </para>
+    /// <para>
+    /// <b>Read from <c>Local</c>, not from the tab's navigation collections.</b> Those two are
+    /// usually the same thing and diverge exactly where it matters most: after a lost row-version
+    /// race, the retry reloads the tab's orders from the database, and whether the writer's own
+    /// unsaved order survives that reload into <c>tab.Orders</c> is a question about EF's fixup
+    /// rules rather than about the bill. <c>Local</c> is every tracked entity, however it got there,
+    /// which is precisely the set that is about to be saved. Getting this wrong cost a whole order:
+    /// two diners ordered at once, both succeeded, and the total showed only one of them.
+    /// </para>
     /// </remarks>
     public TabBill Compute(Tab tab)
     {
         ArgumentNullException.ThrowIfNull(tab);
 
-        var lines = tab.Orders
+        var orders = db.TabOrders.Local.Where(o => o.TabId == tab.Id).ToList();
+
+        var lines = orders
             .SelectMany(order => order.Lines.Select(line => new BillingLine(
                 line.Id,
                 line.IsSplitAcrossParticipants ? null : order.OwningParticipantId,
@@ -100,19 +113,22 @@ internal sealed class TabLedger(
             .Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))
             .ToList();
 
+        var settled = db.Payments.Local
+            .Where(p => p.TabId == tab.Id)
+            .Where(p => p.Status is PaymentStatus.Reserved or PaymentStatus.Succeeded)
+            .ToList();
+
         // Tips are excluded, entirely and on purpose: a 10,000 AMD bill settled with 12,000 AMD is
         // not overpaid by 2,000, and folding the tip in makes every number after it unexplainable.
-        var paid = tab.Payments
-            .Where(p => p.Status is PaymentStatus.Reserved or PaymentStatus.Succeeded)
-            .Sum(p => p.AmountAmd);
+        var paid = settled.Sum(p => p.AmountAmd);
 
-        var paidByParticipant = tab.Payments
-            .Where(p => p.Status is PaymentStatus.Reserved or PaymentStatus.Succeeded)
+        var paidByParticipant = settled
             .Where(p => p.TabParticipantId is not null)
             .GroupBy(p => p.TabParticipantId!.Value)
             .ToDictionary(g => g.Key, g => g.Sum(p => p.AmountAmd));
 
-        var participants = tab.Participants
+        var participants = db.TabParticipants.Local
+            .Where(p => p.TabId == tab.Id)
             .OrderBy(p => p.JoinedAtUtc)
             .Select(p => new BillingParticipant(
                 p.Id,
@@ -225,20 +241,17 @@ internal sealed class TabLedger(
             await entry.ReloadAsync(cancellationToken);
         }
 
-        await db.Entry(tab).Collection(t => t.Orders).LoadAsync(cancellationToken);
+        // Pull the winner's rows into the tracker. Queried rather than navigated, so this does not
+        // depend on how EF reconciles a reloaded collection with entities we have added and not yet
+        // saved - Compute reads Local, which holds both.
+        await db.TabOrders
+            .Include(o => o.Lines)
+            .ThenInclude(l => l.Shares)
+            .Where(o => o.TabId == tab.Id)
+            .LoadAsync(cancellationToken);
 
-        foreach (var order in tab.Orders)
-        {
-            await db.Entry(order).Collection(o => o.Lines).LoadAsync(cancellationToken);
-
-            foreach (var line in order.Lines)
-            {
-                await db.Entry(line).Collection(l => l.Shares).LoadAsync(cancellationToken);
-            }
-        }
-
-        await db.Entry(tab).Collection(t => t.Payments).LoadAsync(cancellationToken);
-        await db.Entry(tab).Collection(t => t.Participants).LoadAsync(cancellationToken);
+        await db.Payments.Where(p => p.TabId == tab.Id).LoadAsync(cancellationToken);
+        await db.TabParticipants.Where(p => p.TabId == tab.Id).LoadAsync(cancellationToken);
         await db.TabAdjustments.Where(a => a.TabId == tab.Id).LoadAsync(cancellationToken);
     }
 

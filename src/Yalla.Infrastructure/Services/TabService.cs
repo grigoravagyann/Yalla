@@ -52,6 +52,7 @@ internal sealed class TabService(
     ITokenAuthorityCheck authority,
     TabParticipantTokens tokens,
     IOptions<TabOptions> options,
+    TabLedger ledger,
     ILogger<TabService> logger) : ITabService
 {
     /// <summary>
@@ -341,6 +342,7 @@ internal sealed class TabService(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Approving a participant",
+            TabEventType.ParticipantApproved,
             (participant, nowUtc) => participant.Approve(nowUtc), cancellationToken);
 
     public Task<TabParticipantView> RejectParticipantAsync(
@@ -350,6 +352,7 @@ internal sealed class TabService(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Rejecting a participant",
+            TabEventType.ParticipantRejected,
             (participant, nowUtc) => participant.Reject(nowUtc), cancellationToken);
 
     /// <summary>
@@ -363,6 +366,7 @@ internal sealed class TabService(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Removing a participant",
+            TabEventType.ParticipantRemoved,
             (participant, nowUtc) => participant.Remove(nowUtc), cancellationToken);
 
     /// <summary>
@@ -377,6 +381,7 @@ internal sealed class TabService(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Changing permissions",
+            TabEventType.ParticipantPermissionsChanged,
             (participant, _) => participant.SetPermissions(
                 permissions.CanOrder, permissions.CanSeeTableTotal, permissions.CanPay),
             cancellationToken);
@@ -393,6 +398,13 @@ internal sealed class TabService(
                           ?? throw new KeyNotFoundException("No such participant on that tab.");
 
         participant.SetDisplayName(displayName);
+
+        ledger.Append(tab.Id, TabEventType.ParticipantRenamed, new
+        {
+            participantId = participant.Id,
+            displayName = participant.DisplayName,
+        });
+
         await db.SaveChangesAsync(cancellationToken);
 
         return ToView(participant, tab.Status);
@@ -403,6 +415,7 @@ internal sealed class TabService(
         Guid actingParticipantId,
         Guid participantId,
         string operation,
+        TabEventType eventType,
         Action<TabParticipant, DateTime> change,
         CancellationToken cancellationToken)
     {
@@ -413,6 +426,19 @@ internal sealed class TabService(
                      ?? throw new KeyNotFoundException("No such participant on that tab.");
 
         change(target, clock.UtcNow);
+
+        // The other phones at the table are showing this roster. Written in the same SaveChanges as
+        // the change, so the stream can never disagree with the tab.
+        ledger.Append(tab.Id, eventType, new
+        {
+            participantId = target.Id,
+            displayName = target.DisplayName,
+            status = (int)target.Status,
+            canOrder = target.CanOrder,
+            canSeeTableTotal = target.CanSeeTableTotal,
+            canPay = target.CanPay,
+        });
+
         await db.SaveChangesAsync(cancellationToken);
 
         // Their standing just changed, so the cached answer about it is wrong. A participant the
@@ -453,6 +479,13 @@ internal sealed class TabService(
 
         // Throws DomainStateException when locked.
         tab.SetSettlementMode(settlementMode);
+
+        ledger.Append(tab.Id, TabEventType.SettlementModeChanged, new
+        {
+            settlementMode = (int)settlementMode,
+            lockedAtUtc = tab.SettlementModeLockedAtUtc,
+        });
+
         await db.SaveChangesAsync(cancellationToken);
 
         return await query.GetForParticipantAsync(tab.Id, host.Id, cancellationToken)
@@ -481,6 +514,12 @@ internal sealed class TabService(
         newHost.BecomeHost();
         oldHost?.BecomeGuest();
 
+        ledger.Append(tab.Id, TabEventType.HostReassigned, new
+        {
+            fromParticipantId = oldHost?.Id,
+            toParticipantId = newHost.Id,
+        });
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -508,6 +547,8 @@ internal sealed class TabService(
         {
             live.Revoke(nowUtc);
         }
+
+        ledger.Append(tab.Id, TabEventType.TabClosing, new { atUtc = nowUtc });
 
         await db.SaveChangesAsync(cancellationToken);
 

@@ -53,7 +53,10 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             $"/api/branches/{mine.BranchId}/reservation-policy",
             $"/api/branches/{mine.BranchId}/opening-hours",
             $"/api/branches/{mine.BranchId}/floor-plan",
-            $"/api/branches/{mine.BranchId}/menu",
+            // The admin menu read, not the diner one. GET .../menu is deliberately public - a
+            // walk-in scanning a QR code has no account and must still be able to read the menu -
+            // so the manager-only variant lives at /manage and is what belongs in this list.
+            $"/api/branches/{mine.BranchId}/menu/manage",
         };
 
         foreach (var route in routes)
@@ -68,6 +71,18 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             // A waiter is staff, but these are manager-and-above routes.
             Assert.Equal(HttpStatusCode.Forbidden, (await waiter.GetAsync(route)).StatusCode);
         }
+
+        // And the diner-facing menu is the opposite of all of that: anonymous, and readable by
+        // anybody at all. A guest who scanned the code on table 7 has no token and no account.
+        using var anonymous = factory.CreateClient();
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await anonymous.GetAsync($"/api/branches/{mine.BranchId}/menu")).StatusCode);
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await neighbour.GetAsync($"/api/branches/{mine.BranchId}/menu")).StatusCode);
     }
 
     [SkippableFact]

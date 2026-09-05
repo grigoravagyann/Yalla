@@ -211,14 +211,62 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActorType), nameof(DerivedTableState), nameof(ParticipantRole), nameof(ParticipantStatus),
-            nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType), nameof(RefreshTokenSubject),
-            nameof(ReservationStatus), nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole),
-            nameof(StayHint), nameof(SubscriptionTier), nameof(TabOrderStatus), nameof(TabStatus),
+            nameof(ActorType), nameof(AdjustmentKind), nameof(DerivedTableState), nameof(ParticipantRole),
+            nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
+            nameof(RefreshTokenSubject), nameof(ReservationStatus), nameof(ServiceRequestPreset),
+            nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
+            nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
             nameof(TableSessionSource), nameof(TableShape), nameof(TableStatus), nameof(VenueType),
         ];
 
         Assert.Equal(covered.OrderBy(n => n), declared);
+    }
+
+    // ------------------------------------------------------------ Prompt 8: ordering and billing
+
+    [Fact]
+    public void Adjustment_kind_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)AdjustmentKind.Discount);
+        Assert.Equal(2, (int)AdjustmentKind.Comp);
+    }
+
+    [Fact]
+    public void Service_request_preset_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)ServiceRequestPreset.Napkins);
+        Assert.Equal(2, (int)ServiceRequestPreset.Water);
+        Assert.Equal(3, (int)ServiceRequestPreset.TheBill);
+        Assert.Equal(4, (int)ServiceRequestPreset.Other);
+    }
+
+    /// <summary>
+    /// The event stream's types. These reach clients that are catching up, so a renumbering would
+    /// make an old app build misread a tab rather than merely fail on it.
+    /// </summary>
+    [Fact]
+    public void Tab_event_type_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)TabEventType.TabOpened);
+        Assert.Equal(2, (int)TabEventType.ParticipantJoined);
+        Assert.Equal(3, (int)TabEventType.ParticipantApproved);
+        Assert.Equal(4, (int)TabEventType.ParticipantRejected);
+        Assert.Equal(5, (int)TabEventType.ParticipantRemoved);
+        Assert.Equal(6, (int)TabEventType.ParticipantPermissionsChanged);
+        Assert.Equal(7, (int)TabEventType.ParticipantRenamed);
+        Assert.Equal(8, (int)TabEventType.HostReassigned);
+        Assert.Equal(9, (int)TabEventType.SettlementModeChanged);
+        Assert.Equal(10, (int)TabEventType.OrderPlaced);
+        Assert.Equal(11, (int)TabEventType.OrderStatusChanged);
+        Assert.Equal(12, (int)TabEventType.LineVoided);
+        Assert.Equal(13, (int)TabEventType.AdjustmentAdded);
+        Assert.Equal(14, (int)TabEventType.AdjustmentVoided);
+        Assert.Equal(15, (int)TabEventType.PaymentRecorded);
+        Assert.Equal(16, (int)TabEventType.ServiceRequested);
+        Assert.Equal(17, (int)TabEventType.ServiceRequestAcknowledged);
+        Assert.Equal(18, (int)TabEventType.TabClosing);
+        Assert.Equal(19, (int)TabEventType.TabClosed);
+        Assert.Equal(20, (int)TabEventType.TabAbandoned);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>

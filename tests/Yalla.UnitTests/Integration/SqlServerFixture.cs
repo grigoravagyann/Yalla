@@ -209,8 +209,35 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateTokenAuthority(db, clock),
             tokens,
             Microsoft.Extensions.Options.Options.Create(new TabOptions()),
+            CreateLedger(db, clock, actor),
             NullLogger<TabService>.Instance);
     }
+
+    /// <summary>
+    /// The tab's books over one context: totals recomputation, the event stream, and the retry.
+    /// </summary>
+    internal TabLedger CreateLedger(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, NullLogger<TabLedger>.Instance);
+
+    /// <summary>Ordering, voiding and adjusting, over one context.</summary>
+    internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<TabOrderService>.Instance);
+
+    /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
+    internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<TabPaymentService>.Instance);
+
+    /// <summary>Calling a waiter, over one context.</summary>
+    internal ServiceRequestService CreateServiceRequests(
+        YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<ServiceRequestService>.Instance);
+
+    /// <summary>Shares and the event stream, over one context.</summary>
+    internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, CreateLedger(db, clock, actor), NullLogger<TabBillingQuery>.Instance);
+
+    /// <summary>The diner-facing menu read.</summary>
+    internal static MenuQuery CreateMenuQuery(YallaDbContext db) => new(db);
 
     /// <summary>
     /// The real authority check over one context, with its own cache so tests do not share one.
@@ -325,4 +352,15 @@ public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? ro
     /// </summary>
     public static TestActor Diner(Guid? dinerUserId = null) =>
         new(ActorType.Diner, null, null, dinerUserId ?? Guid.CreateVersion7());
+
+    /// <summary>
+    /// A phone on a tab, identified by its participant row.
+    /// </summary>
+    /// <remarks>
+    /// A tab participant has no account, so the participant id is what the token carries and what
+    /// <c>ICurrentActor.DinerUserId</c> holds for them - see <c>docs/auth.md</c>. Ordering reads it
+    /// from there and never from a request body, so one phone cannot order in another's name.
+    /// </remarks>
+    public static TestActor Participant(Guid participantId) =>
+        new(ActorType.Diner, null, null, participantId);
 }
