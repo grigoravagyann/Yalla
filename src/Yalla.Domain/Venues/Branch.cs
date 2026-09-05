@@ -44,6 +44,22 @@ public sealed class Branch : Entity
 
     public bool IsActive { get; private set; }
 
+    /// <summary>
+    /// The picture on the venue card in the diner app. Optional, and the same entity a menu item
+    /// uses - a cover and a dish photo differ in what they are of, not in how they are stored.
+    /// </summary>
+    /// <remarks>
+    /// The diner venue and branch cards faked this until Prompt 9. Nullable because a venue is
+    /// perfectly usable before somebody has taken a photograph of the room, which is not true of a
+    /// menu item: a dish with no picture is the thing the diner then asks a waiter about.
+    /// </remarks>
+    public Guid? CoverPhotoId { get; private set; }
+
+    public Media.Photo? CoverPhoto { get; private set; }
+
+    /// <summary>Sets or clears the venue card's picture.</summary>
+    public void SetCoverPhoto(Guid? photoId) => CoverPhotoId = photoId;
+
     /// <summary>Width of the floor-plan canvas the tables are positioned on, in design units.</summary>
     public int FloorWidth { get; private set; }
 

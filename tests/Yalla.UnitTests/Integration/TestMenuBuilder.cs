@@ -1,4 +1,5 @@
 using Yalla.Domain.Enums;
+using Yalla.Domain.Media;
 using Yalla.Domain.Menus;
 using Yalla.Infrastructure.Persistence;
 
@@ -36,17 +37,44 @@ internal sealed record TestMenu(
 /// </remarks>
 internal static class TestMenuBuilder
 {
+    /// <summary>
+    /// A photo row a menu item can point at, without going through an upload.
+    /// </summary>
+    /// <remarks>
+    /// Externally hosted, so it needs no bytes on disk and no storage root: these tests are about
+    /// menus and ordering, not about image processing, and the photo pipeline has its own suite.
+    /// </remarks>
+    public static async Task<Guid> AddPhotoAsync(
+        YallaDbContext db,
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        var unique = Guid.NewGuid().ToString("N");
+
+        var photo = Photo.ExternallyHosted(
+            branchId,
+            $"https://cdn.example.test/{unique}.jpg",
+            unique + unique,
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        db.Photos.Add(photo);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return photo.Id;
+    }
+
     public static async Task<TestMenu> CreateAsync(
         YallaDbContext db,
         Guid branchId,
         CancellationToken cancellationToken = default)
     {
         var category = new MenuCategory(branchId, $"Everything {Guid.NewGuid().ToString("N")[..6]}", 0);
+        var photoId = await AddPhotoAsync(db, branchId, cancellationToken);
 
-        var coffee = Item(category.Id, "Flat white", TestMenu.CoffeeAmd, prepMinutes: 4);
-        var khachapuri = Item(category.Id, "Adjarian khachapuri", TestMenu.KhachapuriAmd, prepMinutes: 20);
-        var wine = Item(category.Id, "Areni red, bottle", TestMenu.WineAmd, prepMinutes: 2);
-        var soldOut = Item(category.Id, "Lamb kebab", 2_000L, prepMinutes: 25);
+        var coffee = Item(category.Id, "Flat white", TestMenu.CoffeeAmd, 4, photoId);
+        var khachapuri = Item(category.Id, "Adjarian khachapuri", TestMenu.KhachapuriAmd, 20, photoId);
+        var wine = Item(category.Id, "Areni red, bottle", TestMenu.WineAmd, 2, photoId);
+        var soldOut = Item(category.Id, "Lamb kebab", 2_000L, 25, photoId);
 
         soldOut.SetAvailable(false);
 
@@ -58,13 +86,13 @@ internal static class TestMenuBuilder
         return new TestMenu(category.Id, coffee.Id, khachapuri.Id, wine.Id, soldOut.Id);
     }
 
-    private static MenuItem Item(Guid categoryId, string name, long priceAmd, int prepMinutes) =>
+    private static MenuItem Item(Guid categoryId, string name, long priceAmd, int prepMinutes, Guid photoId) =>
         new(
             categoryId,
             name,
             $"{name}, as the kitchen makes it.",
             priceAmd,
-            "https://cdn.example.test/dish.jpg",
+            photoId,
             ingredients: "flour, water, salt",
             allergens: "gluten",
             portionSize: "one serving",

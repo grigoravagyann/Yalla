@@ -118,6 +118,16 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             HttpStatusCode.Forbidden,
             (await neighbour.DeleteAsync($"/api/branches/{mine.BranchId}/menu/categories/{categoryId}")).StatusCode);
 
+        // A photo is required, and is now a row rather than a string - so one has to exist before a
+        // menu item can point at it. Seeded here rather than uploaded, because this test is about
+        // the menu routes' policies and the upload pipeline has its own suite.
+        Guid photoId;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            photoId = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
+        }
+
         var item = await manager.PostAsJsonAsync(
             $"/api/branches/{mine.BranchId}/menu/categories/{categoryId}/items",
             new
@@ -125,7 +135,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
                 name = "Flat white",
                 description = "House blend",
                 priceAmd = 1_400L,
-                photoUrl = "https://cdn.example.test/f.jpg",
+                photoId,
                 ingredients = "coffee, milk",
                 allergens = "dairy",
                 portionSize = "250 ml",
@@ -143,7 +153,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
                 name = "Nameless",
                 description = "x",
                 priceAmd = 100L,
-                photoUrl = "https://cdn.example.test/x.jpg",
+                photoId,
                 ingredients = "x",
                 allergens = "",
                 portionSize = "1",

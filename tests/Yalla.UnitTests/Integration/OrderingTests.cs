@@ -60,7 +60,8 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             Assert.False(string.IsNullOrWhiteSpace(i.Ingredients));
             Assert.False(string.IsNullOrWhiteSpace(i.Allergens));
             Assert.False(string.IsNullOrWhiteSpace(i.PortionSize));
-            Assert.False(string.IsNullOrWhiteSpace(i.PhotoUrl));
+            Assert.False(string.IsNullOrWhiteSpace(i.Photo.CardUrl));
+            Assert.NotEqual(Guid.Empty, i.Photo.PhotoId);
             Assert.True(i.PrepMinutes > 0);
         });
 

@@ -63,6 +63,21 @@ public static class FieldLengths
     /// <summary>A kitchen note on an order line, e.g. "no onions".</summary>
     public const int OrderNote = 300;
 
+    /// <summary>A SHA-256 as lowercase hex: 64 characters, always.</summary>
+    public const int ContentHash = 64;
+
+    /// <summary>An Expo push token, e.g. <c>ExponentPushToken[...]</c>.</summary>
+    public const int PushToken = 256;
+
+    /// <summary>An outbox message type slug, e.g. <c>reservation.reminder</c>.</summary>
+    public const int MessageType = 100;
+
+    /// <summary>An outbox idempotency key, e.g. <c>reservation:{id}:reminder</c>.</summary>
+    public const int IdempotencyKey = 200;
+
+    /// <summary>A recorded dispatch failure, truncated for storage.</summary>
+    public const int ErrorText = 2000;
+
     /// <summary>A command type slug, e.g. <c>table.seat-walk-in</c>.</summary>
     public const int CommandType = 100;
 

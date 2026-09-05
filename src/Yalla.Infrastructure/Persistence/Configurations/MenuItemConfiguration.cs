@@ -24,9 +24,14 @@ internal sealed class MenuItemConfiguration : EntityConfiguration<MenuItem>
 
         // Required, not optional: these five are what a diner would otherwise have to ask a
         // waiter, and nullable columns here would simply stay empty.
-        builder.Property(i => i.PhotoUrl)
-            .HasMaxLength(FieldLengths.Url)
-            .IsRequired();
+        builder.HasOne(i => i.Photo)
+            .WithMany()
+            .HasForeignKey(i => i.PhotoId)
+            .IsRequired()
+
+            // Restrict: a photo a menu references cannot be deleted out from under it, which is also
+            // what stops the orphan sweep from taking one that is in use.
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.Property(i => i.Ingredients)
             .HasMaxLength(FieldLengths.Ingredients)

@@ -8,7 +8,7 @@ namespace Yalla.Domain.Menus;
 /// </summary>
 /// <remarks>
 /// <see cref="Ingredients"/>, <see cref="Allergens"/>, <see cref="PortionSize"/>,
-/// <see cref="PrepMinutes"/> and <see cref="PhotoUrl"/> are <b>required, not optional</b>.
+/// <see cref="PrepMinutes"/> and <see cref="PhotoId"/> are <b>required, not optional</b>.
 /// Nearly every question a diner puts to a waiter - what is in it, how big is it, how long will
 /// it take, does it have nuts - is static data that belongs on the item. Making these nullable
 /// guarantees they stay empty and the app stays unable to answer.
@@ -29,7 +29,18 @@ public sealed class MenuItem : Entity
     /// </summary>
     public long PriceAmd { get; private set; }
 
-    public string PhotoUrl { get; private set; } = null!;
+    /// <summary>
+    /// The uploaded photo. Required, and a foreign key rather than a string since Prompt 9.
+    /// </summary>
+    /// <remarks>
+    /// It was a <c>PhotoUrl</c>, which is the reason no venue could be onboarded: the field was
+    /// required and nothing in the product could produce a value for it. A row instead of a string
+    /// also means the image can be swept when nothing references it, and that moving storage is a
+    /// change to one implementation rather than a rewrite of every URL in the database.
+    /// </remarks>
+    public Guid PhotoId { get; private set; }
+
+    public Media.Photo Photo { get; private set; } = null!;
 
     /// <summary>What is in it, as shown to the diner.</summary>
     public string Ingredients { get; private set; } = null!;
@@ -58,7 +69,7 @@ public sealed class MenuItem : Entity
         string name,
         string description,
         long priceAmd,
-        string photoUrl,
+        Guid photoId,
         string ingredients,
         string allergens,
         string portionSize,
@@ -71,7 +82,7 @@ public sealed class MenuItem : Entity
         Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
         Description = Guard.NotBlank(description, nameof(description), FieldLengths.Description);
         PriceAmd = Guard.NotNegativeAmd(priceAmd, nameof(priceAmd));
-        PhotoUrl = Guard.NotBlank(photoUrl, nameof(photoUrl), FieldLengths.Url);
+        PhotoId = Guard.NotEmpty(photoId, nameof(photoId));
         Ingredients = Guard.NotBlank(ingredients, nameof(ingredients), FieldLengths.Ingredients);
         Allergens = Guard.NotBlank(allergens, nameof(allergens), FieldLengths.Allergens);
         PortionSize = Guard.NotBlank(portionSize, nameof(portionSize), FieldLengths.PortionSize);
@@ -94,7 +105,7 @@ public sealed class MenuItem : Entity
     public void UpdateDetails(
         string name,
         string description,
-        string photoUrl,
+        Guid photoId,
         string ingredients,
         string allergens,
         string portionSize,
@@ -103,7 +114,7 @@ public sealed class MenuItem : Entity
     {
         Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
         Description = Guard.NotBlank(description, nameof(description), FieldLengths.Description);
-        PhotoUrl = Guard.NotBlank(photoUrl, nameof(photoUrl), FieldLengths.Url);
+        PhotoId = Guard.NotEmpty(photoId, nameof(photoId));
         Ingredients = Guard.NotBlank(ingredients, nameof(ingredients), FieldLengths.Ingredients);
         Allergens = Guard.NotBlank(allergens, nameof(allergens), FieldLengths.Allergens);
         PortionSize = Guard.NotBlank(portionSize, nameof(portionSize), FieldLengths.PortionSize);

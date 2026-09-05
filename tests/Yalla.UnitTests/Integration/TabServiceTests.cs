@@ -766,9 +766,11 @@ internal static class TabTestData
         await using var db = fixture.CreateContext(clock);
 
         var category = new MenuCategory(branch.BranchId, "Drinks " + Guid.NewGuid().ToString("N")[..8], 0);
+        var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
+
         var item = new MenuItem(
             category.Id, name, $"A {name.ToLowerInvariant()}", priceAmd,
-            "https://cdn.example.test/drink.jpg", "water", "none", "250 ml", 3);
+            photoId, "water", "none", "250 ml", 3);
 
         db.MenuCategories.Add(category);
         db.MenuItems.Add(item);

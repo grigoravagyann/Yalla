@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
+using Yalla.Application.Media;
 using Yalla.Application.Menus;
 using Yalla.Application.Platform;
 using Yalla.Application.Ordering;
@@ -13,6 +14,7 @@ using Yalla.Application.Reservations;
 using Yalla.Application.Staff;
 using Yalla.Application.Tabs;
 using Yalla.Infrastructure.Identity;
+using Yalla.Infrastructure.Media;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 using Yalla.Infrastructure.Time;
@@ -56,6 +58,12 @@ public static class DependencyInjection
         services.AddScoped<IPlatformService, PlatformService>();
         services.AddScoped<IBranchSettingsService, BranchSettingsService>();
         services.AddScoped<IMenuService, MenuService>();
+
+        // Photos. The storage root is verified once, at construction, so a folder that cannot be
+        // written to stops the process rather than surfacing as a broken menu three screens later.
+        services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));
+        services.AddSingleton<IPhotoStorage, LocalDiskPhotoStorage>();
+        services.AddScoped<IPhotoService, PhotoService>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges

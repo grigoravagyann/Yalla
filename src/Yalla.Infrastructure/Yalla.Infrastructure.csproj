@@ -12,6 +12,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.9" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
 
     <!--
       The per-phone verification-code limiter. Same primitive the pipeline rate limiter uses,

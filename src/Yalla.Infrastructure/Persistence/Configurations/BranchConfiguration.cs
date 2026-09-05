@@ -52,6 +52,14 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasDefaultValue(Yalla.Domain.Enums.SubscriptionTier.Free)
             .HasSentinel((Yalla.Domain.Enums.SubscriptionTier)0);
 
+        // Configured explicitly so the navigation uses CoverPhotoId rather than EF inventing a
+        // shadow foreign key beside it. Restrict, like every other photo reference: a picture a
+        // venue card is using must not be deletable out from under it.
+        builder.HasOne(b => b.CoverPhoto)
+            .WithMany()
+            .HasForeignKey(b => b.CoverPhotoId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.Ignore(b => b.IsPaid);
 
         // The reservation policy is owned: it lives in extra columns on this table rather than in

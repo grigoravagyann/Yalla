@@ -47,6 +47,12 @@ internal static class DatabaseIndexNames
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
     /// <summary>
+    /// Unique on one photo per branch per content hash. A violation means these exact bytes are
+    /// already stored for this branch; the upload reuses the row rather than writing a second one.
+    /// </summary>
+    public const string PhotoPerBranchContent = "UX_Photos_BranchId_ContentHash";
+
+    /// <summary>
     /// Unique on one live device per client identifier per branch. A violation means this browser
     /// is already enrolled here; it should offer its PIN screen rather than enrol again.
     /// </summary>

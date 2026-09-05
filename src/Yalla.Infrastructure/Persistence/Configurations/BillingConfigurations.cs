@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
+using Yalla.Domain.Media;
 using Yalla.Domain.Tabs;
 
 namespace Yalla.Infrastructure.Persistence.Configurations;
@@ -135,5 +136,41 @@ internal sealed class TabEventConfiguration : EntityConfiguration<TabEvent>
         builder.HasIndex(e => new { e.TabId, e.Sequence })
             .IsUnique()
             .HasDatabaseName(DatabaseIndexNames.TabEventSequence);
+    }
+}
+
+internal sealed class PhotoConfiguration : EntityConfiguration<Photo>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<Photo> builder)
+    {
+        builder.ToTable("Photos");
+
+        builder.Property(p => p.ContentHash)
+            .HasMaxLength(FieldLengths.ContentHash)
+            .IsRequired();
+
+        builder.Property(p => p.ThumbnailPath).HasMaxLength(FieldLengths.Url).IsRequired();
+        builder.Property(p => p.CardPath).HasMaxLength(FieldLengths.Url).IsRequired();
+        builder.Property(p => p.FullPath).HasMaxLength(FieldLengths.Url).IsRequired();
+
+        builder.Property(p => p.Width);
+        builder.Property(p => p.Height);
+        builder.Property(p => p.BytesStored).IsRequired();
+        builder.Property(p => p.IsExternallyHosted).IsRequired();
+        builder.Property(p => p.UploadedAtUtc).IsRequired();
+
+        builder.HasOne(p => p.Branch)
+            .WithMany()
+            .HasForeignKey(p => p.BranchId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Uploading the same bytes to the same branch twice reuses the row rather than writing a
+        // second one pointing at identical files.
+        builder.HasIndex(p => new { p.BranchId, p.ContentHash })
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.PhotoPerBranchContent);
+
+        // The orphan sweep's question: what was uploaded before this instant.
+        builder.HasIndex(p => p.UploadedAtUtc);
     }
 }

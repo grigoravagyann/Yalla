@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Media;
 using Yalla.Application.Menus;
 using Yalla.Domain;
 using Yalla.Domain.Menus;
@@ -28,7 +29,15 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
                 c.Id,
                 c.Name,
                 c.DisplayOrder,
-                Items = c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name).Select(i => ToView(i)).ToList(),
+                Items = c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name)
+                    .Select(i => new MenuItemView(
+                        i.Id, i.MenuCategoryId, i.Name, i.Description, i.PriceAmd,
+                        PhotoView.From(
+                            i.PhotoId, i.Photo.IsExternallyHosted, i.Photo.ThumbnailPath, i.Photo.CardPath,
+                            i.Photo.FullPath, i.Photo.Width, i.Photo.Height),
+                        i.Ingredients, i.Allergens, i.PortionSize, i.SpiceLevel, i.PrepMinutes,
+                        i.IsAvailable, i.DisplayOrder))
+                    .ToList(),
             })
             .ToListAsync(cancellationToken);
 
@@ -114,7 +123,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             command.Name,
             command.Description,
             command.PriceAmd,
-            command.PhotoUrl,
+            command.PhotoId,
             command.Ingredients,
             command.Allergens,
             command.PortionSize,
@@ -125,7 +134,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         db.MenuItems.Add(item);
         await db.SaveChangesAsync(cancellationToken);
 
-        return ToView(item);
+        return ToView(await WithPhotoAsync(item, cancellationToken));
     }
 
     public async Task<MenuItemView> UpdateItemAsync(
@@ -137,7 +146,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         ArgumentNullException.ThrowIfNull(command);
         var item = await LoadItemAsync(branchId, itemId, cancellationToken);
 
-        var describes = command.Name is not null || command.Description is not null || command.PhotoUrl is not null
+        var describes = command.Name is not null || command.Description is not null || command.PhotoId is not null
                         || command.Ingredients is not null || command.Allergens is not null
                         || command.PortionSize is not null || command.PrepMinutes is not null || command.SpiceLevel is not null;
 
@@ -146,7 +155,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             item.UpdateDetails(
                 command.Name ?? item.Name,
                 command.Description ?? item.Description,
-                command.PhotoUrl ?? item.PhotoUrl,
+                command.PhotoId ?? item.PhotoId,
                 command.Ingredients ?? item.Ingredients,
                 command.Allergens ?? item.Allergens,
                 command.PortionSize ?? item.PortionSize,
@@ -167,7 +176,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return ToView(item);
+        return ToView(await WithPhotoAsync(item, cancellationToken));
     }
 
     public async Task<MenuItemView> SetItemAvailabilityAsync(
@@ -180,7 +189,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         item.SetAvailable(isAvailable);
         await db.SaveChangesAsync(cancellationToken);
 
-        return ToView(item);
+        return ToView(await WithPhotoAsync(item, cancellationToken));
     }
 
     public async Task<MenuItemDeletionResult> DeleteItemAsync(Guid branchId, Guid itemId, CancellationToken cancellationToken = default)
@@ -214,10 +223,32 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
     private async Task<MenuItem> LoadItemAsync(Guid branchId, Guid itemId, CancellationToken cancellationToken) =>
         await db.MenuItems
+            .Include(i => i.Photo)
             .FirstOrDefaultAsync(i => i.Id == itemId && i.MenuCategory.BranchId == branchId, cancellationToken)
         ?? throw new KeyNotFoundException($"Menu item {itemId} was not found at this branch.");
 
+    /// <summary>
+    /// Makes sure the photo behind an item is loaded before it is projected.
+    /// </summary>
+    /// <remarks>
+    /// A freshly created item has a <c>PhotoId</c> and no <c>Photo</c> - nothing has read the row -
+    /// and a view built from it would dereference null. Changing the photo has the same problem: the
+    /// navigation still holds the old one until it is reloaded.
+    /// </remarks>
+    private async Task<MenuItem> WithPhotoAsync(MenuItem item, CancellationToken cancellationToken)
+    {
+        var reference = db.Entry(item).Reference(i => i.Photo);
+
+        if (!reference.IsLoaded || item.Photo is null || item.Photo.Id != item.PhotoId)
+        {
+            reference.CurrentValue = null;
+            await reference.LoadAsync(cancellationToken);
+        }
+
+        return item;
+    }
+
     private static MenuItemView ToView(MenuItem i) => new(
-        i.Id, i.MenuCategoryId, i.Name, i.Description, i.PriceAmd, i.PhotoUrl, i.Ingredients, i.Allergens,
-        i.PortionSize, i.SpiceLevel, i.PrepMinutes, i.IsAvailable, i.DisplayOrder);
+        i.Id, i.MenuCategoryId, i.Name, i.Description, i.PriceAmd, PhotoView.From(i.Photo), i.Ingredients,
+        i.Allergens, i.PortionSize, i.SpiceLevel, i.PrepMinutes, i.IsAvailable, i.DisplayOrder);
 }
