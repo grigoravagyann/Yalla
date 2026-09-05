@@ -1,3 +1,4 @@
+using Yalla.Api.Errors;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Abstractions;
@@ -123,7 +124,8 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
-            .ProducesProblemDetails(StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+            .ProducesProblem<LockTimeoutProblem>(
+                StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
 
         group.MapGet("/mine", GetMineAsync)
             .WithName("getMyReservations")

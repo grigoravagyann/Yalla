@@ -1,5 +1,6 @@
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Menus;
 using Yalla.Application.Ordering;
 using Yalla.Domain.Enums;
@@ -95,10 +96,13 @@ public static class OrderingEndpoints
                 + "a kitchen cooks an order together.")
             .Produces<OrderView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
-            .ProducesProblemDetails(
+            .ProducesProblem<MenuItemUnavailableProblem>(
                 StatusCodes.Status409Conflict,
-                "An item is unavailable (`menu-item-unavailable`, with the dish named), or the bill "
-                + "has been asked for (`tab-not-accepting-orders`).");
+                "`menu-item-unavailable`: a dish has sold out. `context.itemName` is which one - say "
+                + "it, rather than failing the order generically. Nothing was placed.")
+            .ProducesProblem<TabNotAcceptingOrdersProblem>(
+                StatusCodes.Status409Conflict,
+                "`tab-not-accepting-orders`: the bill has been asked for. Show the bill, not the menu.");
 
         var reads = app.MapGroup("/api/tabs/{tabId:guid}")
             .WithTags(EndpointConventions.DinerTag)
@@ -156,9 +160,10 @@ public static class OrderingEndpoints
                 + "see in its own numbers.")
             .Produces<OrderView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff, or another branch's tab.")
-            .ProducesProblemDetails(
-                StatusCodes.Status409Conflict,
-                "An item is unavailable, or the bill has been asked for.");
+            .ProducesProblem<MenuItemUnavailableProblem>(
+                StatusCodes.Status409Conflict, "`menu-item-unavailable`, with the dish named.")
+            .ProducesProblem<TabNotAcceptingOrdersProblem>(
+                StatusCodes.Status409Conflict, "`tab-not-accepting-orders`: the bill has been asked for.");
 
         staff.MapPost("/lines/{lineId:guid}/void", VoidLineAsync)
             .WithName("voidTabLine")
@@ -170,8 +175,9 @@ public static class OrderingEndpoints
                 + "Refused once the tab has been paid against: that is a refund, which is a "
                 + "different thing with its own rail.")
             .Produces<OrderView>()
-            .ProducesProblemDetails(
-                StatusCodes.Status409Conflict, "The tab has been paid against; this would be a refund.")
+            .ProducesProblem<LineAlreadyPaidProblem>(
+                StatusCodes.Status409Conflict,
+                "`line-already-paid`: the tab has been paid against, so this would be a refund.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such line on this tab.");
 
         staff.MapPost("/adjustments", AddAdjustmentAsync)
@@ -249,8 +255,10 @@ public static class OrderingEndpoints
                 + "table's, and one bored guest must not be able to bury another table's request.")
             .Produces<ServiceRequestView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
-            .ProducesProblemDetails(
-                StatusCodes.Status429TooManyRequests, "This table has asked for too much, too fast.");
+            .ProducesProblem<ServiceRequestRateLimitedProblem>(
+                StatusCodes.Status429TooManyRequests,
+                "`service-request-rate-limited`: too many, too fast. `context.windowMinutes` says "
+                + "how long to wait.");
 
         app.MapGet("/api/branches/{branchId:guid}/service-requests", GetOpenServiceRequestsAsync)
             .WithTags(EndpointConventions.StaffTag)
@@ -305,10 +313,11 @@ public static class OrderingEndpoints
                 + "**This is not a fiscal receipt.** The venue's registered cash register still issues "
                 + "one.")
             .Produces<CashPaymentView>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(
+            .ProducesProblem<PaymentExceedsRemainingProblem>(
                 StatusCodes.Status409Conflict,
-                "More was offered than is owed (`payment-exceeds-remaining`), with `remainingAmd` in "
-                + "the context. Also returned when another payment landed first.")
+                "`payment-exceeds-remaining`: more was offered than is owed. **Show "
+                + "`context.remainingAmd`** - the waiter is at the table and needs the number. Also "
+                + "returned when another payment landed first, in which case the balance has moved.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.");
 
         app.MapPost("/api/tabs/{tabId:guid}/abandon", AbandonAsync)

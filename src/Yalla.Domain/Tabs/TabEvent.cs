@@ -25,6 +25,15 @@ namespace Yalla.Domain.Tabs;
 /// disagree with the tab. This is the seam SignalR plugs into later - adding it now costs one table
 /// and adding it afterwards is a migration on the hottest rows in the product.
 /// </para>
+/// <para>
+/// <b>Known reliance.</b> When one <c>SaveChanges</c> writes several events - a payment that settles
+/// the bill writes <c>PaymentRecorded</c> and then <c>TabClosed</c> - their relative order comes from
+/// EF Core inserting same-type entities in the order they were tracked, which is reliable in
+/// practice and not contractual. The events are logically simultaneous, so a client that treats them
+/// as a set for one instant is correct either way; a client that reads only the last one is not.
+/// If this ever needs to be a guarantee rather than an observation, the fix is an
+/// application-assigned sequence per tab with a unique index behind it, not a second SaveChanges.
+/// </para>
 /// </remarks>
 public sealed class TabEvent : Entity
 {

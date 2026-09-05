@@ -22,6 +22,65 @@ public sealed class OrderingTests(SqlServerFixture fixture)
 {
     private static readonly DateTime Now = new(2026, 9, 6, 18, 0, 0, DateTimeKind.Utc);
 
+    // ------------------------------------------------------------ the menu
+
+    /// <summary>
+    /// A pending participant reads the whole menu, prices included, and can do nothing else.
+    /// </summary>
+    /// <remarks>
+    /// The rule was set in Prompt 5 and only starts to bite now that there is a menu to read. It is
+    /// the one thing a guest waiting on the host's approval must be able to do: they are sitting at
+    /// the table, and a menu they cannot open is the friction the product exists to remove. Prices
+    /// stay visible even to somebody the host has hidden the table total from, so they can always
+    /// work out what their own order costs.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_pending_participant_reads_the_menu_with_prices_and_cannot_order()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        // Somebody who scanned the code and has not been let on yet.
+        var pending = await JoinWithoutApprovalAsync(world, "phone-pending", "Vahe");
+
+        var menu = await SqlServerFixture.CreateMenuQuery(db).GetBranchMenuAsync(world.Branch.BranchId);
+
+        var items = menu.Categories.SelectMany(c => c.Items).ToList();
+
+        Assert.Equal(4, items.Count);
+        Assert.All(items, i => Assert.True(i.PriceAmd > 0L, $"{i.Name} came back without a price."));
+
+        // Every descriptive field is present, because the whole argument for making them required
+        // was that the diner stops needing to ask a waiter.
+        Assert.All(items, i =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(i.Description));
+            Assert.False(string.IsNullOrWhiteSpace(i.Ingredients));
+            Assert.False(string.IsNullOrWhiteSpace(i.Allergens));
+            Assert.False(string.IsNullOrWhiteSpace(i.PortionSize));
+            Assert.False(string.IsNullOrWhiteSpace(i.PhotoUrl));
+            Assert.True(i.PrepMinutes > 0);
+        });
+
+        // The sold-out dish is present and flagged, not hidden.
+        var soldOut = items.Single(i => i.Id == world.Menu.SoldOut);
+
+        Assert.False(soldOut.IsAvailable);
+        Assert.Equal(2_000L, soldOut.PriceAmd);
+
+        // And that is the whole of what they may do: ordering is refused until the host approves.
+        await using var orderDb = fixture.CreateContext(world.Clock);
+        var orders = fixture.CreateOrderService(orderDb, world.Clock, TestActor.Participant(pending));
+
+        var refused = await Assert.ThrowsAsync<TabPermissionException>(
+            () => orders.PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7())));
+
+        Assert.Contains("approved", refused.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ------------------------------------------------------------ 1. spoken orders and attribution
 
     [SkippableFact]
@@ -629,6 +688,24 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         var joined = await tabs.OpenAsync(new OpenTabCommand(qr, deviceId, Guid.CreateVersion7(), name));
 
         await tabs.ApproveParticipantAsync(world.TabId, world.HostId, joined.Tab.Me.ParticipantId);
+
+        return joined.Tab.Me.ParticipantId;
+    }
+
+    /// <summary>A phone that scanned the code and is waiting on the host.</summary>
+    private async Task<Guid> JoinWithoutApprovalAsync(World world, string deviceId, string name)
+    {
+        await using var db = fixture.CreateContext(world.Clock);
+        var tabs = fixture.CreateTabService(db, world.Clock, new TestActor(ActorType.Diner, null, null, null));
+
+        var qr = await db.DiningTables
+            .Where(t => t.Id == world.Branch.FirstTableId)
+            .Select(t => t.QrToken)
+            .FirstAsync();
+
+        var joined = await tabs.OpenAsync(new OpenTabCommand(qr, deviceId, Guid.CreateVersion7(), name));
+
+        Assert.Equal(ParticipantStatus.PendingApproval, joined.Tab.Me.Status);
 
         return joined.Tab.Me.ParticipantId;
     }

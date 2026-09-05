@@ -201,7 +201,10 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
         // the guest's khachapuri 3,200; the table's coffee 1,200 split three ways... but the
         // table-attributed line was placed while only two were approved, so it splits two ways.
         // Subtotal: 9,500 + 3,200 + 1,200 + 1,200 (the late coffee) = 15,100.
-        Assert.Equal(15_100L, shares.Totals!.SubtotalAmd);
+        Assert.True(
+            shares.Totals!.SubtotalAmd == 15_100L,
+            $"Subtotal was {shares.Totals.SubtotalAmd}. Shares: "
+            + string.Join(", ", shares.Shares!.Select(x => $"{x.DisplayName}={x.ShareAmd}")));
         Assert.Equal(1_510L, shares.Totals.ServiceChargeAmd);
         Assert.Equal(16_610L, shares.Totals.TotalAmd);
 
@@ -296,9 +299,14 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
             .OrderBy(e => e.Sequence)
             .ToListAsync();
 
+        var trail = string.Join(", ", events.Select(e => $"{e.Sequence}:{e.Type}"));
+
         Assert.Equal(events.Select(e => e.Sequence).OrderBy(x => x), events.Select(e => e.Sequence));
         Assert.Equal(events.Count, events.Select(e => e.Sequence).Distinct().Count());
-        Assert.Equal(TabEventType.TabClosed, events[^1].Type);
+
+        Assert.True(
+            events[^1].Type == TabEventType.TabClosed,
+            $"The stream should end with the close. It was: {trail}");
 
         // Every kind of thing that happened tonight is on the stream.
         Assert.Contains(TabEventType.OrderPlaced, events.Select(e => e.Type));
@@ -314,7 +322,10 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
             .Where(c => c.DiningTableId == tableThree)
             .ToListAsync();
 
-        Assert.Equal(2, stateChanges.Count);
+        Assert.True(
+            stateChanges.Count == 2,
+            "Table 3 should have exactly the seating and the free: "
+            + string.Join(", ", stateChanges.Select(c => $"{c.FromStatus}->{c.ToStatus}")));
         Assert.All(stateChanges, c => Assert.NotEqual(Guid.Empty, c.ClientCommandId));
 
         // The voided line is still on the bill, labelled.

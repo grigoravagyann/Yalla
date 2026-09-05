@@ -52,6 +52,34 @@ public static class EndpointConventions
         builder
             .Produces<UnifiedErrorEnvelope>(statusCode, ErrorResponsesOperationFilter.ProblemMediaType)
             .WithMetadata(new ResponseDescriptionAttribute(statusCode, description));
+
+    /// <summary>
+    /// The same, with the failure's <c>context</c> declared as a real type rather than a bag.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Use this for every named error a client has to <i>read</i> rather than merely recognise. The
+    /// untyped overload above declares <c>context</c> as <c>Record&lt;string, unknown&gt;</c>, so a
+    /// frontend reading <c>context.remainingAmd</c> gets no help from the compiler at all - which
+    /// defeats most of the argument for generating a client from this schema.
+    /// </para>
+    /// <para>
+    /// The runtime body is unchanged: <see cref="ApiExceptionMapper"/> still writes a
+    /// <see cref="UnifiedErrorEnvelope"/>. <typeparamref name="TProblem"/> only describes the JSON
+    /// it already produces, which is why the shapes live beside the mapper and are checked against
+    /// it by the OpenAPI test.
+    /// </para>
+    /// </remarks>
+    /// <typeparam name="TProblem">One of the declared shapes in <c>ProblemShapes.cs</c>.</typeparam>
+    public static RouteHandlerBuilder ProducesProblem<TProblem>(
+        this RouteHandlerBuilder builder,
+        int statusCode,
+        string description)
+        where TProblem : ProblemShape =>
+        builder
+            .Produces<UnifiedErrorEnvelope>(statusCode, ErrorResponsesOperationFilter.ProblemMediaType)
+            .WithMetadata(new ProblemShapeAttribute(statusCode, typeof(TProblem)))
+            .WithMetadata(new ResponseDescriptionAttribute(statusCode, description));
 }
 
 /// <summary>
