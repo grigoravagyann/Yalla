@@ -83,6 +83,26 @@ internal static class ApiExceptionMapper
         // 422: the request was right when it was made and the world moved. The body carries the
         // clashing window AND a fresh availability snapshot, so the app can redraw the floor and
         // show what changed instead of firing a second request into the same contention.
+        // Someone is sitting there now. A different sentence from "already booked", because the
+        // table may free up early and the diner can act on that.
+        TableCurrentlyOccupiedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableCurrentlyOccupied,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reason"] = (int)e.Reason,
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["requestedStartUtc"] = e.Requested.StartUtc,
+                ["requestedEndUtc"] = e.Requested.EndUtc,
+                ["seatedAtUtc"] = e.SeatedAtUtc,
+                ["projectedFreeAtUtc"] = e.ProjectedFreeAtUtc,
+                ["tableSessionId"] = e.TableSessionId,
+                ["availability"] = e.Availability,
+            }),
+
         TableAlreadyBookedException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.TableAlreadyBooked,

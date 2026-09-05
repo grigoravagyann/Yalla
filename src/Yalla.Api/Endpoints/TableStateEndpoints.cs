@@ -118,9 +118,12 @@ public static class TableStateEndpoints
     private static async Task<IResult> GetFloorAsync(
         Guid branchId,
         IFloorQuery floorQuery,
+        IClock clock,
         CancellationToken cancellationToken)
     {
-        var floor = await floorQuery.GetFloorAsync(branchId, cancellationToken);
+        // The staff floor screen always means "right now", and says so rather than relying on a
+        // default that a future caller would inherit by accident.
+        var floor = await floorQuery.GetFloorStateAsync(branchId, clock.UtcNow, cancellationToken);
 
         return floor is null ? Results.NotFound() : Results.Ok(floor);
     }

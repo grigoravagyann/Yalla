@@ -26,11 +26,14 @@ namespace Yalla.Infrastructure.Services;
 /// </remarks>
 internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 {
-    public async Task<BranchFloorState?> GetFloorAsync(Guid branchId, CancellationToken cancellationToken = default)
+    public async Task<BranchFloorState?> GetFloorStateAsync(
+        Guid branchId,
+        DateTime atUtc,
+        CancellationToken cancellationToken = default)
     {
         var nowUtc = clock.UtcNow;
 
-        var row = await BuildQuery(branchId, nowUtc)
+        var row = await BuildQuery(branchId, atUtc)
             .AsNoTracking()
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -46,7 +49,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
             TimeZoneId = row.TimeZoneId,
             FloorWidth = row.FloorWidth,
             FloorHeight = row.FloorHeight,
-            AsOfUtc = nowUtc,
+            AsOfUtc = atUtc,
             Tables = row.Tables
                 .Select(t => new TableFloorState
                 {
@@ -64,8 +67,16 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     FloorAreaDisplayOrder = t.FloorAreaDisplayOrder ?? 0,
                     IsBookable = t.IsBookable,
                     PhysicalStatus = t.Status,
-                    State = TableStateProjection.Derive(
-                        t.Status, t.NextReservationStartUtc, nowUtc, row.BufferMinutes),
+                    // Physical status only counts while the query is about now; beyond that the
+                    // sitting is projected forward and the momentary status is dropped entirely.
+                    State = TableStateProjection.DeriveAt(
+                        t.Status,
+                        t.SeatedAtUtc,
+                        t.NextReservationStartUtc,
+                        atUtc,
+                        nowUtc,
+                        row.TurnTimeMinutes,
+                        row.BufferMinutes),
                     CurrentSessionId = t.OpenSessionId,
                     SeatedAtUtc = t.SeatedAtUtc,
                     PartySize = t.PartySize,
@@ -84,14 +95,15 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         };
     }
 
-    public string GetFloorQuerySql(Guid branchId) => BuildQuery(branchId, clock.UtcNow).ToQueryString();
+    public string GetFloorQuerySql(Guid branchId, DateTime atUtc) =>
+        BuildQuery(branchId, atUtc).ToQueryString();
 
     /// <summary>
-    /// The one query. <paramref name="nowUtc"/> is passed in rather than read inside the
+    /// The one query. <paramref name="atUtc"/> is passed in rather than read inside the
     /// expression so it becomes a SQL parameter, which keeps the plan cacheable and lets tests
     /// drive the clock.
     /// </summary>
-    private IQueryable<FloorRow> BuildQuery(Guid branchId, DateTime nowUtc) =>
+    private IQueryable<FloorRow> BuildQuery(Guid branchId, DateTime atUtc) =>
         db.Branches
             .Where(b => b.Id == branchId)
             .Select(b => new FloorRow
@@ -102,6 +114,11 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 FloorWidth = b.FloorWidth,
                 FloorHeight = b.FloorHeight,
                 BufferMinutes = b.ReservationPolicy.BufferMinutes,
+
+                // Needed to project the open sitting forward. Read per query rather than stored on
+                // the session: an owner who shortens turn time this afternoon means it for the
+                // tables occupied this afternoon.
+                TurnTimeMinutes = b.ReservationPolicy.TurnTimeMinutes,
                 Tables = b.DiningTables
                     .Where(t => t.IsActive)
                     .Select(t => new FloorTableRow
@@ -146,7 +163,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         // Served by IX_Reservations_DiningTableId_StartUtc_EndUtc.
                         NextReservationId = db.Reservations
                             .Where(r => r.DiningTableId == t.Id
-                                        && r.EndUtc > nowUtc
+                                        && r.EndUtc > atUtc
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval))
                             .OrderBy(r => r.StartUtc)
@@ -154,7 +171,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                             .FirstOrDefault(),
                         NextReservationStartUtc = db.Reservations
                             .Where(r => r.DiningTableId == t.Id
-                                        && r.EndUtc > nowUtc
+                                        && r.EndUtc > atUtc
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval))
                             .OrderBy(r => r.StartUtc)
@@ -177,6 +194,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public int FloorHeight { get; init; }
 
         public int BufferMinutes { get; init; }
+
+        public int TurnTimeMinutes { get; init; }
 
         public List<FloorTableRow> Tables { get; init; } = [];
     }

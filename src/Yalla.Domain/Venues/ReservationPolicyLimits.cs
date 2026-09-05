@@ -34,6 +34,9 @@ public static class ReservationPolicyLimits
 
     public const int MaxCancellationDeadlineMinutes = 14 * 24 * 60;
 
+    /// <summary>Beyond a few hours the warning fires on every seating and stops being read.</summary>
+    public const int MaxWalkInHoldbackMinutes = 4 * 60;
+
     /// <summary>Refuses a policy outside the bounds, naming the field and the value given.</summary>
     /// <exception cref="ArgumentOutOfRangeException">One field is outside its bounds.</exception>
     public static void Validate(ReservationPolicy policy)
@@ -48,6 +51,7 @@ public static class ReservationPolicyLimits
         Between(policy.MinLeadMinutes, 0, MaxMinLeadMinutes, "Minimum lead time", "minutes");
         Between(policy.BookingWindowDays, MinBookingWindowDays, MaxBookingWindowDays, "Booking window", "days");
         Between(policy.CancellationDeadlineMinutes, 0, MaxCancellationDeadlineMinutes, "Cancellation deadline", "minutes");
+        Between(policy.WalkInHoldbackMinutes, 0, MaxWalkInHoldbackMinutes, "Walk-in holdback", "minutes");
 
         // Service charge 0..100 is already enforced by the policy constructor.
     }

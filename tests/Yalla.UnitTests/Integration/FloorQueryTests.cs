@@ -53,7 +53,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
             new TableStateCommand(branch.BranchId, branch.TableIds[4], Guid.NewGuid(), "broken chair"));
 
         await using var readDb = fixture.CreateContext(clock);
-        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorAsync(branch.BranchId);
+        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
         Assert.NotNull(floor);
         Assert.Equal(branch.BranchId, floor.BranchId);
@@ -107,7 +107,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         await TestBranchBuilder.AddConfirmedReservationAsync(db, branch, branch.FirstTableId, start);
 
         await using var readDb = fixture.CreateContext(clock);
-        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorAsync(branch.BranchId);
+        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
         var table = Assert.Single(floor!.Tables);
         Assert.Equal(DerivedTableState.Free, table.State);
@@ -135,13 +135,13 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         await using var readDb = fixture.CreateContext(clock);
         var floorQuery = fixture.CreateFloorQuery(readDb, clock);
 
-        var before = await floorQuery.GetFloorAsync(branch.BranchId);
+        var before = await floorQuery.GetFloorStateAsync(branch.BranchId, clock.UtcNow);
         Assert.Equal(DerivedTableState.Free, before!.Tables[0].State);
 
         // No write of any kind - only time passing.
         clock.Advance(TimeSpan.FromMinutes(30));
 
-        var after = await floorQuery.GetFloorAsync(branch.BranchId);
+        var after = await floorQuery.GetFloorStateAsync(branch.BranchId, clock.UtcNow);
         Assert.Equal(DerivedTableState.ReservedSoon, after!.Tables[0].State);
         Assert.Equal(TableStatus.Free, after.Tables[0].PhysicalStatus);
     }
@@ -165,7 +165,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
             db, branch, branch.FirstTableId, Now.AddHours(-4));
 
         await using var readDb = fixture.CreateContext(clock);
-        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorAsync(branch.BranchId);
+        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
         var table = Assert.Single(floor!.Tables);
         Assert.Equal(DerivedTableState.Free, table.State);
@@ -194,7 +194,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
             new SeatReservationCommand(branch.BranchId, tableId, reservation.Id, Guid.NewGuid()));
 
         await using var readDb = fixture.CreateContext(clock);
-        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorAsync(branch.BranchId);
+        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
         var table = Assert.Single(floor!.Tables);
         Assert.Equal(DerivedTableState.Occupied, table.State);
@@ -210,7 +210,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
 
-        Assert.Null(await fixture.CreateFloorQuery(db, clock).GetFloorAsync(Guid.NewGuid()));
+        Assert.Null(await fixture.CreateFloorQuery(db, clock).GetFloorStateAsync(Guid.NewGuid(), clock.UtcNow));
     }
 
     /// <summary>
@@ -246,7 +246,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         var counter = new CommandCountingInterceptor();
         await using var readDb = fixture.CreateContext(clock, counter);
 
-        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorAsync(branch.BranchId);
+        var floor = await fixture.CreateFloorQuery(readDb, clock).GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
         Assert.Equal(12, floor!.Tables.Count);
         Assert.Equal(1, counter.Count);
@@ -265,7 +265,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 3);
 
-        var sql = fixture.CreateFloorQuery(db, clock).GetFloorQuerySql(branch.BranchId);
+        var sql = fixture.CreateFloorQuery(db, clock).GetFloorQuerySql(branch.BranchId, clock.UtcNow);
 
         var dumpTo = Environment.GetEnvironmentVariable("YALLA_FLOOR_SQL_DUMP");
         if (!string.IsNullOrWhiteSpace(dumpTo))

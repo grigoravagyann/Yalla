@@ -132,6 +132,14 @@ internal sealed class ReservationService(
             return await ToViewAsync(winner, branch, table, wasReplay: true, trigger: null, cancellationToken);
         }
 
+        if (outcome.Occupied is { } sitting)
+        {
+            // Outside the lock, like the booking conflict below: assembling the floor snapshot is
+            // a wide read and holding the table's lock through it would queue every other booker
+            // behind a response body.
+            throw await OccupiedAsync(command, table, proposed, sitting, policy, cancellationToken);
+        }
+
         if (outcome.Conflict is { } conflict)
         {
             // Outside the lock, deliberately. The floor snapshot is a wide read and holding a
@@ -294,6 +302,17 @@ internal sealed class ReservationService(
                 return InsertOutcome.Conflicted(conflict);
             }
 
+            // And the people actually sitting there. TableSession is the authoritative occupancy
+            // record, and until now the conflict rule could not see it: a waiter seating a walk-in
+            // at seven did not stop a phone booking the same table for eight, and the diner arrived
+            // to find the table still occupied. Walk-ins are most of a cafe's traffic, so this was
+            // the common case rather than the edge one.
+            if (await FindOccupyingSessionAsync(table.Id, proposed, policy, cancellationToken) is { } sitting)
+            {
+                db.Entry(reservation).State = EntityState.Detached;
+                return InsertOutcome.OccupiedBy(sitting);
+            }
+
             db.Reservations.Add(reservation);
 
             if (await SaveWithFreshCodeAsync(reservation, dinerUserId, cancellationToken) is { } winner)
@@ -337,6 +356,35 @@ internal sealed class ReservationService(
     /// is therefore the rule that decides the insert, and the SQL is only an index-friendly way of
     /// narrowing the candidates.
     /// </remarks>
+    /// <summary>
+    /// The open sitting whose projected interval runs into the requested one, if there is one.
+    /// </summary>
+    /// <remarks>
+    /// A sitting has a start and no end, so it is projected forward by the branch's <i>current</i>
+    /// turn time - see <see cref="SessionOccupancy"/>. At most one session is open per table (the
+    /// filtered unique index guarantees it), so this is a single seek.
+    /// </remarks>
+    private async Task<TableSession?> FindOccupyingSessionAsync(
+        Guid tableId,
+        BookedInterval proposed,
+        ReservationPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        var open = await db.TableSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.DiningTableId == tableId && s.ClosedAtUtc == null, cancellationToken);
+
+        if (open is null)
+        {
+            return null;
+        }
+
+        return SessionOccupancy.Conflicts(
+            proposed, open.SeatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes)
+            ? open
+            : null;
+    }
+
     private async Task<Reservation?> FindConflictAsync(
         Guid tableId,
         BookedInterval proposed,
@@ -438,6 +486,51 @@ internal sealed class ReservationService(
             // and throwing here would replace the real failure with a meaningless one.
             logger.LogDebug(ex, "Could not restore the connection's lock timeout.");
         }
+    }
+
+    /// <summary>
+    /// Builds the "somebody is sitting there" refusal, with a fresh floor snapshot attached.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors <see cref="ConflictAsync"/> deliberately - same shape, same best-effort snapshot -
+    /// because the two refusals differ in what they mean to the diner, not in how they are built.
+    /// </remarks>
+    private async Task<TableCurrentlyOccupiedException> OccupiedAsync(
+        CreateReservationCommand command,
+        DiningTable table,
+        BookedInterval proposed,
+        TableSession sitting,
+        ReservationPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        var projected = SessionOccupancy.ProjectedInterval(sitting.SeatedAtUtc, policy.TurnTimeMinutes);
+
+        logger.LogInformation(
+            "Table {TableLabel} has been occupied since {SeatedAt:o}; the sitting runs into the {Start:o} booking.",
+            table.Label, sitting.SeatedAtUtc, proposed.StartUtc);
+
+        BranchAvailability? availability = null;
+
+        try
+        {
+            availability = await availabilityQuery.GetAvailabilityAsync(
+                new AvailabilityRequest(command.BranchId, command.PartySize, command.LocalDate, command.LocalTime),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not attach an availability snapshot to the occupancy conflict.");
+        }
+
+        return new TableCurrentlyOccupiedException(
+            command.BranchId,
+            table.Id,
+            table.Label,
+            proposed,
+            sitting.SeatedAtUtc,
+            projected.EndUtc,
+            sitting.Id,
+            availability);
     }
 
     private async Task<TableAlreadyBookedException> ConflictAsync(
@@ -844,12 +937,18 @@ internal sealed class ReservationService(
     }
 
     /// <summary>What came out of the locked section.</summary>
-    private readonly record struct InsertOutcome(Reservation? Conflict, Reservation? Replay)
+    private readonly record struct InsertOutcome(
+        Reservation? Conflict,
+        Reservation? Replay,
+        TableSession? Occupied)
     {
-        public static InsertOutcome Inserted => new(null, null);
+        public static InsertOutcome Inserted => new(null, null, null);
 
-        public static InsertOutcome Conflicted(Reservation conflict) => new(conflict, null);
+        public static InsertOutcome Conflicted(Reservation conflict) => new(conflict, null, null);
 
-        public static InsertOutcome Replayed(Reservation winner) => new(null, winner);
+        public static InsertOutcome Replayed(Reservation winner) => new(null, winner, null);
+
+        /// <summary>A party is physically at the table and their projected sitting overlaps.</summary>
+        public static InsertOutcome OccupiedBy(TableSession session) => new(null, null, session);
     }
 }

@@ -73,6 +73,48 @@ public sealed record BranchAvailability
 /// <summary>
 /// One table's answer for the requested slot: can the diner have it, and if so, for how long.
 /// </summary>
+/// <summary>
+/// How long this table can be had for, stated rather than implied.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The sheet has three cases to tell apart and used to be able to distinguish only two: bounded by
+/// a later booking, unbounded, and "we do not know". A null <see cref="AvailableUntilUtc"/> meant
+/// both of the last two, so <see cref="HasNoLaterBooking"/> is carried explicitly - and "nobody is
+/// booked after you" is a thing the sheet is meant to say out loud rather than a gap in the data.
+/// </para>
+/// <para>
+/// <see cref="IsShorterThanTurnTime"/> saves every client doing the same subtraction and reaching a
+/// different conclusion about whether to warn.
+/// </para>
+/// </remarks>
+/// <param name="AvailableFromUtc">The start of the slot, which is what was asked for.</param>
+/// <param name="AvailableUntilUtc">
+/// When the table has to be clear again - the next booking's start less the branch's clearing time.
+/// Null when nothing is booked after it.
+/// </param>
+/// <param name="HasNoLaterBooking">
+/// True when nothing is booked after this slot. Explicit, so a client never has to read a null as
+/// either "unbounded" or "missing".
+/// </param>
+/// <param name="WindowMinutes">How long the table is free for, in minutes. Null when unbounded.</param>
+/// <param name="IsShorterThanTurnTime">
+/// True when the window is shorter than the branch's usual sitting, so the client can say plainly
+/// that this table gives less time than normal.
+/// </param>
+/// <param name="AvailableFromLocal">
+/// <paramref name="AvailableFromUtc"/> as branch wall-clock time, for rendering.
+/// </param>
+/// <param name="AvailableUntilLocal"><paramref name="AvailableUntilUtc"/> as branch wall-clock time.</param>
+public sealed record TableAvailabilityWindow(
+    DateTime AvailableFromUtc,
+    DateTime? AvailableUntilUtc,
+    bool HasNoLaterBooking,
+    int? WindowMinutes,
+    bool IsShorterThanTurnTime,
+    TimeOnly AvailableFromLocal,
+    TimeOnly? AvailableUntilLocal);
+
 public sealed record TableAvailability
 {
     public required Guid TableId { get; init; }
@@ -135,50 +177,12 @@ public sealed record TableAvailability
     public required bool RequiresApproval { get; init; }
 
     /// <summary>Start of the window on offer. The requested slot, when the table is available.</summary>
-    public DateTime? AvailableFromUtc { get; init; }
-
     /// <summary>
-    /// When the table stops being theirs: the next booking's start less the branch's clearing
-    /// time. <b>Null means no limit</b> - nothing is booked after them.
+    /// How long the table can be had for. Null when it is not available at all - there is no window
+    /// to describe, and a zero-length one would read as though there were.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This is how the product avoids asking people how long they intend to stay. The limit is
-    /// shown <i>before</i> they confirm - "table 7, yours until 19:45" - and if that is too short
-    /// for what they had in mind they can see which tables have no limit at all and pick one of
-    /// those instead.
-    /// </para>
-    /// <para>
-    /// Self-reported departure times are unreliable in a way a stated window is not: a party that
-    /// said ninety minutes still leaves when they leave, whereas a party told the table is theirs
-    /// until 19:45 has been told something true, by a venue that can hold itself to it.
-    /// </para>
-    /// <para>
-    /// It is never earlier than the turn time the booking itself reserves. A table whose next
-    /// booking leaves no room for a full sitting fails the overlap rule outright and is offered
-    /// with <see cref="ReservationRejectionReason.TableAlreadyBooked"/> rather than with a window
-    /// too short to use.
-    /// </para>
-    /// </remarks>
-    public DateTime? AvailableUntilUtc { get; init; }
+    public TableAvailabilityWindow? Window { get; init; }
 
-    /// <summary>The same window in the branch's wall clock, for display.</summary>
-    public TimeOnly? AvailableFromLocal { get; init; }
-
-    /// <inheritdoc cref="AvailableFromLocal"/>
-    public TimeOnly? AvailableUntilLocal { get; init; }
-
-    /// <summary>Length of the window in minutes. Null when there is no limit.</summary>
-    public int? AvailableMinutes { get; init; }
-
-    /// <summary>
-    /// True when a later booking closes the window. False means the table has no limit at all,
-    /// which is the answer a diner would rather have and the one this flag exists to let a client
-    /// sort on.
-    /// </summary>
-    public required bool LimitedByNextBooking { get; init; }
-
-    /// <summary>The booking that closes the window, when there is one.</summary>
     public Guid? NextReservationId { get; init; }
 
     public DateTime? NextReservationStartUtc { get; init; }

@@ -734,10 +734,12 @@ internal sealed class TableStateService(
                             || r.Status == ReservationStatus.PendingApproval)
                         && (excludingReservationId == null || r.Id != excludingReservationId))
             .OrderBy(r => r.StartUtc)
-            .Select(r => new { r.Id, r.StartUtc })
+            .Select(r => new { r.Id, r.StartUtc, r.PartySize })
             .FirstOrDefaultAsync(cancellationToken);
 
-        return next is null ? NextReservation.None : new NextReservation(next.Id, next.StartUtc);
+        return next is null
+            ? NextReservation.None
+            : new NextReservation(next.Id, next.StartUtc, next.PartySize);
     }
 
     // ---------------------------------------------------------------- results
@@ -823,6 +825,19 @@ internal sealed class TableStateService(
                 $"table {table.Label} reserved {FormatBranchLocalTime(next.StartUtc!.Value, table.Branch.TimeZoneId)}"));
         }
 
+        // The tighter window: the booked party is nearly here. Carries the time and the size,
+        // because "reserved 20:00 for 6" is what a waiter can actually act on - they know whether
+        // six people will fit around the party they are about to seat.
+        if (SessionOccupancy.WithinWalkInHoldback(next.StartUtc, nowUtc, policy.WalkInHoldbackMinutes))
+        {
+            var at = FormatBranchLocalTime(next.StartUtc!.Value, table.Branch.TimeZoneId);
+            var forParty = next.PartySize is { } size ? $" for {size}" : string.Empty;
+
+            warnings.Add(new TableStateWarning(
+                TableStateWarning.WalkInHoldback,
+                $"table {table.Label} reserved {at}{forParty}, within {policy.WalkInHoldbackMinutes} minutes"));
+        }
+
         return warnings;
     }
 
@@ -848,8 +863,12 @@ internal sealed class TableStateService(
     }
 
     /// <summary>The next relevant booking for a table, or none.</summary>
-    private readonly record struct NextReservation(Guid? ReservationId, DateTime? StartUtc)
+    /// <param name="PartySize">
+    /// How many the booking is for. Carried so the holdback warning can say "reserved 20:00 for 4"
+    /// - the number is most of what the waiter needs to judge whether the seating is safe.
+    /// </param>
+    private readonly record struct NextReservation(Guid? ReservationId, DateTime? StartUtc, int? PartySize)
     {
-        public static NextReservation None => new(null, null);
+        public static NextReservation None => new(null, null, null);
     }
 }

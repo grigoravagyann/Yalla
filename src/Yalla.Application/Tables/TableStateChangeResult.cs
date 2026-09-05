@@ -18,6 +18,17 @@ public sealed record TableStateWarning(string Code, string Message)
     /// <summary>A booking starts soon enough to collide with the party just seated.</summary>
     public const string UpcomingReservation = "upcoming-reservation";
 
+    /// <summary>
+    /// A walk-in is being seated inside the branch's holdback window for a booking on that table.
+    /// </summary>
+    /// <remarks>
+    /// Narrower and more urgent than <see cref="UpcomingReservation"/>, which fires whenever the
+    /// booking falls inside a whole turn time. This one means the booked party is nearly here. It
+    /// is still only a warning: the waiter can see that the walk-in is two people wanting a coffee,
+    /// and the system cannot.
+    /// </remarks>
+    public const string WalkInHoldback = "walk-in-holdback";
+
     /// <summary>The table was freed with money still owed on its tab.</summary>
     public const string OutstandingBalance = "outstanding-balance";
 }

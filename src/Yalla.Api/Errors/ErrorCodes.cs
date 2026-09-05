@@ -64,6 +64,13 @@ public static class ErrorCodes
     public const string TableAlreadyBooked = "table-already-booked";
 
     /// <summary>
+    /// A party is seated at the table now and their sitting runs into the requested slot. HTTP 409,
+    /// with the seating and projected finish times in <c>details</c>. Distinct from
+    /// <see cref="TableAlreadyBooked"/>: nobody booked it, and it may free up early.
+    /// </summary>
+    public const string TableCurrentlyOccupied = "table-currently-occupied";
+
+    /// <summary>
     /// The booking could not get the table's lock in time. HTTP 503 and <b>retryable</b> - which
     /// is what makes it different from <see cref="TableAlreadyBooked"/>: the question was never
     /// asked, rather than answered no. Retry with the same <c>clientCommandId</c>.
@@ -151,6 +158,7 @@ public static class ErrorCodes
         TableStateConflict => "Table state conflict",
         InvalidTableTransition => "Invalid table transition",
         TableAlreadyBooked => "Table already booked",
+        TableCurrentlyOccupied => "Table currently occupied",
         ReservationLockTimeout => "Reservation lock timeout",
         ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",

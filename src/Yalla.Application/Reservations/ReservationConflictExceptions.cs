@@ -24,6 +24,62 @@ namespace Yalla.Application.Reservations;
 /// one to describe a failure.
 /// </para>
 /// </remarks>
+/// <summary>
+/// Somebody is sitting at the table now, and their sitting runs into the slot that was asked for.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Deliberately not <see cref="TableAlreadyBookedException"/>. Nobody booked this table - a waiter
+/// seated a walk-in at it - and the two need different sentences. "Already booked" tells the diner
+/// to pick another time; "someone is sitting there" tells them the table may well be free before
+/// the projected end, because the projection is the branch's turn time and not a promise anybody
+/// made.
+/// </para>
+/// <para>
+/// This is the case the product exists to prevent and the one that used to slip through: walk-ins
+/// are most of a cafe's traffic, and a sitting was invisible to the conflict rule, so a diner could
+/// book a table that already had people at it and arrive to find them still there.
+/// </para>
+/// </remarks>
+public sealed class TableCurrentlyOccupiedException(
+    Guid branchId,
+    Guid tableId,
+    string tableLabel,
+    BookedInterval requested,
+    DateTime seatedAtUtc,
+    DateTime projectedFreeAtUtc,
+    Guid tableSessionId,
+    BranchAvailability? availability = null)
+    : Exception(
+        $"Table {tableLabel} has a party seated at it since {seatedAtUtc:HH:mm} UTC. They are "
+        + $"expected to be finished around {projectedFreeAtUtc:HH:mm} UTC, which runs into the "
+        + $"{requested.StartUtc:HH:mm}-{requested.EndUtc:HH:mm} sitting once clearing time is allowed "
+        + "for. They may leave sooner - the finish time is an estimate from the branch's turn time.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    public Guid TableId { get; } = tableId;
+
+    public string TableLabel { get; } = tableLabel;
+
+    /// <summary>The interval that was asked for.</summary>
+    public BookedInterval Requested { get; } = requested;
+
+    /// <summary>When the party sat down. A fact.</summary>
+    public DateTime SeatedAtUtc { get; } = seatedAtUtc;
+
+    /// <summary>Seated plus the branch's turn time. An estimate, and the reason the message hedges.</summary>
+    public DateTime ProjectedFreeAtUtc { get; } = projectedFreeAtUtc;
+
+    public Guid TableSessionId { get; } = tableSessionId;
+
+    /// <summary>Why, for a client that switches on the reason rather than the message.</summary>
+    public ReservationRejectionReason Reason => ReservationRejectionReason.TableCurrentlyOccupied;
+
+    /// <summary>The branch as it stands now, so the app can redraw without a second request.</summary>
+    public BranchAvailability? Availability { get; } = availability;
+}
+
 public sealed class TableAlreadyBookedException(
     Guid branchId,
     Guid tableId,

@@ -138,6 +138,20 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                         IsBookable = t.IsBookable,
                         Status = t.Status,
 
+                        // The open sitting, as a second left join beside the bookings one. This is
+                        // what used to be missing: TableSession is the authoritative occupancy
+                        // record, so without it a walk-in seated at seven did not stop a phone
+                        // booking the same table for eight. A correlated subquery, so a table with
+                        // nobody at it yields NULL rather than being dropped.
+                        OpenSessionSeatedAtUtc = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Select(s => (DateTime?)s.SeatedAtUtc)
+                            .FirstOrDefault(),
+                        OpenSessionId = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Select(s => (Guid?)s.Id)
+                            .FirstOrDefault(),
+
                         // The left join. A table with none of these is not dropped - it is the
                         // most available table in the room. Served by
                         // IX_Reservations_DiningTableId_StartUtc_EndUtc.
@@ -238,7 +252,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var needsApproval = ReservationRules.NeedsApproval(request.PartySize, policy);
 
         var tables = row.Tables
-            .Select(t => ProjectTable(t, proposed, zone, policy, request.PartySize, requestReason, needsApproval))
+            .Select(t => ProjectTable(t, proposed, zone, policy, request.PartySize, requestReason, needsApproval, nowUtc))
             // Ordered here rather than in SQL, for the same reason as the floor query: the client
             // draws by area then label, and "7" before "10" needs natural ordering that SQL
             // collation will not give.
@@ -274,7 +288,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         ReservationPolicy policy,
         int partySize,
         ReservationRejectionReason? requestReason,
-        bool needsApproval)
+        bool needsApproval,
+        DateTime nowUtc)
     {
         // The next booking that still matters at the requested instant: the earliest one not
         // already over by then. Drives both the derived state and the window.
@@ -287,9 +302,26 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             ReservationOverlap.Conflicts(
                 proposed, new BookedInterval(b.StartUtc, b.EndUtc), b.Status, policy.BufferMinutes));
 
+        // And the people already sitting there, projected forward by the branch's turn time. The
+        // same rule the booking service applies inside its lock, so the sheet and the refusal agree.
+        var occupied = table.OpenSessionSeatedAtUtc is { } seatedAtUtc
+                       && SessionOccupancy.Conflicts(
+                           proposed, seatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes);
+
+        // Physical status is checked by CheckTable only for the here and now; beyond the horizon it
+        // would be a statement about tonight applied to tomorrow.
+        var physicalReason = TableStateProjection.IsWithinPhysicalHorizon(proposed.StartUtc, nowUtc)
+            ? ReservationRules.CheckTable(table.Status, table.IsBookable, table.Seats, partySize, policy)
+            : ReservationRules.CheckTable(
+                table.Status == TableStatus.OutOfService ? TableStatus.OutOfService : TableStatus.Free,
+                table.IsBookable,
+                table.Seats,
+                partySize,
+                policy);
+
         var reason = requestReason
-                     ?? ReservationRules.CheckTable(
-                         table.Status, table.IsBookable, table.Seats, partySize, policy)
+                     ?? physicalReason
+                     ?? (occupied ? ReservationRejectionReason.TableCurrentlyOccupied : (ReservationRejectionReason?)null)
                      ?? (conflict is null ? null : ReservationRejectionReason.TableAlreadyBooked);
 
         var isAvailable = reason is null;
@@ -299,6 +331,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var availableUntilUtc = isAvailable
             ? TableStateProjection.FreeUntil(next?.StartUtc, policy.BufferMinutes)
             : null;
+
+        var windowMinutes = availableUntilUtc is null
+            ? (int?)null
+            : (int)(availableUntilUtc.Value - proposed.StartUtc).TotalMinutes;
 
         return new TableAvailability
         {
@@ -318,22 +354,31 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             PhysicalStatus = table.Status,
 
             // Derived for the requested instant, not for now: a table free this afternoon but
-            // booked at 20:00 reads as ReservedSoon when the question is about 20:00.
-            State = TableStateProjection.Derive(
-                table.Status, next?.StartUtc, proposed.StartUtc, policy.BufferMinutes),
+            // booked at 20:00 reads as ReservedSoon when the question is about 20:00 - and a table
+            // occupied tonight reads as free when the question is about tomorrow.
+            State = TableStateProjection.DeriveAt(
+                table.Status,
+                table.OpenSessionSeatedAtUtc,
+                next?.StartUtc,
+                proposed.StartUtc,
+                nowUtc,
+                policy.TurnTimeMinutes,
+                policy.BufferMinutes),
 
             IsAvailable = isAvailable,
             UnavailableReason = reason,
             RequiresApproval = needsApproval,
 
-            AvailableFromUtc = isAvailable ? proposed.StartUtc : null,
-            AvailableUntilUtc = availableUntilUtc,
-            AvailableFromLocal = isAvailable ? zone.LocalTimeAt(proposed.StartUtc) : null,
-            AvailableUntilLocal = availableUntilUtc is null ? null : zone.LocalTimeAt(availableUntilUtc.Value),
-            AvailableMinutes = availableUntilUtc is null
-                ? null
-                : (int)(availableUntilUtc.Value - proposed.StartUtc).TotalMinutes,
-            LimitedByNextBooking = isAvailable && next is not null,
+            Window = isAvailable
+                ? new TableAvailabilityWindow(
+                    AvailableFromUtc: proposed.StartUtc,
+                    AvailableUntilUtc: availableUntilUtc,
+                    HasNoLaterBooking: next is null,
+                    WindowMinutes: windowMinutes,
+                    IsShorterThanTurnTime: windowMinutes is { } minutes && minutes < policy.TurnTimeMinutes,
+                    AvailableFromLocal: zone.LocalTimeAt(proposed.StartUtc),
+                    AvailableUntilLocal: availableUntilUtc is null ? null : zone.LocalTimeAt(availableUntilUtc.Value))
+                : null,
 
             NextReservationId = next?.ReservationId,
             NextReservationStartUtc = next?.StartUtc,
@@ -390,7 +435,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                     IsAvailable = false,
                     UnavailableReason = reason,
                     RequiresApproval = false,
-                    LimitedByNextBooking = false,
+
+                    // No slot could be computed, so there is no window to describe. Null rather
+                    // than a zero-length one, which would read as "available for no time at all".
+                    Window = null,
                 })
                 .OrderBy(t => t.FloorAreaDisplayOrder)
                 .ThenBy(t => t.Label.Length)
@@ -447,6 +495,11 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         public bool IsBookable { get; init; }
 
         public TableStatus Status { get; init; }
+
+        /// <summary>When the party currently at this table sat down. Null when nobody is at it.</summary>
+        public DateTime? OpenSessionSeatedAtUtc { get; init; }
+
+        public Guid? OpenSessionId { get; init; }
 
         public List<AvailabilityBookingRow> Bookings { get; init; } = [];
     }

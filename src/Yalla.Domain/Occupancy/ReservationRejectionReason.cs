@@ -52,4 +52,10 @@ public enum ReservationRejectionReason
     /// conversion.
     /// </summary>
     LocalTimeDoesNotExist = 9,
+
+    /// <summary>
+    /// Somebody is sitting at the table right now and their sitting runs into the requested slot.
+    /// Distinct from <see cref="TableAlreadyBooked"/>: nobody booked it, and it may free up early.
+    /// </summary>
+    TableCurrentlyOccupied = 10,
 }

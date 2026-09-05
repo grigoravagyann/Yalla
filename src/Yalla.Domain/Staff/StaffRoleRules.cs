@@ -38,6 +38,36 @@ public static class StaffRoleRules
     /// </summary>
     public static bool MayManage(StaffRole actor, StaffRole subject) => MayAssign(actor, subject);
 
+    /// <summary>
+    /// Seniority, lowest number most senior. <b>Deliberately not the enum's own values.</b>
+    /// </summary>
+    /// <remarks>
+    /// The enum's numbers are storage: they are pinned to what is already on disk and carry gaps
+    /// where members were retired, so their order says nothing about authority and must never be
+    /// read as if it did. <c>PlatformAdmin</c> happens to be 0 today; the day somebody retires a
+    /// role and leaves a gap, an ordinal comparison would quietly re-rank the hierarchy. This map
+    /// is the hierarchy, and it changes only when somebody means to change it.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<StaffRole, int> Seniority = new Dictionary<StaffRole, int>
+    {
+        [StaffRole.PlatformAdmin] = 0,
+        [StaffRole.Owner] = 1,
+        [StaffRole.Manager] = 2,
+        [StaffRole.Waiter] = 3,
+        [StaffRole.Kitchen] = 4,
+    };
+
     /// <summary>Strictly higher in the hierarchy.</summary>
-    public static bool Outranks(StaffRole actor, StaffRole other) => (int)actor < (int)other;
+    public static bool Outranks(StaffRole actor, StaffRole other) => RankOf(actor) < RankOf(other);
+
+    /// <summary>
+    /// Where a role sits, most senior first. Throws for a role with no place in the hierarchy,
+    /// because silently ranking it last is how an unranked role ends up able to do nothing or
+    /// everything depending on which way the comparison happens to run.
+    /// </summary>
+    public static int RankOf(StaffRole role) =>
+        Seniority.TryGetValue(role, out var rank)
+            ? rank
+            : throw new ArgumentOutOfRangeException(
+                nameof(role), role, "This role has no place in the seniority map. Add it deliberately.");
 }
