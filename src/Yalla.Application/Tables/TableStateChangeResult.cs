@@ -84,7 +84,46 @@ public sealed record TableStateChangeResult
     public long? OutstandingAmd { get; init; }
 
     public IReadOnlyList<TableStateWarning> Warnings { get; init; } = [];
+
+    /// <summary>
+    /// Bookings this table still has tonight, when it has just been marked out of service.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Empty on every other transition. <b>Never cancelled automatically.</b> A table out of service
+    /// for ten minutes while a chair is replaced is not the same as one out for a week, and only a
+    /// person standing in the room knows which this is - so the list goes to the waiter and the
+    /// decision stays theirs.
+    /// </para>
+    /// <para>
+    /// Releasing one of these uses <c>CancelledByVenue</c>, never <c>NoShow</c>: a broken table is
+    /// the venue's doing and must not count against a diner who was never given the chance to turn
+    /// up.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<AffectedReservation> AffectedReservations { get; init; } = [];
 }
+
+/// <summary>A booking left stranded by a table going out of service.</summary>
+/// <param name="ReservationId">The booking, so the waiter can release it from this screen.</param>
+/// <param name="Code">The short code the diner quotes at the door.</param>
+/// <param name="GuestName">Who to call.</param>
+/// <param name="GuestPhone">What to call them on. This is the point of surfacing the list at all.</param>
+/// <param name="PartySize">How many, so the waiter can look for another table that fits.</param>
+/// <param name="StartUtc">When they are expected.</param>
+/// <param name="LocalDate">The booked date, as the diner sees it.</param>
+/// <param name="LocalStartTime">The booked time, as the diner sees it.</param>
+/// <param name="Status">1 PendingApproval, 2 Confirmed.</param>
+public sealed record AffectedReservation(
+    Guid ReservationId,
+    string Code,
+    string GuestName,
+    string GuestPhone,
+    int PartySize,
+    DateTime StartUtc,
+    DateOnly LocalDate,
+    TimeOnly LocalStartTime,
+    ReservationStatus Status);
 
 /// <summary>The outcome of writing off a tab. Manager-only.</summary>
 public sealed record TabAbandonResult

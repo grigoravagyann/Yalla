@@ -295,6 +295,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new AuthorizationQueries(db),
             noShowPolicy ?? new NoShowPolicy(),
             CreateReservationWriter(db, lockOptions),
+            CreateService(db, clock, actor),
             NullLogger<ReservationService>.Instance);
 
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>

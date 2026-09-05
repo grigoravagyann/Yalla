@@ -444,10 +444,23 @@ internal sealed class TableStateService(
             return replayed;
         }
 
+        // Under the table's write lock, unlike freeing and holding.
+        //
+        // Prompt 7 exempted the three "narrowing" commands on the grounds that they only ever make a
+        // booking's re-check more conservative - a worse answer, never a wrong one. That is true of
+        // freeing and holding and false of this one: a booking validated while the table was Free,
+        // committing after this commits, leaves a confirmed reservation on a broken table. That is a
+        // different kind of wrong, and no amount of retrying finds it. Marking a table broken is
+        // also rare, so the throughput argument that justifies the other two does not apply.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
+
+        // Read inside the lock, before the transition, so no booking can slip in behind it.
+        var stranded = await FutureBookingsAsync(table.Id, nowUtc, cancellationToken);
 
         // Refuses an occupied table: a table with diners at it cannot be marked broken.
         table.MarkOutOfService();
@@ -456,14 +469,26 @@ internal sealed class TableStateService(
             table, fromStatus, TableStatus.OutOfService, command.Reason ?? "out of service",
             nowUtc, command.ClientCommandId, staffId));
 
+        if (stranded.Count > 0)
+        {
+            logger.LogWarning(
+                "Table {TableLabel} at branch {BranchId} was marked out of service with {Count} "
+                + "booking(s) still to come tonight. They were NOT cancelled - a waiter decides.",
+                table.Label, table.BranchId, stranded.Count);
+        }
+
         return await CommitAsync(
             table,
             fromStatus,
             command.ClientCommandId,
             () => Success(
                 table, fromStatus, TableStatus.OutOfService, nowUtc, command.ClientCommandId,
-                NextReservation.None),
-            cancellationToken);
+                NextReservation.None) with
+            {
+                AffectedReservations = stranded,
+            },
+            cancellationToken,
+            locked);
     }
 
     public async Task<TableStateChangeResult> ReturnToServiceAsync(
@@ -813,9 +838,22 @@ internal sealed class TableStateService(
 
         // Commands applied before this store existed have only their audit row. Recomputing from it
         // is worse than the stored answer and better than refusing, so it stays as a fallback.
-        return await FindReplayAsync(clientCommandId, cancellationToken) is { } audited
-            ? await BuildReplayResultAsync(audited, cancellationToken)
-            : null;
+        if (await FindReplayAsync(clientCommandId, cancellationToken) is not { } audited)
+        {
+            return null;
+        }
+
+        // Loud on purpose. This path exists for rows written before ProcessedCommands did, and those
+        // disappear the first time a developer resets their database - so in a month it should never
+        // fire. If it still is, something is writing audit rows without recording their answer, and
+        // the symptom would otherwise be a replay that quietly returns a recomputed body.
+        logger.LogWarning(
+            "Command {ClientCommandId} was replayed from its audit row because no ProcessedCommand "
+            + "exists for it. Expected only for commands applied before that store was added; if this "
+            + "is a recent command, a write path is skipping RecordProcessedCommand.",
+            clientCommandId);
+
+        return await BuildReplayResultAsync(audited, cancellationToken);
     }
 
     /// <summary>Adds the answer to the unit of work, alongside the change it describes.</summary>
@@ -874,6 +912,38 @@ internal sealed class TableStateService(
                 PreconditionFailure.TableChangedAndChangedBack);
         }
     }
+
+    /// <summary>
+    /// Bookings this table still has, so a waiter marking it broken can see who to telephone.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not a race - a missing behaviour.</b> Today a waiter can mark table 7 broken at six
+    /// o'clock with three bookings on it tonight and nothing anywhere tells anybody. The list is
+    /// returned and deliberately not acted on: ten minutes for a replacement chair and a week for a
+    /// new floor look identical from here, and only the person in the room can tell them apart.
+    /// </remarks>
+    private async Task<IReadOnlyList<AffectedReservation>> FutureBookingsAsync(
+        Guid tableId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.DiningTableId == tableId
+                        && r.EndUtc > nowUtc
+                        && (r.Status == ReservationStatus.Confirmed
+                            || r.Status == ReservationStatus.PendingApproval))
+            .OrderBy(r => r.StartUtc)
+            .Select(r => new AffectedReservation(
+                r.Id,
+                r.Code,
+                r.GuestName,
+                r.GuestPhone,
+                r.PartySize,
+                r.StartUtc,
+                r.LocalDate,
+                r.LocalStartTime,
+                r.Status))
+            .ToListAsync(cancellationToken);
 
     /// <summary>
     /// The command slug recorded against a processed command, derived from the method that ran it

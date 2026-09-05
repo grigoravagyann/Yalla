@@ -42,6 +42,37 @@ namespace Yalla.Infrastructure.Persistence;
 /// no notification, no email happens inside it. Conflict payloads are assembled after the
 /// transaction has already ended.
 /// </para>
+/// <para>
+/// <b>Which commands take the table's write lock.</b> A list rather than a rule, because the rule
+/// has been stated twice and been wrong twice.
+/// </para>
+/// <list type="table">
+/// <listheader><term>Command</term><description>Locks, and why</description></listheader>
+/// <item>
+/// <term>Create a booking</term>
+/// <description><b>Yes.</b> Two bookers insert different rows and collide on nothing, so optimistic
+/// concurrency sees no conflict and both commit.</description>
+/// </item>
+/// <item>
+/// <term>Seat (walk-in, QR, reservation, held party)</term>
+/// <description><b>Yes.</b> Booking's re-check reads <c>TableSessions</c>; a seating that skipped the
+/// lock could commit between that read and the booking's commit, and both would succeed.</description>
+/// </item>
+/// <item>
+/// <term>Mark out of service</term>
+/// <description><b>Yes.</b> A booking validated while the table was <c>Free</c> and committing after
+/// this leaves a confirmed reservation on a broken table. Prompt 7 grouped this with the commands
+/// below and that was wrong: it is not a narrower answer, it is a wrong one. Rare enough that the
+/// throughput argument does not apply.</description>
+/// </item>
+/// <item>
+/// <term>Free, hold, release a hold, return to service</term>
+/// <description><b>No.</b> These only ever <i>narrow</i> what a booking finds - a booking that saw a
+/// sitting about to close refuses a slot that would have been fine, which is a worse answer and never
+/// a wrong one. They are also the floor's whole write traffic, and putting that through one queue per
+/// table buys nothing.</description>
+/// </item>
+/// </list>
 /// </remarks>
 internal sealed class TableLock(
     YallaDbContext db,

@@ -169,6 +169,40 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
 
+        // Waiter or above, not manager: the person standing at the table is the one who knows
+        // nobody came, and a hold that waits for somebody senior to walk past is a hold nobody
+        // releases. Its own group for that reason.
+        var floor = app.MapGroup("/api/reservations")
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove);
+
+        floor.AddEndpointFilter<ClientCommandIdFilter>();
+
+        floor.MapPost("/{id:guid}/release", ReleaseAsync)
+            .WithName("releaseReservation")
+            .WithSummary("Let a late booking go, and free the table with it")
+            .WithDescription(
+                "**Two outcomes, and the difference matters to the diner.**\n\n"
+                + "| `outcome` | Booking becomes | Counts toward the no-show threshold |\n"
+                + "|---|---|---|\n"
+                + "| `1` NoShow | `NoShow` | **Yes** |\n"
+                + "| `2` CancelledByVenue | `CancelledByVenue` | **No** |\n\n"
+                + "Render these as two buttons - *release, marked no-show* and *release, they let us "
+                + "know*. With one button a busy waiter taps it for both, and the threshold ends up "
+                + "punishing the people who phoned ahead. A table out of service is always the second "
+                + "one: a broken chair is the venue's doing.\n\n"
+                + "The table is freed when it is **held for this booking**, through the state "
+                + "machine, so the audit row is written and the branch change sequence moves. A table "
+                + "somebody is **sitting at** is left alone - the booking is released either way, and "
+                + "a floor plan that shows an occupied table as free costs more than a stale hold.")
+            .Produces<ReservationReleaseResult>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "The booking is not in a state that can be released - it was already seated, "
+                + "completed or cancelled by the diner.");
+
         group.MapPost("/{id:guid}/reject", RejectAsync)
             .WithName("rejectReservation")
             .WithSummary("Decline a booking that is waiting for approval")
@@ -177,6 +211,19 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
+    }
+
+    private static async Task<IResult> ReleaseAsync(
+        Guid id,
+        ReleaseReservationRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await reservations.ReleaseAsync(
+            new ReleaseReservationCommand(id, request.Outcome, request.ClientCommandId, request.Reason),
+            cancellationToken));
     }
 
     private static async Task<IResult> GetAvailabilityAsync(

@@ -54,4 +54,25 @@ public interface IReservationService
 
     /// <summary>The calling diner's own bookings, upcoming and past.</summary>
     Task<MyReservations> GetMineAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// A waiter lets a late booking go, and the table with it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The action that was missing: a waiter could hold a table for a booking and had no way to stop
+    /// holding it. Both outcomes free the table when it is held <i>for this booking</i>, through the
+    /// state machine, so the audit row is written and every tablet sees it on the change stream.
+    /// </para>
+    /// <para>
+    /// A table somebody is <b>sitting at</b> is left alone. The booking is released either way -
+    /// that is a fact about the booking - but freeing an occupied table would make the floor plan
+    /// lie about where people are, which costs more than a stale hold.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="Domain.Staff.StaffPermissionException">Not staff at this branch.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">The booking is not in a state that can be released.</exception>
+    Task<ReservationReleaseResult> ReleaseAsync(
+        ReleaseReservationCommand command,
+        CancellationToken cancellationToken = default);
 }
