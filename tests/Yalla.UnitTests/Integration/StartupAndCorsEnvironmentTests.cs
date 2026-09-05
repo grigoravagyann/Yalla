@@ -16,12 +16,18 @@ public class StartupAndCorsEnvironmentTests
 {
     // ------------------------------------------------------------ the startup guard
 
+    /// <remarks>
+    /// The key is blanked rather than dropped. Dropping it only makes the setting absent for
+    /// factories that have nothing else supplying it - and a developer who followed README.md has
+    /// these two in user secrets, which Development loads. A test that passes only on an unset-up
+    /// machine is a test that fails for everyone who can actually run the app.
+    /// </remarks>
     [Theory]
     [InlineData("PlatformAdmin:Email")]
     [InlineData("PlatformAdmin:Password")]
     public void Development_refuses_to_start_without_the_platform_admin_configured(string missingKey)
     {
-        using var factory = new YallaApiFactory().Without(missingKey);
+        using var factory = new YallaApiFactory().With(missingKey, string.Empty);
 
         var failure = Record.Exception(() => factory.CreateClient());
 
@@ -39,8 +45,8 @@ public class StartupAndCorsEnvironmentTests
     {
         using var factory = new YallaApiFactory()
             .WithEnvironment(Environments.Staging)
-            .Without("PlatformAdmin:Email")
-            .Without("PlatformAdmin:Password");
+            .With("PlatformAdmin:Email", string.Empty)
+            .With("PlatformAdmin:Password", string.Empty);
 
         var failure = Record.Exception(() => factory.CreateClient());
 

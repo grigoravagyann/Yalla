@@ -201,7 +201,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             areas = new[] { new { id = (Guid?)null, name = "Windows", displayOrder = 0 } },
             tables = new[]
             {
-                new { id = (Guid?)null, label = "1", seats = 2, x = 50, y = 50, width = 90, height = 90, rotationDegrees = 0d, shape = TableShape.Round, floorAreaName = "Windows", isBookable = true },
+                new { id = (Guid?)null, label = "1", seats = 2, x = 50, y = 50, width = 90, height = 90, rotationDegrees = 0d, shape = TableShape.Round, floorAreaName = (string?)"Windows", isBookable = true },
                 new { id = (Guid?)null, label = "2", seats = 4, x = 300, y = 50, width = 120, height = 90, rotationDegrees = 0d, shape = TableShape.Rectangle, floorAreaName = (string?)null, isBookable = true },
             },
         });

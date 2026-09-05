@@ -80,6 +80,7 @@ public sealed record ReservationPolicyCommand(
 /// <summary>
 /// The policy after the change, and what the change did <i>not</i> do.
 /// </summary>
+/// <param name="Policy">The policy now in force, as stored.</param>
 /// <param name="AffectedExistingReservations">
 /// How many live bookings now fall outside the new rules - beyond the shortened window, or
 /// booked under a longer turn time. They were <b>not</b> changed: a settings edit never rewrites or
@@ -199,7 +200,17 @@ public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
 /// table with that label already exists in the branch, in which case it is that table, so its QR
 /// code survives an editor that lost the id.
 /// </summary>
+/// <param name="Id">The existing table this entry edits, or null for one matched by label or created.</param>
+/// <param name="Label">What is printed on the table. Unique within the branch, and required.</param>
+/// <param name="Seats">How many people it seats.</param>
+/// <param name="X">Left edge on the canvas.</param>
+/// <param name="Y">Top edge on the canvas.</param>
+/// <param name="Width">Width on the canvas.</param>
+/// <param name="Height">Height on the canvas.</param>
+/// <param name="RotationDegrees">Clockwise rotation, 0 to 360.</param>
+/// <param name="Shape">1 Rectangle, 2 Round.</param>
 /// <param name="FloorAreaName">Names an area in the same plan, by name. Null for no area.</param>
+/// <param name="IsBookable">False for tables that only ever take walk-ins, e.g. bar stools.</param>
 public sealed record FloorTableInput(
     Guid? Id,
     string Label,

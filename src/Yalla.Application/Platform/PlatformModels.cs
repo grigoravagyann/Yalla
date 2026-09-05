@@ -48,6 +48,18 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSi
 /// <summary>
 /// One venue as the platform sees it, with the per-branch tier rolled up.
 /// </summary>
+/// <param name="VenueId">The venue.</param>
+/// <param name="Name">Its name.</param>
+/// <param name="Type">1 Cafe, 2 Restaurant. Selects the shipped policy defaults for a new branch.</param>
+/// <param name="Slug">Unique URL segment for the brand.</param>
+/// <param name="IsActive">Whether the venue is switched on at all.</param>
+/// <param name="IsSuspended">Suspended venues keep every row but disappear from diner browsing.</param>
+/// <param name="IsDeleted">Soft-deleted. Never a hard delete; the venue refuses every change.</param>
+/// <param name="SuspendedAtUtc">When it was suspended, if it is.</param>
+/// <param name="DeletedAtUtc">When it was deleted, if it was. Never cleared.</param>
+/// <param name="BranchCount">How many branches it has.</param>
+/// <param name="TableCount">How many tables across all of them.</param>
+/// <param name="PaidBranchCount">How many of those branches are on the paid tier.</param>
 /// <param name="SubscriptionTier">
 /// The rollup: <c>Paid</c> when every branch is paid, otherwise <c>Free</c>. The real flag is per
 /// branch - see <paramref name="PaidBranchCount"/>.

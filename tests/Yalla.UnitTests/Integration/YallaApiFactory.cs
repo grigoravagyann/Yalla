@@ -75,19 +75,6 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         return this;
     }
 
-    /// <summary>Removes a configuration value entirely, so the host sees it as absent.</summary>
-    /// <remarks>
-    /// Distinct from <see cref="With(string, string?)"/> with null: the startup guards ask whether
-    /// a setting is configured at all, and a key present with a null value is the same thing only
-    /// by accident. This makes "genuinely missing" testable.
-    /// </remarks>
-    public YallaApiFactory Without(string key)
-    {
-        _settings.Remove(key);
-
-        return this;
-    }
-
     /// <summary>
     /// Runs the host as another environment.
     /// </summary>
