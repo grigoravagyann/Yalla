@@ -10,6 +10,7 @@ schema that is wrong produces types that compile and are quietly untrue.
 |---|---|
 | Local (`dotnet run`, HTTP) | `http://localhost:5086/swagger/v1/swagger.json` |
 | Local (`dotnet run`, HTTPS) | `https://localhost:7289/swagger/v1/swagger.json` |
+| Local, from another device on the wifi | `http://<LAN-IP>:5086/swagger/v1/swagger.json` - the exact address is logged at startup |
 | Staging / QA | `https://<host>/swagger/v1/swagger.json` |
 
 The local ports come from `src/Yalla.Api/Properties/launchSettings.json`; the path is always

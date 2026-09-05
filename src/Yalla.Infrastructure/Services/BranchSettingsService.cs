@@ -159,9 +159,11 @@ internal sealed class BranchSettingsService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        // Two collections on one root: split, so the areas do not multiply the tables on the wire.
         var branch = await db.Branches
             .Include(b => b.FloorAreas)
             .Include(b => b.DiningTables)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
