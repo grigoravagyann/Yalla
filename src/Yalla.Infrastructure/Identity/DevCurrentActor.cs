@@ -9,12 +9,17 @@ namespace Yalla.Infrastructure.Identity;
 /// seeded waiter.
 /// </summary>
 /// <remarks>
+/// <para>
 /// <b>Development only.</b> Registration is gated on <see cref="DevActorOptions.Enabled"/>, and
-/// nothing registers it outside Development. Replacing this one registration with a real
-/// claims-reading implementation is the entire change when authentication arrives - which is the
-/// point of routing every service through <see cref="ICurrentActor"/> now rather than later.
+/// nothing registers it outside Development.
+/// </para>
+/// <para>
+/// It no longer replaces the real actor. Authentication exists now, so a request carrying a token
+/// is the person that token names and this stub only answers for requests that carry none - see
+/// the composite in the API layer, which is why this type is public.
+/// </para>
 /// </remarks>
-internal sealed class DevCurrentActor(IOptions<DevActorOptions> options, DevSeedRegistry seed) : ICurrentActor
+public sealed class DevCurrentActor(IOptions<DevActorOptions> options, DevSeedRegistry seed) : ICurrentActor
 {
     private DevActorOptions Options => options.Value;
 

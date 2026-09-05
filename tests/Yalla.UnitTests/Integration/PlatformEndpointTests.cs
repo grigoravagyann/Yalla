@@ -240,6 +240,42 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/platform/venues")).StatusCode);
     }
 
+    /// <summary>
+    /// The development actor stub must never contradict a token.
+    /// </summary>
+    /// <remarks>
+    /// It used to replace <c>ICurrentActor</c> outright, so a platform admin's own request passed
+    /// every policy and then reached a service that had been told they were the seeded waiter. The
+    /// error - "List venues requires the PlatformAdmin role; the caller is a Waiter" - named a role
+    /// the caller never chose and pointed at the wrong layer entirely.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_development_actor_stub_does_not_override_a_real_token()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory().With("DevActor:Enabled", "true").With("DevActor:Role", "Waiter");
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
+
+        var listed = await platform.GetAsync("/api/platform/venues?search=yalla-demo");
+        Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+
+        // Proves the stub really was switched on for this host rather than the test passing
+        // vacuously: the demo venue exists only because enabling it also runs the dev seeder.
+        Assert.Equal(1, (await listed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("totalCount").GetInt32());
+
+        // And the stub still cannot get an untokened caller past a policy.
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/platform/venues")).StatusCode);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);

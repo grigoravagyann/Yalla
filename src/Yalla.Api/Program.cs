@@ -51,16 +51,29 @@ builder.Services.AddPlatformAdminSeeding(
     requireConfiguration: builder.Environment.IsDevelopment() && !EF.IsDesignTime);
 
 // The real actor, read from the token's claims: this is what puts a genuine staffMemberId on
-// every audit row. Registered before the development stub so that, when the stub is enabled, its
-// later registration wins.
-builder.Services.AddScoped<Yalla.Application.Abstractions.ICurrentActor, Yalla.Api.Identity.ClaimsCurrentActor>();
+// every audit row.
+builder.Services.AddScoped<Yalla.Api.Identity.ClaimsCurrentActor>();
+builder.Services.AddScoped<Yalla.Application.Abstractions.ICurrentActor>(
+    sp => sp.GetRequiredService<Yalla.Api.Identity.ClaimsCurrentActor>());
 
-// The pre-authentication stub, kept so the existing integration tests and local work against a
-// seeded branch keep running. A no-op unless DevActor:Enabled is set, and never registered
-// outside Development.
+// The stub that lets you poke the API locally with no token and still land a real staff member in
+// the audit log. Never registered outside Development, and a no-op unless DevActor:Enabled is set.
+//
+// It is composed with the real actor rather than replacing it: the last registration wins, and it
+// resolves the stub only for a request that carries no token. Overriding a genuine sign-in was a
+// trap - the policies would admit a platform admin and the service would then be told they were
+// the seeded waiter.
 if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddDevelopmentActor(configuration);
+
+    builder.Services.AddScoped<Yalla.Application.Abstractions.ICurrentActor>(sp =>
+        sp.GetService<Yalla.Infrastructure.Identity.DevCurrentActor>() is { } stub
+            ? new Yalla.Api.Identity.DevelopmentActorOrToken(
+                sp.GetRequiredService<IHttpContextAccessor>(),
+                sp.GetRequiredService<Yalla.Api.Identity.ClaimsCurrentActor>(),
+                stub)
+            : sp.GetRequiredService<Yalla.Api.Identity.ClaimsCurrentActor>());
 }
 
 var app = builder.Build();

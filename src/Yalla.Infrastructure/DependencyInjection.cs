@@ -211,8 +211,8 @@ public static class DependencyInjection
     /// </summary>
     /// <remarks>
     /// Call this from Development only. It is a no-op unless <c>DevActor:Enabled</c> is true, so
-    /// switching it on is always deliberate. When authentication arrives, the real
-    /// <see cref="ICurrentActor"/> registration replaces this call and nothing else changes.
+    /// switching it on is always deliberate. The stub answers only for requests that carry no
+    /// token; see <c>DevelopmentActorOrToken</c> in the API layer.
     /// </remarks>
     public static IServiceCollection AddDevelopmentActor(
         this IServiceCollection services,
@@ -229,7 +229,10 @@ public static class DependencyInjection
 
         services.AddSingleton<DevSeedRegistry>();
         services.AddScoped<DevDataSeeder>();
-        services.AddScoped<ICurrentActor, DevCurrentActor>();
+
+        // Registered as itself, not as ICurrentActor. The host composes it with the real
+        // claims-based actor so that a request carrying a token is never overridden by the stub.
+        services.AddScoped<DevCurrentActor>();
 
         return services;
     }
