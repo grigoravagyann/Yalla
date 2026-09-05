@@ -859,7 +859,19 @@ internal sealed class TableStateService(
         if (table.Status != expected)
         {
             throw new CommandPreconditionFailedException(
-                table.Id, table.Label, expected, table.Status, command.ClientCommandId);
+                table.Id, table.Label, expected, table.Status, command.ClientCommandId,
+                PreconditionFailure.StatusChanged);
+        }
+
+        // Both supplied means both must hold. The status matching is the interesting case: the
+        // table looks exactly as the waiter left it and is not the same table - a party was seated,
+        // fed, billed and cleared while this command sat in a queue. Status alone would apply it.
+        if (command.ExpectedRowVersion is { Length: > 0 } expectedVersion
+            && !string.Equals(expectedVersion, Convert.ToBase64String(table.RowVersion), StringComparison.Ordinal))
+        {
+            throw new CommandPreconditionFailedException(
+                table.Id, table.Label, expected, table.Status, command.ClientCommandId,
+                PreconditionFailure.TableChangedAndChangedBack);
         }
     }
 

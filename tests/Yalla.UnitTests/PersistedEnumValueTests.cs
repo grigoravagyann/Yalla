@@ -57,11 +57,77 @@ public class PersistedEnumValueTests
     [Fact]
     public void Staff_role_values_are_pinned_and_the_platform_tier_displaced_nobody()
     {
-        Assert.Equal(0, (int)StaffRole.PlatformAdmin);
+        Assert.Equal(0, (int)StaffRole.Unknown);
         Assert.Equal(1, (int)StaffRole.Owner);
         Assert.Equal(2, (int)StaffRole.Manager);
         Assert.Equal(3, (int)StaffRole.Waiter);
         Assert.Equal(4, (int)StaffRole.Kitchen);
+        Assert.Equal(5, (int)StaffRole.PlatformAdmin);
+    }
+
+    // ------------------------------------------------------------ 11 and 12. zero grants nothing
+
+    /// <summary>
+    /// <b>Test 11.</b> The value you get by forgetting is nobody, and asking its rank throws.
+    /// </summary>
+    /// <remarks>
+    /// <c>PlatformAdmin</c> was 0, so an unset field, a deserialisation default, or an insert path
+    /// that forgot to set a role produced a platform administrator. Not a hypothetical: it is what
+    /// <c>default(StaffRole)</c> evaluates to in every one of those cases, and none of them looks
+    /// like a security decision at the call site.
+    /// </remarks>
+    [Fact]
+    public void The_default_staff_role_is_nobody_and_has_no_rank()
+    {
+        Assert.Equal(StaffRole.Unknown, default(StaffRole));
+
+        // Absent from the seniority map on purpose. A role nobody set is a bug to surface, not a
+        // permission level to resolve.
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(() => StaffRoleRules.RankOf(StaffRole.Unknown));
+
+        Assert.Contains("no place in the seniority map", thrown.Message);
+
+        // And it outranks nothing, including itself, because asking is already an error.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => StaffRoleRules.Outranks(StaffRole.Unknown, StaffRole.Kitchen));
+    }
+
+    /// <summary>
+    /// <b>Test 12.</b> No persisted enum may put a privileged member on zero.
+    /// </summary>
+    /// <remarks>
+    /// The general guard, so the next enum does not repeat the mistake this one made. Zero is what
+    /// an unset column, a missing JSON property and a <c>default(T)</c> all produce, so whatever
+    /// sits there is the value the system hands out by accident - and that must never be the value
+    /// that can do the most.
+    /// </remarks>
+    [Fact]
+    public void No_persisted_enum_gives_its_zero_value_to_a_privileged_member()
+    {
+        // Names that mean "may do more than an ordinary caller". Matched on the name because the
+        // point is to catch a member somebody adds later without thinking about zero.
+        string[] privileged =
+        [
+            "PlatformAdmin", "Admin", "Owner", "Manager", "SuperUser", "Root", "Host",
+        ];
+
+        var offenders = typeof(StaffRole).Assembly
+            .GetTypes()
+            .Where(t => t.IsEnum && t.Namespace == "Yalla.Domain.Enums")
+            .Where(t => Enum.IsDefined(t, 0))
+            .Select(t => new { Enum = t.Name, Zero = Enum.GetName(t, 0)! })
+            .Where(x => privileged.Contains(x.Zero, StringComparer.OrdinalIgnoreCase))
+            .Select(x => $"{x.Enum}.{x.Zero}")
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            "These enums hand out a privileged member as their default: "
+            + string.Join(", ", offenders)
+            + ". Zero is what an unset column and a deserialisation default both produce, so it must "
+            + "be the value that can do the least. Give it an Unknown member and move the privileged "
+            + "one to the next free number - while there are no live rows, which is the only time it "
+            + "is free.");
     }
 
     /// <summary>
@@ -76,8 +142,13 @@ public class PersistedEnumValueTests
         Assert.False(StaffRoleRules.Outranks(StaffRole.Waiter, StaffRole.Manager));
         Assert.False(StaffRoleRules.Outranks(StaffRole.Owner, StaffRole.Owner));
 
-        // Every role has a declared rank; none falls through to a default.
-        foreach (var role in Enum.GetValues<StaffRole>())
+        // PlatformAdmin is 5 and still outranks Owner at 1, which is the whole reason seniority is
+        // a declared map: the storage numbers now run the other way.
+        Assert.True((int)StaffRole.PlatformAdmin > (int)StaffRole.Owner);
+
+        // Every real role has a declared rank; none falls through to a default. Unknown is the one
+        // deliberate omission and has its own test.
+        foreach (var role in Enum.GetValues<StaffRole>().Where(r => r != StaffRole.Unknown))
         {
             _ = StaffRoleRules.RankOf(role);
         }

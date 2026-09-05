@@ -39,6 +39,7 @@ public sealed record RefreshTokenRequest([Required] string RefreshToken);
 /// </param>
 public sealed record RedeemEnrolmentCodeRequest(
     [Required] string Code,
+    [Required][StringLength(128, MinimumLength = 8)] string DeviceId,
     [Required][StringLength(100, MinimumLength = 1)] string DeviceName);
 
 /// <summary>Body of <c>POST /api/auth/staff/pin</c>.</summary>

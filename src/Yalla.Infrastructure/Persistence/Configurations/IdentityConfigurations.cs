@@ -65,6 +65,18 @@ internal sealed class StaffDeviceConfiguration : EntityConfiguration<StaffDevice
             .HasMaxLength(FieldLengths.DeviceName)
             .IsRequired();
 
+        builder.Property(d => d.ClientDeviceId)
+            .HasMaxLength(FieldLengths.DeviceId)
+            .IsRequired();
+
+        // One live device per client identifier per branch. Filtered, so a browser that was revoked
+        // and set up again can reuse the identifier it still has in storage - the alternative is a
+        // device list that fills up with dead rows nobody can tell apart.
+        builder.HasIndex(d => new { d.BranchId, d.ClientDeviceId })
+            .IsUnique()
+            .HasFilter("[RevokedAtUtc] IS NULL")
+            .HasDatabaseName(DatabaseIndexNames.LiveDevicePerClientId);
+
         builder.HasOne(d => d.Branch)
             .WithMany()
             .HasForeignKey(d => d.BranchId)

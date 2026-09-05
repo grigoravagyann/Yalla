@@ -128,6 +128,27 @@ public sealed record VenueUserSignInResult(
 /// <param name="EnrolledAtUtc">When it redeemed its enrolment code.</param>
 /// <param name="LastSeenAtUtc">Last time a token from it was used. Null if never.</param>
 /// <param name="IsRevoked">True once a manager killed it. Revocation is permanent; re-enrol instead.</param>
+/// <summary>
+/// Where an enrolled device thinks it is, shown on the PIN screen before anybody taps.
+/// </summary>
+/// <param name="DeviceId">The device row.</param>
+/// <param name="ClientDeviceId">The identifier the client minted for itself.</param>
+/// <param name="DeviceName">What the manager called it.</param>
+/// <param name="BranchId">The one branch it can act on.</param>
+/// <param name="BranchName">That branch, in words, because an id on a counter screen means nothing.</param>
+/// <param name="VenueName">The venue, for a chain where two branches share a name.</param>
+/// <param name="EnrolledAtUtc">When it was set up.</param>
+/// <param name="LastSeenAtUtc">When it was last used.</param>
+public sealed record EnrolledDeviceView(
+    Guid DeviceId,
+    string ClientDeviceId,
+    string DeviceName,
+    Guid BranchId,
+    string BranchName,
+    string VenueName,
+    DateTime EnrolledAtUtc,
+    DateTime? LastSeenAtUtc);
+
 public sealed record StaffDeviceSummary(
     Guid Id,
     string Name,

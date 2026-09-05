@@ -38,7 +38,8 @@ public class StaffAuthTests(SqlServerFixture fixture)
         using var tablet = factory.CreateClient();
 
         var enrolled = await tablet.PostAsJsonAsync(
-            "/api/auth/staff/enrol", new { code, deviceName = "Bar tablet" });
+            "/api/auth/staff/enrol",
+            new { code, deviceId = $"browser-{Guid.NewGuid():N}", deviceName = "Bar tablet" });
 
         Assert.Equal(HttpStatusCode.OK, enrolled.StatusCode);
 
@@ -49,7 +50,8 @@ public class StaffAuthTests(SqlServerFixture fixture)
         // Enrolment codes get read out across a bar and will be overheard. Single use is what
         // makes that survivable.
         var second = await tablet.PostAsJsonAsync(
-            "/api/auth/staff/enrol", new { code, deviceName = "Somebody else's tablet" });
+            "/api/auth/staff/enrol",
+            new { code, deviceId = $"browser-{Guid.NewGuid():N}", deviceName = "Somebody else's tablet" });
 
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
     }
@@ -250,7 +252,8 @@ public class StaffAuthTests(SqlServerFixture fixture)
 
         using var tablet = factory.CreateClient();
         var enrolled = await tablet.PostAsJsonAsync(
-            "/api/auth/staff/enrol", new { code, deviceName = "Test tablet" });
+            "/api/auth/staff/enrol",
+            new { code, deviceId = $"browser-{Guid.NewGuid():N}", deviceName = "Test tablet" });
 
         enrolled.EnsureSuccessStatusCode();
 

@@ -164,7 +164,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.SeatWalkInAsync(
-            new SeatWalkInCommand(branchId, tableId, request.PartySize, request.ClientCommandId, request.Reason),
+            new SeatWalkInCommand(
+                branchId, tableId, request.PartySize, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -179,7 +181,8 @@ public static class TableStateEndpoints
     {
         var result = await service.SeatReservationAsync(
             new SeatReservationCommand(
-                branchId, tableId, request.ReservationId, request.ClientCommandId, request.PartySize, request.Reason),
+                branchId, tableId, request.ReservationId, request.ClientCommandId, request.PartySize,
+                request.Reason, request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -193,7 +196,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.HoldForLatePartyAsync(
-            new TableStateCommand(branchId, tableId, request.ClientCommandId, request.Reason),
+            new TableStateCommand(
+                branchId, tableId, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -207,7 +212,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.ReleaseHoldAsync(
-            new TableStateCommand(branchId, tableId, request.ClientCommandId, request.Reason),
+            new TableStateCommand(
+                branchId, tableId, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -222,7 +229,8 @@ public static class TableStateEndpoints
     {
         var result = await service.SeatHeldPartyAsync(
             new SeatHeldPartyCommand(
-                branchId, tableId, request.PartySize, request.ClientCommandId, request.ReservationId, request.Reason),
+                branchId, tableId, request.PartySize, request.ClientCommandId, request.ReservationId,
+                request.Reason, request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -236,7 +244,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.FreeTableAsync(
-            new TableStateCommand(branchId, tableId, request.ClientCommandId, request.Reason),
+            new TableStateCommand(
+                branchId, tableId, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -250,7 +260,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.MarkOutOfServiceAsync(
-            new TableStateCommand(branchId, tableId, request.ClientCommandId, request.Reason),
+            new TableStateCommand(
+                branchId, tableId, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);
@@ -264,7 +276,9 @@ public static class TableStateEndpoints
         CancellationToken cancellationToken)
     {
         var result = await service.ReturnToServiceAsync(
-            new TableStateCommand(branchId, tableId, request.ClientCommandId, request.Reason),
+            new TableStateCommand(
+                branchId, tableId, request.ClientCommandId, request.Reason,
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
             cancellationToken);
 
         return Results.Ok(result);

@@ -33,6 +33,26 @@ public sealed class StaffDevice : Entity
     /// <summary>What a manager calls it in the admin panel: "Bar tablet", "Terrace".</summary>
     public string Name { get; private set; } = null!;
 
+    /// <summary>
+    /// The identifier the client generated for itself and keeps in its own storage.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A browser is a device here, and the browser is the thing that has to recognise itself. It
+    /// mints this once, stores it, and sends it with every enrolment, so a PWA can tell "I am
+    /// already the terrace tablet" from "I am a laptop that has never been enrolled" without a
+    /// server round trip - and a manager looking at the device list sees one row per real device
+    /// rather than one per time somebody reloaded the page.
+    /// </para>
+    /// <para>
+    /// Not the primary key. A client-chosen primary key lets a caller name a row that already
+    /// exists; this is a claim about the caller, checked against a unique index scoped to the
+    /// branch and filtered to live devices, so a revoked tablet's identifier can be enrolled again
+    /// after the browser is wiped and re-set-up.
+    /// </para>
+    /// </remarks>
+    public string ClientDeviceId { get; private set; } = null!;
+
     /// <summary>Last time a token from this device was seen, so an unused tablet is obvious.</summary>
     public DateTime? LastSeenAtUtc { get; private set; }
 
@@ -45,12 +65,18 @@ public sealed class StaffDevice : Entity
     {
     }
 
-    public StaffDevice(Guid venueId, Guid branchId, string name, DateTime enrolledAtUtc)
+    public StaffDevice(
+        Guid venueId,
+        Guid branchId,
+        string name,
+        string clientDeviceId,
+        DateTime enrolledAtUtc)
         : base(Guid.CreateVersion7())
     {
         VenueId = Guard.NotEmpty(venueId, nameof(venueId));
         BranchId = Guard.NotEmpty(branchId, nameof(branchId));
         Name = Guard.NotBlank(name, nameof(name), FieldLengths.DeviceName);
+        ClientDeviceId = Guard.NotBlank(clientDeviceId, nameof(clientDeviceId), FieldLengths.DeviceId);
         StampCreatedAt(enrolledAtUtc);
         LastSeenAtUtc = enrolledAtUtc;
     }
