@@ -103,6 +103,25 @@ public static class ErrorCodes
     /// </summary>
     public const string AccountLocked = "account-locked";
 
+    /// <summary>
+    /// The branch is on a tier that does not include this feature - tabs on a Free branch. HTTP
+    /// 409, not 403: the caller is allowed here, the branch has not paid for it. <c>context</c>
+    /// carries <c>branchId</c> and <c>currentTier</c>.
+    /// </summary>
+    public const string FeatureNotEnabled = "feature-not-enabled";
+
+    /// <summary>
+    /// The venue has open tabs or future bookings and cannot be deleted. HTTP 409, with the
+    /// blockers named in <c>context</c>.
+    /// </summary>
+    public const string VenueDeletionBlocked = "venue-deletion-blocked";
+
+    /// <summary>
+    /// The floor plan cannot be applied: tables outside the canvas or repeated labels. HTTP 422,
+    /// with the offending tables in <c>context</c>.
+    /// </summary>
+    public const string FloorPlanInvalid = "floor-plan-invalid";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -131,6 +150,9 @@ public static class ErrorCodes
         Unauthenticated => "Not authenticated",
         TooManyAttempts => "Too many attempts",
         AccountLocked => "Account locked",
+        FeatureNotEnabled => "Feature not enabled for this branch",
+        VenueDeletionBlocked => "Venue cannot be deleted",
+        FloorPlanInvalid => "Floor plan invalid",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

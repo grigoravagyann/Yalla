@@ -52,6 +52,7 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             {
                 t.Id,
                 t.BranchId,
+                Tier = t.Branch.SubscriptionTier,
                 t.DiningTableId,
                 TableLabel = t.DiningTable.Label,
                 t.Status,
@@ -72,6 +73,12 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
         if (tab is null)
         {
             return null;
+        }
+
+        // A free branch has no tabs to read. Same answer the service gives on write.
+        if (tab.Tier != Yalla.Domain.Enums.SubscriptionTier.Paid)
+        {
+            throw new Yalla.Domain.Venues.FeatureNotEnabledException("Tabs and ordering", tab.BranchId, tab.Tier);
         }
 
         // Removed participants included: a line they placed still names them, and the projection

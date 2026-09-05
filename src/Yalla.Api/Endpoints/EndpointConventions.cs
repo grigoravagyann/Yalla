@@ -20,6 +20,9 @@ public static class EndpointConventions
     /// <summary>The sign-in flows for all four identity types.</summary>
     public const string AuthTag = "auth";
 
+    /// <summary>The people who run Yalla: onboarding and configuring venues.</summary>
+    public const string PlatformTag = "platform";
+
     /// <summary>
     /// Declares a failure response carrying the API's problem document.
     /// </summary>

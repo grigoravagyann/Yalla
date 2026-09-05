@@ -1,0 +1,79 @@
+using Yalla.Domain.Enums;
+
+namespace Yalla.Domain.Venues;
+
+/// <summary>
+/// The branch is on a tier that does not include this feature. Not a 403: the caller is allowed
+/// to be here; the branch has not paid for what they asked for.
+/// </summary>
+public sealed class FeatureNotEnabledException(string feature, Guid branchId, SubscriptionTier currentTier)
+    : DomainStateException(
+        $"{feature} is not enabled for this branch. It is on the {currentTier} tier; "
+        + "upgrade the branch to Paid to turn it on.")
+{
+    /// <summary>What was asked for, e.g. "Tabs and ordering".</summary>
+    public string Feature { get; } = feature;
+
+    public Guid BranchId { get; } = branchId;
+
+    public SubscriptionTier CurrentTier { get; } = currentTier;
+}
+
+/// <summary>
+/// The venue cannot be deleted while people are still eating there or still booked to.
+/// </summary>
+/// <remarks>
+/// Names the blockers, because "cannot delete" with no reason sends the admin to the database
+/// to find out why. The fix is to let the tabs close and the bookings pass, or to suspend the
+/// venue instead, which needs neither.
+/// </remarks>
+public sealed class VenueDeletionBlockedException(
+    Guid venueId,
+    IReadOnlyList<string> openTabs,
+    IReadOnlyList<string> futureReservations)
+    : DomainStateException(Describe(openTabs, futureReservations))
+{
+    public Guid VenueId { get; } = venueId;
+
+    /// <summary>Table labels with an open or closing tab.</summary>
+    public IReadOnlyList<string> OpenTabs { get; } = openTabs;
+
+    /// <summary>Codes of confirmed or pending bookings that have not yet started.</summary>
+    public IReadOnlyList<string> FutureReservations { get; } = futureReservations;
+
+    private static string Describe(IReadOnlyList<string> openTabs, IReadOnlyList<string> futureReservations)
+    {
+        var parts = new List<string>();
+
+        if (openTabs.Count > 0)
+        {
+            parts.Add($"{openTabs.Count} open tab(s) on table(s) {string.Join(", ", openTabs)}");
+        }
+
+        if (futureReservations.Count > 0)
+        {
+            parts.Add($"{futureReservations.Count} future confirmed reservation(s) ({string.Join(", ", futureReservations)})");
+        }
+
+        return "This venue cannot be deleted: it has " + string.Join(" and ", parts)
+               + ". Suspend it instead, or wait for them to close.";
+    }
+}
+
+/// <summary>
+/// A floor plan that cannot be applied, with the offending tables named.
+/// </summary>
+public sealed class FloorPlanInvalidException(
+    IReadOnlyList<string> errors,
+    IReadOnlyList<string> tablesOutsideCanvas,
+    IReadOnlyList<string> duplicateLabels)
+    : ArgumentException(string.Join(" ", errors))
+{
+    public IReadOnlyList<string> Errors { get; } = errors;
+
+    /// <summary>Labels of tables that do not sit inside the canvas.</summary>
+    public IReadOnlyList<string> TablesOutsideCanvas { get; } = tablesOutsideCanvas;
+
+    /// <summary>Labels used more than once in the plan.</summary>
+    public IReadOnlyList<string> DuplicateLabels { get; } = duplicateLabels;
+}

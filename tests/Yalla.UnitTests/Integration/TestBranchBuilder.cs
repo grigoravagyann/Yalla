@@ -49,6 +49,7 @@ internal static class TestBranchBuilder
         int seatsPerTable = 4,
         ReservationPolicy? policy = null,
         IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null,
+        SubscriptionTier subscriptionTier = SubscriptionTier.Paid,
         CancellationToken cancellationToken = default)
     {
         var unique = Guid.NewGuid().ToString("N")[..12];
@@ -66,7 +67,8 @@ internal static class TestBranchBuilder
             timeZoneId: timeZoneId,
             floorWidth: 1000,
             floorHeight: 700,
-            reservationPolicy: policy);
+            reservationPolicy: policy,
+            subscriptionTier: subscriptionTier);
 
         db.Branches.Add(branch);
 

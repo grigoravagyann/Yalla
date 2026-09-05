@@ -655,7 +655,7 @@ internal sealed class ReservationService(
     {
         if (actor.Type != ActorType.Staff
             || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Manager or StaffRole.Owner))
+            || actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }
@@ -663,13 +663,24 @@ internal sealed class ReservationService(
         var staff = await db.StaffMembers
             .AsNoTracking()
             .Where(s => s.Id == staffId)
-            .Select(s => new { s.BranchId, s.VenueId, s.IsActive })
+            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
             .FirstOrDefaultAsync(cancellationToken);
+
+        if (staff is not { IsActive: true })
+        {
+            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+        }
+
+        // A platform admin belongs to no venue and may decide for any branch.
+        if (staff.Role == StaffRole.PlatformAdmin)
+        {
+            return;
+        }
 
         // The same read the BranchScoped policy does, through the same interface, rather than a
         // second copy of the query that could drift from it.
-        if (staff is not { IsActive: true }
-            || !await authorization.BranchBelongsToVenueAsync(branchId, staff.VenueId, cancellationToken))
+        if (staff.VenueId is not { } venueId
+            || !await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }

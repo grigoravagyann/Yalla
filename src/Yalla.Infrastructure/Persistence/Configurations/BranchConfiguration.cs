@@ -42,6 +42,13 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
         builder.Property(b => b.IsActive)
             .IsRequired();
 
+        // Per branch, never per venue: a chain with four locations is four paying customers.
+        builder.Property(b => b.SubscriptionTier)
+            .IsRequired()
+            .HasDefaultValue(Yalla.Domain.Enums.SubscriptionTier.Free);
+
+        builder.Ignore(b => b.IsPaid);
+
         // The reservation policy is owned: it lives in extra columns on this table rather than in
         // a table of its own, because a branch always has exactly one and it is never queried
         // apart from its branch.

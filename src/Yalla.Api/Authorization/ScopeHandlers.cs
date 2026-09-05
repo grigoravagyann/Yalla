@@ -52,7 +52,28 @@ internal sealed class BranchScopedHandler(
         AuthorizationHandlerContext context,
         BranchScopedRequirement requirement)
     {
+        // The platform tier belongs to no branch and passes for every one. Decided here, inside
+        // the handler, so no call site needs a role check of its own.
+        if (context.User.IsPlatformAdmin())
+        {
+            context.Succeed(requirement);
+            return;
+        }
+
         var routeBranchId = accessor.HttpContext.RouteGuid("branchId");
+
+        if (routeBranchId is null && accessor.HttpContext.RouteGuid("tableId") is { } routeTableId)
+        {
+            // A route addressed by table - /api/tables/{tableId}/regenerate-qr - names no branch,
+            // but the table does.
+            routeBranchId = await queries.GetTableBranchIdAsync(
+                routeTableId, accessor.HttpContext?.RequestAborted ?? default);
+
+            if (routeBranchId is null)
+            {
+                return;
+            }
+        }
 
         if (routeBranchId is null && accessor.HttpContext.RouteGuid("tabId") is { } routeTabId)
         {
@@ -121,6 +142,13 @@ internal sealed class VenueScopedHandler(
         AuthorizationHandlerContext context,
         VenueScopedRequirement requirement)
     {
+        // The platform tier passes for every venue. See BranchScopedHandler.
+        if (context.User.IsPlatformAdmin())
+        {
+            context.Succeed(requirement);
+            return;
+        }
+
         var role = context.User.StaffRole();
 
         if (role is null || !Administrators.Contains(role.Value))

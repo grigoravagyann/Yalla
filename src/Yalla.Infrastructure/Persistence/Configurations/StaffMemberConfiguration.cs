@@ -42,9 +42,15 @@ internal sealed class StaffMemberConfiguration : EntityConfiguration<StaffMember
             .HasFilter("[Email] IS NOT NULL")
             .HasDatabaseName(DatabaseIndexNames.StaffMemberEmail);
 
+        builder.Ignore(s => s.IsPlatformAdmin);
+        builder.Ignore(s => s.HasPasswordCredentials);
+
+        // Null only for a platform admin, who is staff of no venue. Every other role requires one,
+        // and the entity enforces that; the column is nullable so the one exception can exist.
         builder.HasOne(s => s.Venue)
             .WithMany(v => v.Staff)
             .HasForeignKey(s => s.VenueId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
         // Null means every branch of the venue, which is the normal case for an owner.

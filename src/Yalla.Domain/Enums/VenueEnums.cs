@@ -7,6 +7,22 @@ public enum VenueType
     Restaurant = 2,
 }
 
+/// <summary>
+/// What a <b>branch</b> pays for. Stored per branch, never per venue: a chain with four locations
+/// is four paying customers. The venue-level view is a rollup.
+/// </summary>
+/// <remarks>
+/// A flag that gates features, nothing more. Billing, invoicing and collection are out of scope.
+/// </remarks>
+public enum SubscriptionTier
+{
+    /// <summary>Floor plan and reservations.</summary>
+    Free = 1,
+
+    /// <summary>Adds ordering, tabs, payments and analytics.</summary>
+    Paid = 2,
+}
+
 /// <summary>Footprint of a table on the floor plan.</summary>
 public enum TableShape
 {

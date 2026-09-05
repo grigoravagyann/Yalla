@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Endpoints;
@@ -36,6 +37,13 @@ builder.Services.AddAuthenticationServices(
     allowDevelopmentSecretsInResponses: builder.Environment.IsDevelopment());
 
 builder.AddYallaAuthentication();
+
+// The first platform admin, from user secrets. In Development a missing email or password fails
+// startup here rather than silently creating a default account - except under the EF tooling,
+// which builds the host only to read the model and must not need a secret to do it.
+builder.Services.AddPlatformAdminSeeding(
+    configuration,
+    requireConfiguration: builder.Environment.IsDevelopment() && !EF.IsDesignTime);
 
 // The real actor, read from the token's claims: this is what puts a genuine staffMemberId on
 // every audit row. Registered before the development stub so that, when the stub is enabled, its
@@ -91,12 +99,22 @@ app.MapTabEndpoints();
 app.MapTableStateEndpoints();
 app.MapAdminDeviceEndpoints();
 app.MapReservationEndpoints();
+app.MapPlatformEndpoints();
+app.MapVenueAdminEndpoints();
 
 // Migrates and seeds the demo branch so the dev actor stub has a real staff member to be.
 // Returns false, and does nothing at all, when DevActor:Enabled is off.
 if (app.Environment.IsDevelopment() && await app.Services.InitialiseDevelopmentDataAsync())
 {
     app.Logger.LogInformation("Development data initialised.");
+}
+
+// The way in to a fresh database. Off under the EF tooling and in the test host; migrates first in
+// Development so a brand-new machine gets a schema and an admin in one start.
+if (!EF.IsDesignTime
+    && await app.Services.SeedPlatformAdminAsync(applyMigrations: app.Environment.IsDevelopment()))
+{
+    app.Logger.LogInformation("Platform admin present.");
 }
 
 app.Run();

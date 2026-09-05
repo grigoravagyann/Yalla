@@ -25,7 +25,18 @@ internal sealed class VenueConfiguration : EntityConfiguration<Venue>
         builder.Property(v => v.IsActive)
             .IsRequired();
 
+        // Both null for a live venue. Suspension clears; deletion never does.
+        builder.Property(v => v.SuspendedAtUtc);
+        builder.Property(v => v.DeletedAtUtc);
+
+        builder.Ignore(v => v.IsSuspended);
+        builder.Ignore(v => v.IsDeleted);
+        builder.Ignore(v => v.IsBrowsable);
+
+        // Named so the platform service can recognise the violation and answer "that slug is
+        // taken" rather than a 500. Same name EF would have generated.
         builder.HasIndex(v => v.Slug)
-            .IsUnique();
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.VenueSlug);
     }
 }

@@ -36,6 +36,14 @@ internal static class ClaimsPrincipalExtensions
         Enum.TryParse<StaffRole>(principal.FindFirstValue(YallaClaims.Role), out var role) ? role : null;
 
     /// <summary>
+    /// Whether this is a platform admin signed in to the admin panel. Read from the explicit
+    /// principal type <i>and</i> the role, so a role claim alone on some other token is not enough.
+    /// </summary>
+    public static bool IsPlatformAdmin(this ClaimsPrincipal principal) =>
+        principal.PrincipalType() == Domain.Enums.PrincipalType.VenueUser
+        && principal.StaffRole() == Domain.Enums.StaffRole.PlatformAdmin;
+
+    /// <summary>
     /// A Guid route value, or null when the route does not carry one.
     /// </summary>
     /// <remarks>

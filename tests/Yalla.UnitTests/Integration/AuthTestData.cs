@@ -25,6 +25,9 @@ internal sealed record AuthBranch(
 /// <summary>An open tab with a host participant already on it.</summary>
 internal sealed record AuthTab(Guid TabId, Guid TableId, Guid SessionId, Guid HostParticipantId, string JoinToken);
 
+/// <summary>A seeded platform admin and the credentials that sign them in.</summary>
+internal sealed record PlatformAdminAccount(Guid StaffMemberId, string Email, string Password);
+
 /// <summary>
 /// Fixture data for the authentication tests: a branch whose staff have real hashed credentials,
 /// and tabs that a participant token can be minted against.
@@ -72,6 +75,29 @@ internal static class AuthTestData
             ManagerPassword,
             WaiterPin,
             branch.TableIds);
+    }
+
+    /// <summary>
+    /// The first platform admin, created the way startup creates them: through the seeder, from
+    /// configuration. Returns the id and the credentials that sign them in at /api/auth/venue/sign-in.
+    /// </summary>
+    public static async Task<PlatformAdminAccount> CreatePlatformAdminAsync(
+        YallaDbContext db,
+        CancellationToken cancellationToken = default)
+    {
+        var email = $"platform-{Guid.NewGuid():N}@yalla.test";
+        const string password = "platform-admin-password-that-is-long";
+
+        var seeder = new PlatformAdminSeeder(
+            db,
+            new SecretHasher(),
+            Microsoft.Extensions.Options.Options.Create(new PlatformAdminOptions { Email = email, Password = password }),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<PlatformAdminSeeder>.Instance);
+
+        var id = await seeder.SeedAsync(cancellationToken)
+                 ?? throw new InvalidOperationException("The seeder did not create a platform admin.");
+
+        return new PlatformAdminAccount(id, email, password);
     }
 
     /// <summary>

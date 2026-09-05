@@ -111,7 +111,7 @@ public sealed record StaffSessionResult(
 /// <param name="StaffMemberId">Who signed in.</param>
 /// <param name="FullName">Display name for the panel.</param>
 /// <param name="Role">Coarse permission level: 1 Owner, 2 Manager, 3 Waiter, 4 Kitchen.</param>
-/// <param name="VenueId">The venue this account administers.</param>
+/// <param name="VenueId">The venue this account administers. Null for a platform admin, who administers all of them.</param>
 public sealed record VenueUserSignInResult(
     string AccessToken,
     string RefreshToken,
@@ -119,7 +119,7 @@ public sealed record VenueUserSignInResult(
     Guid StaffMemberId,
     string FullName,
     StaffRole Role,
-    Guid VenueId);
+    Guid? VenueId);
 
 /// <summary>One enrolled tablet, as the admin panel lists it.</summary>
 /// <param name="Id">The device.</param>

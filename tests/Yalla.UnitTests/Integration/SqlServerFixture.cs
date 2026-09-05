@@ -206,6 +206,24 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <summary>The tab read model over one context, for asserting on a projected view directly.</summary>
     internal TabQuery CreateTabQuery(YallaDbContext db) => new(db);
 
+    /// <summary>The platform tier over one context, acting as the given caller - normally a platform admin.</summary>
+    internal PlatformService CreatePlatformService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, NullLogger<PlatformService>.Instance);
+
+    internal BranchSettingsService CreateBranchSettingsService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, NullLogger<BranchSettingsService>.Instance);
+
+    internal MenuService CreateMenuService(YallaDbContext db) => new(db);
+
+    internal StaffManagementService CreateStaffManagementService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(
+            db,
+            clock,
+            actor,
+            new SecretHasher(),
+            Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            NullLogger<StaffManagementService>.Instance);
+
     internal AvailabilityQuery CreateAvailabilityQuery(YallaDbContext db, IClock clock) => new(db, clock);
 
     /// <summary>
@@ -263,6 +281,10 @@ public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? ro
     public static TestActor Waiter(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Waiter);
 
     public static TestActor Manager(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Manager);
+
+    public static TestActor Owner(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Owner);
+
+    public static TestActor PlatformAdmin(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.PlatformAdmin);
 
     /// <summary>
     /// A diner. An id is supplied by default because booking requires a <i>verified</i> one, and a
