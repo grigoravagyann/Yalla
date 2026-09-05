@@ -260,8 +260,15 @@ internal sealed class StaffManagementService(
     {
         if (target is not (StaffRole.Owner or StaffRole.Manager))
         {
-            throw new StaffPermissionException(
-                $"Giving a {target} an admin-panel sign-in", actorRole, StaffRole.Manager);
+            // Not a StaffPermissionException: nothing about the caller's rank would help, and
+            // saying "requires the Manager role; the caller is a PlatformAdmin" to a platform admin
+            // is nonsense. The refusal is about the person being created, not the person creating.
+            _ = actorRole;
+
+            throw new DomainStateException(
+                $"A {target} signs in by tapping a PIN on a tablet a manager enrolled, so they cannot "
+                + "have an email and password. Only an owner or a manager uses the admin panel. "
+                + "Create them without credentials, or give them the Manager role.");
         }
     }
 

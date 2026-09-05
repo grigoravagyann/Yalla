@@ -206,10 +206,15 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
             Password = "a-perfectly-long-password",
         };
 
-        await Assert.ThrowsAsync<StaffPermissionException>(
+        var refused = await Assert.ThrowsAsync<DomainStateException>(
             () => asManager.CreateAsync(branch.VenueId, withCredentials));
 
-        await Assert.ThrowsAsync<StaffPermissionException>(
+        // The message is about the person being created, not the caller's rank - a platform admin
+        // reading "requires the Manager role" would go looking in the wrong place.
+        Assert.Contains("tapping a PIN", refused.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("the caller is", refused.Message, StringComparison.OrdinalIgnoreCase);
+
+        await Assert.ThrowsAsync<DomainStateException>(
             () => asManager.CreateAsync(branch.VenueId, withCredentials with { Role = StaffRole.Kitchen }));
 
         // The same waiter without credentials is fine - the refusal is the password, not the role.
