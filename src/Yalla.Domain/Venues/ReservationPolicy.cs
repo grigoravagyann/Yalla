@@ -29,6 +29,17 @@ public sealed class ReservationPolicy
     /// <summary>How long past the start time before the diner is nudged to confirm they are coming.</summary>
     public int LateNudgeAfterMinutes { get; private set; }
 
+    /// <summary>
+    /// How long before a booking the diner is reminded of it.
+    /// </summary>
+    /// <remarks>
+    /// Three hours by default: late enough that the day's plans are settled, early enough that
+    /// cancelling still gives the venue time to sell the table. The reminder is the point of the
+    /// whole feature - <b>cancelling has to be easier than not showing up</b> - so this is the number
+    /// that decides whether the no-show rate moves.
+    /// </remarks>
+    public int ReminderHoursBefore { get; private set; }
+
     /// <summary>Length of one extension staff may grant to a late party.</summary>
     public int GraceExtensionMinutes { get; private set; }
 
@@ -91,7 +102,8 @@ public sealed class ReservationPolicy
         bool pricesIncludeVat,
         int? maxSeatOverhang,
         int? approvalRequiredAbovePartySize,
-        int walkInHoldbackMinutes = 30)
+        int walkInHoldbackMinutes = 30,
+        int reminderHoursBefore = 3)
     {
         WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));
 
@@ -99,6 +111,7 @@ public sealed class ReservationPolicy
         BufferMinutes = NotNegative(bufferMinutes, nameof(bufferMinutes));
         GraceMinutes = NotNegative(graceMinutes, nameof(graceMinutes));
         LateNudgeAfterMinutes = NotNegative(lateNudgeAfterMinutes, nameof(lateNudgeAfterMinutes));
+        ReminderHoursBefore = NotNegative(reminderHoursBefore, nameof(reminderHoursBefore));
         GraceExtensionMinutes = NotNegative(graceExtensionMinutes, nameof(graceExtensionMinutes));
         MinLeadMinutes = NotNegative(minLeadMinutes, nameof(minLeadMinutes));
         BookingWindowDays = Positive(bookingWindowDays, nameof(bookingWindowDays));
@@ -144,6 +157,7 @@ public sealed class ReservationPolicy
         bufferMinutes: 15,
         graceMinutes: 15,
         lateNudgeAfterMinutes: 10,
+        reminderHoursBefore: 3,
         graceExtensionMinutes: 10,
         minLeadMinutes: 30,
         bookingWindowDays: 14,

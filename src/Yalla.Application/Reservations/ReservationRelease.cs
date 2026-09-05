@@ -28,6 +28,30 @@ public enum ReleaseOutcome
     CancelledByVenue = 2,
 }
 
+/// <summary>The diner tapping "we are five minutes away" from the late nudge.</summary>
+/// <param name="ReservationId">Their booking.</param>
+/// <param name="ClientCommandId">
+/// Idempotency. Tapping the notification twice must not be two extensions - and since there is only
+/// ever one extension, the second tap would otherwise be an error rather than a no-op.
+/// </param>
+public sealed record ExtendHoldCommand(Guid ReservationId, Guid ClientCommandId);
+
+/// <summary>What extending the hold did.</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="HoldExpiresAtUtc">Until when the table is now held.</param>
+/// <param name="ExtensionMinutes">How long was added, from the branch's policy.</param>
+/// <param name="ExtensionsRemaining">
+/// Always zero after a successful extension. Stated so the app can grey the button out rather than
+/// letting the diner tap it and be told no.
+/// </param>
+/// <param name="WasReplay">True when this command had already been applied.</param>
+public sealed record ExtendHoldResult(
+    Guid ReservationId,
+    DateTime HoldExpiresAtUtc,
+    int ExtensionMinutes,
+    int ExtensionsRemaining,
+    bool WasReplay);
+
 /// <summary>A waiter letting a booking go.</summary>
 /// <param name="ReservationId">The booking.</param>
 /// <param name="Outcome">Which of the two this is. The diner's next booking depends on it.</param>

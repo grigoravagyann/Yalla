@@ -75,4 +75,26 @@ public interface IReservationService
     Task<ReservationReleaseResult> ReleaseAsync(
         ReleaseReservationCommand command,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The diner extends their own hold, once, from the late nudge.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Once.</b> <c>GraceExtensionsUsed</c> enforces it and has been an orphan column since Prompt
+    /// 1. Repeated "just five more minutes" is how a table stays held all evening for somebody who is
+    /// not coming, and the venue loses the cover without anybody ever deciding to.
+    /// </para>
+    /// <para>
+    /// Written through the table state machine, so the extension reaches every tablet on the branch
+    /// change sequence rather than sitting in a column the floor screen never reads.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="Domain.Tabs.TabPermissionException">Not this diner's booking.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">
+    /// The one extension is already used, or the booking cannot hold a table.
+    /// </exception>
+    Task<ExtendHoldResult> ExtendHoldAsync(
+        ExtendHoldCommand command,
+        CancellationToken cancellationToken = default);
 }

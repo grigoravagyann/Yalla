@@ -47,6 +47,18 @@ internal static class DatabaseIndexNames
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
     /// <summary>
+    /// Unique on one live push token. Filtered, so a phone that moves between diner accounts can be
+    /// registered again after the previous owner's row is revoked.
+    /// </summary>
+    public const string LivePushToken = "UX_DinerDevices_PushToken_Live";
+
+    /// <summary>
+    /// Unique on an outbox message's idempotency key. A violation means this message already exists
+    /// for this cause; the second write is the bug, not the first.
+    /// </summary>
+    public const string OutboxIdempotency = "UX_OutboxMessages_IdempotencyKey";
+
+    /// <summary>
     /// Unique on one photo per branch per content hash. A violation means these exact bytes are
     /// already stored for this branch; the upload reuses the row rather than writing a second one.
     /// </summary>

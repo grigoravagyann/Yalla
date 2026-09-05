@@ -7,6 +7,7 @@ using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Services;
 
 namespace Yalla.UnitTests.Integration;
@@ -296,7 +297,12 @@ public sealed class SqlServerFixture : IAsyncLifetime
             noShowPolicy ?? new NoShowPolicy(),
             CreateReservationWriter(db, lockOptions),
             CreateService(db, clock, actor),
+            CreateOutbox(db, clock),
             NullLogger<ReservationService>.Instance);
+
+    /// <summary>The outbox over one context. Writes only - dispatching is its own thing.</summary>
+    internal Outbox CreateOutbox(YallaDbContext db, IClock clock) =>
+        new(db, clock, NullLogger<Outbox>.Instance);
 
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
     internal ReservationWriter CreateReservationWriter(

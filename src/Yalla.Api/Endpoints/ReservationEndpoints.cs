@@ -136,6 +136,24 @@ public static class ReservationEndpoints
                 + "screen.")
             .Produces<MyReservations>();
 
+        group.MapPost("/{id:guid}/extend-hold", ExtendHoldAsync)
+            .WithName("extendReservationHold")
+            .WithSummary("Keep the table a little longer - the late nudge's action")
+            .WithDescription(
+                "What the **late nudge** notification's action button calls. The diner taps it from "
+                + "the lock screen; they never open a screen and hunt for it.\n\n"
+                + "**Once.** `graceExtensionsUsed` enforces it, and a second attempt is refused with "
+                + "a reason a diner can read. Repeated requests for five more minutes are how a table "
+                + "stays held all evening for somebody who is not coming.\n\n"
+                + "The extension goes onto the branch change sequence, so the waiter watching that "
+                + "table sees it immediately rather than in a column nothing reads.")
+            .Produces<ExtendHoldResult>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not the diner who made the booking.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "The one extension is already used, or the booking is not one that holds a table.");
+
         group.MapPost("/{id:guid}/cancel", CancelAsync)
             .WithName("cancelReservation")
             .WithSummary("Cancel a booking")
@@ -178,6 +196,23 @@ public static class ReservationEndpoints
 
         floor.AddEndpointFilter<ClientCommandIdFilter>();
 
+        floor.MapPost("/{id:guid}/no-show", MarkNoShowAsync)
+            .WithName("markReservationNoShow")
+            .WithSummary("Mark a booking as a no-show, and free the table")
+            .WithDescription(
+                "The same action as `release` with `outcome: 1`, under the name the tablet's "
+                + "late-booking panel uses - one implementation, two doors, so the two cannot drift.\n\n"
+                + "**Never automatic.** Prompt 2's rule that the decision belongs to a waiter applies "
+                + "here more than anywhere: only a person standing in the room knows whether the "
+                + "party is late or absent.\n\n"
+                + "Counts toward the diner's rolling no-show threshold. If they telephoned to say "
+                + "they could not come, use `release` with `outcome: 2` instead - a diner who let the "
+                + "venue know must not be punished for it.")
+            .Produces<ReservationReleaseResult>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "The booking cannot be released.");
+
         floor.MapPost("/{id:guid}/release", ReleaseAsync)
             .WithName("releaseReservation")
             .WithSummary("Let a late booking go, and free the table with it")
@@ -211,6 +246,32 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
+    }
+
+    private static async Task<IResult> MarkNoShowAsync(
+        Guid id,
+        MarkNoShowRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await reservations.ReleaseAsync(
+            new ReleaseReservationCommand(
+                id, ReleaseOutcome.NoShow, request.ClientCommandId, request.Reason),
+            cancellationToken));
+    }
+
+    private static async Task<IResult> ExtendHoldAsync(
+        Guid id,
+        ExtendHoldRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await reservations.ExtendHoldAsync(
+            new ExtendHoldCommand(id, request.ClientCommandId), cancellationToken));
     }
 
     private static async Task<IResult> ReleaseAsync(

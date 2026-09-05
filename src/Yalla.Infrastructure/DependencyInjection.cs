@@ -6,6 +6,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
+using Yalla.Application.Messaging;
+using Yalla.Application.Notifications;
+using Yalla.Infrastructure.Messaging;
+using Yalla.Infrastructure.Notifications;
 using Yalla.Application.Media;
 using Yalla.Application.Menus;
 using Yalla.Application.Platform;
@@ -64,6 +68,40 @@ public static class DependencyInjection
         services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));
         services.AddSingleton<IPhotoStorage, LocalDiskPhotoStorage>();
         services.AddScoped<IPhotoService, PhotoService>();
+
+        // TimeProvider is what PeriodicTimer in the outbox loop reads, so a test advances a fake one
+        // rather than waiting. IClock stays the domain-facing seam - see SystemClock.
+        services.TryAddSingleton(TimeProvider.System);
+
+        // The outbox: written with its cause, dispatched by a loop, leased so two dispatchers can
+        // share the work.
+        services.AddSingleton(Bind<OutboxOptions>(configuration, OutboxOptions.SectionName));
+        services.AddScoped<IOutbox, Outbox>();
+        services.AddScoped<OutboxDispatcher>();
+        services.AddHostedService<OutboxHostedService>();
+
+        // Notifications. The channel is selected by configuration, the same way Prompt 3 selects its
+        // verification-code sender - and the default writes to the log, so the whole scheduler runs
+        // and is testable with no phone attached to the machine.
+        var notifications = Bind<NotificationOptions>(configuration, NotificationOptions.SectionName);
+
+        services.AddSingleton(notifications);
+        services.AddScoped<IDinerDeviceService, DinerDeviceService>();
+
+        if (string.Equals(notifications.Channel, "Expo", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddHttpClient<INotificationChannel, ExpoNotificationChannel>();
+        }
+        else
+        {
+            services.AddScoped<INotificationChannel, LoggingNotificationChannel>();
+        }
+
+        services.AddScoped<IOutboxHandler, ReservationReminderHandler>();
+        services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
+        services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
+        services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();
+        services.AddScoped<IOutboxHandler, OrderReadyHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges

@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Application.Messaging;
+using Yalla.Domain.Tabs;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
@@ -80,6 +82,7 @@ internal sealed class ReservationService(
     NoShowPolicy noShowPolicy,
     ReservationWriter reservations,
     ITableStateService tableState,
+    IOutbox outbox,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -169,6 +172,11 @@ internal sealed class ReservationService(
             throw await ConflictAsync(command, table, proposed, conflict, cancellationToken);
         }
 
+        // The reminder and the nudge, written in the same unit of work as the booking. A booking
+        // that exists without its reminder is the failure mode an outbox is for, and the diner finds
+        // out about it by not being reminded.
+        await ScheduleRemindersAsync(reservation, branch, table.Label, cancellationToken);
+
         logger.LogInformation(
             "Booked table {TableLabel} at branch {BranchId} for {PartySize} as {Code} ({Status}).",
             table.Label, branch.Id, command.PartySize, reservation.Code, reservation.Status);
@@ -226,6 +234,12 @@ internal sealed class ReservationService(
         // Late is recorded, never refused. A diner who cannot cancel simply does not turn up, and
         // a no-show costs the venue the same table plus the chance to resell it.
         reservation.CancelByDiner(nowUtc, command.Reason, late);
+
+        // Cancelling the cause cancels the message, in the same transaction. A reminder arriving for
+        // a booking somebody cancelled an hour ago is worse than no reminder at all - it is the push
+        // the diner remembers, and it teaches them the notifications are wrong.
+        await outbox.CancelAsync(
+            OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -503,6 +517,31 @@ internal sealed class ReservationService(
             reservation.Reject(nowUtc, command.Reason);
         }
 
+        // The decision is worth telling the diner about: they are on a screen that says "waiting".
+        outbox.Enqueue(
+            OutboxMessageTypes.ReservationDecided,
+            new
+            {
+                reservationId = reservation.Id,
+                dinerUserId = reservation.DinerUserId,
+                venueName = branch.Venue?.Name ?? branch.Name,
+                branchName = branch.Name,
+                tableLabel = string.Empty,
+                localStartTime = reservation.LocalStartTime,
+                reservationCode = reservation.Code,
+                graceExtensionMinutes = 0,
+                approved = approve,
+            },
+            clock.UtcNow,
+            OutboxMessageTypes.KeyFor("reservation", reservation.Id, approve ? "approved" : "rejected"));
+
+        if (!approve)
+        {
+            // A rejected booking is not going to happen, so its reminder and nudge must not fire.
+            await outbox.CancelAsync(
+                OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -511,6 +550,128 @@ internal sealed class ReservationService(
 
         return await ToViewAsync(
             reservation, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+    }
+
+    // ---------------------------------------------------------------- what the diner gets told
+
+    /// <summary>
+    /// Queues the reminder and the late nudge alongside the booking that causes them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both are written in the caller's transaction and saved with it - <c>IOutbox</c> has no save of
+    /// its own, precisely so this cannot drift into "book, commit, then enqueue" and leave a window
+    /// where the booking exists and the reminder does not.
+    /// </para>
+    /// <para>
+    /// The payload carries the venue and branch names, the table and the time as they are now. At
+    /// send time the world has moved - the venue may have been renamed - and what the message should
+    /// say is what was true when the booking was made.
+    /// </para>
+    /// <para>
+    /// A reminder whose moment has already passed is not written at all. A booking made an hour
+    /// before it starts has no three-hours-before, and queueing one in the past would only be
+    /// discarded by the staleness rule with a log line implying something went wrong.
+    /// </para>
+    /// </remarks>
+    private async Task ScheduleRemindersAsync(
+        Reservation reservation,
+        Branch branch,
+        string tableLabel,
+        CancellationToken cancellationToken)
+    {
+        var policy = branch.ReservationPolicy;
+        var nowUtc = clock.UtcNow;
+
+        var notice = new
+        {
+            reservationId = reservation.Id,
+            dinerUserId = reservation.DinerUserId,
+            venueName = branch.Venue?.Name ?? branch.Name,
+            branchName = branch.Name,
+            tableLabel,
+            localStartTime = reservation.LocalStartTime,
+            reservationCode = reservation.Code,
+            graceExtensionMinutes = policy.GraceExtensionMinutes,
+            approved = false,
+        };
+
+        var remindAt = reservation.StartUtc.AddHours(-policy.ReminderHoursBefore);
+
+        if (remindAt > nowUtc)
+        {
+            outbox.Enqueue(
+                OutboxMessageTypes.ReservationReminder,
+                notice,
+                remindAt,
+                OutboxMessageTypes.KeyFor("reservation", reservation.Id, "reminder"));
+        }
+
+        // The nudge is always in the future when the booking is made, because a booking cannot start
+        // in the past. Written unconditionally for that reason.
+        outbox.Enqueue(
+            OutboxMessageTypes.ReservationLateNudge,
+            notice,
+            reservation.StartUtc.AddMinutes(policy.LateNudgeAfterMinutes),
+            OutboxMessageTypes.KeyFor("reservation", reservation.Id, "late-nudge"));
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    // ---------------------------------------------------------------- the diner extends their hold
+
+    public async Task<ExtendHoldResult> ExtendHoldAsync(
+        ExtendHoldCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var dinerUserId = RequireDiner("Extend a hold");
+        var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
+
+        // Their own booking, read from the token rather than the body. A diner must not be able to
+        // hold somebody else's table by guessing an id.
+        if (reservation.DinerUserId != dinerUserId)
+        {
+            throw new TabPermissionException("Extending this hold", "the diner who made the booking");
+        }
+
+        // Already extended by this exact command: answer with what it did rather than refusing. The
+        // notification is tappable twice and the second tap is not an error.
+        if (reservation.GraceExtensionsUsed > 0
+            && await db.TableStateChanges.AnyAsync(
+                c => c.ClientCommandId == command.ClientCommandId, cancellationToken))
+        {
+            return new ExtendHoldResult(
+                reservation.Id, reservation.HoldExpiresAtUtc ?? clock.UtcNow, 0, 0, WasReplay: true);
+        }
+
+        var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+        var minutes = branch.ReservationPolicy.GraceExtensionMinutes;
+
+        // Throws when the one extension is spent, or the booking is not confirmed.
+        reservation.ExtendHold(clock.UtcNow, minutes);
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        // Onto the branch change sequence, so the waiter watching that table sees it. Held to Held -
+        // nothing about the table changed, but something happened at it.
+        await tableState.RecordHoldExtendedAsync(
+            new TableStateCommand(
+                reservation.BranchId,
+                reservation.DiningTableId,
+                command.ClientCommandId,
+                $"the diner extended their hold by {minutes} minutes"),
+            reservation.Id,
+            reservation.HoldExpiresAtUtc!.Value,
+            cancellationToken);
+
+        logger.LogInformation(
+            "Booking {Code} extended its hold to {HoldExpiresAtUtc} ({Minutes} minutes).",
+            reservation.Code, reservation.HoldExpiresAtUtc, minutes);
+
+        return new ExtendHoldResult(
+            reservation.Id, reservation.HoldExpiresAtUtc!.Value, minutes, 0, WasReplay: false);
     }
 
     // ---------------------------------------------------------------- releasing a late booking
@@ -553,6 +714,11 @@ internal sealed class ReservationService(
         {
             reservation.CancelByVenue(nowUtc, reason);
         }
+
+        // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
+        // after a waiter has already given the table away is the worst of both.
+        await outbox.CancelAsync(
+            OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 

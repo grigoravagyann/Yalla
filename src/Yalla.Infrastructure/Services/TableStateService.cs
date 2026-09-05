@@ -431,6 +431,53 @@ internal sealed class TableStateService(
             cancellationToken);
     }
 
+    public async Task<TableStateChangeResult> RecordHoldExtendedAsync(
+        TableStateCommand command,
+        Guid reservationId,
+        DateTime newHoldExpiresAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        // No RequireStaff: the diner taps this from the late nudge, on their own phone, and the
+        // actor is whoever the token says. The reservation service has already checked that they own
+        // the booking - that is the permission, and it is not one this method can re-derive.
+        var (actorType, actorId) = ResolveActor();
+
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
+        {
+            return replayed;
+        }
+
+        var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        var nowUtc = clock.UtcNow;
+        var status = table.Status;
+        var next = await FindNextReservationAsync(table.Id, nowUtc, reservationId, cancellationToken);
+
+        // From-status equals to-status on purpose. Nothing about the table changed; something
+        // happened at it, and the branch sequence is how every other tablet finds out.
+        db.TableStateChanges.Add(new TableStateChange(
+            table.BranchId,
+            table.Id,
+            status,
+            status,
+            command.Reason ?? $"hold extended to {newHoldExpiresAtUtc:HH:mm} UTC",
+            actorType,
+            nowUtc,
+            command.ClientCommandId,
+            actorId,
+            reservationId: reservationId));
+
+        return await CommitAsync(
+            table,
+            status,
+            command.ClientCommandId,
+            () => Success(
+                table, status, status, nowUtc, command.ClientCommandId, next,
+                reservationId: reservationId),
+            cancellationToken);
+    }
+
     public async Task<TableStateChangeResult> MarkOutOfServiceAsync(
         TableStateCommand command,
         CancellationToken cancellationToken = default)

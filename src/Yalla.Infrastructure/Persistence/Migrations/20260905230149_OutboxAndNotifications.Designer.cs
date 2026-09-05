@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    partial class YallaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260905230149_OutboxAndNotifications")]
+    partial class OutboxAndNotifications
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
