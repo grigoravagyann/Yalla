@@ -26,6 +26,17 @@ namespace Yalla.Infrastructure.Services;
 /// </remarks>
 internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 {
+    /// <summary>
+    /// The most changes one catch-up call will return.
+    /// </summary>
+    /// <remarks>
+    /// A client that has been away for a whole service could otherwise ask for thousands of rows
+    /// in one response. The page says whether more remain, so catching up is a loop rather than a
+    /// single unbounded read - and a client that far behind is usually better off refetching the
+    /// floor anyway, which the sequence numbers let it decide.
+    /// </remarks>
+    public const int MaxChangePageSize = 500;
+
     public async Task<BranchFloorState?> GetFloorStateAsync(
         Guid branchId,
         DateTime atUtc,
@@ -44,6 +55,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 
         return new BranchFloorState
         {
+            MaxSequence = row.MaxSequence,
             BranchId = row.BranchId,
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
@@ -95,6 +107,57 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         };
     }
 
+    public async Task<BranchChangePage?> GetChangesAsync(
+        Guid branchId,
+        long afterSequence,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await db.Branches.AsNoTracking().AnyAsync(b => b.Id == branchId, cancellationToken))
+        {
+            return null;
+        }
+
+        var capped = Math.Clamp(limit, 1, MaxChangePageSize);
+
+        // The end of the stream is read first. Reading it after the page would let a change land
+        // in between and make a full page look like the end.
+        var maxSequence = await db.TableStateChanges
+            .AsNoTracking()
+            .Where(c => c.BranchId == branchId)
+            .MaxAsync(c => (long?)c.Sequence, cancellationToken) ?? 0L;
+
+        // One more than asked for, so "are there further entries" is answered without a count.
+        var rows = await db.TableStateChanges
+            .AsNoTracking()
+            .Where(c => c.BranchId == branchId && c.Sequence > afterSequence)
+            .OrderBy(c => c.Sequence)
+            .Take(capped + 1)
+            .Select(c => new BranchChange(
+                c.Sequence,
+                c.Id,
+                c.DiningTableId,
+                c.DiningTable.Label,
+                c.FromStatus,
+                c.ToStatus,
+                c.Reason,
+                c.ActorType,
+                c.ActorId,
+                c.AtUtc,
+                c.TableSessionId,
+                c.ReservationId))
+            .ToListAsync(cancellationToken);
+
+        var hasMore = rows.Count > capped;
+
+        return new BranchChangePage(
+            branchId,
+            afterSequence,
+            maxSequence,
+            hasMore,
+            hasMore ? rows.Take(capped).ToList() : rows);
+    }
+
     public string GetFloorQuerySql(Guid branchId, DateTime atUtc) =>
         BuildQuery(branchId, atUtc).ToQueryString();
 
@@ -119,6 +182,14 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 // the session: an owner who shortens turn time this afternoon means it for the
                 // tables occupied this afternoon.
                 TurnTimeMinutes = b.ReservationPolicy.TurnTimeMinutes,
+
+                // Where the branch's change stream ends, so every floor response tells a client its
+                // position in the stream. Folded in as a correlated subquery rather than read
+                // separately: this endpoint is the most-called in the product and it stays one
+                // round trip. Zero when the branch has no history yet.
+                MaxSequence = db.TableStateChanges
+                    .Where(c => c.BranchId == b.Id)
+                    .Max(c => (long?)c.Sequence) ?? 0L,
                 Tables = b.DiningTables
                     .Where(t => t.IsActive)
                     .Select(t => new FloorTableRow
@@ -196,6 +267,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public int BufferMinutes { get; init; }
 
         public int TurnTimeMinutes { get; init; }
+
+        public long MaxSequence { get; init; }
 
         public List<FloorTableRow> Tables { get; init; } = [];
     }

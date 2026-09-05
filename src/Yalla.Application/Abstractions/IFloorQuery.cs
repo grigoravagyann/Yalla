@@ -33,4 +33,18 @@ public interface IFloorQuery
     /// statement?" is a question worth being able to answer without attaching a profiler.
     /// </summary>
     string GetFloorQuerySql(Guid branchId, DateTime atUtc);
+
+    /// <summary>
+    /// A page of the branch's change stream, everything after <paramref name="afterSequence"/>.
+    /// </summary>
+    /// <remarks>
+    /// Capped, and the page says whether more remain. A client reconnecting after a dropped
+    /// connection catches up through this rather than refetching the whole floor; the realtime hub,
+    /// when it arrives, will push the same entries.
+    /// </remarks>
+    Task<BranchChangePage?> GetChangesAsync(
+        Guid branchId,
+        long afterSequence,
+        int limit,
+        CancellationToken cancellationToken = default);
 }

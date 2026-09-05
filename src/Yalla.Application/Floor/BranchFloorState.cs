@@ -30,6 +30,16 @@ public sealed record BranchFloorState
     /// </summary>
     public required DateTime AsOfUtc { get; init; }
 
+    /// <summary>
+    /// The branch's highest change-log sequence at the moment this was read.
+    /// </summary>
+    /// <remarks>
+    /// Every floor response carries it so a client always knows where it is in the stream. After a
+    /// dropped connection it asks <c>/changes?afterSequence=</c> with this number rather than
+    /// refetching the whole floor and diffing. Zero when the branch has never had a state change.
+    /// </remarks>
+    public required long MaxSequence { get; init; }
+
     public required IReadOnlyList<TableFloorState> Tables { get; init; }
 }
 

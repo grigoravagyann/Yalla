@@ -64,6 +64,22 @@ public static class TableStateEndpoints
             .Produces<BranchFloorState>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
+        group.MapGet("/changes", GetChangesAsync)
+            .WithName("getBranchChanges")
+            .WithSummary("The branch's change stream, for catching up after a dropped connection")
+            .WithDescription(
+                "Every table state change writes exactly one audit row in the same transaction as "
+                + "the change, so this is an ordered event log. A client that lost its connection "
+                + "sends the `maxSequence` from its last floor response as `afterSequence` and "
+                + "applies what comes back, in order, rather than refetching the whole floor and "
+                + "working out what moved. "
+                + "`maxSequence` in the response is where the branch's stream ends right now, not "
+                + "the last entry in this page - so a short page still tells you that you are up to "
+                + "date. `hasMore` is set when the page hit its cap; call again with the last "
+                + "sequence you received.")
+            .Produces<BranchChangePage>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
         Transition(group, "/{tableId:guid}/seat-walk-in", SeatWalkInAsync, "seatWalkIn")
             .WithSummary("Seat a party with no booking (Free to Occupied)");
 
@@ -114,6 +130,18 @@ public static class TableStateEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, TransitionDescription);
+
+    private static async Task<IResult> GetChangesAsync(
+        Guid branchId,
+        IFloorQuery floorQuery,
+        CancellationToken cancellationToken,
+        long afterSequence = 0,
+        int limit = 200)
+    {
+        var page = await floorQuery.GetChangesAsync(branchId, afterSequence, limit, cancellationToken);
+
+        return page is null ? Results.NotFound() : Results.Ok(page);
+    }
 
     private static async Task<IResult> GetFloorAsync(
         Guid branchId,

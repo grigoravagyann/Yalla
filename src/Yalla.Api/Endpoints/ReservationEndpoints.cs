@@ -1,3 +1,4 @@
+using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
@@ -88,7 +89,15 @@ public static class ReservationEndpoints
                 + "query. Returns no guest names and no money. Omit date and time for 'now, at "
                 + "the branch'.")
             .Produces<BranchAvailability>()
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "Too many availability queries from this address. Generous but finite - the endpoint "
+                + "is anonymous and a phone will poll it.")
+
+            // Anonymous and the hottest endpoint in the product, so it is the one that most needs
+            // a ceiling. Per address, because there is no account to partition by.
+            .RequireRateLimiting(RateLimitingExtensions.AvailabilityPolicy);
     }
 
     private static void MapDinerBookings(IEndpointRouteBuilder app)

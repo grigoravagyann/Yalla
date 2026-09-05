@@ -83,6 +83,28 @@ public sealed class TableStateChange : Entity
     /// </remarks>
     public Guid ClientCommandId { get; private set; }
 
+    /// <summary>
+    /// Position in the branch's change stream. Assigned by the database, never by the application.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every state change already writes exactly one of these rows in the same transaction as the
+    /// change itself, which makes this table an event log whether or not anybody reads it as one.
+    /// Giving it an order now is what lets a client that dropped its connection ask "what have I
+    /// missed since 4,812?" instead of refetching the whole floor.
+    /// </para>
+    /// <para>
+    /// <c>CreatedAtUtc</c> is not an ordering. Two changes in the same millisecond tie, and a clock
+    /// that steps backwards would interleave them wrongly. An identity column is monotonic by
+    /// construction.
+    /// </para>
+    /// <para>
+    /// Added before the hub that needs it, deliberately: adding an identity column to a live,
+    /// growing audit table later is a far more painful migration than adding it to an empty one.
+    /// </para>
+    /// </remarks>
+    public long Sequence { get; private set; }
+
     private TableStateChange()
     {
     }
