@@ -275,7 +275,7 @@ public sealed record CashPaymentView(
     bool WasReplay);
 
 /// <summary>One thing that happened on a tab.</summary>
-/// <param name="Sequence">Increasing, not contiguous. Ask for everything after the one you hold.</param>
+/// <param name="Sequence">This event's place on its tab, from 1. Ask for everything after the one you hold.</param>
 /// <param name="Type">What happened. Ignore a type you do not recognise and keep your position.</param>
 /// <param name="Payload">The details, shaped per type.</param>
 /// <param name="ActorType">1 Diner, 2 Staff, 3 System.</param>
@@ -292,7 +292,7 @@ public sealed record TabEventView(
 /// <summary>A page of a tab's event stream.</summary>
 /// <param name="TabId">The tab.</param>
 /// <param name="AfterSequence">What the caller already had.</param>
-/// <param name="MaxSequence">The newest sequence on the tab, whether or not it is in this page.</param>
+/// <param name="MaxSequence">The newest position on the tab, whether or not it is in this page.</param>
 /// <param name="HasMore">True when more remain past this page.</param>
 /// <param name="Events">The events, oldest first.</param>
 public sealed record TabEventPage(

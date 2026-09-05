@@ -67,7 +67,8 @@ public sealed class InactiveTableVisibilityTests(SqlServerFixture fixture)
         var floor = await fixture.CreateFloorQuery(readDb, clock)
             .GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
-        Assert.DoesNotContain(floor.Tables, t => t.TableId == retired);
+        Assert.NotNull(floor);
+        Assert.DoesNotContain(floor!.Tables, t => t.TableId == retired);
         Assert.Equal(2, floor.Tables.Count);
 
         // Nor does availability, so nobody can book it.
@@ -75,7 +76,8 @@ public sealed class InactiveTableVisibilityTests(SqlServerFixture fixture)
             .GetAvailabilityAsync(new AvailabilityRequest(
                 branch.BranchId, 2, DateOnly.FromDateTime(Now).AddDays(1), new TimeOnly(19, 0)));
 
-        Assert.DoesNotContain(availability.Tables, t => t.TableId == retired);
+        Assert.NotNull(availability);
+        Assert.DoesNotContain(availability!.Tables, t => t.TableId == retired);
     }
 
     // ------------------------------------------------------------ isDeletable

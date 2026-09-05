@@ -106,12 +106,11 @@ internal sealed class TabEventConfiguration : EntityConfiguration<TabEvent>
     {
         builder.ToTable("TabEvents");
 
-        // A database IDENTITY, not a value the application picks. Two events on the same tab in
-        // the same millisecond are ordinary, and a client asking for "everything after 41" needs a
-        // total order that no amount of clock precision can give it.
+        // Assigned by TabLedger, not by the database. An IDENTITY column numbers rows in the order
+        // EF happens to insert them, which is not guaranteed within one SaveChanges - and a payment
+        // that settles a bill writes two events in one. See TabEvent's remarks.
         builder.Property(e => e.Sequence)
-            .ValueGeneratedOnAdd()
-            .UseIdentityColumn();
+            .ValueGeneratedNever();
 
         builder.Property(e => e.Type).IsRequired();
 
@@ -130,8 +129,11 @@ internal sealed class TabEventConfiguration : EntityConfiguration<TabEvent>
             .HasForeignKey(e => e.TabId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        // The catch-up query, and the only one this table serves.
+        // The catch-up query, and the guarantee. Unique, so two writers racing on one tab cannot
+        // both claim position 42 - the loser is renumbered rather than silently reordering the
+        // stream a client is replaying.
         builder.HasIndex(e => new { e.TabId, e.Sequence })
-            .HasDatabaseName("IX_TabEvents_TabId_Sequence");
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.TabEventSequence);
     }
 }

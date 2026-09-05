@@ -139,7 +139,7 @@ internal sealed class TabPaymentService(
 
         try
         {
-            await db.SaveChangesAsync(cancellationToken);
+            await ledger.SaveAppendedAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -225,7 +225,7 @@ internal sealed class TabPaymentService(
             byStaffId = staffId,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogWarning(
             "Tab {TabId} written off by manager {StaffId} with {RemainingAmd} AMD outstanding: {Reason}",

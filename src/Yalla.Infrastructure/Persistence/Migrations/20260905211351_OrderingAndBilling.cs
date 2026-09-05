@@ -153,8 +153,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     TabId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Sequence = table.Column<long>(type: "bigint", nullable: false)
-                        .Annotation("SqlServer:Identity", "1, 1"),
+                    Sequence = table.Column<long>(type: "bigint", nullable: false),
                     Type = table.Column<int>(type: "int", nullable: false),
                     PayloadJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
                     ActorType = table.Column<int>(type: "int", nullable: false),
@@ -226,9 +225,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 column: "TabOrderLineId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_TabEvents_TabId_Sequence",
+                name: "UX_TabEvents_TabId_Sequence",
                 table: "TabEvents",
-                columns: new[] { "TabId", "Sequence" });
+                columns: new[] { "TabId", "Sequence" },
+                unique: true);
 
             migrationBuilder.AddForeignKey(
                 name: "FK_TabOrders_TabParticipants_OnBehalfOfParticipantId",

@@ -42,7 +42,13 @@ internal sealed class TabLedger(
     /// </remarks>
     public const int TotalsRetryAttempts = 3;
 
+    /// <summary>How many times an event may be renumbered after losing its place to another writer.</summary>
+    public const int SequenceRetryAttempts = 5;
+
     private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Events appended in this unit of work, in the order they were appended.</summary>
+    private readonly List<TabEvent> pending = [];
 
     /// <summary>How many attempts the last <see cref="SaveWithTotalsAsync"/> actually needed.</summary>
     /// <remarks>Read by the concurrency test, which has to prove the retry does real work.</remarks>
@@ -156,8 +162,65 @@ internal sealed class TabLedger(
             clock.UtcNow);
 
         db.TabEvents.Add(record);
+        pending.Add(record);
 
         return record;
+    }
+
+    /// <summary>
+    /// Saves, numbering any appended events first so the stream reads in the order things happened.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Every save on a path that appends an event must come through here.</b> The numbering is
+    /// what the whole event stream rests on, and a <c>db.SaveChangesAsync</c> beside it would write
+    /// events with no position at all.
+    /// </para>
+    /// <para>
+    /// The positions come from the tab's current maximum, so two writers racing on one tab can both
+    /// reach for the same number. The unique index on <c>(TabId, Sequence)</c> is what makes that
+    /// safe: the loser sees a violation, re-reads the maximum, renumbers, and tries again. That is a
+    /// renumbering rather than a re-application - nothing else in the unit of work is touched - so
+    /// it is safe even on the payment path, which must never retry the payment itself.
+    /// </para>
+    /// </remarks>
+    public async Task SaveAppendedAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            await NumberPendingAsync(cancellationToken);
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                pending.Clear();
+
+                return;
+            }
+            catch (DbUpdateException ex)
+                when (attempt < SequenceRetryAttempts
+                      && UniqueViolation.IsOn(ex, DatabaseIndexNames.TabEventSequence))
+            {
+                logger.LogInformation(
+                    "Another writer took the same place in tab {TabId}'s event stream; renumbering "
+                    + "(attempt {Attempt} of {Max}).",
+                    pending[0].TabId, attempt, SequenceRetryAttempts);
+            }
+        }
+    }
+
+    /// <summary>Gives each appended event the next free position on its tab.</summary>
+    private async Task NumberPendingAsync(CancellationToken cancellationToken)
+    {
+        foreach (var group in pending.GroupBy(e => e.TabId))
+        {
+            var next = await MaxSequenceAsync(group.Key, cancellationToken) + 1L;
+
+            foreach (var record in group)
+            {
+                record.PlaceAt(next++);
+            }
+        }
     }
 
     /// <summary>
@@ -197,7 +260,7 @@ internal sealed class TabLedger(
 
             try
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await SaveAppendedAsync(cancellationToken);
 
                 return bill;
             }
@@ -258,6 +321,7 @@ internal sealed class TabLedger(
     /// <summary>The tab's newest event sequence, for a client that wants to know where it stands.</summary>
     public async Task<long> MaxSequenceAsync(Guid tabId, CancellationToken cancellationToken) =>
         await db.TabEvents
+            .AsNoTracking()
             .Where(e => e.TabId == tabId)
             .MaxAsync(e => (long?)e.Sequence, cancellationToken) ?? 0L;
 

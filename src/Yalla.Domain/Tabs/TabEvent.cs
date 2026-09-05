@@ -14,11 +14,19 @@ namespace Yalla.Domain.Tabs;
 /// flicker and disagree with itself - or to miss the change entirely.
 /// </para>
 /// <para>
-/// <b><see cref="Sequence"/> is a database IDENTITY, not a timestamp.</b> Two events in the same
-/// millisecond are common on a busy tab, and a client asking for "everything after what I have"
-/// needs a total order it can state exactly. It is scoped by query rather than per tab, so the
-/// numbers have gaps within one tab; the contract is that they increase, never that they are
-/// contiguous.
+/// <b><see cref="Sequence"/> is a per-tab counter, not a timestamp and not a database identity.</b>
+/// Two events in the same millisecond are ordinary on a busy tab, so a client asking for
+/// "everything after what I have" needs a total order the clock cannot give it.
+/// </para>
+/// <para>
+/// It was an <c>IDENTITY</c> column first, and that was wrong in a way that took an intermittent
+/// test failure to surface: when one <c>SaveChanges</c> writes several events - a payment that
+/// settles the bill writes <c>PaymentRecorded</c> and then <c>TabClosed</c> - the order the database
+/// assigns identities in is the order EF happens to insert them, which is not guaranteed and does
+/// vary. The stream then read <c>124:TabClosed, 125:PaymentRecorded</c>, telling a catching-up phone
+/// that the tab closed before the payment that closed it. Assigned by
+/// <c>TabLedger</c> against a unique index on <c>(TabId, Sequence)</c>, the order is the order the
+/// events were appended in, which is the only order that means anything.
 /// </para>
 /// <para>
 /// Written in the same <c>SaveChanges</c> as the change it describes, so the stream can never
@@ -26,13 +34,10 @@ namespace Yalla.Domain.Tabs;
 /// and adding it afterwards is a migration on the hottest rows in the product.
 /// </para>
 /// <para>
-/// <b>Known reliance.</b> When one <c>SaveChanges</c> writes several events - a payment that settles
-/// the bill writes <c>PaymentRecorded</c> and then <c>TabClosed</c> - their relative order comes from
-/// EF Core inserting same-type entities in the order they were tracked, which is reliable in
-/// practice and not contractual. The events are logically simultaneous, so a client that treats them
-/// as a set for one instant is correct either way; a client that reads only the last one is not.
-/// If this ever needs to be a guarantee rather than an observation, the fix is an
-/// application-assigned sequence per tab with a unique index behind it, not a second SaveChanges.
+/// Sequences are contiguous from 1 within a tab. A client keeps the highest it has seen and asks for
+/// everything after it; it should still ignore a <see cref="Type"/> it does not recognise rather than
+/// stopping, because new types will be added and an old app build must not break on a tab that used
+/// one.
 /// </para>
 /// </remarks>
 public sealed class TabEvent : Entity
@@ -42,9 +47,26 @@ public sealed class TabEvent : Entity
     public Tab Tab { get; private set; } = null!;
 
     /// <summary>
-    /// Database-assigned running number. Increasing, not contiguous - see the type's remarks.
+    /// This event's position on its tab, from 1. Assigned by the ledger - see the type's remarks.
     /// </summary>
     public long Sequence { get; private set; }
+
+    /// <summary>Puts this event in its place on the tab, immediately before it is saved.</summary>
+    /// <remarks>
+    /// Set here rather than in the constructor because the number depends on what is already stored,
+    /// which is not known when the caller appends. A unique index on <c>(TabId, Sequence)</c> is what
+    /// makes two concurrent writers safe: the loser sees a violation and is renumbered.
+    /// </remarks>
+    public void PlaceAt(long sequence)
+    {
+        if (sequence <= 0L)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sequence), sequence, "A tab event's sequence starts at 1.");
+        }
+
+        Sequence = sequence;
+    }
 
     public TabEventType Type { get; private set; }
 

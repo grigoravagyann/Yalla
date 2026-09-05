@@ -89,7 +89,7 @@ internal sealed class ServiceRequestService(
             requestedByParticipantId = participant.Id,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
             "Table {TableLabel} at branch {BranchId} asked for {Preset}.",
@@ -141,7 +141,7 @@ internal sealed class ServiceRequestService(
                 byStaffId = staffId,
             });
 
-            await db.SaveChangesAsync(cancellationToken);
+            await ledger.SaveAppendedAsync(cancellationToken);
         }
 
         return ToView(request, request.DiningTable.Label, nowUtc);

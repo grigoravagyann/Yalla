@@ -404,9 +404,10 @@ internal sealed class TabOrderService(
             byStaffId = staffId,
         });
 
-        // The rail does not touch money, so this is an ordinary save rather than a totals
-        // recomputation - there is nothing on this path that can change what the tab owes.
-        await db.SaveChangesAsync(cancellationToken);
+        // The rail does not touch money, so no totals recomputation - there is nothing on this path
+        // that can change what the tab owes. It still goes through the ledger, because it appends an
+        // event and the numbering is what the stream rests on.
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);

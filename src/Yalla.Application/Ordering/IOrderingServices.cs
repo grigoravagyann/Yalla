@@ -58,7 +58,7 @@ public interface ITabOrderService
     /// Moves an order along the kitchen rail. <b>Waiter or above</b>, with Kitchen confined to
     /// <c>InKitchen -> Ready</c>: cooking is what that role does, and serving is not.
     /// </summary>
-    /// <exception cref="DomainStateException">The transition is not one the rail allows.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">The transition is not one the rail allows.</exception>
     /// <exception cref="Domain.Staff.StaffPermissionException">This role may not make that move.</exception>
     Task<KitchenOrderView> MoveOrderStatusAsync(
         Guid orderId,

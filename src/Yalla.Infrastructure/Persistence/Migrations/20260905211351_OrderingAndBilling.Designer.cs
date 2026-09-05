@@ -12,7 +12,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    [Migration("20260905201549_OrderingAndBilling")]
+    [Migration("20260905211351_OrderingAndBilling")]
     partial class OrderingAndBilling
     {
         /// <inheritdoc />
@@ -1012,10 +1012,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<long>("Sequence")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Sequence"));
 
                     b.Property<Guid>("TabId")
                         .HasColumnType("uniqueidentifier");
@@ -1026,7 +1023,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TabId", "Sequence")
-                        .HasDatabaseName("IX_TabEvents_TabId_Sequence");
+                        .IsUnique()
+                        .HasDatabaseName("UX_TabEvents_TabId_Sequence");
 
                     b.ToTable("TabEvents", (string)null);
                 });

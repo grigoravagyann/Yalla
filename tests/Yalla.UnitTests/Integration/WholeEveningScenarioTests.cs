@@ -212,7 +212,7 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
         Assert.Equal(shares.Totals.TotalAmd, shares.Shares!.Sum(s => s.ShareAmd));
 
         // The late friend is on their own coffee and on nothing that came before them.
-        var lateShare = shares.Shares.Single(s => s.ParticipantId == pendingGuest);
+        var lateShare = shares.Shares!.Single(s => s.ParticipantId == pendingGuest);
         Assert.Equal(TestMenu.CoffeeAmd, lateShare.OwnItemsAmd);
         Assert.Equal(0L, lateShare.SharedItemsAmd);
 
@@ -301,12 +301,22 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
 
         var trail = string.Join(", ", events.Select(e => $"{e.Sequence}:{e.Type}"));
 
-        Assert.Equal(events.Select(e => e.Sequence).OrderBy(x => x), events.Select(e => e.Sequence));
-        Assert.Equal(events.Count, events.Select(e => e.Sequence).Distinct().Count());
+        // Contiguous from 1, which is what the per-tab counter buys over a database identity.
+        Assert.Equal(
+            Enumerable.Range(1, events.Count).Select(i => (long)i),
+            events.Select(e => e.Sequence));
 
+        // And in the order things actually happened. This assertion found a real bug: with an
+        // IDENTITY column the payment that settled the bill and the close it triggered were written
+        // in one SaveChanges, and EF inserted them in whichever order it liked - intermittently
+        // telling a catching-up phone that the tab closed BEFORE the payment that closed it.
         Assert.True(
             events[^1].Type == TabEventType.TabClosed,
             $"The stream should end with the close. It was: {trail}");
+
+        Assert.True(
+            events[^2].Type == TabEventType.PaymentRecorded,
+            $"The close should follow the payment that caused it. It was: {trail}");
 
         // Every kind of thing that happened tonight is on the stream.
         Assert.Contains(TabEventType.OrderPlaced, events.Select(e => e.Type));

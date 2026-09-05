@@ -129,10 +129,12 @@ public static class OrderingEndpoints
             .WithDescription(
                 "Everything after `afterSequence`, oldest first, for the phone that was in a lift "
                 + "when the wine was ordered.\n\n"
-                + "Sequences **increase but are not contiguous** - the column is a database identity "
-                + "shared across tabs. Keep the highest you have seen and ask for everything after "
-                + "it. **Ignore a `type` you do not recognise and keep your position**: new types "
-                + "will be added and an old build must not break on a tab that used one.")
+                + "`sequence` is this event's place **on this tab**, counting from 1, and the order "
+                + "is the order things happened - a payment that settles the bill is immediately "
+                + "followed by the close, never the other way round. Keep the highest you have seen "
+                + "and ask for everything after it.\n\n"
+                + "**Ignore a `type` you do not recognise and keep your position**: new types will be "
+                + "added and an old build must not break on a tab that used one.")
             .Produces<TabEventPage>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription);
     }

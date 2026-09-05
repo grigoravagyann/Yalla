@@ -405,7 +405,7 @@ internal sealed class TabService(
             displayName = participant.DisplayName,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         return ToView(participant, tab.Status);
     }
@@ -439,7 +439,7 @@ internal sealed class TabService(
             canPay = target.CanPay,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         // Their standing just changed, so the cached answer about it is wrong. A participant the
         // host has just removed must be refused on their next call, not on the one after the cache
@@ -486,7 +486,7 @@ internal sealed class TabService(
             lockedAtUtc = tab.SettlementModeLockedAtUtc,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         return await query.GetForParticipantAsync(tab.Id, host.Id, cancellationToken)
                ?? throw new InvalidOperationException($"Tab {tab.Id} vanished while its settlement mode was being set.");
@@ -520,7 +520,7 @@ internal sealed class TabService(
             toParticipantId = newHost.Id,
         });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
             "Staff {StaffId} moved the host of tab {TabId} from {OldHost} to {NewHost}.",
@@ -550,7 +550,7 @@ internal sealed class TabService(
 
         ledger.Append(tab.Id, TabEventType.TabClosing, new { atUtc = nowUtc });
 
-        await db.SaveChangesAsync(cancellationToken);
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         return await StaffViewAsync(tab.Id, cancellationToken);
     }
