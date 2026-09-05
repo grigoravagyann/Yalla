@@ -176,6 +176,81 @@ public class StaffAuthTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Unauthorized, floor.StatusCode);
     }
 
+    // ------------------------------------------------------------ 2. the device grants nothing
+
+    /// <summary>
+    /// <b>Test 2.</b> A device token is refused on every staff action; the PIN session is accepted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The property that makes a long-lived token safe to leave in a browser on a counter for a
+    /// year. The device can do exactly one thing - offer a PIN - and the tablet with nobody signed
+    /// in cannot seat a table, read a floor, or take money.
+    /// </para>
+    /// <para>
+    /// It holds by construction rather than by a check: the device token carries a branch and a
+    /// device and <b>no role claim at all</b>, so every staff policy fails on it. Asserted here
+    /// anyway, across the four surfaces, because "by construction" is exactly the kind of claim that
+    /// stops being true when somebody adds a convenience.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_device_token_alone_can_do_nothing_but_offer_a_pin()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await SeedBranchAsync(factory);
+        var deviceToken = await EnrolDeviceAsync(factory, branch);
+
+        using var tablet = factory.CreateClientWithToken(deviceToken);
+
+        // It can read what it is bound to - a tablet on a counter should say where it thinks it is -
+        // and that is the whole of what it can read.
+        var whereAmI = await tablet.GetAsync("/api/auth/staff/device");
+
+        Assert.Equal(HttpStatusCode.OK, whereAmI.StatusCode);
+
+        var device = await whereAmI.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(branch.BranchId, device.GetProperty("branchId").GetGuid());
+        Assert.False(string.IsNullOrWhiteSpace(device.GetProperty("branchName").GetString()));
+
+        string[] staffRoutes =
+        [
+            $"/api/branches/{branch.BranchId}/tables/floor",
+            $"/api/branches/{branch.BranchId}/tables/changes",
+            $"/api/branches/{branch.BranchId}/orders",
+            $"/api/branches/{branch.BranchId}/service-requests",
+        ];
+
+        foreach (var route in staffRoutes)
+        {
+            var refused = await tablet.GetAsync(route);
+
+            Assert.True(
+                refused.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden,
+                $"{route} answered {refused.StatusCode} to a bare device token. The tablet is not a "
+                + "person and must not be able to act as one.");
+        }
+
+        // And a write, because a read-only leak and a write leak are different sizes of mistake.
+        var seat = await tablet.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{branch.FirstTableId}/seat-walk-in",
+            new { partySize = 2, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.True(seat.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden);
+
+        // The PIN session minted on that same device is accepted everywhere the device was not.
+        var sessionToken = await SignInWaiterAsync(factory, branch);
+        using var staff = factory.CreateClientWithToken(sessionToken);
+
+        foreach (var route in staffRoutes)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await staff.GetAsync(route)).StatusCode);
+        }
+    }
+
     /// <summary>
     /// The reason per-person PINs are worth the extra taps: the audit log names a person.
     /// </summary>

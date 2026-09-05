@@ -50,6 +50,18 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
 
         // The stream read: "everything at this branch after N, in order". Covering, so catching up
         // after a dropped connection is a range seek rather than a scan of the branch's history.
+        //
+        // It also serves the MAX(Sequence) the floor projection folds in, which runs on every floor
+        // render against a table that grows without bound. Confirmed from the plan rather than from
+        // the index list, because "there is an index" and "the query uses it" are different claims:
+        //
+        //   Stream Aggregate
+        //     |--Top(TOP EXPRESSION:((1)))
+        //          |--Index Seek(OBJECT:([TableStateChanges].[IX_TableStateChanges_BranchId_Sequence]),
+        //                        SEEK:([t].[BranchId]=[@__branchId_0]) ORDERED BACKWARD)
+        //
+        // Top(1) over a backward-ordered seek: one row read, not an aggregate over the branch's
+        // history, so the cost does not move as the log grows.
         builder.HasIndex(c => new { c.BranchId, c.Sequence })
             .HasDatabaseName("IX_TableStateChanges_BranchId_Sequence");
 

@@ -182,6 +182,28 @@ person either way. Two tables would give one human two identities and quietly br
 
 ---
 
+### Waiters and kitchen never hold email credentials, on any surface
+
+The question came up when the staff app moved to a web PWA: should Waiter and Kitchen be allowed
+admin-panel email sign-ins, so `/staff` works in a browser? **No.** Two reasons, and neither of them
+is about tablets.
+
+- **A waiter must never type an email address during a Friday rush.** That is the constraint the
+  whole staff model exists to satisfy. An email and a password is thirty seconds and two mistakes;
+  four taps is four taps. Moving the surface to a browser does not make typing faster.
+- **The PIN is what makes the audit log answer "who gave away my reserved table".** Per-person PINs
+  on a shared device are the only mechanism that names a person on a floor where the device is shared
+  and the people change every few hours. A shared email login erases exactly that.
+
+**The browser is the device.** A PWA on a laptop at the counter enrols with a one-time code, holds a
+device token, and exchanges a PIN for a session — the same three steps a tablet takes, because
+nothing in that flow ever assumed a native app. What was missing was the redemption endpoint's
+client-generated `deviceId` and a way for the PIN screen to say which venue it is bound to, not a
+permission.
+
+Email and password stay what they always were: the admin panel, for owners and managers, who do sit
+down at a desk to do the things it is for.
+
 ## Tokens
 
 | Token | Lifetime | Renewal |
@@ -190,6 +212,22 @@ person either way. Two tables would give one human two identities and quietly br
 | Tab participant | Tab close + 2h grace, 12h ceiling | None - rejoin the tab |
 | Staff device | 365 days | None - re-enrol |
 | Staff session | 30 minutes | Renewal handle, dies after 30 minutes idle |
+
+### What a device token can and cannot do
+
+Four properties, and the fourth is the one that makes the first three safe to leave in a browser on
+a counter for a year:
+
+| | |
+|---|---|
+| **Bearer only** | No cookie, no session affinity. It is sent as a header and nothing else. |
+| **Branch-scoped** | It carries one `branchId`, copied onto every session opened on it. A waiter at branch A cannot act on branch B however the request is addressed. |
+| **Revocable** | `StaffDevice.RevokedAtUtc` is checked on **every** request, so a laptop left in a taxi stops working on its next call rather than when its year-long token expires — and so does any PIN session already open on it. |
+| **Grants nothing** | It carries a branch and a device and **no role claim at all**, so every staff policy fails on it. The tablet is not a person; it can offer a PIN and read which venue it is bound to, and that is the whole list. |
+
+`StaffAuthTests.A_device_token_alone_can_do_nothing_but_offer_a_pin` asserts the last one across
+reads and a write, because "by construction" is exactly the kind of claim that stops being true the
+first time somebody adds a convenience.
 
 **Refresh tokens rotate.** Each use retires the token and issues its successor, so a stolen copy is
 only useful until the real client next refreshes. Every token descended from one sign-in shares a

@@ -93,6 +93,12 @@ internal sealed class ReservationWriter(
                 return InsertOutcome.Replayed(original);
             }
 
+            // The table itself, re-read inside the lock. Validation ran against a copy read before
+            // it, and a waiter marking the table broken in between is precisely the race the lock
+            // was added for - without this re-check the lock only makes the two commits serial and
+            // still lets a confirmed reservation land on a table nobody can sit at.
+            await ReadTableStatusUnderLockAsync(table, cancellationToken);
+
             if (await FindConflictAsync(table.Id, proposed, policy, cancellationToken) is { } conflict)
             {
                 // Nothing was written. Leave the lock and build the answer outside it.
@@ -121,6 +127,40 @@ internal sealed class ReservationWriter(
         {
             Detach(reservation);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Refuses a table that stopped being bookable while this booking was being validated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Freeing and holding only ever narrow what a booking finds, which is why they take no lock.
+    /// Going out of service is different in kind: it makes the table unusable, and a booking that
+    /// committed a moment later would be confirmed onto it. Nobody would notice until the party
+    /// arrived, because nothing else looks at a booking again once it is made.
+    /// </para>
+    /// <para>
+    /// A fresh read rather than the tracked entity: the caller's copy was loaded before the lock and
+    /// says whatever was true then, which is the thing being guarded against.
+    /// </para>
+    /// </remarks>
+    private async Task ReadTableStatusUnderLockAsync(DiningTable table, CancellationToken cancellationToken)
+    {
+        var current = await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == table.Id)
+            .Select(t => new { t.Status, t.IsBookable, t.IsActive })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (current is null || !current.IsActive || !current.IsBookable)
+        {
+            throw new TableNotBookableException(table.Id, table.Label);
+        }
+
+        if (current.Status == TableStatus.OutOfService)
+        {
+            throw new TableOutOfServiceException(table.Id, table.Label);
         }
     }
 

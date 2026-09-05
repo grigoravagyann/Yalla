@@ -565,9 +565,11 @@ internal sealed class ReservationService(
         if (table.Status == TableStatus.Held
             && await HoldIsForAsync(table.Id, reservation.Id, cancellationToken))
         {
-            // Through the state machine, so the audit row is written and the branch change sequence
-            // moves - which is what puts this on every other tablet in the room.
-            var change = await tableState.FreeTableAsync(
+            // ReleaseHold, not FreeTable: the machine has no Held-to-Free transition, because
+            // vacating is what happens when a party leaves and a hold has nobody at it. Going
+            // through the machine at all is the point - the audit row is written and the branch
+            // change sequence moves, which is what puts this on every other tablet in the room.
+            var change = await tableState.ReleaseHoldAsync(
                 new TableStateCommand(reservation.BranchId, table.Id, command.ClientCommandId, reason),
                 cancellationToken);
 
