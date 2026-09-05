@@ -61,6 +61,10 @@ public static class SwaggerExtensions
             // generated client sees the error shape instead of discovering it in production.
             options.OperationFilter<ErrorResponsesOperationFilter>();
 
+            // After the generic one: it replaces the envelope with the real shape, and a
+            // oneOf where a status code can arrive in more than one form.
+            options.OperationFilter<ProblemShapesOperationFilter>();
+
             // Puts the endpoint's own words on the responses it declared, which is where the
             // "someone just took that table" 409 gets described as the normal outcome it is.
             options.OperationFilter<ResponseDescriptionOperationFilter>();

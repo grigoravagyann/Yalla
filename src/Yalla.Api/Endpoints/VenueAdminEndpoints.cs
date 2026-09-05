@@ -196,9 +196,16 @@ public static class VenueAdminEndpoints
             .RequireAuthorization(YallaPolicies.ManagerOrAbove)
             .RequireAuthorization(YallaPolicies.BranchScoped);
 
-        group.MapGet("/", GetMenuAsync)
+        // Deliberately not "/" - that is the diner-facing GET /api/branches/{id}/menu, and two
+        // operations cannot share a path in OpenAPI 3.0. The two reads return the same shape; this
+        // one exists because it is reachable for a venue that is suspended, which the diner route
+        // refuses on purpose. A manager fixing their menu during a suspension needs to see it.
+        group.MapGet("/manage", GetMenuAsync)
             .WithName("getMenuForAdmin")
             .WithSummary("The full menu, including unavailable items")
+            .WithDescription(
+                "The same body as the public `GET /api/branches/{branchId}/menu`, without its "
+                + "open-for-business gate, so a suspended venue's manager can still edit.")
             .Produces<IReadOnlyList<MenuCategoryView>>();
 
         group.MapPost("/categories", CreateCategoryAsync)

@@ -47,6 +47,19 @@ internal static class DatabaseIndexNames
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
     /// <summary>
+    /// Unique on a tab's event positions. A violation means two writers raced for the same place in
+    /// the stream; the loser renumbers and retries.
+    /// </summary>
+    public const string TabEventSequence = "UX_TabEvents_TabId_Sequence";
+
+    /// <summary>
+    /// Unique on the caller's command id for a payment. A violation means the same "take cash" was
+    /// submitted twice; the second one answers with the first payment rather than taking the money
+    /// again.
+    /// </summary>
+    public const string PaymentClientCommand = "UX_Payments_ClientCommandId";
+
+    /// <summary>
     /// Unique on the caller's command id across every command type. A violation means the same
     /// command is being applied concurrently with its original; the store answers with the original.
     /// </summary>

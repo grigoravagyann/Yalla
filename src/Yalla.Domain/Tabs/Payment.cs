@@ -36,11 +36,34 @@ public sealed class Payment : Entity
 
     public PaymentStatus Status { get; private set; }
 
+    /// <summary>
+    /// A tip, in whole dram, handed over with this payment.
+    /// </summary>
+    /// <remarks>
+    /// <b>Outside the balance.</b> A tip is not part of what the table owes: it is excluded from
+    /// <c>Tab.PaidAmd</c> and <c>Tab.RemainingAmd</c> entirely. Folding it in makes a 10,000 AMD
+    /// bill settled with 12,000 AMD look overpaid by 2,000, and every subsequent number - the
+    /// remaining balance, each person's share, whether the tab may close - becomes arithmetic
+    /// nobody at the table or in the office can follow. It is recorded here because the venue has
+    /// to reconcile the cash drawer against it, not because the bill knows about it.
+    /// </remarks>
+    public long TipAmd { get; private set; }
+
     /// <summary>The provider's own identifier for this transaction, for reconciliation.</summary>
     public string? ProviderReference { get; private set; }
 
     /// <summary>Set when the attempt reached a terminal state.</summary>
     public DateTime? CompletedAtUtc { get; private set; }
+
+    /// <summary>
+    /// The caller's own id for the command that took this money.
+    /// </summary>
+    /// <remarks>
+    /// Unique across the table. A waiter tapping "take 5,000 in cash" twice on a tablet that showed
+    /// no response must not take 10,000 off the balance, and the index - not a check in the service -
+    /// is what settles it, because two taps can race and a check-then-insert lets both through.
+    /// </remarks>
+    public Guid ClientCommandId { get; private set; }
 
     private Payment()
     {
@@ -54,9 +77,18 @@ public sealed class Payment : Entity
         DateTime createdAtUtc,
         Guid? tabParticipantId = null,
         string? providerReference = null,
-        DateTime? completedAtUtc = null)
+        DateTime? completedAtUtc = null,
+        long tipAmd = 0L,
+        Guid? clientCommandId = null)
         : base(Guid.CreateVersion7())
     {
+        TipAmd = Guard.NotNegativeAmd(tipAmd, nameof(tipAmd));
+
+        // A caller with no command id - a fixture, a seeder - gets a synthetic one so the unique
+        // index still holds. A caller that has one must not pass Guid.Empty and mean it.
+        ClientCommandId = clientCommandId is { } given
+            ? Guard.NotEmpty(given, nameof(clientCommandId))
+            : Guid.CreateVersion7();
         TabId = Guard.NotEmpty(tabId, nameof(tabId));
         Method = Guard.Defined(method, nameof(method));
         Status = Guard.Defined(status, nameof(status));
@@ -97,6 +129,35 @@ public sealed class Payment : Entity
         long amountAmd,
         PaymentMethod method,
         DateTime createdAtUtc,
-        Guid? tabParticipantId = null) =>
-        new(tabId, amountAmd, method, PaymentStatus.Reserved, createdAtUtc, tabParticipantId);
+        Guid? tabParticipantId = null,
+        long tipAmd = 0L,
+        Guid? clientCommandId = null) =>
+        new(tabId, amountAmd, method, PaymentStatus.Reserved, createdAtUtc, tabParticipantId,
+            tipAmd: tipAmd, clientCommandId: clientCommandId);
+
+    /// <summary>
+    /// The reserved hold actually went through.
+    /// </summary>
+    /// <remarks>
+    /// For cash this happens in the same call as the reserve, because the money is already on the
+    /// table. The two steps exist so that Idram and Telcell can sit in <see cref="PaymentStatus.Reserved"/>
+    /// while the provider is called - the hold against the tab is taken before anything leaves the
+    /// building, so two people paying at once cannot both claim the same remaining dram.
+    /// </remarks>
+    public void MarkSucceeded(DateTime completedAtUtc, string? providerReference = null)
+    {
+        if (Status != PaymentStatus.Reserved)
+        {
+            throw new DomainStateException($"Only a reserved payment can succeed; this one is {Status}.");
+        }
+
+        Status = PaymentStatus.Succeeded;
+        CompletedAtUtc = Guard.NotLocalTime(completedAtUtc, nameof(completedAtUtc));
+
+        if (providerReference is not null)
+        {
+            ProviderReference = Guard.OptionalText(
+                providerReference, nameof(providerReference), FieldLengths.ProviderReference);
+        }
+    }
 }

@@ -57,6 +57,12 @@ public static class FieldLengths
     /// <summary>Client address recorded against a sign-in attempt, for diagnostics only.</summary>
     public const int ClientAddress = 64;
 
+    /// <summary>The one optional line on a service request. Short on purpose - not a chat.</summary>
+    public const int ServiceNote = 200;
+
+    /// <summary>A kitchen note on an order line, e.g. "no onions".</summary>
+    public const int OrderNote = 300;
+
     /// <summary>A command type slug, e.g. <c>table.seat-walk-in</c>.</summary>
     public const int CommandType = 100;
 

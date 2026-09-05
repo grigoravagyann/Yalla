@@ -8,6 +8,7 @@ using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Application.Platform;
+using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Staff;
 using Yalla.Application.Tabs;
@@ -55,6 +56,16 @@ public static class DependencyInjection
         services.AddScoped<IPlatformService, PlatformService>();
         services.AddScoped<IBranchSettingsService, BranchSettingsService>();
         services.AddScoped<IMenuService, MenuService>();
+
+        // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
+        // through it, so the totals cache and the event stream are written in the same SaveChanges
+        // as the change itself and neither can drift from the lines.
+        services.AddScoped<TabLedger>();
+        services.AddScoped<IMenuQuery, MenuQuery>();
+        services.AddScoped<ITabOrderService, TabOrderService>();
+        services.AddScoped<ITabBillingQuery, TabBillingQuery>();
+        services.AddScoped<IServiceRequestService, ServiceRequestService>();
+        services.AddScoped<ITabPaymentService, TabPaymentService>();
         services.AddScoped<IStaffManagementService, StaffManagementService>();
 
         // The share-link template. Optional in configuration; the default points at the local

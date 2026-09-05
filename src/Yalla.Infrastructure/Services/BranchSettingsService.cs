@@ -596,8 +596,31 @@ internal sealed class BranchSettingsService(
     private static Guid? AreaId(Dictionary<string, FloorArea> areasByName, string? areaName) =>
         areaName is null ? null : areasByName[areaName.Trim()].Id;
 
-    private static readonly System.Linq.Expressions.Expression<Func<DiningTable, FloorTableView>> TableProjection =
+    /// <summary>
+    /// A table as the editor reads it, including whether deleting it would actually work.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>IsDeletable</c> is four <c>EXISTS</c> subqueries rather than the three the floor plan
+    /// obviously needs, and the fourth is the one that matters: <see cref="TablesWithHistoryAsync"/>
+    /// counts <c>TableStateChange</c> rows too, because that foreign key is <c>Restrict</c>. A table
+    /// held for a late party has no booking, no seating and no bill, but it does have audit rows -
+    /// and if this flag disagreed with the rule the delete actually applies, the editor would offer
+    /// a delete that then refuses, which is exactly the confusion the flag exists to remove. The two
+    /// must be read as one rule; changing either alone is a bug.
+    /// </para>
+    /// <para>
+    /// An instance expression rather than a static one, because it closes over the context. It runs
+    /// once per editing session, not on the floor screen's refresh loop, so four correlated
+    /// subqueries against indexed foreign keys are the right trade for one round trip.
+    /// </para>
+    /// </remarks>
+    private System.Linq.Expressions.Expression<Func<DiningTable, FloorTableView>> TableProjection =>
         t => new FloorTableView(
             t.Id, t.Label, t.Seats, t.X, t.Y, t.Width, t.Height, t.RotationDegrees, t.Shape,
-            t.FloorAreaId, t.IsBookable, t.IsActive, t.QrToken, t.Status);
+            t.FloorAreaId, t.IsBookable, t.IsActive, t.QrToken, t.Status,
+            !db.Reservations.Any(r => r.DiningTableId == t.Id)
+            && !db.TableSessions.Any(ts => ts.DiningTableId == t.Id)
+            && !db.Tabs.Any(tb => tb.DiningTableId == t.Id)
+            && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id));
 }

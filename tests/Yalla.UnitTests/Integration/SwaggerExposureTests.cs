@@ -235,6 +235,114 @@ public class SwaggerExposureTests
         Assert.Equal("JWT", scheme.GetProperty("bearerFormat").GetString());
     }
 
+    // ------------------------------------------------------------ 22. typed error extensions
+
+    /// <summary>
+    /// <b>Test 22.</b> Every declared problem shape reaches the document with a real
+    /// <c>context</c> object rather than a bag of unknowns.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The generic envelope's <c>context</c> is an <c>IReadOnlyDictionary&lt;string, object?&gt;</c>,
+    /// which <c>openapi-typescript</c> emits as <c>Record&lt;string, unknown&gt;</c>. Every named
+    /// error a client branches on was therefore stringly-typed on the other side, which is most of
+    /// the argument for generating a client at all.
+    /// </para>
+    /// <para>
+    /// This asserts the schema, not the runtime body - the two are checked against each other by the
+    /// integration tests that read <c>context.remainingAmd</c> and friends off a real response.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Every_declared_problem_shape_has_a_typed_context_in_the_document()
+    {
+        using var document = await GetDocumentAsync();
+
+        var schemas = document.RootElement.GetProperty("components").GetProperty("schemas");
+
+        // Shape name -> the field a client actually reads off it.
+        var expected = new Dictionary<string, string[]>
+        {
+            ["MenuItemUnavailableProblem"] = ["itemName", "menuItemId"],
+            ["TabNotAcceptingOrdersProblem"] = ["tabId", "status"],
+            ["LineAlreadyPaidProblem"] = ["tabId", "lineId"],
+            ["PaymentExceedsRemainingProblem"] = ["tabId", "requestedAmd", "remainingAmd"],
+            ["ServiceRequestRateLimitedProblem"] = ["tabId", "limit", "windowMinutes"],
+            ["LockTimeoutProblem"] = ["tableId", "tableLabel", "timeoutMilliseconds", "retryable"],
+        };
+
+        // Schema ids are fully qualified in this document, so match on the tail.
+        JsonElement Find(string suffix)
+        {
+            foreach (var candidate in schemas.EnumerateObject())
+            {
+                if (candidate.Name.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    return candidate.Value;
+                }
+            }
+
+            throw new Xunit.Sdk.XunitException(
+                $"{suffix} is declared in ProblemShapes.cs but never reaches the document. "
+                + "Some endpoint has to declare it with ProducesProblem<T>.");
+        }
+
+        foreach (var (shapeName, fields) in expected)
+        {
+            var properties = Find(shapeName).GetProperty("properties");
+
+            // The standard envelope members are flattened onto the derived schema, so a generated
+            // client gets one complete object rather than an intersection it has to unwrap.
+            Assert.True(properties.TryGetProperty("code", out _), $"{shapeName} has no code.");
+            Assert.True(properties.TryGetProperty("traceId", out _), $"{shapeName} has no traceId.");
+
+            // And the part this test exists for: context is a named schema, not a free-form map.
+            var context = properties.GetProperty("context");
+
+            Assert.False(
+                context.TryGetProperty("additionalProperties", out _),
+                $"{shapeName}.context generated as a dictionary, which is the thing being fixed.");
+
+            // Swashbuckle wraps the reference in a single-member allOf whenever the property also
+            // carries a description, which these all do. Both forms are one named type, and
+            // openapi-typescript resolves them identically.
+            var reference = context.TryGetProperty("$ref", out var direct)
+                ? direct.GetString()
+                : context.GetProperty("allOf").EnumerateArray().First().GetProperty("$ref").GetString();
+
+            Assert.NotNull(reference);
+
+            var contextProperties = Find(reference!.Split('/')[^1]).GetProperty("properties");
+
+            foreach (var field in fields)
+            {
+                Assert.True(
+                    contextProperties.TryGetProperty(field, out _),
+                    $"{shapeName}.context is missing {field}, which a client has to read.");
+            }
+        }
+
+        // And where one status code can arrive in more than one form, the document says so with a
+        // oneOf rather than silently documenting whichever Produces call came last.
+        var placeOrder409 = document.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/tabs/{tabId}/orders")
+            .GetProperty("post")
+            .GetProperty("responses")
+            .GetProperty("409")
+            .GetProperty("content")
+            .GetProperty("application/problem+json")
+            .GetProperty("schema");
+
+        var union = placeOrder409.GetProperty("oneOf").EnumerateArray()
+            .Select(o => o.GetProperty("$ref").GetString()!)
+            .ToList();
+
+        Assert.Equal(2, union.Count);
+        Assert.Contains(union, r => r.EndsWith("MenuItemUnavailableProblem", StringComparison.Ordinal));
+        Assert.Contains(union, r => r.EndsWith("TabNotAcceptingOrdersProblem", StringComparison.Ordinal));
+    }
+
     private static async Task<JsonDocument> GetDocumentAsync()
     {
         await using var factory = new YallaApiFactory().WithSwagger(enabled: true);
