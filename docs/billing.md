@@ -300,3 +300,42 @@ next walk-in. Freeing stays an explicit waiter action.
   over, and each share reports what that person has settled — but a share is a **pre-payment**
   allocation of the total, which is what makes the sum invariant hold. Netting payments off shares is
   part of the multi-payer flow, not of this arithmetic.
+
+---
+
+## 8. Golden vectors, for the other implementation
+
+The mobile app carries its own port of `TabBilling.Compute`, so it can show an offline bill that
+matches the one the server will send. A property test on that port proves it is **self-consistent**,
+which is not the same as proving it agrees with us: two implementations can both be internally
+coherent, both green, and quietly disagree about what three people owe.
+
+So the side that owns the arithmetic publishes its answers.
+
+**`docs/billing-vectors.json`** holds fourteen worked cases — input tab, expected subtotal, service
+charge, total, and every participant's share — produced by `TabBilling.Compute` itself and committed.
+Test the client against it.
+
+```json
+{
+  "name": "residue-does-not-divide-by-three",
+  "input":    { "serviceChargePercent": 0, "lines": [ ... ], "participants": [ ... ] },
+  "expected": { "subtotalAmd": 1000, "serviceChargeAmd": 0, "totalAmd": 1000,
+                "shares": [ { "shareAmd": 334 }, { "shareAmd": 333 }, { "shareAmd": 333 } ] }
+}
+```
+
+The cases are chosen for the disagreements a re-implementation actually has — where rounding lands,
+whether comping a dish comps its service charge, what happens to a removed guest's food, whether a
+pending joiner is on the bill. Even splits of round numbers agree by accident and prove nothing.
+
+**The file is generated, never hand-edited.** `GoldenBillingVectorTests` compares it against what the
+arithmetic produces today and fails, naming the vector that moved, if they disagree. Regenerating is
+deliberate:
+
+```
+YALLA_WRITE_BILLING_VECTORS=1 dotnet test --filter GoldenBillingVectorTests
+```
+
+Then read the diff, and tell whoever ships the client — their bill has just started disagreeing with
+the server, and the failing test is the only warning either side gets.

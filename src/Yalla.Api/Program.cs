@@ -126,6 +126,8 @@ app.MapReservationEndpoints();
 app.MapPlatformEndpoints();
 app.MapVenueAdminEndpoints();
 app.MapOrderingEndpoints();
+app.MapPhotoEndpoints();
+app.MapNotificationEndpoints();
 
 // Development only: on start, log the LAN address with both ports - the value that goes into the
 // frontend config - so nobody hunts for it in ipconfig.

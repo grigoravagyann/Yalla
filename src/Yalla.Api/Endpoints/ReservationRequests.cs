@@ -4,6 +4,20 @@ using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
+/// <summary>Body of <c>POST /api/reservations/{id}/extend-hold</c>.</summary>
+/// <param name="ClientCommandId">
+/// Idempotency. The late nudge is a notification the diner can tap twice, and the second tap must be
+/// a no-op rather than an error about an extension already used.
+/// </param>
+public sealed record ExtendHoldRequest([Required] Guid ClientCommandId) : IClientCommandRequest;
+
+/// <summary>Body of <c>POST /api/reservations/{id}/no-show</c>.</summary>
+/// <param name="ClientCommandId">Idempotency - see <see cref="ExtendHoldRequest"/>.</param>
+/// <param name="Reason">Optional free text for the audit row.</param>
+public sealed record MarkNoShowRequest(
+    [Required] Guid ClientCommandId,
+    string? Reason = null) : IClientCommandRequest;
+
 /// <summary>Body of <c>POST /api/reservations/{id}/release</c>.</summary>
 /// <param name="Outcome">
 /// <b>1 NoShow</b> - nobody came and nobody called; counts toward the diner's rolling no-show

@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
+using Yalla.Domain.Identity;
+using Yalla.Domain.Media;
+using Yalla.Domain.Messaging;
 using Yalla.Domain.Tabs;
 
 namespace Yalla.Infrastructure.Persistence.Configurations;
@@ -135,5 +138,112 @@ internal sealed class TabEventConfiguration : EntityConfiguration<TabEvent>
         builder.HasIndex(e => new { e.TabId, e.Sequence })
             .IsUnique()
             .HasDatabaseName(DatabaseIndexNames.TabEventSequence);
+    }
+}
+
+internal sealed class PhotoConfiguration : EntityConfiguration<Photo>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<Photo> builder)
+    {
+        builder.ToTable("Photos");
+
+        builder.Property(p => p.ContentHash)
+            .HasMaxLength(FieldLengths.ContentHash)
+            .IsRequired();
+
+        builder.Property(p => p.ThumbnailPath).HasMaxLength(FieldLengths.Url).IsRequired();
+        builder.Property(p => p.CardPath).HasMaxLength(FieldLengths.Url).IsRequired();
+        builder.Property(p => p.FullPath).HasMaxLength(FieldLengths.Url).IsRequired();
+
+        builder.Property(p => p.Width);
+        builder.Property(p => p.Height);
+        builder.Property(p => p.BytesStored).IsRequired();
+        builder.Property(p => p.IsExternallyHosted).IsRequired();
+        builder.Property(p => p.UploadedAtUtc).IsRequired();
+
+        builder.HasOne(p => p.Branch)
+            .WithMany()
+            .HasForeignKey(p => p.BranchId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Uploading the same bytes to the same branch twice reuses the row rather than writing a
+        // second one pointing at identical files.
+        builder.HasIndex(p => new { p.BranchId, p.ContentHash })
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.PhotoPerBranchContent);
+
+        // The orphan sweep's question: what was uploaded before this instant.
+        builder.HasIndex(p => p.UploadedAtUtc);
+    }
+}
+
+internal sealed class OutboxMessageConfiguration : EntityConfiguration<OutboxMessage>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<OutboxMessage> builder)
+    {
+        builder.ToTable("OutboxMessages");
+
+        builder.Property(m => m.Type).HasMaxLength(FieldLengths.MessageType).IsRequired();
+
+        // Unbounded: a payload is self-contained on purpose, and truncating one would produce a
+        // message that sends successfully and says the wrong thing.
+        builder.Property(m => m.PayloadJson).HasColumnType("nvarchar(max)").IsRequired();
+
+        builder.Property(m => m.ScheduledForUtc).IsRequired();
+        builder.Property(m => m.AttemptCount).IsRequired();
+        builder.Property(m => m.LockedUntilUtc);
+        builder.Property(m => m.LockedBy).HasMaxLength(FieldLengths.DeviceName);
+        builder.Property(m => m.SentAtUtc);
+        builder.Property(m => m.LastError).HasMaxLength(FieldLengths.ErrorText);
+        builder.Property(m => m.DeadLetteredAtUtc);
+
+        builder.Property(m => m.IdempotencyKey)
+            .HasMaxLength(FieldLengths.IdempotencyKey)
+            .IsRequired();
+
+        builder.Ignore(m => m.IsSent);
+        builder.Ignore(m => m.IsDeadLettered);
+
+        // What makes writing the same message twice impossible rather than merely unlikely. The key
+        // is derived from the cause, so no amount of retrying a request produces two reminders.
+        builder.HasIndex(m => m.IdempotencyKey)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.OutboxIdempotency);
+
+        // The dispatcher's only query: what is due, unsent and unlocked.
+        builder.HasIndex(m => new { m.SentAtUtc, m.DeadLetteredAtUtc, m.ScheduledForUtc })
+            .HasDatabaseName("IX_OutboxMessages_Due");
+    }
+}
+
+internal sealed class DinerDeviceConfiguration : EntityConfiguration<DinerDevice>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<DinerDevice> builder)
+    {
+        builder.ToTable("DinerDevices");
+
+        builder.Property(d => d.PushToken).HasMaxLength(FieldLengths.PushToken).IsRequired();
+        builder.Property(d => d.Platform).IsRequired();
+        builder.Property(d => d.Locale).HasMaxLength(FieldLengths.LocaleCode).IsRequired();
+        builder.Property(d => d.LastSeenAtUtc).IsRequired();
+        builder.Property(d => d.RevokedAtUtc);
+        builder.Property(d => d.RevokedReason).HasMaxLength(FieldLengths.Reason);
+
+        builder.Ignore(d => d.IsRevoked);
+
+        builder.HasOne(d => d.DinerUser)
+            .WithMany()
+            .HasForeignKey(d => d.DinerUserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // One live row per token. A phone that moves between accounts revokes the old registration
+        // and creates a new one, so the filter is what lets the token be reused rather than blocked.
+        builder.HasIndex(d => d.PushToken)
+            .IsUnique()
+            .HasFilter("[RevokedAtUtc] IS NULL")
+            .HasDatabaseName(DatabaseIndexNames.LivePushToken);
+
+        // "Everyone this diner can be reached on" - the query every notification makes.
+        builder.HasIndex(d => new { d.DinerUserId, d.RevokedAtUtc });
     }
 }

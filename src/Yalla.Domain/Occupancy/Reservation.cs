@@ -259,6 +259,52 @@ public sealed class Reservation : Entity
         IsLateAt(nowUtc, graceMinutes) ? nowUtc - StartUtc : null;
 
     /// <summary>
+    /// "We are five minutes away." Pushes the hold out by the branch's extension, <b>once</b>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="GraceExtensionsUsed"/> has been an orphan column since Prompt 1 and this is what
+    /// finally reads it. Once, because "just five more minutes" granted repeatedly is how a table
+    /// stays held all evening for somebody who is not coming - and the venue loses the cover without
+    /// ever making a decision.
+    /// </para>
+    /// <para>
+    /// Extends from whichever is later: the current hold, or now. A diner who taps the nudge after
+    /// the hold already lapsed gets a full extension from this moment rather than one measured from
+    /// a deadline that has passed.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="DomainStateException">
+    /// The extension was already used, or the booking is not in a state that can hold a table.
+    /// </exception>
+    public void ExtendHold(DateTime nowUtc, int extensionMinutes)
+    {
+        if (Status != ReservationStatus.Confirmed)
+        {
+            throw new DomainStateException(
+                $"Only a confirmed booking can have its table held; {Code} is {Status}.");
+        }
+
+        if (GraceExtensionsUsed > 0)
+        {
+            throw new DomainStateException(
+                "This booking has already had its one extension. The table is being held for other "
+                + "guests too, so a waiter decides what happens next.");
+        }
+
+        if (extensionMinutes <= 0)
+        {
+            throw new DomainStateException(
+                "This branch does not offer hold extensions. Speak to the venue.");
+        }
+
+        var from = HoldExpiresAtUtc is { } current && current > nowUtc ? current : nowUtc;
+
+        HoldExpiresAtUtc = from.AddMinutes(extensionMinutes);
+        GraceExtensionsUsed++;
+    }
+
+    /// <summary>
     /// The party arrived and was seated. Called in the same transaction as the table transition
     /// and the session insert, so a seated table and an unseated booking cannot coexist.
     /// </summary>

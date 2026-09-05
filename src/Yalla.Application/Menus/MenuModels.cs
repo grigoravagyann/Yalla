@@ -1,3 +1,4 @@
+using Yalla.Application.Media;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Menus;
@@ -14,7 +15,7 @@ public sealed record CreateMenuItemCommand(
     string Name,
     string Description,
     long PriceAmd,
-    string PhotoUrl,
+    Guid PhotoId,
     string Ingredients,
     string Allergens,
     string PortionSize,
@@ -27,7 +28,7 @@ public sealed record UpdateMenuItemCommand(
     string? Name = null,
     string? Description = null,
     long? PriceAmd = null,
-    string? PhotoUrl = null,
+    Guid? PhotoId = null,
     string? Ingredients = null,
     string? Allergens = null,
     string? PortionSize = null,
@@ -41,7 +42,7 @@ public sealed record MenuItemView(
     string Name,
     string Description,
     long PriceAmd,
-    string PhotoUrl,
+    PhotoView Photo,
     string Ingredients,
     string Allergens,
     string PortionSize,

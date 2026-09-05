@@ -168,6 +168,52 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("TableStateChanges", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerDevice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("LastSeenAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Locale")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<int>("Platform")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PushToken")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PushToken")
+                        .IsUnique()
+                        .HasDatabaseName("UX_DinerDevices_PushToken_Live")
+                        .HasFilter("[RevokedAtUtc] IS NULL");
+
+                    b.HasIndex("DinerUserId", "RevokedAtUtc");
+
+                    b.ToTable("DinerDevices", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Identity.DinerUser", b =>
                 {
                     b.Property<Guid>("Id")
@@ -457,6 +503,66 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("StaffSessions", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Media.Photo", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("BytesStored")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("CardPath")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FullPath")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<int?>("Height")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsExternallyHosted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ThumbnailPath")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<DateTime>("UploadedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("UploadedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("Width")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UploadedAtUtc");
+
+                    b.HasIndex("BranchId", "ContentHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Photos_BranchId_ContentHash");
+
+                    b.ToTable("Photos", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.Property<Guid>("Id")
@@ -520,10 +626,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<string>("PhotoUrl")
-                        .IsRequired()
-                        .HasMaxLength(2048)
-                        .HasColumnType("nvarchar(2048)");
+                    b.Property<Guid>("PhotoId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("PortionSize")
                         .IsRequired()
@@ -541,9 +645,68 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("PhotoId");
+
                     b.HasIndex("MenuCategoryId", "DisplayOrder");
 
                     b.ToTable("MenuItems", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Messaging.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeadLetteredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("LockedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("LockedUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("ScheduledForUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_OutboxMessages_IdempotencyKey");
+
+                    b.HasIndex("SentAtUtc", "DeadLetteredAtUtc", "ScheduledForUtc")
+                        .HasDatabaseName("IX_OutboxMessages_Due");
+
+                    b.ToTable("OutboxMessages", (string)null);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
@@ -1269,6 +1432,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
+                    b.Property<Guid?>("CoverPhotoId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -1292,6 +1458,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<bool>("NotifyOnOrderReady")
+                        .HasColumnType("bit");
+
                     b.Property<string>("Slug")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -1311,6 +1480,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CoverPhotoId");
 
                     b.HasIndex("VenueId", "Slug")
                         .IsUnique();
@@ -1510,6 +1681,17 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("DiningTable");
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerDevice", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", "DinerUser")
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("DinerUser");
+                });
+
             modelBuilder.Entity("Yalla.Domain.Identity.PasswordResetToken", b =>
                 {
                     b.HasOne("Yalla.Domain.Staff.StaffMember", "StaffMember")
@@ -1562,6 +1744,17 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("StaffMember");
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Media.Photo", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+                });
+
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
@@ -1581,7 +1774,15 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Yalla.Domain.Media.Photo", "Photo")
+                        .WithMany()
+                        .HasForeignKey("PhotoId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("MenuCategory");
+
+                    b.Navigation("Photo");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
@@ -1877,6 +2078,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Yalla.Domain.Venues.Branch", b =>
                 {
+                    b.HasOne("Yalla.Domain.Media.Photo", "CoverPhoto")
+                        .WithMany()
+                        .HasForeignKey("CoverPhotoId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Yalla.Domain.Venues.Venue", "Venue")
                         .WithMany("Branches")
                         .HasForeignKey("VenueId")
@@ -1921,6 +2127,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                             b1.Property<bool>("PricesIncludeVat")
                                 .HasColumnType("bit");
 
+                            b1.Property<int>("ReminderHoursBefore")
+                                .HasColumnType("int");
+
                             b1.Property<decimal>("ServiceChargePercent")
                                 .HasPrecision(5, 2)
                                 .HasColumnType("decimal(5,2)");
@@ -1940,6 +2149,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                             b1.WithOwner()
                                 .HasForeignKey("BranchId");
                         });
+
+                    b.Navigation("CoverPhoto");
 
                     b.Navigation("ReservationPolicy")
                         .IsRequired();

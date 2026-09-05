@@ -5,6 +5,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
+using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -53,6 +54,7 @@ internal sealed class TabService(
     TabParticipantTokens tokens,
     IOptions<TabOptions> options,
     TabLedger ledger,
+    IOutbox outbox,
     ILogger<TabService> logger) : ITabService
 {
     /// <summary>
@@ -429,6 +431,24 @@ internal sealed class TabService(
 
         // The other phones at the table are showing this roster. Written in the same SaveChanges as
         // the change, so the stream can never disagree with the tab.
+        // The one message worth pushing on this path: the guest is sitting at the table with the
+        // phone in their pocket, on a screen that says "waiting for the host". Only reaches somebody
+        // whose phone was carrying a diner token when it scanned - see TabParticipant.UserId.
+        if (eventType == TabEventType.ParticipantApproved && target.UserId is { } dinerUserId)
+        {
+            outbox.Enqueue(
+                OutboxMessageTypes.ParticipantApproved,
+                new
+                {
+                    tabId = tab.Id,
+                    participantId = target.Id,
+                    dinerUserId,
+                    tableLabel = tab.DiningTable?.Label ?? string.Empty,
+                },
+                clock.UtcNow,
+                OutboxMessageTypes.KeyFor("participant", target.Id, "approved"));
+        }
+
         ledger.Append(tab.Id, eventType, new
         {
             participantId = target.Id,
@@ -629,6 +649,7 @@ internal sealed class TabService(
     {
         IQueryable<Tab> tabs = db.Tabs
             .Include(t => t.Participants)
+            .Include(t => t.DiningTable)
             .Include(t => t.Branch)
                 .ThenInclude(b => b.Venue);
 

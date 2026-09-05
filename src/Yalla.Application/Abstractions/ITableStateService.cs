@@ -43,6 +43,27 @@ public interface ITableStateService
     /// <summary>Held to Free, giving up on the party the hold was for.</summary>
     Task<TableStateChangeResult> ReleaseHoldAsync(TableStateCommand command, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Records that a late party's hold was extended. Held to Held - the status does not move.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a transition, and deliberately still an entry in the log. The diner tapping "we are five
+    /// minutes away" is exactly the thing the waiter watching that table needs to know, and the only
+    /// way it reaches their screen is the branch change sequence - which is a column on
+    /// <c>TableStateChange</c>, so something has to be written there.
+    /// </para>
+    /// <para>
+    /// A row whose from-status equals its to-status is unusual enough to be worth stating: it means
+    /// "something happened at this table" rather than "this table became something else".
+    /// </para>
+    /// </remarks>
+    Task<TableStateChangeResult> RecordHoldExtendedAsync(
+        TableStateCommand command,
+        Guid reservationId,
+        DateTime newHoldExpiresAtUtc,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Held to Occupied, seating the party the hold was placed for.</summary>
     Task<TableStateChangeResult> SeatHeldPartyAsync(SeatHeldPartyCommand command, CancellationToken cancellationToken = default);
 

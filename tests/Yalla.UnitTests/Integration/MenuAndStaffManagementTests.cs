@@ -28,7 +28,8 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var menu = fixture.CreateMenuService(db);
         var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Mains"));
 
-        var complete = Item("Khachapuri");
+        var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
+        var complete = Item("Khachapuri", photoId);
 
         await Assert.ThrowsAnyAsync<ArgumentException>(
             () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { Allergens = "" }));
@@ -37,7 +38,7 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
             () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { PrepMinutes = 0 }));
 
         await Assert.ThrowsAnyAsync<ArgumentException>(
-            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { PhotoUrl = " " }));
+            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { PhotoId = Guid.Empty }));
 
         await Assert.ThrowsAnyAsync<ArgumentException>(
             () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { Ingredients = null! }));
@@ -61,7 +62,7 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var menu = fixture.CreateMenuService(db);
         var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Drinks"));
-        var item = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Flat white") with { PriceAmd = 1_400L });
+        var item = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Flat white", await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId)) with { PriceAmd = 1_400L });
 
         var lineId = await PlaceOrderLineAsync(db, branch, item.Id, item.Name, item.PriceAmd);
 
@@ -90,7 +91,7 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var menu = fixture.CreateMenuService(db);
         var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Mains"));
-        var item = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Khachapuri"));
+        var item = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Khachapuri", await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId)));
 
         var out86 = await menu.SetItemAvailabilityAsync(branch.BranchId, item.Id, isAvailable: false);
         Assert.False(out86.IsAvailable);
@@ -288,11 +289,11 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ helpers
 
-    private static CreateMenuItemCommand Item(string name) => new(
+    private static CreateMenuItemCommand Item(string name, Guid photoId) => new(
         Name: name,
         Description: $"House {name.ToLowerInvariant()}",
         PriceAmd: 2_500L,
-        PhotoUrl: "https://cdn.example.test/item.jpg",
+        PhotoId: photoId,
         Ingredients: "flour, cheese, egg",
         Allergens: "gluten, dairy, egg",
         PortionSize: "350 g",

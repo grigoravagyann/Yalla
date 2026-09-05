@@ -74,6 +74,13 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<TabEvent> TabEvents => Set<TabEvent>();
 
+    public DbSet<Yalla.Domain.Media.Photo> Photos => Set<Yalla.Domain.Media.Photo>();
+
+    public DbSet<Yalla.Domain.Messaging.OutboxMessage> OutboxMessages =>
+        Set<Yalla.Domain.Messaging.OutboxMessage>();
+
+    public DbSet<DinerDevice> DinerDevices => Set<DinerDevice>();
+
     public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
 
     public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();
