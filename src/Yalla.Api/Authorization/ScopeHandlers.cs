@@ -35,6 +35,12 @@ public sealed record StaffRoleRequirement(IReadOnlySet<StaffRole> AllowedRoles) 
 /// for venue users only; a staff session with a branch claim is still confined to it, and a
 /// venue user is still confined to their own venue.
 /// </para>
+/// <para>
+/// The branch is usually a <c>branchId</c> route value. The staff tab routes are addressed by tab
+/// instead - <c>/api/tabs/{tabId}/closing</c> - so when there is no <c>branchId</c> but there is a
+/// <c>tabId</c>, the handler resolves the tab's branch and compares against that. Same comparison,
+/// same claim; only where the branch comes from differs.
+/// </para>
 /// </remarks>
 internal sealed class BranchScopedHandler(
     IHttpContextAccessor accessor,
@@ -48,13 +54,30 @@ internal sealed class BranchScopedHandler(
     {
         var routeBranchId = accessor.HttpContext.RouteGuid("branchId");
 
-        // No branch in the route means this policy has been applied to an endpoint it cannot
-        // scope. Failing is the only safe reading: succeeding would leave the endpoint looking
-        // protected while protecting nothing.
+        if (routeBranchId is null && accessor.HttpContext.RouteGuid("tabId") is { } routeTabId)
+        {
+            // A staff route addressed by tab - /api/tabs/{tabId}/closing - names no branch, but
+            // the tab does. Resolve it and compare against that: the branch the route implies is
+            // the one the token has to match. A tab that does not exist resolves to nothing and
+            // the request is refused, which reveals no more than a 403 for the wrong branch would.
+            routeBranchId = await queries.GetTabBranchIdAsync(
+                routeTabId, accessor.HttpContext?.RequestAborted ?? default);
+
+            if (routeBranchId is null)
+            {
+                logger.LogDebug("BranchScoped could not resolve a branch for tab {TabId}.", routeTabId);
+
+                return;
+            }
+        }
+
+        // No branch in the route, and nothing that implies one, means this policy has been applied
+        // to an endpoint it cannot scope. Failing is the only safe reading: succeeding would leave
+        // the endpoint looking protected while protecting nothing.
         if (routeBranchId is null)
         {
             logger.LogError(
-                "BranchScoped was applied to {Path}, which has no branchId route value.",
+                "BranchScoped was applied to {Path}, which has no branchId or tabId route value.",
                 accessor.HttpContext?.Request.Path);
 
             return;

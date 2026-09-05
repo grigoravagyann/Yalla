@@ -157,7 +157,10 @@ public class PolicyHandlerTests
             tabClosedAtUtc is null ? TabStatus.Open : TabStatus.Closed,
             tabClosedAtUtc,
             participantStatus,
-            canOrder);
+            ParticipantRole.Guest,
+            canOrder,
+            CanSeeTableTotal: true,
+            CanPay: false);
 
         var principal = Principal(
             PrincipalType.TabParticipant,
@@ -248,6 +251,9 @@ public class PolicyHandlerTests
         public Task<TabParticipantAccess?> GetTabParticipantAccessAsync(
             Guid tabId, Guid participantId, CancellationToken cancellationToken = default) =>
             Task.FromResult(access);
+
+        public Task<Guid?> GetTabBranchIdAsync(Guid tabId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Guid?>(access?.BranchId);
 
         public Task<bool> BranchBelongsToVenueAsync(
             Guid branchId, Guid venueId, CancellationToken cancellationToken = default) =>

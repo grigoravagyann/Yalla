@@ -30,6 +30,13 @@ public interface ITableStateService
     /// <summary>Free to Occupied, against a booking, which also moves the booking to Seated.</summary>
     Task<TableStateChangeResult> SeatReservationAsync(SeatReservationCommand command, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Free to Occupied, for the party that scanned the table's QR code. The one transition that
+    /// needs no staff member: the actor is whoever the token says, or the system when the scanner
+    /// has no account yet, and the audit row says so.
+    /// </summary>
+    Task<TableStateChangeResult> SeatQrScanAsync(SeatQrScanCommand command, CancellationToken cancellationToken = default);
+
     /// <summary>Free to Held, keeping the table for a party expected imminently.</summary>
     Task<TableStateChangeResult> HoldForLatePartyAsync(TableStateCommand command, CancellationToken cancellationToken = default);
 

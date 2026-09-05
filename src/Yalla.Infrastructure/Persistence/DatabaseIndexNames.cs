@@ -34,6 +34,18 @@ internal static class DatabaseIndexNames
     /// </summary>
     public const string ReservationCode = "IX_Reservations_Code";
 
+    /// <summary>
+    /// Unique on a tab's session: one bill per seating. A violation means another phone at the
+    /// same table attached a tab to this session first, and the loser joins that tab instead.
+    /// </summary>
+    public const string TabPerSession = "UX_Tabs_TableSessionId";
+
+    /// <summary>
+    /// Unique on the command that opened a tab. A violation means the same scan is being replayed
+    /// concurrently with its original, and the loser answers with the tab that won.
+    /// </summary>
+    public const string TabClientCommand = "UX_Tabs_ClientCommandId";
+
     /// <summary>Unique on the verified phone number: the number <i>is</i> the diner's account.</summary>
     public const string DinerUserPhone = "UX_DinerUsers_PhoneE164";
 

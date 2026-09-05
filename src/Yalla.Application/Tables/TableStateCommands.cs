@@ -61,6 +61,22 @@ public sealed record SeatHeldPartyCommand(
     Guid? ReservationId = null,
     string? Reason = null) : ITableStateCommand;
 
+/// <summary>
+/// Seat the party that just scanned the table's QR code. The one transition no staff member
+/// performs: a walk-in opening a tab from their own phone.
+/// </summary>
+/// <remarks>
+/// Goes through the same state machine as every other seating - one session, one audit row, the
+/// table's <c>RowVersion</c> and the open-session index deciding a race - because a QR scan that
+/// occupied a table any other way would be a second, unaudited path onto the floor plan.
+/// </remarks>
+public sealed record SeatQrScanCommand(
+    Guid BranchId,
+    Guid TableId,
+    int PartySize,
+    Guid ClientCommandId,
+    string? Reason = null) : ITableStateCommand;
+
 /// <summary>Write off an outstanding balance. Manager-only.</summary>
 public sealed record AbandonTabCommand(
     Guid BranchId,

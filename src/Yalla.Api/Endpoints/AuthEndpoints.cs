@@ -40,8 +40,10 @@ public static class AuthEndpoints
             .WithTags(EndpointConventions.AuthTag)
             .RequireAuthorization();
 
+        // Identity type 1 - the tab participant with no account - is minted by POST /api/tabs/open
+        // and /api/tabs/join, in TabEndpoints: the token is a by-product of scanning a table, and
+        // the four table-state cases a scan can land in belong with the tab, not with sign-in.
         MapDinerFlow(group);
-        MapTabParticipantFlow(group);
         MapStaffFlow(group, authenticated);
         MapVenueUserFlow(group);
 
@@ -110,48 +112,6 @@ public static class AuthEndpoints
             .WithSummary("Revoke a refresh chain")
             .WithDescription("Always succeeds, including for a handle that was never valid.")
             .Produces(StatusCodes.Status204NoContent);
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Identity type 1 - tab participant: no account at all.
-    // ---------------------------------------------------------------------------------------
-    private static void MapTabParticipantFlow(RouteGroupBuilder group)
-    {
-        group.MapPost("/tab/scan", ScanTableQrAsync)
-            .WithName("scanTableQr")
-            .WithSummary("Join the tab at a table by scanning its QR code")
-            .WithDescription(
-                "Returns a token scoped to one tab, with **no account behind it**. This is the "
-                + "flow the product lives on: a walk-in scans the code on table 7 and orders a "
-                + "coffee, and if that asked them to register they would put the phone down.\n\n"
-                + "The token names a participant, a tab and a branch and nothing else, so it is "
-                + "structurally incapable of addressing another tab. It expires when the tab "
-                + "closes, plus a grace period long enough to read the receipt.\n\n"
-                + "Re-scanning from the same device returns the existing participant rather than "
-                + "adding a second person to the bill.\n\n"
-                + "Returns 409 when nobody is seated at the table yet: seating is a staff "
-                + "transition that opens a session and writes an audit row, and this flow does not "
-                + "go round it.")
-            .Produces<TabParticipantTokenResult>()
-            .ProducesProblemDetails(
-                StatusCodes.Status404NotFound, "No table in service carries that QR code.")
-            .ProducesProblemDetails(
-                StatusCodes.Status409Conflict,
-                "Nobody is seated at that table yet, so there is no tab to join.")
-            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
-
-        group.MapPost("/tab/join", JoinTabAsync)
-            .WithName("joinTabByToken")
-            .WithSummary("Join a tab with an invitation token")
-            .WithDescription(
-                "The link a person already on the tab passes round the table. Same account-free "
-                + "token as scanning the QR code; the invitation is short-lived so a screenshot "
-                + "from last Tuesday cannot get a stranger onto a live bill.")
-            .Produces<TabParticipantTokenResult>()
-            .ProducesProblemDetails(
-                StatusCodes.Status401Unauthorized, "The invitation is unknown, revoked or expired.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "That tab is closed.")
-            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -331,20 +291,6 @@ public static class AuthEndpoints
 
         return Results.NoContent();
     }
-
-    private static async Task<IResult> ScanTableQrAsync(
-        ScanTableQrRequest request,
-        ITabParticipantAuthService service,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await service.JoinByTableQrAsync(
-            request.QrToken, request.DeviceId, request.DisplayName, cancellationToken));
-
-    private static async Task<IResult> JoinTabAsync(
-        JoinTabRequest request,
-        ITabParticipantAuthService service,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await service.RedeemJoinTokenAsync(
-            request.JoinToken, request.DeviceId, request.DisplayName, cancellationToken));
 
     private static async Task<IResult> RedeemEnrolmentCodeAsync(
         RedeemEnrolmentCodeRequest request,
