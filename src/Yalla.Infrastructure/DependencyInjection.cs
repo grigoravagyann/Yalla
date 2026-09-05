@@ -43,6 +43,10 @@ public static class DependencyInjection
         services.AddScoped<IReservationService, ReservationService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
+
+        // The lifecycle checks a stateless token cannot make about itself, cached for seconds.
+        services.AddMemoryCache();
+        services.AddScoped<ITokenAuthorityCheck, TokenAuthorityCheck>();
         services.AddScoped<ITabQuery, TabQuery>();
         services.AddScoped<ITabService, TabService>();
 

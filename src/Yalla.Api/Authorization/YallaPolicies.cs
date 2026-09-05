@@ -16,6 +16,17 @@ public static class YallaPolicies
     /// <summary>As <see cref="TabParticipant"/>, and the participant may add items to the tab.</summary>
     public const string TabParticipantCanOrder = "TabParticipantCanOrder";
 
+    /// <summary>
+    /// As <see cref="TabParticipant"/>, and the tab is still open to change.
+    /// </summary>
+    /// <remarks>
+    /// The read/write split on a tab. Once staff mark it closing the bill is being settled, and
+    /// somebody who has paid their share and left must not find it changing behind them - but they
+    /// must still be able to look at it. Payments, when they arrive, need their own policy: they
+    /// are the one mutation a Closing tab is <i>for</i>.
+    /// </remarks>
+    public const string TabParticipantMutating = "TabParticipantMutating";
+
     /// <summary>A live staff session whose role is Waiter, Manager, Owner or PlatformAdmin.</summary>
     public const string WaiterOrAbove = "WaiterOrAbove";
 

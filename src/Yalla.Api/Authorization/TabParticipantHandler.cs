@@ -15,7 +15,12 @@ namespace Yalla.Api.Authorization;
 /// and the tab still open. The difference between the <c>TabParticipant</c> and
 /// <c>TabParticipantCanOrder</c> policies.
 /// </param>
-public sealed record TabParticipantRequirement(bool MustBeAbleToOrder) : IAuthorizationRequirement;
+/// <param name="MustBeAbleToMutate">
+/// Also requires the tab to be open to change - false once staff mark it closing. The difference
+/// between reading a bill that is being settled and altering it.
+/// </param>
+public sealed record TabParticipantRequirement(bool MustBeAbleToOrder, bool MustBeAbleToMutate = false)
+    : IAuthorizationRequirement;
 
 /// <summary>
 /// Enforces the boundary that two adjacent tables cannot order on each other's bill.
@@ -42,13 +47,10 @@ public sealed record TabParticipantRequirement(bool MustBeAbleToOrder) : IAuthor
 /// </remarks>
 internal sealed class TabParticipantHandler(
     IHttpContextAccessor accessor,
-    IAuthorizationQueries queries,
-    IClock clock,
-    Microsoft.Extensions.Options.IOptions<JwtOptions> jwtOptions,
+    ITokenAuthorityCheck authority,
     ILogger<TabParticipantHandler> logger)
     : AuthorizationHandler<TabParticipantRequirement>
 {
-    private readonly JwtOptions _jwt = jwtOptions.Value;
 
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
@@ -58,6 +60,7 @@ internal sealed class TabParticipantHandler(
         {
             return;
         }
+
 
         var claimedTabId = context.User.Guid(YallaClaims.TabId);
         var participantId = context.User.Guid(YallaClaims.ParticipantId);
@@ -74,24 +77,28 @@ internal sealed class TabParticipantHandler(
             return;
         }
 
-        var access = await queries.GetTabParticipantAccessAsync(
+        // Everything a stateless token cannot say about itself - is the tab still live, is this
+        // participant still on it - comes from one place, cached for seconds. A removed participant
+        // fails here, which is what the approval flow exists to guarantee: the stranger from the
+        // next table who was taken off cannot carry on ordering with the token they already hold.
+        var standing = await authority.GetParticipantAuthorityAsync(
             routeTabId.Value, participantId.Value, accessor.HttpContext?.RequestAborted ?? default);
 
-        if (access is null || !TabPermissions.MayReadTab(access.ParticipantStatus))
+        if (standing is null || !standing.MayRead)
         {
+            logger.LogInformation(
+                "Participant {ParticipantId} is no longer entitled to tab {TabId}.", participantId, routeTabId);
+
             return;
         }
 
-        // The token's own expiry is a ceiling, not the rule: it was minted before anyone knew when
-        // the tab would close. The real lifetime is the tab, plus long enough to read the receipt.
-        if (access.TabClosedAtUtc is { } closedAtUtc
-            && clock.UtcNow > closedAtUtc.AddMinutes(_jwt.ParticipantReceiptGraceMinutes))
+        if (requirement.MustBeAbleToMutate && !standing.MayMutate)
         {
             return;
         }
 
         if (requirement.MustBeAbleToOrder
-            && !TabPermissions.MayOrder(access.ParticipantStatus, access.CanOrder, access.TabStatus))
+            && !TabPermissions.MayOrder(standing.ParticipantStatus, standing.CanOrder, standing.TabStatus))
         {
             return;
         }

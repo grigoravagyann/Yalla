@@ -198,10 +198,22 @@ public sealed class SqlServerFixture : IAsyncLifetime
             actor,
             tableState,
             query,
+            CreateTokenAuthority(db, clock),
             tokens,
             Microsoft.Extensions.Options.Options.Create(new TabOptions()),
             NullLogger<TabService>.Instance);
     }
+
+    /// <summary>
+    /// The real authority check over one context, with its own cache so tests do not share one.
+    /// </summary>
+    internal TokenAuthorityCheck CreateTokenAuthority(YallaDbContext db, IClock clock) =>
+        new(
+            new AuthorizationQueries(db),
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+            clock,
+            Microsoft.Extensions.Options.Options.Create(new JwtOptions()));
 
     /// <summary>The tab read model over one context, for asserting on a projected view directly.</summary>
     internal TabQuery CreateTabQuery(YallaDbContext db) => new(db);
