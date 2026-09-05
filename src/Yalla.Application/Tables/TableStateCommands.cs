@@ -38,6 +38,18 @@ public interface ITableStateCommand
     /// for a live one made from a fresh read, where the row version already guards the race.
     /// </summary>
     TableStatus? ExpectedFromStatus { get; }
+
+    /// <summary>
+    /// The table's row version when the waiter tapped, base64, exactly as the floor read model sent
+    /// it. Optional, and worth sending on every queued command.
+    /// </summary>
+    /// <remarks>
+    /// <b>Status is not a version.</b> A table that went Free to Occupied and back to Free while the
+    /// command sat in the queue passes a status check, and the command lands on a sitting that has
+    /// already been seated, served, paid and cleared. When both are supplied both must match; status
+    /// alone behaves exactly as it did before.
+    /// </remarks>
+    string? ExpectedRowVersion { get; }
 }
 
 /// <summary>A transition that needs nothing beyond the table itself.</summary>
@@ -47,7 +59,8 @@ public sealed record TableStateCommand(
     Guid ClientCommandId,
     string? Reason = null,
     bool Queued = false,
-    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
 
 /// <summary>Seat a party with no booking. The common case in a cafe.</summary>
 public sealed record SeatWalkInCommand(
@@ -57,7 +70,8 @@ public sealed record SeatWalkInCommand(
     Guid ClientCommandId,
     string? Reason = null,
     bool Queued = false,
-    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat a party against their booking, which also moves the booking to Seated. <c>PartySize</c>
@@ -71,7 +85,8 @@ public sealed record SeatReservationCommand(
     int? PartySize = null,
     string? Reason = null,
     bool Queued = false,
-    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat the party a hold was placed for. <see cref="ReservationId"/> is set when the hold was
@@ -85,7 +100,8 @@ public sealed record SeatHeldPartyCommand(
     Guid? ReservationId = null,
     string? Reason = null,
     bool Queued = false,
-    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
 
 /// <summary>
 /// Seat the party that just scanned the table's QR code. The one transition no staff member
@@ -103,7 +119,8 @@ public sealed record SeatQrScanCommand(
     Guid ClientCommandId,
     string? Reason = null,
     bool Queued = false,
-    TableStatus? ExpectedFromStatus = null) : ITableStateCommand;
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
 
 /// <summary>Write off an outstanding balance. Manager-only.</summary>
 public sealed record AbandonTabCommand(

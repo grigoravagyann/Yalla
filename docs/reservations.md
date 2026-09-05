@@ -194,6 +194,45 @@ booking would find — a booking that saw a sitting which was about to close ref
 have been fine, a worse answer but never a wrong one — and locking every tap on the floor screen
 would put the room's whole write traffic through one queue per table for no gain.
 
+### Which commands take the lock
+
+A list, not a rule. The rule has been stated twice and been wrong twice — first that table state
+never needs the lock, then that the three "narrowing" commands never do — so what follows is the
+enumeration, and anything added to the state machine belongs in it explicitly.
+
+| Command | Locks | Why |
+|---|---|---|
+| Create a booking | **Yes** | Two bookers insert different rows and collide on nothing, so optimistic concurrency sees no conflict and both commit. |
+| Seat: walk-in, QR, reservation, held party | **Yes** | Booking's re-check reads `TableSessions`. A seating that skipped the lock could commit between that read and the booking's commit, and both would succeed. |
+| Mark out of service | **Yes** | A booking validated while the table was `Free`, committing after this commits, is a **confirmed reservation on a broken table**. Not a narrower answer — a wrong one. Rare enough that the throughput argument below does not apply. |
+| Free | No | Only narrows what a booking finds. |
+| Hold for a late party | No | Only narrows what a booking finds. |
+| Release a hold | No | Only narrows what a booking finds. |
+| Return to service | No | Widens, and only ever toward the table being usable. |
+
+The three that do not lock are the floor's entire write traffic. Putting that through one queue per
+table buys nothing, because the worst they can do is make a booking's re-check more conservative: a
+booking that saw a sitting which was about to close refuses a slot that would have been fine. A worse
+answer, never a wrong one.
+
+**The lock alone is not enough for the out-of-service case.** Serialising the two commits still lets
+a booking that waited for the lock commit onto a table that has since been marked broken, so
+`ReservationWriter` re-reads the table's status **inside** the lock and refuses. The lock makes the
+order deterministic; the re-check is what makes the outcome right.
+
+### Marking a table out of service surfaces its bookings
+
+Separate from the race, and the more useful half. A waiter can mark table 7 broken at six o'clock
+with three bookings on it tonight, and until Prompt 8b nothing anywhere told anybody.
+
+`MarkOutOfService` now returns the confirmed and pending bookings the table still has — time, party
+size, guest name, code and **telephone number** — and cancels none of them. Ten minutes while a
+chair is replaced and a week while a floor is relaid look identical from here, and only the person
+standing in the room knows which this is.
+
+Releasing one of them uses `CancelledByVenue`, never `NoShow`: a broken table is the venue's doing
+and must not count against a diner who was never given the chance to turn up.
+
 ### The lock is a convention, not a constraint
 
 This is the uncomfortable part, and it is the reason `ReservationWriter` exists.
@@ -277,6 +316,36 @@ about the booking holding it. `ReservationEndpointTests` asserts the 409 body co
 other diner's code, name, nor phone.
 
 ---
+
+## 3b. Letting a booking go
+
+`POST /api/reservations/{id}/release`, waiter or above. The action that was missing: a waiter could
+hold a table for a late booking and had no way to stop holding it.
+
+| `outcome` | Booking becomes | Counts toward the no-show threshold |
+|---|---|---|
+| `NoShow` | `NoShow` | **Yes** |
+| `CancelledByVenue` | `CancelledByVenue` | **No** |
+
+**Two buttons on the tablet, never one.** *Release, marked no-show* and *release, they let us know*.
+With a single button a busy waiter taps it for both cases — from the floor the two look the same —
+and the threshold ends up punishing the diners who telephoned to say they could not come. Yerevan is
+a small market and being unfair to a regular by accident is a cost the product cannot carry.
+
+Both outcomes:
+
+- **Free the table when it is held for this booking**, through the state machine, so the audit row is
+  written and the branch change sequence moves. Which booking a hold is for lives in the audit log
+  rather than on the table row — the hold is a physical fact and the booking is a financial one —
+  so the most recent transition into `Held` is what names it.
+- **Leave an occupied table alone.** The booking is released either way, because that is a fact about
+  the booking; freeing a table somebody is sitting at would make the floor plan lie about where people
+  are, which costs more than a stale hold.
+- Idempotent by `clientCommandId`, and a booking already released answers with what the first attempt
+  got. A tablet replaying its queue must not put two no-shows on a diner's record.
+
+The threshold rule itself is unchanged: `RequiresApproval` is `>` and the shipped threshold is three,
+so it is the **fourth** no-show in the window that costs instant confirmation.
 
 ## 4. The rules, and why none of them is a number in code
 

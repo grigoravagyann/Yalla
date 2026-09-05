@@ -21,16 +21,46 @@ namespace Yalla.Domain.Venues;
 /// see what actually happened.
 /// </para>
 /// </remarks>
+/// <summary>Which half of the precondition failed. The two mean different things to a waiter.</summary>
+public enum PreconditionFailure
+{
+    /// <summary>
+    /// The table is in a different state now. Visible on the floor screen, and usually obvious:
+    /// somebody seated the party you were about to hold it for.
+    /// </summary>
+    StatusChanged = 1,
+
+    /// <summary>
+    /// The table looks the same and is not the same. It moved and came back while the command sat
+    /// in the queue - seated, served, paid, freed - so a status check would have let this through
+    /// and applied it to a sitting that has already ended. Nothing on the screen shows this; only
+    /// the version does.
+    /// </summary>
+    TableChangedAndChangedBack = 2,
+}
+
 public sealed class CommandPreconditionFailedException(
     Guid tableId,
     string tableLabel,
     TableStatus expectedFromStatus,
     TableStatus currentStatus,
-    Guid clientCommandId)
+    Guid clientCommandId,
+    PreconditionFailure failure = PreconditionFailure.StatusChanged)
     : DomainStateException(
-        $"This change was queued while table {tableLabel} was {expectedFromStatus}; it is {currentStatus} now, "
-        + "so it was not applied. Look at the table and decide what should happen.")
+        failure == PreconditionFailure.StatusChanged
+            ? $"This change was queued while table {tableLabel} was {expectedFromStatus}; it is "
+              + $"{currentStatus} now, so it was not applied. Look at the table and decide what "
+              + "should happen."
+            : $"Table {tableLabel} is {currentStatus} again, but it has been used since this change "
+              + "was queued - somebody was seated and has left. It was not applied. Look at the "
+              + "table and decide what should happen.")
 {
+    /// <summary>
+    /// Which half failed. A status mismatch is something the waiter can see; a version mismatch on
+    /// a matching status is the case they cannot, and the one worth wording differently.
+    /// </summary>
+    public PreconditionFailure Failure { get; } = failure;
+
     public Guid TableId { get; } = tableId;
 
     public string TableLabel { get; } = tableLabel;

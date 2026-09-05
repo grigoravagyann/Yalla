@@ -86,8 +86,38 @@ public sealed record TableFloorState
     /// <summary>What to draw: <see cref="PhysicalStatus"/> with the booking overlay applied.</summary>
     public required DerivedTableState State { get; init; }
 
+    /// <summary>
+    /// The table's row version, base64, as it stood when this floor was read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Status is not a version.</b> The staff app captures this at the moment a waiter taps, so a
+    /// command queued offline can be checked against the world it was issued in. A table that goes
+    /// Free to Occupied and back to Free between the tap and the sync passes a status check while
+    /// the world moved underneath it - the party was seated, ordered, paid and left, and the queued
+    /// "hold this for the Sarkisyans" applies to a table that is no longer the one the waiter was
+    /// looking at.
+    /// </para>
+    /// <para>
+    /// Base64 rather than the raw bytes because it is a token to be sent back untouched, not a
+    /// number to be compared or ordered. A client that tries to interpret it has misunderstood it.
+    /// </para>
+    /// </remarks>
+    public required string RowVersion { get; init; }
+
     /// <summary>The open occupancy, when somebody is sitting here.</summary>
     public Guid? CurrentSessionId { get; init; }
+
+    /// <summary>
+    /// The open tab on this table, when the party sitting here has one.
+    /// </summary>
+    /// <remarks>
+    /// From the same open-session join the query already performs, so it costs nothing. Without it a
+    /// cold-loaded staff app cannot find the bill for a table somebody is already sitting at - it
+    /// only knows the tab id when one happens to come back in a transition result, which means the
+    /// bill is reachable after you seat a party and unreachable after you refresh the page.
+    /// </remarks>
+    public Guid? OpenTabId { get; init; }
 
     public DateTime? SeatedAtUtc { get; init; }
 

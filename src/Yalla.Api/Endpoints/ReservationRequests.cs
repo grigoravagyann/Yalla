@@ -1,7 +1,27 @@
 using System.ComponentModel.DataAnnotations;
+using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
+
+/// <summary>Body of <c>POST /api/reservations/{id}/release</c>.</summary>
+/// <param name="Outcome">
+/// <b>1 NoShow</b> - nobody came and nobody called; counts toward the diner's rolling no-show
+/// threshold. <b>2 CancelledByVenue</b> - they phoned, or the table went out of service; does
+/// <b>not</b> count.
+///
+/// Two buttons on the tablet, never one. A single "release" gets tapped for both cases by a busy
+/// waiter, and the threshold then punishes the diners who bothered to ring ahead.
+/// </param>
+/// <param name="ClientCommandId">
+/// Idempotency. Releasing twice from a tablet that lost its connection must not put two no-shows on
+/// a diner's record.
+/// </param>
+/// <param name="Reason">Optional free text for the audit row.</param>
+public sealed record ReleaseReservationRequest(
+    [Required] ReleaseOutcome Outcome,
+    [Required] Guid ClientCommandId,
+    string? Reason = null) : IClientCommandRequest;
 
 /// <summary>
 /// Body for booking a table.

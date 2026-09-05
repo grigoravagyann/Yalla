@@ -17,6 +17,10 @@ namespace Yalla.Application.Auth;
 /// </remarks>
 public interface IStaffAuthService
 {
+    // Note for anyone reading this looking for an email sign-in for waiters: there is not one, and
+    // there is not going to be. See docs/auth.md - the browser is the device, not an exception to
+    // the device model.
+
     /// <summary>
     /// Generates a one-time enrolment code for a branch. Manager or owner only.
     /// </summary>
@@ -32,9 +36,30 @@ public interface IStaffAuthService
     /// </summary>
     /// <exception cref="Domain.Identity.AuthenticationFailedException">The code is unknown or expired.</exception>
     /// <exception cref="Yalla.Domain.DomainStateException">The code has already been redeemed.</exception>
+    /// <param name="code">The one-time code a manager read out.</param>
+    /// <param name="clientDeviceId">
+    /// The identifier the client generated for itself and keeps in its own storage. A browser is a
+    /// device here; this is how it recognises itself on the next load.
+    /// </param>
+    /// <param name="deviceName">What a manager will see in the device list.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     Task<DeviceEnrolmentResult> RedeemEnrolmentCodeAsync(
         string code,
+        string clientDeviceId,
         string deviceName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// What this device token is bound to, for the PIN screen.
+    /// </summary>
+    /// <remarks>
+    /// A tablet on a counter should say where it thinks it is. Without this a browser that has been
+    /// enrolled for months shows a PIN pad with no indication of which venue it will act on, and the
+    /// first anybody knows about a laptop bound to the wrong branch is an audit row.
+    /// </remarks>
+    /// <exception cref="Domain.Identity.AuthenticationFailedException">The device is unknown or revoked.</exception>
+    Task<EnrolledDeviceView> GetEnrolledDeviceAsync(
+        Guid deviceId,
         CancellationToken cancellationToken = default);
 
     /// <summary>

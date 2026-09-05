@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
+using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
@@ -38,6 +39,37 @@ namespace Yalla.Infrastructure.Services;
 /// snapshot, no push notification, no email happens inside it. The 409's availability payload is
 /// built after the transaction has already rolled back.
 /// </para>
+/// <para>
+/// <b>Which commands take the table's write lock.</b> A list rather than a rule, because the rule
+/// has been stated twice and been wrong twice.
+/// </para>
+/// <list type="table">
+/// <listheader><term>Command</term><description>Locks, and why</description></listheader>
+/// <item>
+/// <term>Create a booking</term>
+/// <description><b>Yes.</b> Two bookers insert different rows and collide on nothing, so optimistic
+/// concurrency sees no conflict and both commit.</description>
+/// </item>
+/// <item>
+/// <term>Seat (walk-in, QR, reservation, held party)</term>
+/// <description><b>Yes.</b> Booking's re-check reads <c>TableSessions</c>; a seating that skipped the
+/// lock could commit between that read and the booking's commit, and both would succeed.</description>
+/// </item>
+/// <item>
+/// <term>Mark out of service</term>
+/// <description><b>Yes.</b> A booking validated while the table was <c>Free</c> and committing after
+/// this leaves a confirmed reservation on a broken table. Prompt 7 grouped this with the commands
+/// below and that was wrong: it is not a narrower answer, it is a wrong one. Rare enough that the
+/// throughput argument does not apply.</description>
+/// </item>
+/// <item>
+/// <term>Free, hold, release a hold, return to service</term>
+/// <description><b>No.</b> These only ever <i>narrow</i> what a booking finds - a booking that saw a
+/// sitting about to close refuses a slot that would have been fine, which is a worse answer and never
+/// a wrong one. They are also the floor's whole write traffic, and putting that through one queue per
+/// table buys nothing.</description>
+/// </item>
+/// </list>
 /// </remarks>
 internal sealed class ReservationService(
     YallaDbContext db,
@@ -47,6 +79,7 @@ internal sealed class ReservationService(
     IAuthorizationQueries authorization,
     NoShowPolicy noShowPolicy,
     ReservationWriter reservations,
+    ITableStateService tableState,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -478,6 +511,186 @@ internal sealed class ReservationService(
 
         return await ToViewAsync(
             reservation, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+    }
+
+    // ---------------------------------------------------------------- releasing a late booking
+
+    public async Task<ReservationReleaseResult> ReleaseAsync(
+        ReleaseReservationCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
+        var staffId = await RequireStaffForBranchAsync(reservation.BranchId, "Release a booking", cancellationToken);
+
+        var table = await db.DiningTables
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == reservation.DiningTableId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Table {reservation.DiningTableId} was not found.");
+
+        // Already let go. A tablet replaying its queue must not count a second no-show against a
+        // diner, and the answer it gets is the one the first attempt got.
+        if (reservation.Status is ReservationStatus.NoShow or ReservationStatus.CancelledByVenue)
+        {
+            logger.LogInformation(
+                "Booking {Code} was already released as {Status}; returning that answer.",
+                reservation.Code, reservation.Status);
+
+            return await BuildReleaseAsync(
+                reservation, OutcomeOf(reservation.Status), tableFreed: false, table.Id, table.Label,
+                table.Status, wasReplay: true, cancellationToken);
+        }
+
+        var nowUtc = clock.UtcNow;
+        var reason = command.Reason ?? DefaultReleaseReason(command.Outcome);
+
+        if (command.Outcome == ReleaseOutcome.NoShow)
+        {
+            reservation.MarkNoShow(nowUtc);
+        }
+        else
+        {
+            reservation.CancelByVenue(nowUtc, reason);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        // The table is freed only when it is being held for THIS booking. A table somebody is
+        // sitting at is left exactly as it is: the booking is released either way, but a floor plan
+        // that shows an occupied table as free costs more than a stale hold does.
+        var freed = false;
+        var tableStatus = table.Status;
+
+        if (table.Status == TableStatus.Held
+            && await HoldIsForAsync(table.Id, reservation.Id, cancellationToken))
+        {
+            // ReleaseHold, not FreeTable: the machine has no Held-to-Free transition, because
+            // vacating is what happens when a party leaves and a hold has nobody at it. Going
+            // through the machine at all is the point - the audit row is written and the branch
+            // change sequence moves, which is what puts this on every other tablet in the room.
+            var change = await tableState.ReleaseHoldAsync(
+                new TableStateCommand(reservation.BranchId, table.Id, command.ClientCommandId, reason),
+                cancellationToken);
+
+            freed = true;
+            tableStatus = change.ToStatus;
+        }
+
+        logger.LogInformation(
+            "Booking {Code} released as {Outcome} by staff {StaffId}. Table {TableLabel} {TableAction}.",
+            reservation.Code, command.Outcome, staffId, table.Label,
+            freed ? "was freed" : $"was left {tableStatus}");
+
+        return await BuildReleaseAsync(
+            reservation, command.Outcome, freed, table.Id, table.Label, tableStatus,
+            wasReplay: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether the table's current hold was placed for this booking.
+    /// </summary>
+    /// <remarks>
+    /// <c>DiningTable</c> stores that it is <c>Held</c> and not who for - the hold is a physical
+    /// fact and the booking is a financial one, and coupling them on the row was the wrong trade.
+    /// The audit log knows: the most recent transition into <c>Held</c> names the booking it was
+    /// placed for. Releasing a different booking must not free a table being held for somebody else.
+    /// </remarks>
+    private async Task<bool> HoldIsForAsync(Guid tableId, Guid reservationId, CancellationToken cancellationToken)
+    {
+        var mostRecentHold = await db.TableStateChanges
+            .AsNoTracking()
+            .Where(c => c.DiningTableId == tableId && c.ToStatus == TableStatus.Held)
+            .OrderByDescending(c => c.Sequence)
+            .Select(c => c.ReservationId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return mostRecentHold == reservationId;
+    }
+
+    private static ReleaseOutcome OutcomeOf(ReservationStatus status) =>
+        status == ReservationStatus.NoShow ? ReleaseOutcome.NoShow : ReleaseOutcome.CancelledByVenue;
+
+    private static string DefaultReleaseReason(ReleaseOutcome outcome) =>
+        outcome == ReleaseOutcome.NoShow
+            ? "released: nobody arrived"
+            : "released: the venue let the booking go";
+
+    private async Task<ReservationReleaseResult> BuildReleaseAsync(
+        Reservation reservation,
+        ReleaseOutcome outcome,
+        bool tableFreed,
+        Guid tableId,
+        string tableLabel,
+        TableStatus tableStatus,
+        bool wasReplay,
+        CancellationToken cancellationToken)
+    {
+        var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+        var view = await ToViewAsync(
+            reservation, branch, table: null, wasReplay: wasReplay, trigger: null, cancellationToken);
+
+        return new ReservationReleaseResult(
+            view,
+            outcome,
+            tableFreed,
+            tableId,
+            tableLabel,
+            tableStatus,
+
+            // Stated rather than implied. A client should be able to tell the waiter "this one goes
+            // on their record" without knowing the rule.
+            CountsTowardNoShowThreshold: outcome == ReleaseOutcome.NoShow,
+            wasReplay);
+    }
+
+    /// <summary>
+    /// A waiter or above, at this branch. The lighter cousin of the manager check below.
+    /// </summary>
+    /// <remarks>
+    /// Releasing a late booking is floor work, not a decision about money: the person standing at
+    /// the table is the one who knows nobody came. Requiring a manager would mean the table stays
+    /// held until somebody senior walks past, which is how the feature ends up unused.
+    /// </remarks>
+    private async Task<Guid> RequireStaffForBranchAsync(
+        Guid branchId,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        if (actor.Type != ActorType.Staff
+            || actor.StaffMemberId is not { } staffId
+            || actor.Role is not (StaffRole.Waiter or StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+        {
+            throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
+        }
+
+        var staff = await db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.Id == staffId)
+            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (staff is not { IsActive: true })
+        {
+            throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
+        }
+
+        if (staff.Role == StaffRole.PlatformAdmin || staff.BranchId == branchId)
+        {
+            return staffId;
+        }
+
+        // An owner or manager is venue-scoped rather than branch-scoped, which is the point of that
+        // account. A waiter is confined to the branch they are enrolled at.
+        if (staff.Role is StaffRole.Owner or StaffRole.Manager
+            && staff.VenueId is { } venueId
+            && await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
+        {
+            return staffId;
+        }
+
+        throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
     }
 
     // ---------------------------------------------------------------- permissions

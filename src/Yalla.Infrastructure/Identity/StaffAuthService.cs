@@ -66,6 +66,7 @@ internal sealed class StaffAuthService(
 
     public async Task<DeviceEnrolmentResult> RedeemEnrolmentCodeAsync(
         string code,
+        string clientDeviceId,
         string deviceName,
         CancellationToken cancellationToken = default)
     {
@@ -97,7 +98,24 @@ internal sealed class StaffAuthService(
                 "enrolment-code-expired", "That enrolment code has expired. Ask for a new one.");
         }
 
-        var device = new StaffDevice(enrolment.VenueId, enrolment.BranchId, deviceName, nowUtc);
+        // A browser that is already enrolled here should be offering its PIN screen, not enrolling
+        // again. Told apart from a mistyped code deliberately: this one means the client has state
+        // it is not using, which is a client bug worth surfacing rather than a credential problem.
+        var alreadyHere = await db.StaffDevices.AnyAsync(
+            d => d.BranchId == enrolment.BranchId
+                 && d.ClientDeviceId == clientDeviceId
+                 && d.RevokedAtUtc == null,
+            cancellationToken);
+
+        if (alreadyHere)
+        {
+            throw new DomainStateException(
+                "This device is already enrolled at that branch. Use the PIN screen rather than "
+                + "enrolling again, or ask a manager to revoke it first.");
+        }
+
+        var device = new StaffDevice(
+            enrolment.VenueId, enrolment.BranchId, deviceName, clientDeviceId, nowUtc);
 
         // Concurrency token on RedeemedAtUtc: if another tablet redeemed this code between the
         // read above and here, this UPDATE matches no rows and the whole transaction - including
@@ -296,6 +314,39 @@ internal sealed class StaffAuthService(
         session.End(clock.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
     }
+
+    public async Task<EnrolledDeviceView> GetEnrolledDeviceAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        var device = await db.StaffDevices
+            .AsNoTracking()
+            .Where(d => d.Id == deviceId)
+            .Select(d => new EnrolledDeviceView(
+                d.Id,
+                d.ClientDeviceId,
+                d.Name,
+                d.BranchId,
+                d.Branch.Name,
+                d.Branch.Venue.Name,
+                d.CreatedAtUtc,
+                d.LastSeenAtUtc))
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // A revoked device is refused here as well as on every action. The PIN screen must not
+        // render at all for a tablet that has been killed - showing a venue name and a keypad to
+        // somebody holding a device the manager just revoked is the wrong answer twice.
+        if (device is null || await IsRevokedAsync(deviceId, cancellationToken))
+        {
+            throw new AuthenticationFailedException(
+                "device-revoked", "This device is no longer enrolled. Ask a manager to set it up again.");
+        }
+
+        return device;
+    }
+
+    private Task<bool> IsRevokedAsync(Guid deviceId, CancellationToken cancellationToken) =>
+        db.StaffDevices.AnyAsync(d => d.Id == deviceId && d.RevokedAtUtc != null, cancellationToken);
 
     public async Task<IReadOnlyList<StaffDeviceSummary>> ListDevicesAsync(
         Guid branchId,

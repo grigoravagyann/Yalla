@@ -86,6 +86,24 @@ public sealed class StaffMember : Entity
     /// <summary>Whether this person runs Yalla rather than working for a venue.</summary>
     public bool IsPlatformAdmin => Role == StaffRole.PlatformAdmin;
 
+    /// <summary>
+    /// A real role, never <see cref="StaffRole.Unknown"/>.
+    /// </summary>
+    /// <remarks>
+    /// <c>Guard.Defined</c> is not enough on its own: <c>Unknown</c> <i>is</i> a defined member, so
+    /// it would pass. It exists to make a forgotten role loud rather than to be assignable, and the
+    /// place to be loud is here, before a row that means nothing reaches the database.
+    /// </remarks>
+    private static StaffRole RequireRealRole(StaffRole role, string paramName)
+    {
+        Guard.Defined(role, paramName);
+
+        return role == StaffRole.Unknown
+            ? throw new ArgumentOutOfRangeException(
+                paramName, role, "A staff member needs a real role. Unknown means somebody forgot to set one.")
+            : role;
+    }
+
     private StaffMember()
     {
     }
@@ -116,7 +134,7 @@ public sealed class StaffMember : Entity
         VenueId = venueId;
         FullName = Guard.NotBlank(fullName, nameof(fullName), FieldLengths.PersonName);
         Phone = Guard.NotBlank(phone, nameof(phone), FieldLengths.Phone);
-        Role = Guard.Defined(role, nameof(role));
+        Role = RequireRealRole(role, nameof(role));
         PinHash = Guard.NotBlank(pinHash, nameof(pinHash), FieldLengths.PinHash);
         BranchId = branchId;
         IsActive = true;
@@ -144,7 +162,7 @@ public sealed class StaffMember : Entity
     public void SetRole(StaffRole role)
     {
         var previous = Role;
-        Role = Guard.Defined(role, nameof(role));
+        Role = RequireRealRole(role, nameof(role));
 
         try
         {

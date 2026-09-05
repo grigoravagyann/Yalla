@@ -138,8 +138,25 @@ public static class AuthEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized, "The code is unknown or has expired.")
             .ProducesProblemDetails(
-                StatusCodes.Status409Conflict, "The code has already been redeemed.")
+                StatusCodes.Status409Conflict,
+                "The code has already been redeemed, or this `deviceId` is already enrolled at that "
+                + "branch - in which case the client should show its PIN screen instead.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
+
+        authenticated.MapGet("/staff/device", GetEnrolledDeviceAsync)
+            .WithName("getEnrolledStaffDevice")
+            .WithSummary("Which venue and branch this device is bound to")
+            .WithDescription(
+                "For the PIN screen. **A tablet on a counter should say where it thinks it is** - "
+                + "without this a browser enrolled months ago shows a keypad with no indication of "
+                + "which branch it will act on, and a laptop bound to the wrong one is first noticed "
+                + "in an audit row.\n\n"
+                + "Authenticated by the device token. A revoked device is refused here too: showing "
+                + "a venue name and a keypad to somebody holding a killed tablet is the wrong answer "
+                + "twice.")
+            .Produces<EnrolledDeviceView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized, "No device token, or the device was revoked.");
 
         authenticated.MapPost("/staff/pin", StaffPinSignInAsync)
             .WithName("signInStaffWithPin")
@@ -297,7 +314,26 @@ public static class AuthEndpoints
         IStaffAuthService service,
         CancellationToken cancellationToken) =>
         Results.Ok(await service.RedeemEnrolmentCodeAsync(
-            request.Code, request.DeviceName, cancellationToken));
+            request.Code, request.DeviceId, request.DeviceName, cancellationToken));
+
+    /// <summary>
+    /// What this device is bound to. Reads the claim in the handler for the same reason the PIN
+    /// exchange does: the device token is the credential being described, not one being authorised.
+    /// </summary>
+    private static async Task<IResult> GetEnrolledDeviceAsync(
+        IStaffAuthService service,
+        HttpContext http,
+        CancellationToken cancellationToken)
+    {
+        var deviceId = http.User.Guid(YallaClaims.DeviceId);
+
+        if (deviceId is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        return Results.Ok(await service.GetEnrolledDeviceAsync(deviceId.Value, cancellationToken));
+    }
 
     /// <summary>
     /// The one endpoint that reads a claim in the handler, because the device is the credential

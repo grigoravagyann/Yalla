@@ -47,6 +47,12 @@ internal static class DatabaseIndexNames
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
     /// <summary>
+    /// Unique on one live device per client identifier per branch. A violation means this browser
+    /// is already enrolled here; it should offer its PIN screen rather than enrol again.
+    /// </summary>
+    public const string LiveDevicePerClientId = "UX_StaffDevices_BranchId_ClientDeviceId_Live";
+
+    /// <summary>
     /// Unique on a tab's event positions. A violation means two writers raced for the same place in
     /// the stream; the loser renumbers and retries.
     /// </summary>

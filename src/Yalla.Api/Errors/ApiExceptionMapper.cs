@@ -323,6 +323,10 @@ internal static class ApiExceptionMapper
                 ["tableLabel"] = e.TableLabel,
                 ["expectedFromStatus"] = (int)e.ExpectedFromStatus,
                 ["currentStatus"] = (int)e.CurrentStatus,
+
+                // Which half failed. A status mismatch is on the waiter's screen; a version
+                // mismatch on a matching status is the one nothing else can show them.
+                ["failure"] = (int)e.Failure,
                 ["clientCommandId"] = e.ClientCommandId,
             }),
 

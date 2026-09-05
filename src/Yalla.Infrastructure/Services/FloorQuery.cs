@@ -89,7 +89,9 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         nowUtc,
                         row.TurnTimeMinutes,
                         row.BufferMinutes),
+                    RowVersion = Convert.ToBase64String(t.RowVersion),
                     CurrentSessionId = t.OpenSessionId,
+                    OpenTabId = t.OpenTabId,
                     SeatedAtUtc = t.SeatedAtUtc,
                     PartySize = t.PartySize,
                     OccupancySource = t.OccupancySource,
@@ -209,12 +211,24 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         IsBookable = t.IsBookable,
                         Status = t.Status,
 
+                        // What the staff app sends back as a precondition on a queued command.
+                        // Status alone cannot tell "nothing happened" from "several things happened
+                        // and it ended up looking the same".
+                        RowVersion = t.RowVersion,
+
                         // The open occupancy. Served by the filtered unique index on
                         // (DiningTableId) where ClosedAtUtc IS NULL, so this reads one row from a
                         // tiny index rather than scanning the session history.
                         OpenSessionId = db.TableSessions
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
                             .Select(s => (Guid?)s.Id)
+                            .FirstOrDefault(),
+
+                        // The bill for whoever is sitting here, off the same open session. A cold
+                        // load has no other way to reach it.
+                        OpenTabId = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Select(s => s.TabId)
                             .FirstOrDefault(),
                         SeatedAtUtc = db.TableSessions
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
@@ -303,7 +317,11 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 
         public TableStatus Status { get; init; }
 
+        public byte[] RowVersion { get; init; } = [];
+
         public Guid? OpenSessionId { get; init; }
+
+        public Guid? OpenTabId { get; init; }
 
         public DateTime? SeatedAtUtc { get; init; }
 
