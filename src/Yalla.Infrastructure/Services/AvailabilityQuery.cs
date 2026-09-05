@@ -101,6 +101,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             // row and stays visible to its owner through the admin surface, but a diner must not
             // be able to find it or book it.
             .Where(b => b.Id == request.BranchId
+                        && b.IsActive
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
                         && b.Venue.DeletedAtUtc == null)

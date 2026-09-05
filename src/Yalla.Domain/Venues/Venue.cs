@@ -72,11 +72,28 @@ public sealed class Venue : Entity
         IsActive = true;
     }
 
-    public void Rename(string name) => Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
+    /// <summary>
+    /// Renames the venue. Refused once deleted, like every other change: a deleted venue is a
+    /// closed record, and letting its name or slug move would make the audit trail lie about what
+    /// was deleted.
+    /// </summary>
+    public void Rename(string name)
+    {
+        RequireNotDeleted();
+        Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
+    }
 
-    public void SetType(VenueType type) => Type = Guard.Defined(type, nameof(type));
+    public void SetType(VenueType type)
+    {
+        RequireNotDeleted();
+        Type = Guard.Defined(type, nameof(type));
+    }
 
-    public void SetSlug(string slug) => Slug = SlugText.Normalise(slug, nameof(slug));
+    public void SetSlug(string slug)
+    {
+        RequireNotDeleted();
+        Slug = SlugText.Normalise(slug, nameof(slug));
+    }
 
     public void SetActive(bool isActive)
     {

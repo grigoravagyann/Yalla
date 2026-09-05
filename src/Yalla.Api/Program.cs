@@ -26,6 +26,11 @@ builder.Logging.AddSerilog();
 builder.AddServices(configuration);
 builder.AddYallaCors();
 
+// Development only, and only when nothing more specific was asked for: bind every interface so a
+// phone on the same wifi can reach the API. A launch profile's applicationUrl, a container's
+// ASPNETCORE_HTTP_PORTS or an explicit Kestrel section all win over this.
+builder.ListenOnAllInterfacesInDevelopment();
+
 // Reads the JWT signing key from user secrets in Development and from configuration elsewhere,
 // and fails startup if it is missing - not on the first request that needs to sign something.
 //
@@ -121,10 +126,27 @@ if (app.Environment.IsDevelopment() && await app.Services.InitialiseDevelopmentD
 
 // The way in to a fresh database. Off under the EF tooling and in the test host; migrates first in
 // Development so a brand-new machine gets a schema and an admin in one start.
-if (!EF.IsDesignTime
-    && await app.Services.SeedPlatformAdminAsync(applyMigrations: app.Environment.IsDevelopment()))
+//
+// A failure here is logged and does not stop the host. Outside Development this is the only thing
+// that touches the database at boot, and a database that is briefly unreachable - or a build
+// started before its migration ran - would otherwise crash-loop the whole API over a row that can
+// be created on the next restart.
+if (!EF.IsDesignTime)
 {
-    app.Logger.LogInformation("Platform admin present.");
+    try
+    {
+        if (await app.Services.SeedPlatformAdminAsync(applyMigrations: app.Environment.IsDevelopment()))
+        {
+            app.Logger.LogInformation("Platform admin present.");
+        }
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(
+            ex,
+            "The platform admin could not be seeded. The API is starting anyway; if this is a fresh "
+            + "database there is no way in until it succeeds. Check the connection and that migrations have run.");
+    }
 }
 
 app.Run();

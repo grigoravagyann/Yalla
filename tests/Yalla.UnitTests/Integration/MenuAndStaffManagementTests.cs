@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Menus;
 using Yalla.Application.Staff;
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
@@ -183,6 +184,101 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var platform = fixture.CreateStaffManagementService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
         var staff = await platform.ListAsync(venueA.VenueId);
         Assert.Equal(2, staff.Count);
+    }
+
+    /// <summary>
+    /// A password mints a venue-scoped token. Giving one to a waiter would hand them, off a browser
+    /// with no enrolled tablet, the branches their PIN is deliberately refused at.
+    /// </summary>
+    [SkippableFact]
+    public async Task Only_owners_and_managers_can_be_given_an_admin_panel_sign_in()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var asManager = fixture.CreateStaffManagementService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var withCredentials = Staff("Waiter With Password", StaffRole.Waiter, branch.BranchId) with
+        {
+            Email = $"waiter-{Guid.NewGuid():N}@example.test",
+            Password = "a-perfectly-long-password",
+        };
+
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => asManager.CreateAsync(branch.VenueId, withCredentials));
+
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => asManager.CreateAsync(branch.VenueId, withCredentials with { Role = StaffRole.Kitchen }));
+
+        // The same waiter without credentials is fine - the refusal is the password, not the role.
+        var waiter = await asManager.CreateAsync(branch.VenueId, Staff("Plain Waiter", StaffRole.Waiter, branch.BranchId));
+        Assert.False(waiter.HasPasswordSignIn);
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.Equal(0, await verify.StaffMembers.CountAsync(s => s.Role == StaffRole.Waiter && s.Email != null && s.VenueId == branch.VenueId));
+    }
+
+    /// <summary>
+    /// A branch-confined manager who could clear their own branch would sign in on every branch's
+    /// tablets - the same escalation the own-role rule exists to stop.
+    /// </summary>
+    [SkippableFact]
+    public async Task Nobody_widens_their_own_branch_assignment()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var asManager = fixture.CreateStaffManagementService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => asManager.UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(SetBranch: true, BranchId: null)));
+
+        // An owner may do it for them, and the manager may still edit their own other fields.
+        var owner = new StaffMember(branch.VenueId, "Founder", "+37499000002", StaffRole.Owner, "hash");
+        db.StaffMembers.Add(owner);
+        await db.SaveChangesAsync();
+
+        var widened = await fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id))
+            .UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(SetBranch: true, BranchId: null));
+
+        Assert.Null(widened.BranchId);
+
+        var renamed = await asManager.UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(FullName: "Still Me"));
+        Assert.Equal("Still Me", renamed.FullName);
+    }
+
+    /// <summary>One address, one account - and the collision is an answer, not a fault.</summary>
+    [SkippableFact]
+    public async Task A_duplicate_email_is_refused_with_a_message_rather_than_a_fault()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+
+        var owner = new StaffMember(branch.VenueId, "Founder", "+37499000003", StaffRole.Owner, "hash");
+        db.StaffMembers.Add(owner);
+        await db.SaveChangesAsync();
+
+        var service = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
+        var email = $"taken-{Guid.NewGuid():N}@example.test";
+
+        var first = Staff("First Manager", StaffRole.Manager) with { Email = email, Password = "a-perfectly-long-password" };
+        await service.CreateAsync(branch.VenueId, first);
+
+        var clash = Staff("Second Manager", StaffRole.Manager) with { Email = email, Password = "a-perfectly-long-password" };
+
+        var refused = await Assert.ThrowsAsync<DomainStateException>(() => service.CreateAsync(branch.VenueId, clash));
+
+        Assert.Contains("already has an account", refused.Message, StringComparison.OrdinalIgnoreCase);
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.Equal(1, await verify.StaffMembers.CountAsync(s => s.Email == email));
     }
 
     // ------------------------------------------------------------ helpers

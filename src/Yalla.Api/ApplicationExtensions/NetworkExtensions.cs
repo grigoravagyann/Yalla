@@ -30,6 +30,51 @@ public static class NetworkExtensions
         "virtual", "vmware", "hyper-v", "vethernet", "virtualbox", "docker", "wsl", "loopback", "tailscale", "zerotier",
     ];
 
+    /// <summary>
+    /// Development fallback: listen on every interface, so a phone on the same wifi can reach the
+    /// API even when nothing told the host where to listen.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The normal path is a launch profile's <c>applicationUrl</c>, which already names
+    /// <c>0.0.0.0</c> for both ports. This covers the runs that have no profile - the built
+    /// executable started directly, <c>dotnet run --no-launch-profile</c> - which would otherwise
+    /// bind loopback and be invisible to every other device.
+    /// </para>
+    /// <para>
+    /// <b>Anything explicit wins.</b> A profile's <c>applicationUrl</c> (which arrives as
+    /// <c>ASPNETCORE_URLS</c>), a container's <c>ASPNETCORE_HTTP_PORTS</c>, or a <c>Kestrel:Endpoints</c>
+    /// section all take precedence - which is what keeps the Docker profile, whose published ports
+    /// are 8080 and 8081, listening where its Dockerfile says it does.
+    /// </para>
+    /// <para>
+    /// HTTP only. HTTPS here would demand a developer certificate from a run that never asked for
+    /// one, and plain HTTP is what a phone can use anyway - see README.md.
+    /// </para>
+    /// </remarks>
+    public static WebApplicationBuilder ListenOnAllInterfacesInDevelopment(this WebApplicationBuilder builder)
+    {
+        if (!builder.Environment.IsDevelopment())
+        {
+            return builder;
+        }
+
+        var alreadyTold =
+            !string.IsNullOrWhiteSpace(builder.Configuration["urls"])
+            || !string.IsNullOrWhiteSpace(builder.Configuration["http_ports"])
+            || !string.IsNullOrWhiteSpace(builder.Configuration["https_ports"])
+            || builder.Configuration.GetSection("Kestrel:Endpoints").GetChildren().Any();
+
+        if (alreadyTold)
+        {
+            return builder;
+        }
+
+        builder.WebHost.UseUrls("http://0.0.0.0:5086");
+
+        return builder;
+    }
+
     public static WebApplication LogLanAddresses(this WebApplication app)
     {
         if (!app.Environment.IsDevelopment())

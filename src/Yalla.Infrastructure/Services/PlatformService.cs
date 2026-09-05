@@ -298,10 +298,39 @@ internal sealed class PlatformService(
         RequirePlatformAdmin("Update branch");
         ArgumentNullException.ThrowIfNull(command);
 
-        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
-                     ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+        var branch = await db.Branches
+            .Include(b => b.Venue)
+            .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        if (branch.Venue.IsDeleted)
+        {
+            throw new DomainStateException(
+                $"Venue '{branch.Venue.Name}' has been deleted, so its branches can no longer be changed.");
+        }
 
         var before = BranchSnapshot(branch);
+
+        // Downgrading switches the tab endpoints off for this branch - including the reads and the
+        // settlement of tabs that are already open. Doing that to a table mid-meal strands a real
+        // bill nobody can see or pay, so it waits, exactly as deleting a venue does.
+        if (command.SubscriptionTier is SubscriptionTier.Free && branch.IsPaid)
+        {
+            var openTabs = await db.Tabs
+                .AsNoTracking()
+                .Where(t => t.BranchId == branch.Id && (t.Status == TabStatus.Open || t.Status == TabStatus.Closing))
+                .OrderBy(t => t.DiningTable.Label)
+                .Select(t => t.DiningTable.Label)
+                .ToListAsync(cancellationToken);
+
+            if (openTabs.Count > 0)
+            {
+                throw new DomainStateException(
+                    $"This branch has {openTabs.Count} open tab(s) on table(s) {string.Join(", ", openTabs)}. "
+                    + "Moving it to Free would hide those bills from the people who owe them. "
+                    + "Wait until they are settled.");
+            }
+        }
 
         if (command.Name is { } name)
         {
