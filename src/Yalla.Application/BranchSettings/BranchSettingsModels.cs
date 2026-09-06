@@ -4,6 +4,34 @@ using Yalla.Domain.Venues;
 
 namespace Yalla.Application.BranchSettings;
 
+// ------------------------------------------------------------------ the public page
+
+/// <summary>
+/// The two settings that decide what a branch publishes to anybody with its link.
+/// </summary>
+/// <remarks>
+/// Their own form rather than fields on the reservation policy, because they answer a different
+/// question. The policy is "how do we run our floor"; this is "what do we say to strangers on the
+/// internet", and the second is a decision an owner makes once during onboarding.
+/// </remarks>
+/// <param name="PhoneE164">
+/// The published contact number in E.164, or null when there is none.
+/// </param>
+/// <param name="AcceptsWebBookings">
+/// Whether the public page offers booking. See
+/// <see cref="Yalla.Domain.Venues.Branch.AcceptsWebBookings"/> for why this is false until somebody
+/// says otherwise.
+/// </param>
+public sealed record PublicProfileView(string? PhoneE164, bool AcceptsWebBookings);
+
+/// <summary>The same two settings, as written. Both are replaced at once.</summary>
+/// <param name="PhoneE164">
+/// E.164, e.g. <c>+37411223344</c>. Spaces, dashes and brackets are stripped before validation.
+/// Null or blank clears the number.
+/// </param>
+/// <param name="AcceptsWebBookings">Whether to offer booking on the public page.</param>
+public sealed record PublicProfileCommand(string? PhoneE164, bool AcceptsWebBookings);
+
 // ------------------------------------------------------------------ reservation policy
 
 /// <summary>Every field of the owned <see cref="ReservationPolicy"/>, as read.</summary>
@@ -422,6 +450,18 @@ public static class FloorPlanRules
 /// </remarks>
 public interface IBranchSettingsService
 {
+    /// <summary>The branch's public-page settings.</summary>
+    /// <exception cref="KeyNotFoundException">No such branch.</exception>
+    Task<PublicProfileView> GetPublicProfileAsync(Guid branchId, CancellationToken cancellationToken = default);
+
+    /// <summary>Replaces the branch's public-page settings.</summary>
+    /// <exception cref="KeyNotFoundException">No such branch.</exception>
+    /// <exception cref="ArgumentException">The phone number is not valid E.164.</exception>
+    Task<PublicProfileView> UpdatePublicProfileAsync(
+        Guid branchId,
+        PublicProfileCommand command,
+        CancellationToken cancellationToken = default);
+
     Task<ReservationPolicyView> GetReservationPolicyAsync(Guid branchId, CancellationToken cancellationToken = default);
 
     /// <summary>

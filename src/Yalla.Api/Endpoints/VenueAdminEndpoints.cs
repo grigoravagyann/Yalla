@@ -42,6 +42,30 @@ public static class VenueAdminEndpoints
             .RequireAuthorization(YallaPolicies.ManagerOrAbove)
             .RequireAuthorization(YallaPolicies.BranchScoped);
 
+        group.MapGet("/public-profile", GetPublicProfileAsync)
+            .WithName("getBranchPublicProfile")
+            .WithSummary("What this branch publishes on its public page")
+            .Produces<PublicProfileView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
+        group.MapPut("/public-profile", PutPublicProfileAsync)
+            .WithName("putBranchPublicProfile")
+            .WithSummary("Set the published phone number and whether the page takes bookings")
+            .WithDescription(
+                "`acceptsWebBookings` is **false until somebody switches it on**, and stays false "
+                + "for every branch that has never been asked. A venue has not agreed to take "
+                + "bookings from strangers on the internet by never having been consulted, so this "
+                + "is a decision made during onboarding rather than a default inherited - which is "
+                + "also why it appears on the branch readiness checklist.\n\n"
+                + "While it is off the public page still shows the room, the menu and the hours and "
+                + "simply offers no booking.\n\n"
+                + "`phoneE164` must be E.164 (`+37411223344`); spaces, dashes and brackets are "
+                + "stripped first. Null or blank clears it. A branch with no number published is "
+                + "a branch a diner on the public page has no way to ask about a high chair.")
+            .Produces<PublicProfileView>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`phoneE164` is not a valid E.164 number.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
         group.MapGet("/reservation-policy", GetPolicyAsync)
             .WithName("getReservationPolicy")
             .WithSummary("Every field of the branch's reservation policy")
@@ -169,6 +193,14 @@ public static class VenueAdminEndpoints
             .Produces<FloorTableView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such table.");
     }
+
+    private static async Task<IResult> GetPublicProfileAsync(
+        Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.GetPublicProfileAsync(branchId, ct));
+
+    private static async Task<IResult> PutPublicProfileAsync(
+        Guid branchId, PublicProfileCommand command, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.UpdatePublicProfileAsync(branchId, command, ct));
 
     private static async Task<IResult> GetPolicyAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.GetReservationPolicyAsync(branchId, ct));

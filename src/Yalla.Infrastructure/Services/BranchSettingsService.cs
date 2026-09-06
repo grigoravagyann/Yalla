@@ -38,6 +38,40 @@ internal sealed class BranchSettingsService(
 {
     // ------------------------------------------------------------ reservation policy
 
+    // ------------------------------------------------------------ the public page
+
+    public async Task<PublicProfileView> GetPublicProfileAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
+        return new PublicProfileView(branch.PhoneE164, branch.AcceptsWebBookings);
+    }
+
+    public async Task<PublicProfileView> UpdatePublicProfileAsync(
+        Guid branchId,
+        PublicProfileCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
+        // The number first: a bad one must refuse the whole form rather than leave the branch
+        // switched on for bookings with its old phone still published.
+        branch.SetPhoneE164(command.PhoneE164);
+        branch.SetAcceptsWebBookings(command.AcceptsWebBookings);
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Branch {BranchId} public profile saved; web bookings {State}.",
+            branch.Id, command.AcceptsWebBookings ? "on" : "off");
+
+        return new PublicProfileView(branch.PhoneE164, branch.AcceptsWebBookings);
+    }
+
     public async Task<ReservationPolicyView> GetReservationPolicyAsync(
         Guid branchId,
         CancellationToken cancellationToken = default)

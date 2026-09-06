@@ -46,6 +46,30 @@ public interface IReservationService
     /// </remarks>
     Task<ReservationView> CancelAsync(CancelReservationCommand command, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Cancels a booking with the manage token from its link, for a caller with no account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same rule and the same writing as <see cref="CancelAsync"/> - one cancellation path,
+    /// two ways of proving you may use it. A diner from the public page has no app, so this link
+    /// is the only way cancelling is ever easier for them than not turning up, which is the
+    /// premise the whole reservation product rests on.
+    /// </para>
+    /// <para>
+    /// A booking that is already cancelled or finished is returned as it stands rather than
+    /// refused.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">
+    /// The token is unknown, expired, or its booking is gone. All three answer identically - see
+    /// <c>ManageBookingFailure</c>.
+    /// </exception>
+    Task<ReservationView> CancelByManageTokenAsync(
+        string manageToken,
+        string? reason = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Staff accept a booking that was waiting for approval. Manager or above.</summary>
     Task<ReservationView> ApproveAsync(DecideReservationCommand command, CancellationToken cancellationToken = default);
 

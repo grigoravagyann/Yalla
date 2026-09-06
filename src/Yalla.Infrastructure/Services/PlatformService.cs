@@ -44,17 +44,11 @@ internal sealed class PlatformService(
         RequirePlatformAdmin("Create venue");
         ArgumentNullException.ThrowIfNull(command);
 
-        // Client input, unlike the line above it. A body that omits the firstBranch object - or
-        // sends a scalar where the object goes - arrives here as null, and ArgumentNullException
-        // is mapped to a 500 on the grounds that a null object is an internal bug; this one is
-        // not, and the endpoint documents a 400 for it. ArgumentException carries the refusal to
-        // the caller as the 400 it is, with the field named. The name is the wire one and so a
-        // literal: the mapper keys context.field on camelCase, and nameof would give it
-        // "FirstBranch", which it drops.
-        if (command.FirstBranch is null)
-        {
-            throw new ArgumentException("A venue needs its first branch.", "firstBranch");
-        }
+        // Client input, unlike the line above it - and every missing field at once rather than the
+        // first. A body with no firstBranch used to reach ArgumentNullException.ThrowIfNull and
+        // come back as a 500 logged as our fault; it is now one entry in a refusal that also names
+        // the missing name and slug beside it. Presence only - bounds are still the constructors'.
+        command.Validate();
 
         var venue = new Venue(command.Name, command.Type, command.Slug);
         var branch = NewBranch(venue, command.FirstBranch);

@@ -120,6 +120,30 @@ public sealed class BranchNotReadyForDinersException(Guid branchId, int incomple
 }
 
 /// <summary>
+/// The branch does not take bookings from its public page.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A conflict, not a permission failure and not a 404. The caller is entitled to be here and the
+/// branch is real and published - it has simply not agreed to take bookings from strangers on the
+/// internet, which is a venue's own decision about its own page and false until somebody switches
+/// it on.
+/// </para>
+/// <para>
+/// In practice the public page reads <c>acceptsWebBookings</c> and never offers the button, so this
+/// fires for a page somebody left open while the branch was switched off - which is exactly when a
+/// clear refusal beats a silent failure.
+/// </para>
+/// </remarks>
+public sealed class WebBookingsNotAcceptedException(Guid branchId, string branchName)
+    : DomainStateException(
+        $"{branchName} does not take bookings from its public page. "
+        + "Contact the venue directly to book a table.")
+{
+    public Guid BranchId { get; } = branchId;
+}
+
+/// <summary>
 /// A floor plan that cannot be applied, with the offending tables named.
 /// </summary>
 public sealed class FloorPlanInvalidException(

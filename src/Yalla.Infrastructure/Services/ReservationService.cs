@@ -1,15 +1,18 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Tabs;
+using Yalla.Application.Public;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
+using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -83,6 +86,7 @@ internal sealed class ReservationService(
     ReservationWriter reservations,
     ITableStateService tableState,
     IOutbox outbox,
+    IOptions<PublicWebOptions> publicWeb,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -114,6 +118,12 @@ internal sealed class ReservationService(
         // whose app cached the branch id must not get past the fact that it vanished from search.
         // Only creation is gated: cancelling and seating an existing booking still work.
         VenueGate.RequireOpenForBusiness(branch);
+
+        // A branch that never agreed to take bookings from its public page does not take them.
+        // Checked here rather than at the endpoint because the public page books through this same
+        // service - there is no separate public booking route to guard - and because a rule that
+        // lives in the service holds for any caller, not only the one that remembered.
+        RequireWebBookingsAccepted(command.Channel, branch);
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
@@ -147,6 +157,12 @@ internal sealed class ReservationService(
             clientCommandId: command.ClientCommandId,
             channel: command.Channel);
 
+        // Minted here and returned exactly once, below. Only the hash is stored, so this plaintext
+        // exists in this method and in the response and nowhere else - which is what makes it safe
+        // to put in a URL somebody will paste into WhatsApp.
+        var manageToken = Secrets.NewOpaqueToken();
+        reservation.AttachManageToken(Secrets.Hash(manageToken));
+
         // The one way a booking row is created. Everything above this line is validation and
         // everything below it is presentation; the concurrency-critical part is all in there.
         var outcome = await InsertUnderTheTableLockAsync(
@@ -176,13 +192,14 @@ internal sealed class ReservationService(
         // The reminder and the nudge, written in the same unit of work as the booking. A booking
         // that exists without its reminder is the failure mode an outbox is for, and the diner finds
         // out about it by not being reminded.
-        await ScheduleRemindersAsync(reservation, branch, table.Label, cancellationToken);
+        await ScheduleRemindersAsync(reservation, branch, table.Label, manageToken, cancellationToken);
 
         logger.LogInformation(
             "Booked table {TableLabel} at branch {BranchId} for {PartySize} as {Code} ({Status}).",
             table.Label, branch.Id, command.PartySize, reservation.Code, reservation.Status);
 
-        return await ToViewAsync(reservation, branch, table, wasReplay: false, status.Trigger, cancellationToken);
+        return await ToViewAsync(
+            reservation, branch, table, wasReplay: false, status.Trigger, cancellationToken, manageToken);
     }
 
     /// <summary>
@@ -228,13 +245,126 @@ internal sealed class ReservationService(
             throw new UnauthorizedAccessException("A diner may only cancel their own bookings.");
         }
 
+        return await CancelCoreAsync(reservation, command.Reason, cancellationToken);
+    }
+
+    /// <summary>
+    /// Cancels a booking with the manage token from its link, for a caller with no account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <b>only</b> thing this does not share with <see cref="CancelAsync"/> is how the caller
+    /// proved they may: a signed-in diner is checked against <c>DinerUserId</c>, a link holder by
+    /// holding an unguessable token. Everything after that - the deadline rule, the lateness
+    /// record, cancelling the outbox messages, the save - is <see cref="CancelCoreAsync"/>, once.
+    /// A second cancellation path is how a web cancel would eventually stop cancelling the reminder.
+    /// </para>
+    /// <para>
+    /// A booking that is already cancelled or finished is returned untouched rather than refused;
+    /// the caller renders its state. Only an unusable token fails, and every one of those fails
+    /// identically - see <see cref="ManageBookingFailure"/>.
+    /// </para>
+    /// </remarks>
+    public async Task<ReservationView> CancelByManageTokenAsync(
+        string manageToken,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        var reservation = await FindByManageTokenAsync(manageToken, cancellationToken);
+
+        // Already finished with. Cancelling a cancelled booking must not move CancelledAtUtc, and
+        // cancelling a completed one is meaningless - so the state is reported, not rewritten.
+        if (!CanStillCancel(reservation.Status))
+        {
+            var settled = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+            return await ToViewAsync(
+                reservation, settled, table: null, wasReplay: false, trigger: null, cancellationToken);
+        }
+
+        return await CancelCoreAsync(reservation, reason, cancellationToken);
+    }
+
+    /// <summary>Whether cancelling would still do anything.</summary>
+    internal static bool CanStillCancel(ReservationStatus status) =>
+        status is ReservationStatus.Confirmed or ReservationStatus.PendingApproval;
+
+    /// <summary>
+    /// Resolves a manage token to its booking, or throws the one refusal every failure shares.
+    /// </summary>
+    /// <remarks>
+    /// Unknown, expired and purged are three facts here and one answer on the wire. The expiry
+    /// check runs after the row is found and raises the same exception as not finding one, and
+    /// nothing branches on the token's contents before the lookup.
+    /// </remarks>
+    internal async Task<Reservation> FindByManageTokenAsync(
+        string manageToken,
+        CancellationToken cancellationToken)
+    {
+        // A blank token is answered like any other bad one rather than as a different error: the
+        // caller learns nothing either way, which is the whole rule.
+        if (string.IsNullOrWhiteSpace(manageToken))
+        {
+            throw ManageBookingFailure.Raise();
+        }
+
+        var hash = Secrets.Hash(manageToken);
+
+        var reservation = await db.Reservations
+            .FirstOrDefaultAsync(r => r.ManageTokenHash == hash, cancellationToken);
+
+        // The link outlives the booking by ManageTokenGraceDays so somebody can still read what
+        // happened, then stops working - a bearer capability sitting in a WhatsApp thread should
+        // not be live forever.
+        if (reservation is null || !reservation.ManageTokenIsLiveAt(clock.UtcNow))
+        {
+            throw ManageBookingFailure.Raise();
+        }
+
+        return reservation;
+    }
+
+    /// <summary>
+    /// Refuses a booking from the public page at a branch that has not switched web bookings on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ReservationChannel"/> is self-reported, which is worth being plain about: this
+    /// stops the public page offering a booking the venue never agreed to; it does not stop a
+    /// hand-written client claiming to be the app. That is the right trade for what the flag is - a
+    /// venue's stated preference about its own page, not an access control - and making it one
+    /// would mean authenticating the channel, which a page reachable by anybody with a URL cannot
+    /// do.
+    /// </para>
+    /// <para>
+    /// The public page reads <c>acceptsWebBookings</c> and hides its booking UI, so in practice
+    /// this fires for a stale page whose branch was switched off while somebody had it open.
+    /// </para>
+    /// </remarks>
+    private static void RequireWebBookingsAccepted(ReservationChannel channel, Branch branch)
+    {
+        if (channel == ReservationChannel.Web && !branch.AcceptsWebBookings)
+        {
+            throw new WebBookingsNotAcceptedException(branch.Id, branch.Name);
+        }
+    }
+
+    /// <summary>
+    /// The one cancellation path. Both entry points arrive here having already settled that the
+    /// caller is entitled to cancel this booking.
+    /// </summary>
+    private async Task<ReservationView> CancelCoreAsync(
+        Reservation reservation,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
         var nowUtc = clock.UtcNow;
         var late = ReservationRules.IsLateCancellation(reservation.StartUtc, nowUtc, branch.ReservationPolicy);
 
         // Late is recorded, never refused. A diner who cannot cancel simply does not turn up, and
         // a no-show costs the venue the same table plus the chance to resell it.
-        reservation.CancelByDiner(nowUtc, command.Reason, late);
+        reservation.CancelByDiner(nowUtc, reason, late);
 
         // Cancelling the cause cancels the message, in the same transaction. A reminder arriving for
         // a booking somebody cancelled an hour ago is worse than no reminder at all - it is the push
@@ -579,6 +709,7 @@ internal sealed class ReservationService(
         Reservation reservation,
         Branch branch,
         string tableLabel,
+        string manageToken,
         CancellationToken cancellationToken)
     {
         var policy = branch.ReservationPolicy;
@@ -595,6 +726,20 @@ internal sealed class ReservationService(
             reservationCode = reservation.Code,
             graceExtensionMinutes = policy.GraceExtensionMinutes,
             approved = false,
+
+            // The manage link, for a booking whose diner has no app to be pushed to.
+            //
+            // Written now, before any channel exists that could send it. The app reminder already
+            // carries a one-tap cancel; a web booking's reminder has to carry a URL instead, and
+            // the token is knowable only here - it is never stored in plaintext and never returned
+            // again. A dispatcher added later that had to go and mint one would find it cannot.
+            //
+            // Only for Web. A capability that opens somebody's booking should be written into as
+            // few places as possible, and an app booking has a better cancel route already.
+            manageUrl = reservation.Channel == ReservationChannel.Web
+                ? publicWeb.Value.ManageBookingUrlTemplate.Replace(
+                    "{token}", Uri.EscapeDataString(manageToken), StringComparison.Ordinal)
+                : null,
         };
 
         var remindAt = reservation.StartUtc.AddHours(-policy.ReminderHoursBefore);
@@ -988,7 +1133,8 @@ internal sealed class ReservationService(
         DiningTable? table,
         bool wasReplay,
         ApprovalTrigger? trigger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? manageToken = null)
     {
         var tableLabel = table?.Label
                          ?? await db.DiningTables
@@ -998,7 +1144,8 @@ internal sealed class ReservationService(
                              .FirstOrDefaultAsync(cancellationToken)
                          ?? string.Empty;
 
-        return BuildView(reservation, branch.Name, branch.TimeZoneId, tableLabel, wasReplay, trigger);
+        return BuildView(
+            reservation, branch.Name, branch.TimeZoneId, tableLabel, wasReplay, trigger, manageToken);
     }
 
     private static ReservationView ToView(MineRow row) =>
@@ -1010,7 +1157,8 @@ internal sealed class ReservationService(
         string timeZoneId,
         string tableLabel,
         bool wasReplay,
-        ApprovalTrigger? trigger)
+        ApprovalTrigger? trigger,
+        string? manageToken = null)
     {
         var zone = BranchZone.For(timeZoneId);
 
@@ -1044,6 +1192,10 @@ internal sealed class ReservationService(
             WasReplay = wasReplay,
             AwaitingApprovalBecause =
                 reservation.Status == ReservationStatus.PendingApproval ? trigger : null,
+
+            // Null on every path but creation. The server holds only the hash, so a later read
+            // could not return it even if one wanted to.
+            ManageToken = manageToken,
         };
     }
 

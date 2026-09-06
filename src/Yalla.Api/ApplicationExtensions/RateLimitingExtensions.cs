@@ -1,4 +1,6 @@
 ﻿using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
@@ -79,6 +81,17 @@ public static class RateLimitingExtensions
     public const string PublicPathPrefix = "/api/public";
 
     /// <summary>
+    /// The manage-booking routes, which are limited a third time - per token.
+    /// </summary>
+    /// <remarks>
+    /// The per-address limit already bounds somebody guessing tokens, because every guess is a
+    /// different address's budget and a different partition. What it does not bound is somebody who
+    /// <i>has</i> a link - it was pasted into a group chat - hammering that one booking's cancel.
+    /// This is that half: one booking, one budget, however many people are holding its URL.
+    /// </remarks>
+    public const string PublicBookingPathPrefix = "/api/public/bookings";
+
+    /// <summary>
     /// Whether rate limiting is switched on for this environment. Both the registration and the
     /// middleware read this one decision - asking the configuration twice is how you end up
     /// calling <c>UseRateLimiter</c> without the services behind it.
@@ -117,6 +130,10 @@ public static class RateLimitingExtensions
         var publicBranchPermitLimit = section.GetValue<int?>("PublicBranchPermitLimit") ?? 300;
         var publicBranchWindowSeconds = section.GetValue<int?>("PublicBranchWindowSeconds") ?? 60;
 
+        // And a ceiling per manage token, for the link that went round a group chat.
+        var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
+        var publicBookingWindowSeconds = section.GetValue<int?>("PublicBookingWindowSeconds") ?? 60;
+
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -149,7 +166,23 @@ public static class RateLimitingExtensions
                                 Window = TimeSpan.FromSeconds(publicBranchWindowSeconds),
                                 QueueLimit = 0,
                             })
-                        : RateLimitPartition.GetNoLimiter<string>("not-public")));
+                        : RateLimitPartition.GetNoLimiter<string>("not-public")),
+
+                // And one manage link has one budget. Chained rather than an endpoint policy for
+                // the same reason as the branch ceiling above: an endpoint carries one policy, and
+                // these routes already carry the per-address one. Off the booking routes, a no-op.
+                PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                    context.Request.Path.StartsWithSegments(
+                        PublicBookingPathPrefix, StringComparison.OrdinalIgnoreCase)
+                        ? RateLimitPartition.GetFixedWindowLimiter(
+                            ManageTokenPartitionKey(context),
+                            _ => new FixedWindowRateLimiterOptions
+                            {
+                                PermitLimit = publicBookingPermitLimit,
+                                Window = TimeSpan.FromSeconds(publicBookingWindowSeconds),
+                                QueueLimit = 0,
+                            })
+                        : RateLimitPartition.GetNoLimiter<string>("not-a-booking")));
 
             options.AddPolicy(AuthPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
@@ -243,9 +276,34 @@ public static class RateLimitingExtensions
     /// <c>branchId</c> or as the venue/branch slug pair. Requests with neither (the browse list)
     /// share one partition, which is correct: the browse list is one thing and has one budget.
     /// </remarks>
+    /// <summary>
+    /// One manage link's partition, keyed by a digest of the token rather than the token.
+    /// </summary>
+    /// <remarks>
+    /// The limiter holds its partition keys in memory for the life of the window, and a bearer
+    /// capability that opens somebody's booking has no business sitting in that dictionary - or in
+    /// whatever dumps it during a diagnosis. A digest partitions exactly as well.
+    /// </remarks>
+    private static string ManageTokenPartitionKey(HttpContext context) =>
+        context.Request.RouteValues.TryGetValue("token", out var token) && token is string text
+            ? "token:" + Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..32]
+
+            // No token in the route: one shared budget, which is the safe direction to be wrong in.
+            : "token:none";
+
     private static string PublicBranchPartitionKey(HttpContext context)
     {
         var route = context.Request.RouteValues;
+
+        // A manage link belongs to no branch on the wire, and bucketing every one of them into the
+        // shared browse partition below would put all manage traffic, everywhere, under a single
+        // branch-sized budget. They are limited per token instead - see ManageTokenPartitionKey.
+        if (context.Request.Path.StartsWithSegments(
+                PublicBookingPathPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return "public:booking";
+        }
 
         if (route.TryGetValue("branchId", out var branchId) && branchId is not null)
         {

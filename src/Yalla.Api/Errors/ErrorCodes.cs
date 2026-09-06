@@ -169,6 +169,12 @@ public static class ErrorCodes
     public const string BranchUnavailable = "branch-unavailable";
 
     /// <summary>
+    /// The branch does not take bookings from its public page. The public page branches on
+    /// this to say "call the venue" rather than "something went wrong".
+    /// </summary>
+    public const string WebBookingsNotAccepted = "web-bookings-not-accepted";
+
+    /// <summary>
     /// A queued command arrived describing a table that has since moved. HTTP 409, with the
     /// expected and current status in <c>context</c>.
     /// </summary>

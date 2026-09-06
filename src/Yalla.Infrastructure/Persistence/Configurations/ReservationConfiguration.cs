@@ -96,5 +96,20 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.Channel)
             .IsRequired()
             .HasDefaultValue(Yalla.Domain.Enums.ReservationChannel.Unknown);
+
+        // Only the hash is stored - see Reservation.ManageTokenHash. Nullable for every booking
+        // made before the column existed.
+        builder.Property(r => r.ManageTokenHash)
+            .HasMaxLength(FieldLengths.TokenHash);
+
+        // The manage link's only lookup: one row, by hash. Unique so two bookings cannot share a
+        // token, and filtered because most rows have none and a null is not a collision.
+        builder.HasIndex(r => r.ManageTokenHash)
+            .IsUnique()
+            .HasFilter("[ManageTokenHash] IS NOT NULL")
+            .HasDatabaseName(DatabaseIndexNames.ReservationManageToken);
+
+        // Derived from EndUtc and a constant; nothing to store and nothing to keep in sync.
+        builder.Ignore(r => r.ManageTokenExpiresAtUtc);
     }
 }

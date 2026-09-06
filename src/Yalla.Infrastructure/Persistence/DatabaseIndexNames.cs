@@ -34,6 +34,9 @@ internal static class DatabaseIndexNames
     /// </summary>
     public const string ReservationCode = "IX_Reservations_Code";
 
+    /// <summary>The manage link's only lookup. Filtered: most bookings carry no token.</summary>
+    public const string ReservationManageToken = "IX_Reservations_ManageTokenHash";
+
     /// <summary>
     /// Unique on a tab's session: one bill per seating. A violation means another phone at the
     /// same table attached a tab to this session first, and the loser joins that tab instead.

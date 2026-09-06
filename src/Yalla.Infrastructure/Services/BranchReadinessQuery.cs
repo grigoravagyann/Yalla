@@ -28,7 +28,7 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         var branch = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.Id, b.VenueId, b.ReservationPolicyReviewedAtUtc })
+            .Select(b => new { b.Id, b.VenueId, b.ReservationPolicyReviewedAtUtc, b.AcceptsWebBookings })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
@@ -147,6 +147,11 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
             StaffCount: staffCount,
             DeviceEnrolled: deviceEnrolled,
             DeviceCount: deviceCount,
+
+            // Reported, never a blocker - see BranchReadinessView. It is deliberately absent from
+            // the blockers list above, and adding it there would stop every venue that does not
+            // want web bookings from ever reading as ready.
+            AcceptsWebBookings: branch.AcceptsWebBookings,
             Blockers: blockers);
     }
 

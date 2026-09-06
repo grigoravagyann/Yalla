@@ -81,6 +81,24 @@ public sealed record ReservationView
     /// the diner has run up no-shows. Only the last is about them.
     /// </remarks>
     public ApprovalTrigger? AwaitingApprovalBecause { get; init; }
+
+    /// <summary>
+    /// The plaintext manage token, <b>returned exactly once</b> - in the response to the request
+    /// that created this booking - and null on every later read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only the hash is stored, so the server cannot return this again even if a later endpoint
+    /// wanted to. That is the point: it is a bearer capability, and a capability a read endpoint
+    /// will re-issue is a capability anybody who can read the booking can steal.
+    /// </para>
+    /// <para>
+    /// It is what the caller builds the manage link from, and it matters most for a booking made
+    /// from the public page: that diner has no app, so this link is the only way they will ever
+    /// cancel rather than simply not turn up.
+    /// </para>
+    /// </remarks>
+    public string? ManageToken { get; init; }
 }
 
 /// <summary>Why a booking needs a human before it is promised.</summary>

@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -353,14 +353,21 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
     /// A body with no firstBranch object is bad input, and was answered as a 500.
     /// </summary>
     /// <remarks>
-    /// The service guarded it with <c>ArgumentNullException.ThrowIfNull</c>, which the mapper
-    /// sends back as a 500 and logs as an error - correct for the null objects the domain builds
-    /// for itself, wrong for this one, which arrives over HTTP. The endpoint has always documented
-    /// a 400 here, so the API was contradicting its own contract and filing every malformed
-    /// request as a server fault. The sibling cases below already answered 400 and must keep to it.
+    /// <para>
+    /// The service guarded it with <c>ArgumentNullException.ThrowIfNull</c>, which the mapper sends
+    /// back as a 500 and logs as an error - correct for the null objects the domain builds for
+    /// itself, wrong for this one, which arrives over HTTP. The endpoint had always documented a
+    /// refusal here, so the API was contradicting its own contract and filing every malformed
+    /// request as a server fault.
+    /// </para>
+    /// <para>
+    /// It now names <b>every</b> missing field rather than the first, so an empty body reports its
+    /// name, its slug and its branch together. Out-of-range values are still one at a time, as a
+    /// 400 - see <c>CreateVenueCommand.Validate</c> for why the two halves differ.
+    /// </para>
     /// </remarks>
     [SkippableFact]
-    public async Task A_create_venue_body_with_no_first_branch_is_refused_as_bad_input_not_a_server_fault()
+    public async Task A_create_venue_body_with_missing_fields_names_all_of_them_and_is_not_a_server_fault()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -375,17 +382,28 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
         var marker = Guid.NewGuid().ToString("N")[..8];
 
-        // Nothing at all.
+        // Nothing at all. Not a 500, and not one field at a time.
         var empty = await platform.PostAsJsonAsync("/api/platform/venues", new { });
 
-        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, empty.StatusCode);
 
-        // And it names the field, so the console can put the message against the input rather
-        // than asking the owner to quote a traceId.
         var emptyBody = await empty.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("firstBranch", emptyBody.GetProperty("context").GetProperty("field").GetString());
 
-        // The branch fields sent flat, where the nested object should be. Same null, same answer.
+        var fields = emptyBody.GetProperty("context").GetProperty("fields").EnumerateArray()
+            .Select(f => f.GetProperty("field").GetString())
+            .ToList();
+
+        // All three, in one answer. Reporting them one at a time makes somebody submit three times
+        // to find out there were three problems.
+        Assert.Contains("name", fields);
+        Assert.Contains("slug", fields);
+        Assert.Contains("firstBranch", fields);
+
+        // And context.field still carries the first, for a form that can only highlight one.
+        Assert.Equal("name", emptyBody.GetProperty("context").GetProperty("field").GetString());
+
+        // The branch fields sent flat, where the nested object should be. Name and slug are fine;
+        // only the branch is missing, and it is the only thing reported.
         var flat = await platform.PostAsJsonAsync("/api/platform/venues", new
         {
             name = $"Api Venue {marker}",
@@ -397,10 +415,38 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             floorHeight = 700,
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, flat.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, flat.StatusCode);
 
-        // The neighbouring refusals, which the deserializer already answered correctly: a scalar
-        // where the object goes, and an undefined venue type.
+        var flatBody = await flat.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("firstBranch", flatBody.GetProperty("context").GetProperty("field").GetString());
+
+        // A nested field left out is named with its path, the way the opening-hours refusal
+        // already names [1].opensAt.
+        var namelessBranch = await platform.PostAsJsonAsync("/api/platform/venues", new
+        {
+            name = $"Api Venue {marker}",
+            type = VenueType.Cafe,
+            slug = $"api-venue-{marker}",
+            firstBranch = new
+            {
+                slug = "main",
+                address = "1 Test Street, Yerevan",
+                latitude = 40.18,
+                longitude = 44.51,
+                timeZoneId = "Asia/Yerevan",
+                floorWidth = 1000,
+                floorHeight = 700,
+            },
+        });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, namelessBranch.StatusCode);
+        Assert.Equal(
+            "firstBranch.name",
+            (await namelessBranch.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("context").GetProperty("field").GetString());
+
+        // A scalar where the object goes never reaches the validator - the deserialiser refuses it
+        // first, as a 400. That half was always correct and stays that way.
         var scalar = await platform.PostAsJsonAsync("/api/platform/venues", new
         {
             name = $"Api Venue {marker}",

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Infrastructure.Persistence;
@@ -35,7 +36,7 @@ internal sealed class DinerAuthService(
         string? requestedFromAddress,
         CancellationToken cancellationToken = default)
     {
-        var phone = PhoneNumber.Normalise(phoneE164);
+        var phone = PhoneNumber.Normalise(phoneE164, "phoneE164");
         var locale = AuthMessages.Normalise(localeCode, _options.DefaultLocale);
 
         if (!await phoneLimiter.TryAcquireAsync(phone, cancellationToken))
@@ -87,7 +88,7 @@ internal sealed class DinerAuthService(
         string localeCode,
         CancellationToken cancellationToken = default)
     {
-        var phone = PhoneNumber.Normalise(phoneE164);
+        var phone = PhoneNumber.Normalise(phoneE164, "phoneE164");
         var locale = AuthMessages.Normalise(localeCode, _options.DefaultLocale);
         var nowUtc = clock.UtcNow;
 

@@ -66,6 +66,49 @@ public sealed class Branch : Entity
     /// <summary>Turns the order-ready push on or off for this branch.</summary>
     public void SetNotifyOnOrderReady(bool notify) => NotifyOnOrderReady = notify;
 
+    /// <summary>
+    /// The branch's published contact number in E.164, or null when nobody has supplied one.
+    /// </summary>
+    /// <remarks>
+    /// Nullable because a venue is perfectly usable before anyone has typed its number in, and a
+    /// branch created through the platform API has no way to supply one. It is on the public page
+    /// because a diner who wants to ask about a high chair, a wheelchair ramp or a dog has no other
+    /// way to reach the venue - the page has no messaging and is not going to grow one.
+    /// </remarks>
+    public string? PhoneE164 { get; private set; }
+
+    /// <summary>
+    /// Whether this branch takes bookings from the public page. <b>Off by default.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Default false is a deliberate refusal to opt a venue in to something it never agreed to. A
+    /// branch that has never been asked has not said it will accept bookings from strangers on the
+    /// internet, and the first pilot venues are onboarded by hand anyway - so the cost of the
+    /// default being wrong is one switch somebody flips during onboarding, against a venue
+    /// discovering it has been taking web bookings nobody told it about.
+    /// </para>
+    /// <para>
+    /// It is on the readiness checklist for the same reason: a line somebody ticks is a decision,
+    /// and a default nobody sees is not.
+    /// </para>
+    /// <para>
+    /// When it is false the public page still shows the room, the menu and the hours and simply
+    /// offers no booking - which is a perfectly good page, and the one most venues will start with.
+    /// </para>
+    /// </remarks>
+    public bool AcceptsWebBookings { get; private set; }
+
+    /// <summary>Sets or clears the published contact number. Blank clears it.</summary>
+    /// <exception cref="ArgumentException">The value is not a valid E.164 number.</exception>
+    public void SetPhoneE164(string? phoneE164) =>
+        PhoneE164 = string.IsNullOrWhiteSpace(phoneE164)
+            ? null
+            : PhoneNumber.Normalise(phoneE164, nameof(phoneE164));
+
+    /// <summary>Turns public-page booking on or off for this branch.</summary>
+    public void SetAcceptsWebBookings(bool accepts) => AcceptsWebBookings = accepts;
+
     public Guid? CoverPhotoId { get; private set; }
 
     public Media.Photo? CoverPhoto { get; private set; }

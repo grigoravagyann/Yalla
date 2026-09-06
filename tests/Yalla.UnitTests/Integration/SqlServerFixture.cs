@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
@@ -368,6 +369,10 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateReservationWriter(db, lockOptions),
             CreateService(db, clock, actor),
             CreateOutbox(db, clock),
+
+            // The manage-link template. Its default is the local dev page, which is all a test
+            // asserting on the payload needs; the one test that pins the URL sets it explicitly.
+            Options.Create(new PublicWebOptions()),
             NullLogger<ReservationService>.Instance);
 
     /// <summary>The outbox over one context. Writes only - dispatching is its own thing.</summary>
