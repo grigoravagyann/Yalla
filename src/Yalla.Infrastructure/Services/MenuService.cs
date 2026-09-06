@@ -11,37 +11,41 @@ namespace Yalla.Infrastructure.Services;
 /// One branch's menu: categories and items, with an availability toggle that is not a delete.
 /// </summary>
 /// <remarks>
+/// <para>
 /// An item an order line references is never deleted. The line snapshotted the name and price, so
 /// the bill is safe either way, but the reference has to keep resolving - so the item is
 /// deactivated instead, and the caller is told which happened.
+/// </para>
+/// <para>
+/// <b>This is the console's view of the menu, and it shows incomplete items.</b> The diner-facing
+/// read (<c>MenuQuery</c>) drops them; a manager has to be able to see the eleven dishes that still
+/// need a photo, which is the entire point of being allowed to save them half-entered.
+/// </para>
 /// </remarks>
 internal sealed class MenuService(YallaDbContext db) : IMenuService
 {
     public async Task<IReadOnlyList<MenuCategoryView>> GetMenuAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
+        // Loaded as entities rather than projected into a flat row, so completeness is decided by
+        // MenuItemCompleteness over the item itself. A projection would have to restate the rule in
+        // a Select, and a second copy of that rule is exactly what must not exist.
         var categories = await db.MenuCategories
             .AsNoTracking()
+            .Include(c => c.Items)
+            .ThenInclude(i => i.Photo)
             .Where(c => c.BranchId == branchId)
             .OrderBy(c => c.DisplayOrder)
             .ThenBy(c => c.Name)
-            .Select(c => new
-            {
+            .ToListAsync(cancellationToken);
+
+        return
+        [
+            .. categories.Select(c => new MenuCategoryView(
                 c.Id,
                 c.Name,
                 c.DisplayOrder,
-                Items = c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name)
-                    .Select(i => new MenuItemView(
-                        i.Id, i.MenuCategoryId, i.Name, i.Description, i.PriceAmd,
-                        PhotoView.From(
-                            i.PhotoId, i.Photo.IsExternallyHosted, i.Photo.ThumbnailPath, i.Photo.CardPath,
-                            i.Photo.FullPath, i.Photo.Width, i.Photo.Height),
-                        i.Ingredients, i.Allergens, i.PortionSize, i.SpiceLevel, i.PrepMinutes,
-                        i.IsAvailable, i.DisplayOrder))
-                    .ToList(),
-            })
-            .ToListAsync(cancellationToken);
-
-        return categories.Select(c => new MenuCategoryView(c.Id, c.Name, c.DisplayOrder, c.Items)).ToList();
+                [.. c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name).Select(ToView)])),
+        ];
     }
 
     public async Task<MenuCategoryView> CreateCategoryAsync(
@@ -86,7 +90,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         return new MenuCategoryView(
             category.Id, category.Name, category.DisplayOrder,
-            category.Items.OrderBy(i => i.DisplayOrder).Select(ToView).ToList());
+            [.. category.Items.OrderBy(i => i.DisplayOrder).Select(ToView)]);
     }
 
     public async Task DeleteCategoryAsync(Guid branchId, Guid categoryId, CancellationToken cancellationToken = default)
@@ -116,8 +120,10 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         ArgumentNullException.ThrowIfNull(command);
         var category = await LoadCategoryAsync(branchId, categoryId, cancellationToken);
 
-        // The constructor refuses a blank ingredients, allergens, portion size or photo, and a
-        // non-positive prep time. Those are the questions a diner would otherwise ask a waiter.
+        // A name and a price, and nothing else is insisted on here. The descriptive fields are what
+        // make the item fit to show a diner, and that is enforced where it belongs: the item comes
+        // back with isComplete false, readiness counts it, going Paid is refused while any remain,
+        // and no diner is ever shown it. See docs/menu-completeness.md.
         var item = new MenuItem(
             category.Id,
             command.Name,
@@ -152,6 +158,9 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         if (describes)
         {
+            // Null means "not supplied", so every unspecified field keeps what it had - including
+            // keeping nothing. An edit no longer insists on the fields creation no longer insists
+            // on, or a half-entered item could never be saved a second time.
             item.UpdateDetails(
                 command.Name ?? item.Name,
                 command.Description ?? item.Description,
@@ -169,8 +178,14 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             item.SetPrice(price);
         }
 
-        if (command.DisplayOrder is { } order)
+        if (command.CategoryId is { } categoryId && categoryId != item.MenuCategoryId)
         {
+            await MoveToCategoryAsync(branchId, item, categoryId, cancellationToken);
+        }
+        else if (command.DisplayOrder is { } order)
+        {
+            // Skipped on a move: the move already placed the item last, and applying a display
+            // order from the old category in the same request would put it somewhere arbitrary.
             item.SetDisplayOrder(order);
         }
 
@@ -215,9 +230,56 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         return new MenuItemDeletionResult(item.Id, Deleted: true, Deactivated: false, $"'{item.Name}' was removed from the menu.");
     }
 
+    /// <summary>
+    /// Moves an item to another category of the same branch, placing it last.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Last, not first, and not at its old position.</b> A dish moved into Desserts has no
+    /// meaningful place among the desserts, and dropping it at position zero silently demotes
+    /// whatever the owner deliberately put at the top. Last is the only choice that changes nothing
+    /// the owner already decided, and the client can reorder immediately afterwards.
+    /// </para>
+    /// <para>
+    /// A category on another branch is refused as a field violation rather than a 404: the item the
+    /// request addresses does exist, and it is the <c>categoryId</c> in the body that is wrong -
+    /// which is the difference between a form that highlights the category picker and one that
+    /// shows "not found" over the whole page.
+    /// </para>
+    /// </remarks>
+    private async Task MoveToCategoryAsync(
+        Guid branchId,
+        MenuItem item,
+        Guid categoryId,
+        CancellationToken cancellationToken)
+    {
+        var target = await db.MenuCategories
+            .AsNoTracking()
+            .Where(c => c.Id == categoryId)
+            .Select(c => new { c.Id, c.BranchId, c.Name })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (target is null || target.BranchId != branchId)
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "categoryId",
+                $"Menu category {categoryId} is not a category of this branch. An item can only be moved "
+                + "between categories of the branch whose menu it is on.",
+                FieldBounds.Conflict,
+                Value: categoryId));
+        }
+
+        var lastInTarget = await db.MenuItems
+            .Where(i => i.MenuCategoryId == categoryId)
+            .MaxAsync(i => (int?)i.DisplayOrder, cancellationToken) ?? -1;
+
+        item.MoveToCategory(categoryId, lastInTarget + 1);
+    }
+
     private async Task<MenuCategory> LoadCategoryAsync(Guid branchId, Guid categoryId, CancellationToken cancellationToken) =>
         await db.MenuCategories
             .Include(c => c.Items)
+            .ThenInclude(i => i.Photo)
             .FirstOrDefaultAsync(c => c.Id == categoryId && c.BranchId == branchId, cancellationToken)
         ?? throw new KeyNotFoundException($"Menu category {categoryId} was not found at this branch.");
 
@@ -232,11 +294,17 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     /// </summary>
     /// <remarks>
     /// A freshly created item has a <c>PhotoId</c> and no <c>Photo</c> - nothing has read the row -
-    /// and a view built from it would dereference null. Changing the photo has the same problem: the
-    /// navigation still holds the old one until it is reloaded.
+    /// and a view built from it would report the item as having no picture. Changing the photo has
+    /// the same problem: the navigation still holds the old one until it is reloaded. An item with
+    /// no photo at all needs neither, and asking EF to load a null reference is a wasted round trip.
     /// </remarks>
     private async Task<MenuItem> WithPhotoAsync(MenuItem item, CancellationToken cancellationToken)
     {
+        if (item.PhotoId is null)
+        {
+            return item;
+        }
+
         var reference = db.Entry(item).Reference(i => i.Photo);
 
         if (!reference.IsLoaded || item.Photo is null || item.Photo.Id != item.PhotoId)
@@ -249,6 +317,18 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     }
 
     private static MenuItemView ToView(MenuItem i) => new(
-        i.Id, i.MenuCategoryId, i.Name, i.Description, i.PriceAmd, PhotoView.From(i.Photo), i.Ingredients,
-        i.Allergens, i.PortionSize, i.SpiceLevel, i.PrepMinutes, i.IsAvailable, i.DisplayOrder);
+        i.Id,
+        i.MenuCategoryId,
+        i.Name,
+        i.Description,
+        i.PriceAmd,
+        i.Photo is { } photo ? PhotoView.From(photo) : null,
+        i.Ingredients,
+        i.Allergens,
+        i.PortionSize,
+        i.SpiceLevel,
+        i.PrepMinutes,
+        i.IsAvailable,
+        i.DisplayOrder,
+        i.IsComplete);
 }

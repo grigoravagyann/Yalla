@@ -1,0 +1,191 @@
+# Continuous integration for the Yalla API.
+#
+# The whole reason this runs a real SQL Server rather than the in-memory
+# provider: the tests most likely to be quietly broken are the concurrency ones
+# — two racing bookings, two racing scans, two racing cash payments, two
+# scheduler instances leasing one message — and every one of them is a
+# statement about `rowversion` tokens, filtered unique indexes and application
+# locks. The in-memory provider enforces none of the three and would pass every
+# assertion. A green CI that skipped them would be worse than no CI, because it
+# converts an unknown into a false reassurance.
+#
+# `SqlServerFixture` **skips** when it cannot reach a server, which is right on
+# a laptop and catastrophic here — a misconfigured container would give a green
+# run that proved nothing. So the last step reads the test results and fails if
+# anything skipped.
+name: backend
+
+on:
+  # `master` as well as `main`: this repository's default branch is `master`, and a workflow
+  # that names only `main` would never run on a push here - it would fire on pull requests
+  # alone, and the branch everything lands on would be the one branch with no check.
+  # Both are listed rather than one renamed, so this keeps working after a rename either way.
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Only ever in a throwaway container that lives for one job. It still has to
+  # satisfy SQL Server's own complexity rule or the container exits on startup.
+  SA_PASSWORD: 'Yalla-CI-p4ssw0rd!'
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'Yalla-CI-p4ssw0rd!'
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        # A container-level health check as well as the loop below. This one
+        # gates the *job* on the container reporting healthy; the loop gates the
+        # tests on a connection that actually authenticates, which is a later
+        # and stricter moment — SQL Server accepts TCP before it accepts logins.
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Yalla-CI-p4ssw0rd!' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 30s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # From global.json, so CI and a developer's machine cannot drift.
+          global-json-file: global.json
+
+      # There is no packages.lock.json, so the key is the project files: any
+      # change to a PackageReference invalidates it, and nothing else does.
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'Directory.Build.props', '.config/dotnet-tools.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore Yalla.sln
+
+      # `TreatWarningsAsErrors` is false in Directory.Build.props so a developer
+      # can build mid-thought. A command-line property overrides it, which puts
+      # the strict gate here and nowhere else.
+      - name: Build
+        run: dotnet build Yalla.sln -c Release --no-restore -p:TreatWarningsAsErrors=true
+
+      # The most common way this breaks, and the one that is invisible locally:
+      # somebody edits an entity and does not add a migration. Their database
+      # already has the column, so nothing complains until a fresh one is
+      # created — which is a deploy.
+      #
+      # No `--startup-project`: `YallaDbContextFactory` exists precisely so the
+      # tools never boot the API, which would want configuration and a
+      # PlatformAdmin secret to answer a question about the model. And
+      # `dotnet tool restore` rather than a global install, because
+      # `.config/dotnet-tools.json` pins dotnet-ef to 9.0.9 with
+      # `rollForward: false` — CI and a developer run the same tool, and a new
+      # EF release cannot change the answer underneath either of them.
+      - name: Check for un-migrated model changes
+        run: |
+          dotnet tool restore
+          dotnet tool run dotnet-ef migrations has-pending-model-changes \
+            --project src/Yalla.Infrastructure \
+            --no-build --configuration Release
+
+      # A loop on a real query, not a sleep. The container's own health check
+      # gates the job on the server accepting a login; this asks the question
+      # the tests are about to ask, because a cold image accepts TCP before it
+      # accepts work.
+      #
+      # `sqlcmd` runs *inside* the container rather than on the runner: the
+      # runner image is not guaranteed to carry mssql-tools, and a missing
+      # binary would fail this loop for the wrong reason.
+      - name: Wait for SQL Server
+        env:
+          CONTAINER: ${{ job.services.sqlserver.id }}
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+                 -C -S localhost -U sa -P "$SA_PASSWORD" -Q "SELECT 1" >/dev/null 2>&1; then
+              echo "SQL Server answered a query on attempt $attempt."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "SQL Server never answered. The integration tests would silently skip,"
+          echo "so this fails here rather than reporting a green run that proved nothing."
+          docker logs "$CONTAINER" | tail -50
+          exit 1
+
+      # `YALLA_TEST_SQL_USER` and `_PASSWORD` are what stop the fixture falling
+      # back to Trusted_Connection: the container is Linux and has no notion of
+      # a Windows identity, and without these it would find no server, skip
+      # every integration test, and report green.
+      - name: Test
+        env:
+          YALLA_TEST_SQL_SERVER: localhost,1433
+          YALLA_TEST_SQL_USER: sa
+          YALLA_TEST_SQL_PASSWORD: ${{ env.SA_PASSWORD }}
+        run: |
+          dotnet test Yalla.sln -c Release --no-build \
+            --logger "trx;LogFileName=results.trx" \
+            --results-directory artifacts/test-results
+
+      # The step this file exists for.
+      #
+      # `SkippableFact` means a fixture that cannot reach a database reports
+      # success. That is the correct behaviour on a laptop and a lie here, so
+      # any skip at all fails the run and names the count.
+      - name: Fail if any test skipped
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(artifacts/test-results/*.trx)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No test results were produced."
+            exit 1
+          fi
+
+          total_skipped=0
+          for file in "${files[@]}"; do
+            skipped=$(grep -o 'notExecuted="[0-9]*"' "$file" | head -1 | grep -o '[0-9]*' || echo 0)
+            executed=$(grep -o 'executed="[0-9]*"' "$file" | head -1 | grep -o '[0-9]*' || echo 0)
+            echo "$file: executed=$executed skipped=$skipped"
+            total_skipped=$((total_skipped + skipped))
+          done
+
+          if [ "$total_skipped" -gt 0 ]; then
+            echo
+            echo "$total_skipped test(s) were skipped. On a developer machine that means"
+            echo "'no SQL Server here'; in CI it means the container was not reached and"
+            echo "the concurrency tests proved nothing. Failing rather than reporting green."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/test-results
+          if-no-files-found: warn

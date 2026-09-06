@@ -75,7 +75,9 @@ internal sealed class BranchSettingsService(
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);
 
-        branch.UpdateReservationPolicy(policy);
+        // Saving the form is what counts as having reviewed it, which is the line the onboarding
+        // checklist reads. A branch ships with defaults, so "has a policy" was never the question.
+        branch.UpdateReservationPolicy(policy, nowUtc);
         await db.SaveChangesAsync(cancellationToken);
 
         if (affected.Count > 0)

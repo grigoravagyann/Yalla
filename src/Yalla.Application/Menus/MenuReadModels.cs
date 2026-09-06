@@ -16,6 +16,14 @@ namespace Yalla.Application.Menus;
 /// the diner turns round and asks a waiter about it, which is the exact question this feature was
 /// built to remove.
 /// </para>
+/// <para>
+/// <b>Incomplete items are hidden, and that is the opposite rule for the opposite reason.</b> An
+/// item with no photo and no allergen list is not a dish that has sold out; it is a dish nobody has
+/// finished entering, and showing it is worse than not showing it - a diner reading no allergens
+/// reasonably concludes there are none. Since Prompt 10 those items can exist (they are how a menu
+/// gets typed in before it gets photographed), so this read is where they are kept away from
+/// diners, and <c>GET /api/branches/{id}/readiness</c> is where the venue is told they are there.
+/// </para>
 /// </remarks>
 /// <param name="BranchId">The branch. Menus belong to branches, not venues - see <c>SCHEMA.md</c>.</param>
 /// <param name="Categories">Every category in display order, each with its items.</param>

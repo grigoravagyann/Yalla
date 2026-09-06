@@ -1,4 +1,5 @@
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Application.Staff;
@@ -52,13 +53,22 @@ public static class VenueAdminEndpoints
             .WithSummary("Replace the reservation policy")
             .WithDescription(
                 "Every field, as one form. Out-of-range values are **refused, never clamped** - a "
-                + "turn time of 5 minutes or 12 hours gets a 400 that says so.\n\n"
+                + "turn time of 5 minutes or 12 hours gets a 422 that says so.\n\n"
+                + "**Every refusal names its field.** `context.field` is the first offending property "
+                + "and `context.fields` is all of them, each with the `bound` it broke, the `min` and "
+                + "`max` allowed and the `value` sent - in the same casing this schema uses, so a form "
+                + "can put each message against its own input without mapping English prose back to a "
+                + "field. A request that breaks six bounds reports six.\n\n"
                 + "**Existing bookings are never touched.** If the new window or turn time would not "
                 + "have allowed some of them, `affectedExistingReservations` says how many and "
                 + "`affectedReservationIds` which; they stay exactly as booked. The new rules apply "
-                + "to future bookings only.")
+                + "to future bookings only.\n\n"
+                + "Saving this form is what marks the policy as reviewed on the branch readiness "
+                + "checklist.")
             .Produces<ReservationPolicyChangeResult>()
-            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "A field is outside its bounds; the message names it.");
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "One or more fields are outside their bounds; `context.fields` names every one.");
 
         group.MapGet("/opening-hours", GetHoursAsync)
             .WithName("getOpeningHours")
@@ -71,9 +81,28 @@ public static class VenueAdminEndpoints
             .WithDescription(
                 "Send every block for every day. `closesNextDay` is derived - a closing time at or "
                 + "before the opening time means after midnight - and is not accepted from the client. "
-                + "Blocks on one day may touch but not overlap.")
+                + "Blocks on one day may touch but not overlap.\n\n"
+                + "The body is an array, so a refusal names the offending block by index: "
+                + "`context.field` reads `[2].closesAt`. Every bad block is reported, not just the "
+                + "first.")
             .Produces<IReadOnlyList<OpeningHoursView>>()
-            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Two blocks on one day overlap.");
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "Blocks overlap, or one opens and closes at the same minute; `context.fields` names each.");
+
+        group.MapGet("/readiness", GetReadinessAsync)
+            .WithName("getBranchReadiness")
+            .WithSummary("What this branch still needs before it can take diners")
+            .WithDescription(
+                "The onboarding checklist, answered by the server: floor plan drawn, tables labelled, "
+                + "at least one menu category, how many menu items are still incomplete, hours set, "
+                + "reservation policy reviewed, staff enrolled, at least one tablet.\n\n"
+                + "The console used to render this from a client-side guess, which meant the console "
+                + "and the server had two different ideas of ready - and only the server's decides "
+                + "whether the branch may be switched to `Paid`. `incompleteMenuItemCount` is the line "
+                + "that gate enforces, and `incompleteMenuItemIds` says which items to finish.")
+            .Produces<BranchReadinessView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
         group.MapGet("/floor-plan", GetFloorPlanAsync)
             .WithName("getFloorPlan")
@@ -151,6 +180,10 @@ public static class VenueAdminEndpoints
     private static async Task<IResult> GetHoursAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.GetOpeningHoursAsync(branchId, ct));
 
+    private static async Task<IResult> GetReadinessAsync(
+        Guid branchId, IBranchReadinessQuery readiness, CancellationToken ct) =>
+        Results.Ok(await readiness.GetAsync(branchId, ct));
+
     private static async Task<IResult> PutHoursAsync(
         Guid branchId, IReadOnlyList<OpeningHoursBlock> blocks, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.ReplaceOpeningHoursAsync(branchId, blocks, ct));
@@ -202,10 +235,14 @@ public static class VenueAdminEndpoints
         // refuses on purpose. A manager fixing their menu during a suspension needs to see it.
         group.MapGet("/manage", GetMenuAsync)
             .WithName("getMenuForAdmin")
-            .WithSummary("The full menu, including unavailable items")
+            .WithSummary("The full menu, including unavailable and unfinished items")
             .WithDescription(
-                "The same body as the public `GET /api/branches/{branchId}/menu`, without its "
-                + "open-for-business gate, so a suspended venue's manager can still edit.")
+                "The same shape as the public `GET /api/branches/{branchId}/menu`, without its "
+                + "open-for-business gate, so a suspended venue's manager can still edit.\n\n"
+                + "**This read includes items with `isComplete: false`; the diner-facing one does "
+                + "not.** A manager has to be able to see the eleven dishes that still need a photo - "
+                + "that is the entire point of being allowed to save them half-entered - and a diner "
+                + "must never be shown a dish with no allergen list.")
             .Produces<IReadOnlyList<MenuCategoryView>>();
 
         group.MapPost("/categories", CreateCategoryAsync)
@@ -228,20 +265,40 @@ public static class VenueAdminEndpoints
 
         group.MapPost("/categories/{categoryId:guid}/items", CreateItemAsync)
             .WithName("createMenuItem")
-            .WithSummary("Add an item")
+            .WithSummary("Add an item; only a name and a price are required")
             .WithDescription(
-                "Ingredients, allergens, portion size, prep minutes and a photo URL are **required**. "
-                + "They are what a diner would otherwise ask a waiter; optional fields stay blank and the "
-                + "feature is worthless. Photo upload is out of scope - a URL is accepted for now.")
+                "**A photo and the descriptive fields are optional here and required to go live.** "
+                + "Ingredients, allergens, portion size, prep minutes and a photo are what a diner "
+                + "would otherwise ask a waiter, so an item without them is not fit to show one - but "
+                + "requiring them at this point meant an eighty-dish menu could not be entered without "
+                + "eighty photo uploads first, in order, before a single name or price could be typed. "
+                + "That is not the order the work happens in.\n\n"
+                + "So the rule moved rather than went away. An item saved without them comes back with "
+                + "`isComplete: false`; `GET /api/branches/{branchId}/readiness` counts it; the branch "
+                + "cannot be switched to `Paid` while any remain; and the diner-facing menu does not "
+                + "return it at all.")
             .Produces<MenuItemView>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "A required field is missing or blank.");
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "The name is blank, or the price is negative.");
 
         group.MapPatch("/items/{itemId:guid}", UpdateItemAsync)
             .WithName("updateMenuItem")
-            .WithSummary("Edit an item, including its price")
-            .WithDescription("A price change never affects existing order lines, which snapshotted the price they were placed at.")
+            .WithSummary("Edit an item, including its price and its category")
+            .WithDescription(
+                "A price change never affects existing order lines, which snapshotted the price they "
+                + "were placed at.\n\n"
+                + "`categoryId` **moves the item to another category of the same branch**, where it "
+                + "lands last in the display order - reorder afterwards if that is not where it "
+                + "belongs. Existing order lines are unaffected: they never reference a category. A "
+                + "category belonging to another branch is refused with `context.field` of "
+                + "`categoryId`.\n\n"
+                + "A field left out is left alone, including one that was never filled in, so a "
+                + "half-entered item can be saved again without the edit insisting on the half that "
+                + "is missing.")
             .Produces<MenuItemView>()
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such item at this branch.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such item at this branch.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`categoryId` names a category that is not on this branch.");
 
         group.MapPost("/items/{itemId:guid}/availability", SetAvailabilityAsync)
             .WithName("setMenuItemAvailability")

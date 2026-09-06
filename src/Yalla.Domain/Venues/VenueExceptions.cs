@@ -90,6 +90,36 @@ public sealed class VenueDeletionBlockedException(
 }
 
 /// <summary>
+/// The branch cannot be switched to <see cref="SubscriptionTier.Paid"/> yet: its menu is not
+/// finished.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This is where the rule Prompt 6 wrote into the create endpoint actually lives now. An item may
+/// be saved without a photo, allergens, ingredients, a portion size or a prep time - that is how a
+/// menu gets typed in, in one sitting, in a cafe - but a branch whose menu still has holes in it
+/// must not start taking diners, because the diner is the person the missing allergen list is
+/// dangerous to.
+/// </para>
+/// <para>
+/// A conflict, not a permission failure. The caller is a platform admin and is entitled to do
+/// this; the branch is not ready for it. The count is on the exception so the console can say
+/// "eleven dishes still need a photo" rather than "cannot upgrade".
+/// </para>
+/// </remarks>
+public sealed class BranchNotReadyForDinersException(Guid branchId, int incompleteMenuItemCount)
+    : DomainStateException(
+        $"This branch has {incompleteMenuItemCount} menu item(s) that are not ready to show a diner - "
+        + "each is missing a photo, a description, ingredients, allergens, a portion size or a prep time. "
+        + "Finish them before putting the branch on Paid; the branch readiness endpoint lists what is left.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    /// <summary>How many items are still incomplete. The number the refusal exists to carry.</summary>
+    public int IncompleteMenuItemCount { get; } = incompleteMenuItemCount;
+}
+
+/// <summary>
 /// A floor plan that cannot be applied, with the offending tables named.
 /// </summary>
 public sealed class FloorPlanInvalidException(

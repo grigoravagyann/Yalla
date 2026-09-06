@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -41,6 +41,20 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// Set this in CI. Locally the probe below usually finds the right one on its own.
     /// </remarks>
     public const string ServerEnvironmentVariable = "YALLA_TEST_SQL_SERVER";
+
+    /// <summary>
+    /// SQL login to authenticate with. Unset means Windows authentication.
+    /// </summary>
+    /// <remarks>
+    /// A developer machine uses <c>Trusted_Connection</c> and needs no credentials at all, which is
+    /// why that stays the default. CI runs SQL Server in a Linux container that has no notion of a
+    /// Windows identity, so it sets these two - and without them the fixture would find no server,
+    /// <b>skip</b> every integration test, and report green while proving nothing.
+    /// </remarks>
+    public const string UserEnvironmentVariable = "YALLA_TEST_SQL_USER";
+
+    /// <summary>Password for <see cref="UserEnvironmentVariable"/>.</summary>
+    public const string PasswordEnvironmentVariable = "YALLA_TEST_SQL_PASSWORD";
 
     /// <summary>
     /// Where a developer machine actually keeps SQL Server, in the order worth trying.
@@ -99,7 +113,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         }
 
         ConnectionString =
-            $"Server={_server};Database={_databaseName};Trusted_Connection=True;"
+            $"Server={_server};Database={_databaseName};{Credentials()}"
             + "TrustServerCertificate=True;MultipleActiveResultSets=True";
 
         await using var db = CreateContext(new TestClock(DateTime.UtcNow));
@@ -124,7 +138,24 @@ public sealed class SqlServerFixture : IAsyncLifetime
     }
 
     private static string MasterConnectionString(string server) =>
-        $"Server={server};Database=master;Trusted_Connection=True;TrustServerCertificate=True;Connect Timeout=5";
+        $"Server={server};Database=master;{Credentials()}TrustServerCertificate=True;Connect Timeout=5";
+
+    /// <summary>
+    /// How to authenticate: a SQL login when CI supplies one, Windows authentication otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Returns a fragment ending in a semicolon so both call sites can concatenate it without
+    /// caring which branch it took.
+    /// </remarks>
+    private static string Credentials()
+    {
+        var user = Environment.GetEnvironmentVariable(UserEnvironmentVariable);
+        var password = Environment.GetEnvironmentVariable(PasswordEnvironmentVariable);
+
+        return string.IsNullOrWhiteSpace(user)
+            ? "Trusted_Connection=True;"
+            : $"User ID={user};Password={password};";
+    }
 
     public async Task DisposeAsync()
     {
@@ -258,7 +289,17 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     /// <summary>The platform tier over one context, acting as the given caller - normally a platform admin.</summary>
     internal PlatformService CreatePlatformService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, NullLogger<PlatformService>.Instance);
+        new(db, clock, actor, CreateReadinessQuery(db), NullLogger<PlatformService>.Instance);
+
+    /// <summary>
+    /// The onboarding checklist over one context.
+    /// </summary>
+    /// <remarks>
+    /// Composed into the platform service rather than stubbed, so the going-live gate is tested
+    /// against the same count the readiness endpoint reports. A stub here could pass while the two
+    /// disagreed, which is the failure the single definition of completeness exists to prevent.
+    /// </remarks>
+    internal static BranchReadinessQuery CreateReadinessQuery(YallaDbContext db) => new(db);
 
     internal BranchSettingsService CreateBranchSettingsService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, NullLogger<BranchSettingsService>.Instance);

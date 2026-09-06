@@ -179,6 +179,74 @@ public sealed record LockTimeoutProblem : ProblemShape
     public required LockTimeoutContext Context { get; init; }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Field-level validation - the shape every bounds refusal now answers in
+// ---------------------------------------------------------------------------------------------
+
+/// <summary>
+/// One field of the request that was refused.
+/// </summary>
+/// <param name="Field">
+/// The property, in the casing the OpenAPI schema uses - <c>turnTimeMinutes</c>, or
+/// <c>[2].closesAt</c> where the payload is an array. <b>This is what a form keys on.</b> It
+/// deliberately is not an English label: the console used to map server prose back to inputs
+/// through a lookup table, which stopped working the moment either side was translated.
+/// </param>
+/// <param name="Message">What is wrong with it, in a sentence.</param>
+/// <param name="Bound">
+/// Which rule broke: <c>min</c>, <c>max</c>, <c>range</c>, <c>required</c> or <c>conflict</c>.
+/// </param>
+/// <param name="Min">The lowest accepted value, where the bound has one.</param>
+/// <param name="Max">The highest accepted value, where the bound has one.</param>
+/// <param name="Value">What was supplied, so the message can quote it back.</param>
+public sealed record FieldViolationShape(
+    string Field,
+    string Message,
+    string? Bound,
+    object? Min,
+    object? Max,
+    object? Value);
+
+/// <summary>
+/// Every field the request got wrong.
+/// </summary>
+/// <param name="Field">
+/// The first offending field, for a form that can only highlight one input at a time.
+/// </param>
+/// <param name="Fields">
+/// All of them. A single request can break six bounds, and returning one at a time makes an owner
+/// submit six times to discover that.
+/// </param>
+public sealed record ValidationFailedContext(string Field, IReadOnlyList<FieldViolationShape> Fields);
+
+/// <summary>
+/// <c>validation-failed</c>, 422. The reservation policy and opening-hours refusals, and every
+/// other field-level refusal that used to carry prose and nothing else.
+/// </summary>
+/// <remarks>
+/// The standard <c>errors</c> member carries the same complaints keyed by field, for generic
+/// tooling that already knows RFC 7807. <c>context</c> carries them again with the bound and the
+/// value, which <c>errors</c> has nowhere to put.
+/// </remarks>
+public sealed record ValidationFailedProblem : ProblemShape
+{
+    public required ValidationFailedContext Context { get; init; }
+}
+
+/// <summary>The branch's menu is not finished, so it cannot start taking diners.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="IncompleteMenuItemCount">
+/// How many items are missing a photo, a description, ingredients, allergens, a portion size or a
+/// prep time. The number the refusal exists to carry - the readiness endpoint lists which ones.
+/// </param>
+public sealed record BranchNotReadyContext(Guid BranchId, int IncompleteMenuItemCount);
+
+/// <summary><c>branch-not-ready</c>, 409. Finish the menu, then switch the tier.</summary>
+public sealed record BranchNotReadyProblem : ProblemShape
+{
+    public required BranchNotReadyContext Context { get; init; }
+}
+
 /// <summary>The floor plan the editor sent could not be applied.</summary>
 /// <param name="TablesOutsideCanvas">Labels of tables that fall outside the canvas.</param>
 /// <param name="DuplicateLabels">Labels used more than once.</param>

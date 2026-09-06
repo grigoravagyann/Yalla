@@ -33,7 +33,12 @@ internal sealed class TabBillingQuery(
         CancellationToken cancellationToken = default)
     {
         var tab = await ledger.LoadForWriteAsync(tabId, cancellationToken);
-        var bill = ledger.Compute(tab);
+
+        // Computed from the lines, which are the truth, and the cache is brought back in line if it
+        // disagrees. This is the read half of moving the cache out of the order-insert transaction:
+        // a refresh that lost every one of its races leaves stale columns behind, and the bill
+        // screen is exactly where somebody would notice. Writes only when the numbers differ.
+        var bill = await ledger.EnsureTotalsFreshAsync(tab, cancellationToken);
 
         var names = tab.Participants.ToDictionary(p => p.Id, p => (p.DisplayName, p.Status));
 

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Billing;
@@ -60,6 +60,10 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             Assert.False(string.IsNullOrWhiteSpace(i.Ingredients));
             Assert.False(string.IsNullOrWhiteSpace(i.Allergens));
             Assert.False(string.IsNullOrWhiteSpace(i.PortionSize));
+            // Asserted rather than dereferenced: a photo is required on a menu
+            // item, so a null one is the failure this line is here to catch,
+            // and `i.Photo.CardUrl` on its own reports it as an NRE instead.
+            Assert.NotNull(i.Photo);
             Assert.False(string.IsNullOrWhiteSpace(i.Photo.CardUrl));
             Assert.NotEqual(Guid.Empty, i.Photo.PhotoId);
             Assert.True(i.PrepMinutes > 0);
@@ -413,16 +417,24 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         Assert.Equal(StaffRole.Waiter, refused.ActualRole);
     }
 
-    // ------------------------------------------------------------ 10. the cache agrees with the lines
+    // ------------------------------------------------------------ 11. the cache agrees with the lines
 
     /// <summary>
-    /// <b>Test 10.</b> A complex tab, recomputed from its rows in a fresh context, equals the
+    /// <b>Test 11.</b> A complex tab, recomputed from its rows in a fresh context, equals the
     /// cached columns.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The cached totals are a denormalisation, exactly like <c>DiningTable.Status</c>: the
     /// authoritative number is the sum of the lines. This is the test that says so, and the one
     /// that fails if a future mutation forgets to recompute.
+    /// </para>
+    /// <para>
+    /// It matters more since the cache moved out of the order-insert transaction, not less. Orders
+    /// now refresh it in a second transaction afterwards while voids and adjustments still write it
+    /// inline, so this exercises a tab built by both kinds of write and insists they end up
+    /// agreeing.
+    /// </para>
     /// </remarks>
     [SkippableFact]
     public async Task Recomputing_a_complex_tab_from_its_lines_equals_the_cached_totals()
@@ -575,68 +587,121 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         Assert.Equal(shares.Totals.TotalAmd, shares.Shares!.Sum(s => s.ShareAmd));
     }
 
-    // ------------------------------------------------------------ 15. two orders at once
+    // ------------------------------------------------------------ 9 and 10. ten orders at once
+
+    /// <summary>How many orders race in the concurrency test. Above the old retry ceiling of three.</summary>
+    private const int SimultaneousOrders = 10;
 
     /// <summary>
-    /// <b>Test 15.</b> Two participants tapping "add" at the same moment both succeed.
+    /// <b>Tests 9 and 10.</b> Ten genuinely simultaneous orders on one tab all succeed, and the
+    /// totals cache converges on the right number.
     /// </summary>
     /// <remarks>
-    /// This is the test that fails if somebody applies Prompt 2's no-retry rule here. That rule is
-    /// right for the table state machine - a retried seating seats a party at a table that just
-    /// went - and wrong for ordering, where the two writers insert different rows and only the
-    /// totals cache on the shared tab row collides.
+    /// <para>
+    /// This used to be two orders, and two was the number the old design could survive. The order
+    /// insert wrote the tab's totals cache in the same transaction, so every concurrent order
+    /// contended for one row and lost the row-version race; three attempts absorbed a couple of
+    /// writers and six exhausted them, surfacing a concurrency error <b>to a diner</b> for adding a
+    /// coffee. That is the worst-looking failure in the product, because the fault is invisible and
+    /// the app simply appears broken.
+    /// </para>
+    /// <para>
+    /// Raising the ceiling would have moved it. The fix was to stop writing the shared row: the
+    /// stored totals are a cache, the authoritative total is the sum of the lines, and the insert
+    /// does not need to touch the tab to be correct. Ten writers now have nothing in common to
+    /// collide on, so the number here could be a hundred - ten is simply comfortably past the
+    /// ceiling that used to exist.
+    /// </para>
+    /// <para>
+    /// Ten separate contexts, and therefore ten connections, released by one gate. Anything sharing
+    /// a context would serialise on the context itself and prove nothing.
+    /// </para>
     /// </remarks>
     [SkippableFact]
-    public async Task Two_participants_ordering_at_the_same_moment_both_succeed_and_the_total_is_right()
+    public async Task Ten_simultaneous_orders_all_succeed_and_the_totals_cache_converges()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var world = await ArrangeAsync();
         await using var db = world.Db;
 
-        await using var hostDb = fixture.CreateContext(world.Clock);
-        await using var guestDb = fixture.CreateContext(world.Clock);
+        var contexts = new List<YallaDbContext>();
+        var services = new List<Yalla.Infrastructure.Services.TabOrderService>();
 
-        var hostOrders = fixture.CreateOrderService(hostDb, world.Clock, TestActor.Participant(world.HostId));
-        var guestOrders = fixture.CreateOrderService(guestDb, world.Clock, TestActor.Participant(world.GuestId));
-
-        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var a = Task.Run(async () =>
+        try
         {
-            await gate.Task;
+            for (var i = 0; i < SimultaneousOrders; i++)
+            {
+                var context = fixture.CreateContext(world.Clock);
+                contexts.Add(context);
 
-            return await hostOrders.PlaceOrderAsync(new PlaceOrderCommand(
-                world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7()));
-        });
+                // Alternating between the two people on the tab. Which of them orders is beside the
+                // point - what is under test is what the writers share, and they share the tab.
+                var participant = i % 2 == 0 ? world.HostId : world.GuestId;
+                services.Add(fixture.CreateOrderService(context, world.Clock, TestActor.Participant(participant)));
+            }
 
-        var b = Task.Run(async () =>
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var placements = services
+                .Select(service => Task.Run(async () =>
+                {
+                    await gate.Task;
+
+                    return await service.PlaceOrderAsync(new PlaceOrderCommand(
+                        world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+                }))
+                .ToList();
+
+            gate.SetResult();
+
+            // Test 9. Task.WhenAll rethrows, so a concurrency error reaching any one of these
+            // diners fails the test here rather than showing up as a wrong total below.
+            var results = await Task.WhenAll(placements);
+
+            Assert.All(results, r => Assert.False(r.WasReplay));
+            Assert.Equal(SimultaneousOrders, results.Select(r => r.OrderId).Distinct().Count());
+
+            // Test 10. The cache converges: every writer recomputes after its own insert, and the
+            // row version on the tab is what makes the last one to commit the one that saw
+            // everything.
+            var expectedSubtotal = SimultaneousOrders * TestMenu.CoffeeAmd;
+
+            await using var verify = fixture.CreateContext(world.Clock);
+            var tab = await TabAsync(verify, world.TabId);
+
+            Assert.Equal(expectedSubtotal, tab.SubtotalAmd);
+            Assert.Equal(expectedSubtotal / 10L, tab.ServiceChargeAmd);
+            Assert.Equal(expectedSubtotal + (expectedSubtotal / 10L), tab.TotalAmd);
+
+            // And the cache agrees with the lines, which are the truth.
+            await using var recomputeDb = fixture.CreateContext(world.Clock);
+            var ledger = fixture.CreateLedger(recomputeDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+            var recomputed = ledger.Compute(await ledger.LoadForWriteAsync(world.TabId, default));
+
+            Assert.Equal(tab.SubtotalAmd, recomputed.SubtotalAmd);
+            Assert.Equal(tab.TotalAmd, recomputed.TotalAmd);
+
+            // The event stream numbered all ten, contiguously. Renumbering after a lost place is
+            // the other race ten simultaneous writers provoke, and a gap or a duplicate here would
+            // mean a catching-up phone silently missing an order.
+            var sequences = await verify.TabEvents
+                .AsNoTracking()
+                .Where(e => e.TabId == world.TabId && e.Type == TabEventType.OrderPlaced)
+                .Select(e => e.Sequence)
+                .OrderBy(s => s)
+                .ToListAsync();
+
+            Assert.Equal(SimultaneousOrders, sequences.Count);
+            Assert.Equal(sequences.Count, sequences.Distinct().Count());
+        }
+        finally
         {
-            await gate.Task;
-
-            return await guestOrders.PlaceOrderAsync(new PlaceOrderCommand(
-                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
-        });
-
-        gate.SetResult();
-
-        var results = await Task.WhenAll(a, b);
-
-        // Both. Refusing one would tell a diner their order failed when nothing was wrong with it.
-        Assert.All(results, r => Assert.False(r.WasReplay));
-        Assert.Equal(2, results.Select(r => r.OrderId).Distinct().Count());
-
-        await using var verify = fixture.CreateContext(world.Clock);
-        var tab = await TabAsync(verify, world.TabId);
-
-        Assert.Equal(TestMenu.KhachapuriAmd + TestMenu.CoffeeAmd, tab.SubtotalAmd);
-        Assert.Equal(440L, tab.ServiceChargeAmd);
-        Assert.Equal(4_840L, tab.TotalAmd);
-
-        // How many attempts it actually took is reported, so the retry is not silently dead code.
-        var attempts = Math.Max(hostOrders.RetryAttemptsUsed, guestOrders.RetryAttemptsUsed);
-
-        Assert.InRange(attempts, 1, 3);
+            foreach (var context in contexts)
+            {
+                await context.DisposeAsync();
+            }
+        }
     }
 
     // ------------------------------------------------------------ helpers

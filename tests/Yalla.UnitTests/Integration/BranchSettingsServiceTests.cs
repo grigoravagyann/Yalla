@@ -1,6 +1,7 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Tables;
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
@@ -66,13 +67,18 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
         var current = await service.GetReservationPolicyAsync(branch.BranchId);
 
-        var refused = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+        // A FieldValidationException rather than a bare ArgumentOutOfRangeException, because the
+        // refusal now names the property the console has to highlight. It used to name the English
+        // label "Turn time", which is why the console kept a lookup table keyed on server prose.
+        var refused = await Assert.ThrowsAsync<FieldValidationException>(
             () => service.UpdateReservationPolicyAsync(branch.BranchId, Command(current) with { TurnTimeMinutes = 5 }));
 
         Assert.Contains("Turn time", refused.Message);
         Assert.Contains("5 minutes", refused.Message);
+        Assert.Equal("turnTimeMinutes", refused.Field);
+        Assert.Equal(5, Assert.Single(refused.Violations).Value);
 
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+        await Assert.ThrowsAsync<FieldValidationException>(
             () => service.UpdateReservationPolicyAsync(branch.BranchId, Command(current) with { TurnTimeMinutes = 12 * 60 }));
 
         await using var verify = fixture.CreateContext(clock);
@@ -98,7 +104,12 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
             new(DayOfWeek.Monday, new TimeOnly(14, 0), new TimeOnly(23, 0)),
         };
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.ReplaceOpeningHoursAsync(branch.BranchId, overlapping));
+        var overlap = await Assert.ThrowsAsync<FieldValidationException>(
+            () => service.ReplaceOpeningHoursAsync(branch.BranchId, overlapping));
+
+        // The body is an array, so the refusal names the block by index and the form can put the
+        // message on the row the owner drew rather than at the top.
+        Assert.Equal("[1].opensAt", overlap.Field);
 
         // The refused call changed nothing: the builder's seven all-day rows are still there.
         Assert.Equal(7, await db.OpeningHours.CountAsync(h => h.BranchId == branch.BranchId));
@@ -493,12 +504,13 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
-        var refused = await Assert.ThrowsAsync<ArgumentException>(
+        var refused = await Assert.ThrowsAsync<FieldValidationException>(
             () => service.ReplaceOpeningHoursAsync(
                 branch.BranchId, [new OpeningHoursBlock(DayOfWeek.Monday, new TimeOnly(0, 0), new TimeOnly(0, 0))]));
 
         Assert.Contains("00:00", refused.Message);
         Assert.Contains("23:59", refused.Message);
+        Assert.Equal("[0].closesAt", refused.Field);
 
         // And the week it suggests instead is accepted.
         var allDay = await service.ReplaceOpeningHoursAsync(

@@ -63,6 +63,10 @@ public static class DependencyInjection
         services.AddScoped<IBranchSettingsService, BranchSettingsService>();
         services.AddScoped<IMenuService, MenuService>();
 
+        // The onboarding checklist, answered by the server. Registered before the platform service
+        // because that service consults it: a branch cannot go Paid while its menu has holes in it.
+        services.AddScoped<IBranchReadinessQuery, BranchReadinessQuery>();
+
         // Photos. The storage root is verified once, at construction, so a folder that cannot be
         // written to stops the process rather than surfacing as a broken menu three screens later.
         services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));

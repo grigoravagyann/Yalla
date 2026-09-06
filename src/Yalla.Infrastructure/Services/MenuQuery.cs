@@ -1,17 +1,30 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Media;
 using Yalla.Application.Menus;
+using Yalla.Domain.Menus;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The diner-facing menu read: one query, everything on it, sold-out items included.
+/// The diner-facing menu read: one query, sold-out items included, unfinished ones excluded.
 /// </summary>
 /// <remarks>
-/// Separate from <see cref="MenuService"/>, which edits. This one adds the gate that matters for a
-/// diner and not for a manager: a suspended or deleted venue serves no menu, because a phone that
+/// <para>
+/// Separate from <see cref="MenuService"/>, which edits. This one adds the two gates that matter
+/// for a diner and not for a manager.
+/// </para>
+/// <para>
+/// The first is the venue gate: a suspended or deleted venue serves no menu, because a phone that
 /// cached the branch id must not be shown a list of things it cannot order.
+/// </para>
+/// <para>
+/// The second is completeness. An item with no photo and no allergen list must never reach a
+/// diner - a diner reading an empty allergen list reasonably concludes there are none - so it is
+/// dropped here rather than shown greyed out. That is deliberately the opposite treatment from a
+/// sold-out dish, which <i>is</i> shown: "we are out of khachapuri tonight" is an answer, and "we
+/// have not finished typing this in" is not something to put in front of a customer at all.
+/// </para>
 /// </remarks>
 internal sealed class MenuQuery(YallaDbContext db) : IMenuQuery
 {
@@ -28,116 +41,62 @@ internal sealed class MenuQuery(YallaDbContext db) : IMenuQuery
         VenueGate.RequireOpenForBusiness(branch);
 
         // One round trip. The diner app opens on this screen, and a query per category would turn
-        // a menu with fifteen sections into sixteen round trips over a phone connection.
+        // a menu with fifteen sections into sixteen round trips over a phone connection. Include
+        // rather than a projection so completeness is decided by MenuItemCompleteness over the item
+        // itself: restating the rule in a Select would be a second definition of "complete", and
+        // the day the two disagreed is the day a dish with no allergens reached a phone.
         var categories = await db.MenuCategories
             .AsNoTracking()
+            .Include(c => c.Items)
+            .ThenInclude(i => i.Photo)
             .Where(c => c.BranchId == branchId)
             .OrderBy(c => c.DisplayOrder)
             .ThenBy(c => c.Name)
-            .Select(c => new
-            {
-                c.Id,
-                c.Name,
-                c.DisplayOrder,
-                Items = c.Items
-                    .OrderBy(i => i.DisplayOrder)
-                    .ThenBy(i => i.Name)
-                    .Select(i => new MenuItemRow
-                    {
-                        Id = i.Id,
-                        CategoryId = i.MenuCategoryId,
-                        Name = i.Name,
-                        Description = i.Description,
-                        PriceAmd = i.PriceAmd,
-                        PhotoId = i.PhotoId,
-                        PhotoIsExternal = i.Photo.IsExternallyHosted,
-                        PhotoThumbnail = i.Photo.ThumbnailPath,
-                        PhotoCard = i.Photo.CardPath,
-                        PhotoFull = i.Photo.FullPath,
-                        PhotoWidth = i.Photo.Width,
-                        PhotoHeight = i.Photo.Height,
-                        Ingredients = i.Ingredients,
-                        Allergens = i.Allergens,
-                        PortionSize = i.PortionSize,
-                        SpiceLevel = i.SpiceLevel,
-                        PrepMinutes = i.PrepMinutes,
-
-                        // Not filtered. A sold-out dish is shown greyed out with its price, because
-                        // "we are out of it tonight" is an answer and a missing row is not.
-                        IsAvailable = i.IsAvailable,
-                        DisplayOrder = i.DisplayOrder,
-                    })
-                    .ToList(),
-            })
             .ToListAsync(cancellationToken);
 
-        // The photo links are built after materialising, because turning a stored key into a URL is
-        // not something SQL can do. Still one round trip: the columns came back with the query.
         return new BranchMenuView(
             branchId,
             [
                 .. categories.Select(c => new MenuCategoryView(
-                    c.Id, c.Name, c.DisplayOrder, [.. c.Items.Select(ToView)])),
+                    c.Id,
+                    c.Name,
+                    c.DisplayOrder,
+                    [
+                        .. c.Items
+                            .Where(MenuItemCompleteness.IsComplete)
+                            .OrderBy(i => i.DisplayOrder)
+                            .ThenBy(i => i.Name)
+                            .Select(ToView),
+                    ])),
             ]);
     }
 
-    private static MenuItemView ToView(MenuItemRow row) =>
+    /// <summary>
+    /// Projects an item a diner is allowed to see.
+    /// </summary>
+    /// <remarks>
+    /// Every optional field is dereferenced without a null check on purpose: this only ever runs on
+    /// items that passed <see cref="MenuItemCompleteness"/>, which is precisely the statement that
+    /// none of them is null. If that ever stops being true the null-forgiving operators are where
+    /// it will show up, which is better than silently serving a dish with no allergens.
+    /// </remarks>
+    private static MenuItemView ToView(MenuItem item) =>
         new(
-            row.Id,
-            row.CategoryId,
-            row.Name,
-            row.Description,
-            row.PriceAmd,
-            PhotoView.From(
-                row.PhotoId, row.PhotoIsExternal, row.PhotoThumbnail, row.PhotoCard, row.PhotoFull,
-                row.PhotoWidth, row.PhotoHeight),
-            row.Ingredients,
-            row.Allergens,
-            row.PortionSize,
-            row.SpiceLevel,
-            row.PrepMinutes,
-            row.IsAvailable,
-            row.DisplayOrder);
+            item.Id,
+            item.MenuCategoryId,
+            item.Name,
+            item.Description,
+            item.PriceAmd,
+            PhotoView.From(item.Photo!),
+            item.Ingredients,
+            item.Allergens,
+            item.PortionSize,
+            item.SpiceLevel,
+            item.PrepMinutes,
 
-    /// <summary>The columns one menu item needs, flat, so the whole menu stays one query.</summary>
-    private sealed class MenuItemRow
-    {
-        public Guid Id { get; init; }
-
-        public Guid CategoryId { get; init; }
-
-        public string Name { get; init; } = null!;
-
-        public string Description { get; init; } = null!;
-
-        public long PriceAmd { get; init; }
-
-        public Guid PhotoId { get; init; }
-
-        public bool PhotoIsExternal { get; init; }
-
-        public string PhotoThumbnail { get; init; } = null!;
-
-        public string PhotoCard { get; init; } = null!;
-
-        public string PhotoFull { get; init; } = null!;
-
-        public int? PhotoWidth { get; init; }
-
-        public int? PhotoHeight { get; init; }
-
-        public string Ingredients { get; init; } = null!;
-
-        public string Allergens { get; init; } = null!;
-
-        public string PortionSize { get; init; } = null!;
-
-        public Yalla.Domain.Enums.SpiceLevel SpiceLevel { get; init; }
-
-        public int PrepMinutes { get; init; }
-
-        public bool IsAvailable { get; init; }
-
-        public int DisplayOrder { get; init; }
-    }
+            // Not filtered. A sold-out dish is shown greyed out with its price, because "we are out
+            // of it tonight" is an answer and a missing row is not.
+            item.IsAvailable,
+            item.DisplayOrder,
+            IsComplete: true);
 }

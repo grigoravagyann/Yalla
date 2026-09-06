@@ -151,6 +151,17 @@ public static class ErrorCodes
     public const string FloorPlanInvalid = "floor-plan-invalid";
 
     /// <summary>
+    /// The branch's menu still has items that are not fit to show a diner, so it cannot be
+    /// switched to Paid. HTTP 409, with <c>incompleteMenuItemCount</c> in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// A conflict rather than a validation failure: nothing in the request is wrong, and nothing
+    /// the caller can change in it would help. The fix is to finish the menu, which is what
+    /// <c>GET /api/branches/{branchId}/readiness</c> is for.
+    /// </remarks>
+    public const string BranchNotReady = "branch-not-ready";
+
+    /// <summary>
     /// The branch is not open for business: its venue is suspended or deleted, or the branch is
     /// switched off. HTTP 409. Distinct from <see cref="FeatureNotEnabled"/>, which is about what a
     /// branch pays for rather than whether it is trading at all.
@@ -210,6 +221,7 @@ public static class ErrorCodes
         BranchUnavailable => "Branch not open for business",
         VenueDeletionBlocked => "Venue cannot be deleted",
         FloorPlanInvalid => "Floor plan invalid",
+        BranchNotReady => "Branch is not ready for diners",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

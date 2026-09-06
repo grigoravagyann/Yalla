@@ -15,10 +15,28 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
 {
     private static readonly DateTime Now = new(2026, 9, 5, 14, 0, 0, DateTimeKind.Utc);
 
-    // ------------------------------------------------------------ 14. required descriptive fields
+    // ------------------------------------------------------------ 1. a name and a price, no more
 
+    /// <summary>
+    /// <b>Test 1.</b> An item saved with nothing but a name and a price succeeds, and says it is
+    /// not complete.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This test used to assert the opposite. Prompt 6 required a photo, ingredients, allergens, a
+    /// portion size and a prep time on create, and its reasoning was right - optional fields stay
+    /// blank and the feature is worthless. The enforcement point was wrong: it meant an eighty-dish
+    /// menu could not be entered without eighty photo uploads first, in order, before a single name
+    /// or price could be typed, and somebody sitting in a cafe with the owner could not do the
+    /// obvious thing and shoot the photographs the following week.
+    /// </para>
+    /// <para>
+    /// So the rule moved rather than went away. The two tests below it are where it now lives.
+    /// What is still refused here is what was never a partially entered item.
+    /// </para>
+    /// </remarks>
     [SkippableFact]
-    public async Task Creating_a_menu_item_without_allergens_or_prep_time_is_rejected()
+    public async Task An_item_with_only_a_name_and_a_price_is_saved_and_reports_itself_incomplete()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -28,26 +46,185 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var menu = fixture.CreateMenuService(db);
         var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Mains"));
 
+        var bare = await menu.CreateItemAsync(
+            branch.BranchId, category.Id, new CreateMenuItemCommand("Khachapuri", 3_200L));
+
+        Assert.Equal("Khachapuri", bare.Name);
+        Assert.Equal(3_200L, bare.PriceAmd);
+        Assert.True(bare.IsAvailable);
+
+        // The whole point: it saved, and it says it is not fit to show anyone.
+        Assert.False(bare.IsComplete);
+        Assert.Null(bare.Photo);
+        Assert.Null(bare.Allergens);
+        Assert.Null(bare.PrepMinutes);
+
+        // Half-entered is fine too, and filling the rest in later completes it - which is the
+        // workflow the change exists for.
+        var partial = await menu.CreateItemAsync(
+            branch.BranchId,
+            category.Id,
+            new CreateMenuItemCommand("Lahmajun", 900L, Ingredients: "flour, lamb, tomato"));
+
+        Assert.False(partial.IsComplete);
+
         var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
-        var complete = Item("Khachapuri", photoId);
+
+        var finished = await menu.UpdateItemAsync(branch.BranchId, bare.Id, new UpdateMenuItemCommand(
+            Description: "House khachapuri",
+            PhotoId: photoId,
+            Ingredients: "flour, cheese, egg",
+            Allergens: "gluten, dairy, egg",
+            PortionSize: "350 g",
+            PrepMinutes: 15));
+
+        Assert.True(finished.IsComplete);
+        Assert.NotNull(finished.Photo);
+
+        // Still refused: a thing with no name and a thing with a negative price are not items.
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => menu.CreateItemAsync(branch.BranchId, category.Id, new CreateMenuItemCommand("  ", 1_000L)));
 
         await Assert.ThrowsAnyAsync<ArgumentException>(
-            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { Allergens = "" }));
+            () => menu.CreateItemAsync(branch.BranchId, category.Id, new CreateMenuItemCommand("Free lunch", -1L)));
+
+        // Optional is not unchecked. An explicit zero prep time is a typo rather than "no prep
+        // time", and an empty guid is not a photo id.
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => menu.CreateItemAsync(
+                branch.BranchId, category.Id, new CreateMenuItemCommand("Soup", 800L, PrepMinutes: 0)));
 
         await Assert.ThrowsAnyAsync<ArgumentException>(
-            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { PrepMinutes = 0 }));
+            () => menu.CreateItemAsync(
+                branch.BranchId, category.Id, new CreateMenuItemCommand("Soup", 800L, PhotoId: Guid.Empty)));
+    }
 
-        await Assert.ThrowsAnyAsync<ArgumentException>(
-            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { PhotoId = Guid.Empty }));
+    /// <summary>
+    /// <b>Test 2.</b> An incomplete item is absent from the diner-facing menu and present in the
+    /// console's.
+    /// </summary>
+    /// <remarks>
+    /// The two reads disagree on purpose, and this is the pair of assertions that says so. A
+    /// manager has to see the dish that still needs a photo - that is what saving it half-entered
+    /// is for - and a diner must never see it, because somebody reading an empty allergen list
+    /// reasonably concludes there are none.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_incomplete_item_is_hidden_from_diners_and_shown_to_the_console()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        await Assert.ThrowsAnyAsync<ArgumentException>(
-            () => menu.CreateItemAsync(branch.BranchId, category.Id, complete with { Ingredients = null! }));
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var menu = fixture.CreateMenuService(db);
+        var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Mains"));
+        var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
 
-        Assert.Empty((await menu.GetMenuAsync(branch.BranchId)).Single().Items);
+        var finished = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Khachapuri", photoId));
 
-        var created = await menu.CreateItemAsync(branch.BranchId, category.Id, complete);
-        Assert.Equal("Khachapuri", created.Name);
-        Assert.True(created.IsAvailable);
+        var unfinished = await menu.CreateItemAsync(
+            branch.BranchId, category.Id, Item("Lamb kebab", photoId) with { PhotoId = null });
+
+        // A sold-out but complete dish, to pin the contrast: unavailable is shown, unfinished is not.
+        var soldOut = await menu.CreateItemAsync(branch.BranchId, category.Id, Item("Areni red", photoId));
+        await menu.SetItemAvailabilityAsync(branch.BranchId, soldOut.Id, isAvailable: false);
+
+        var console = (await menu.GetMenuAsync(branch.BranchId)).Single().Items;
+
+        Assert.Equal(3, console.Count);
+        Assert.Contains(console, i => i.Id == unfinished.Id && !i.IsComplete);
+        Assert.Contains(console, i => i.Id == finished.Id && i.IsComplete);
+
+        await using var readDb = fixture.CreateContext(clock);
+        var diner = await SqlServerFixture.CreateMenuQuery(readDb).GetBranchMenuAsync(branch.BranchId);
+        var dinerItems = diner.Categories.SelectMany(c => c.Items).ToList();
+
+        Assert.DoesNotContain(dinerItems, i => i.Id == unfinished.Id);
+        Assert.Contains(dinerItems, i => i.Id == finished.Id);
+
+        // Sold out is present and flagged, because "we are out of it tonight" is an answer.
+        Assert.Contains(dinerItems, i => i.Id == soldOut.Id && !i.IsAvailable);
+
+        // And everything a diner does see is complete, which is what makes those fields safe to read.
+        Assert.All(dinerItems, i =>
+        {
+            Assert.True(i.IsComplete);
+            Assert.NotNull(i.Photo);
+            Assert.False(string.IsNullOrWhiteSpace(i.Description));
+            Assert.False(string.IsNullOrWhiteSpace(i.Ingredients));
+            Assert.False(string.IsNullOrWhiteSpace(i.Allergens));
+            Assert.False(string.IsNullOrWhiteSpace(i.PortionSize));
+            Assert.True(i.PrepMinutes > 0);
+        });
+    }
+
+    // ------------------------------------------------------------ 5 and 6. moving an item
+
+    /// <summary>
+    /// <b>Tests 5 and 6.</b> An item moves between categories of the same branch and lands last;
+    /// a category on another branch is refused; the order lines that reference it are untouched.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_item_moves_category_within_a_branch_lands_last_and_leaves_order_lines_alone()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var menu = fixture.CreateMenuService(db);
+        var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
+
+        var drinks = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Drinks"));
+        var desserts = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Desserts", 1));
+
+        // Two desserts already in a deliberate order, so "last" is a real claim and not "first".
+        await menu.CreateItemAsync(branch.BranchId, desserts.Id, Item("Pakhlava", photoId) with { DisplayOrder = 0 });
+        await menu.CreateItemAsync(branch.BranchId, desserts.Id, Item("Gata", photoId) with { DisplayOrder = 7 });
+
+        var affogato = await menu.CreateItemAsync(
+            branch.BranchId, drinks.Id, Item("Affogato", photoId) with { PriceAmd = 1_600L, DisplayOrder = 0 });
+
+        var lineId = await PlaceOrderLineAsync(db, branch, affogato.Id, affogato.Name, affogato.PriceAmd);
+
+        var moved = await menu.UpdateItemAsync(
+            branch.BranchId, affogato.Id, new UpdateMenuItemCommand(CategoryId: desserts.Id));
+
+        Assert.Equal(desserts.Id, moved.CategoryId);
+        Assert.Equal(8, moved.DisplayOrder);
+
+        var categories = await menu.GetMenuAsync(branch.BranchId);
+
+        Assert.Empty(categories.Single(c => c.Id == drinks.Id).Items);
+        Assert.Equal(
+            ["Pakhlava", "Gata", "Affogato"],
+            categories.Single(c => c.Id == desserts.Id).Items.Select(i => i.Name));
+
+        // Test 6: the line snapshotted a name and a price and never referenced a category, so
+        // reorganising the menu cannot reach back and change a bill.
+        await using var verify = fixture.CreateContext(clock);
+        var line = await verify.TabOrderLines.AsNoTracking().FirstAsync(l => l.Id == lineId);
+
+        Assert.Equal("Affogato", line.NameSnapshot);
+        Assert.Equal(1_600L, line.UnitPriceAmdSnapshot);
+        Assert.Equal(affogato.Id, line.MenuItemId);
+
+        // A category on another branch is refused, and the refusal names the field, so the console
+        // highlights the category picker rather than the whole form.
+        var otherBranch = await TestBranchBuilder.CreateAsync(db);
+        var elsewhere = await menu.CreateCategoryAsync(otherBranch.BranchId, new CreateMenuCategoryCommand("Sides"));
+
+        var refused = await Assert.ThrowsAsync<FieldValidationException>(
+            () => menu.UpdateItemAsync(branch.BranchId, affogato.Id, new UpdateMenuItemCommand(CategoryId: elsewhere.Id)));
+
+        Assert.Equal("categoryId", refused.Field);
+        Assert.Equal(elsewhere.Id, Assert.Single(refused.Violations).Value);
+
+        await using var unchanged = fixture.CreateContext(clock);
+        Assert.Equal(
+            desserts.Id,
+            (await unchanged.MenuItems.AsNoTracking().FirstAsync(i => i.Id == affogato.Id)).MenuCategoryId);
     }
 
     // ------------------------------------------------------------ 15. prices are snapshotted
@@ -289,10 +466,11 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ helpers
 
+    /// <summary>A complete item - every field completeness is measured on is filled in.</summary>
     private static CreateMenuItemCommand Item(string name, Guid photoId) => new(
         Name: name,
-        Description: $"House {name.ToLowerInvariant()}",
         PriceAmd: 2_500L,
+        Description: $"House {name.ToLowerInvariant()}",
         PhotoId: photoId,
         Ingredients: "flour, cheese, egg",
         Allergens: "gluten, dairy, egg",

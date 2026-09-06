@@ -1,4 +1,5 @@
 using Yalla.Application.BranchSettings;
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
@@ -86,7 +87,7 @@ public class PlatformAdminRulesTests
     // ------------------------------------------------------------ 9. opening hours
 
     [Fact]
-    public void Overlapping_opening_hours_within_a_day_are_rejected()
+    public void Overlapping_opening_hours_within_a_day_are_rejected_naming_the_block()
     {
         var blocks = new List<OpeningHoursBlock>
         {
@@ -94,8 +95,17 @@ public class PlatformAdminRulesTests
             new(DayOfWeek.Monday, new TimeOnly(14, 0), new TimeOnly(23, 0)),
         };
 
-        var refused = Assert.Throws<ArgumentException>(() => OpeningHoursRules.Normalise(blocks));
+        var refused = Assert.Throws<FieldValidationException>(() => OpeningHoursRules.Normalise(blocks));
+
         Assert.Contains("Monday", refused.Message);
+
+        // The body is an array, so the field is indexed - which is what lets a form rendering a row
+        // per block put the message on the offending row rather than at the top.
+        var violation = Assert.Single(refused.Violations);
+
+        Assert.Equal("[1].opensAt", violation.Field);
+        Assert.Equal(new TimeOnly(14, 0), violation.Value);
+        Assert.Equal(FieldBounds.Conflict, violation.Bound);
     }
 
     [Fact]
@@ -125,7 +135,40 @@ public class PlatformAdminRulesTests
             new(DayOfWeek.Friday, new TimeOnly(23, 0), new TimeOnly(23, 30)),
         };
 
-        Assert.Throws<ArgumentException>(() => OpeningHoursRules.Normalise(blocks));
+        Assert.Throws<FieldValidationException>(() => OpeningHoursRules.Normalise(blocks));
+    }
+
+    /// <summary>
+    /// <b>Test 8, for the hours form.</b> Three bad blocks come back as three violations.
+    /// </summary>
+    /// <remarks>
+    /// Refusing the first and stopping made an owner fixing a week's hours submit once per mistake.
+    /// </remarks>
+    [Fact]
+    public void Three_bad_opening_blocks_are_all_reported_each_against_its_own_row()
+    {
+        var blocks = new List<OpeningHoursBlock>
+        {
+            new(DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(15, 0)),
+            new(DayOfWeek.Monday, new TimeOnly(14, 0), new TimeOnly(23, 0)),   // overlaps the first
+            new(DayOfWeek.Tuesday, new TimeOnly(12, 0), new TimeOnly(12, 0)),  // no length
+            new(DayOfWeek.Friday, new TimeOnly(10, 0), new TimeOnly(18, 0)),
+            new(DayOfWeek.Friday, new TimeOnly(17, 0), new TimeOnly(23, 0)),   // overlaps the fourth
+        };
+
+        var refused = Assert.Throws<FieldValidationException>(() => OpeningHoursRules.Normalise(blocks));
+
+        Assert.Equal(3, refused.Violations.Count);
+
+        Assert.Equal(
+            ["[2].closesAt", "[1].opensAt", "[4].opensAt"],
+            refused.Violations.Select(v => v.Field));
+
+        // And the same complaints arrive keyed by field for anything reading RFC 7807's errors map.
+        var errors = refused.AsErrorMap();
+
+        Assert.Equal(3, errors.Count);
+        Assert.All(errors.Values, messages => Assert.NotEmpty(messages));
     }
 
     // ------------------------------------------------------------ 10 and 11. the floor plan
@@ -178,17 +221,75 @@ public class PlatformAdminRulesTests
 
     // ------------------------------------------------------------ policy bounds
 
+    /// <summary>
+    /// <b>Test 7.</b> A bounds refusal carries the field, the bound it broke and the value sent.
+    /// </summary>
+    /// <remarks>
+    /// It used to carry prose and nothing else - the <c>ParamName</c> was the English label "Turn
+    /// time" - so the console kept a label-to-input lookup table keyed on server text while its own
+    /// labels were localised. The moment either side was translated the table silently stopped
+    /// matching and every message fell back to form-level.
+    /// </remarks>
     [Theory]
     [InlineData(5)]
     [InlineData(12 * 60)]
-    public void A_turn_time_of_five_minutes_or_twelve_hours_is_refused_with_a_clear_message(int turnTime)
+    public void A_turn_time_of_five_minutes_or_twelve_hours_is_refused_naming_the_field(int turnTime)
     {
         var command = Policy(turnTime);
 
-        var refused = Assert.Throws<ArgumentOutOfRangeException>(() => command.ToPolicy());
+        var refused = Assert.Throws<FieldValidationException>(() => command.ToPolicy());
 
         Assert.Contains("Turn time", refused.Message);
         Assert.Contains(turnTime.ToString(), refused.Message);
+
+        var violation = Assert.Single(refused.Violations);
+
+        // The wire name, in the casing the OpenAPI schema uses - not a label.
+        Assert.Equal("turnTimeMinutes", violation.Field);
+        Assert.Equal(turnTime, violation.Value);
+        Assert.Equal(ReservationPolicyLimits.MinTurnTimeMinutes, violation.Min);
+        Assert.Equal(ReservationPolicyLimits.MaxTurnTimeMinutes, violation.Max);
+        Assert.Equal(turnTime < ReservationPolicyLimits.MinTurnTimeMinutes ? FieldBounds.Min : FieldBounds.Max, violation.Bound);
+    }
+
+    /// <summary>
+    /// <b>Test 8.</b> A request breaking three bounds reports three, not the first.
+    /// </summary>
+    /// <remarks>
+    /// The policy constructor throws on the first bad number it meets, so this only works because
+    /// the bounds are checked against the raw values before the policy is built. A form that
+    /// surfaces one error at a time makes an owner submit six times.
+    /// </remarks>
+    [Fact]
+    public void A_policy_breaking_three_bounds_reports_all_three()
+    {
+        var command = Policy(5) with
+        {
+            BookingWindowDays = 0,
+            ServiceChargePercent = 150m,
+        };
+
+        var refused = Assert.Throws<FieldValidationException>(() => command.ToPolicy());
+
+        Assert.Equal(3, refused.Violations.Count);
+
+        Assert.Equal(
+            ["turnTimeMinutes", "bookingWindowDays", "serviceChargePercent"],
+            refused.Violations.Select(v => v.Field));
+
+        // context.field is the first, for a form that can only highlight one input.
+        Assert.Equal("turnTimeMinutes", refused.Field);
+
+        // And every one of them carries what it broke and what was sent.
+        Assert.All(refused.Violations, v =>
+        {
+            Assert.NotNull(v.Bound);
+            Assert.NotNull(v.Value);
+            Assert.False(string.IsNullOrWhiteSpace(v.Message));
+        });
+
+        Assert.Equal(150m, refused.Violations.Single(v => v.Field == "serviceChargePercent").Value);
+        Assert.Equal(0, refused.Violations.Single(v => v.Field == "bookingWindowDays").Value);
     }
 
     [Fact]

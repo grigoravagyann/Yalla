@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.BranchSettings;
 using Yalla.Application.Platform;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -30,6 +31,7 @@ internal sealed class PlatformService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    IBranchReadinessQuery readiness,
     ILogger<PlatformService> logger) : IPlatformService
 {
     private const string VenueType_ = "Venue";
@@ -329,6 +331,21 @@ internal sealed class PlatformService(
                     $"This branch has {openTabs.Count} open tab(s) on table(s) {string.Join(", ", openTabs)}. "
                     + "Moving it to Free would hide those bills from the people who owe them. "
                     + "Wait until they are settled.");
+            }
+        }
+
+        // Going live is where the menu rule is enforced. Prompt 6 required a photo, ingredients,
+        // allergens, a portion size and a prep time on create, for a good reason - the fields are
+        // what stop a diner having to ask a waiter - but it made an eighty-dish menu unenterable.
+        // The requirement did not go away; it moved here, to the moment the branch starts taking
+        // diners, which is the moment it actually matters. See docs/menu-completeness.md.
+        if (command.SubscriptionTier is SubscriptionTier.Paid && !branch.IsPaid)
+        {
+            var incomplete = await readiness.IncompleteMenuItemIdsAsync(branch.Id, cancellationToken);
+
+            if (incomplete.Count > 0)
+            {
+                throw new BranchNotReadyForDinersException(branch.Id, incomplete.Count);
             }
         }
 
