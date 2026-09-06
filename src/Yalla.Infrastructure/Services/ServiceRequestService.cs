@@ -22,6 +22,7 @@ internal sealed class ServiceRequestService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    StaffBranchGuard branchGuard,
     TabLedger ledger,
     ILogger<ServiceRequestService> logger) : IServiceRequestService
 {
@@ -136,6 +137,9 @@ internal sealed class ServiceRequestService(
             .FirstOrDefaultAsync(r => r.Id == serviceRequestId, cancellationToken)
             ?? throw new KeyNotFoundException($"Service request {serviceRequestId} was not found.");
 
+        await branchGuard.RequireAsync(
+            staffId, request.BranchId, "Acknowledging this request", "request", cancellationToken);
+
         var nowUtc = clock.UtcNow;
 
         // Two waiters tapping the same request at once is the normal case, not a race worth
@@ -179,4 +183,5 @@ internal sealed class ServiceRequestService(
         actor.Type == ActorType.Staff && actor.StaffMemberId is { } id
             ? id
             : throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
+
 }

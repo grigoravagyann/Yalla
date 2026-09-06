@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -177,6 +179,174 @@ public class AuthorizationBoundaryTests(SqlServerFixture fixture)
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Contains(response.Headers.WwwAuthenticate, header => header.Scheme == "Bearer");
+    }
+
+    /// <summary>
+    /// A waiter at one branch cannot acknowledge another branch's service requests.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The route is <c>/api/service-requests/{id}/acknowledge</c>. It names no branch and no tab,
+    /// so <c>BranchScoped</c> cannot be applied to it - the handler resolves a branch from
+    /// <c>branchId</c>, <c>tableId</c> or <c>tabId</c>, this route has none of them, and the policy
+    /// would fail closed on every call. The service-level guard is therefore the only thing
+    /// standing here, which is why this test is at the HTTP level: the failure mode it guards
+    /// against is not "the guard got the answer wrong", it is "there is no guard".
+    /// </para>
+    /// <para>
+    /// The refusal has to leave the request <i>unacknowledged</i>, not merely answer 403. An
+    /// acknowledged request drops out of <c>GET /api/branches/{id}/service-requests</c>, so the
+    /// damage is that a table's call for the bill vanishes off the floor screen while the diner's
+    /// app says somebody is coming - silent in both directions.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_waiter_at_another_branch_cannot_acknowledge_a_service_request()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branchA;
+        AuthBranch branchB;
+        AuthTab tabAtB;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branchA = await AuthTestData.CreateBranchAsync(db);
+            branchB = await AuthTestData.CreateBranchAsync(db);
+
+            tabAtB = await AuthTestData.CreateOpenTabAsync(
+                db, branchB, branchB.FirstTableId, factory.Clock.UtcNow);
+        }
+
+        // The diner at branch B asks for the bill. The id comes straight back in the 201, which is
+        // also how anybody holding a participant token learns it - scanning the QR code at that
+        // table is a public flow, so this is not a guessing game.
+        using var diner = factory.CreateClientWithToken(await JoinAsync(factory, tabAtB.JoinToken));
+
+        var raised = await diner.PostAsJsonAsync(
+            $"/api/tabs/{tabAtB.TabId}/service-requests",
+            new { preset = (int)ServiceRequestPreset.TheBill });
+
+        Assert.Equal(HttpStatusCode.Created, raised.StatusCode);
+
+        var serviceRequestId = (await raised.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("serviceRequestId").GetGuid();
+
+        // A waiter at branch A holds a perfectly good staff token. It is simply not for this
+        // branch, and this endpoint never used to look.
+        using var waiterAtA = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branchA));
+
+        var poached = await waiterAtA.PostAsJsonAsync(
+            $"/api/service-requests/{serviceRequestId}/acknowledge", new { });
+
+        Assert.Equal(HttpStatusCode.Forbidden, poached.StatusCode);
+
+        using var waiterAtB = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branchB));
+
+        // Still on branch B's floor screen. This is the assertion that matters.
+        var open = await waiterAtB.GetAsync($"/api/branches/{branchB.BranchId}/service-requests");
+
+        Assert.Equal(HttpStatusCode.OK, open.StatusCode);
+
+        var rows = await open.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Contains(
+            rows.EnumerateArray(),
+            row => row.GetProperty("serviceRequestId").GetGuid() == serviceRequestId);
+
+        // And the waiter who does work there is not locked out by the guard.
+        var acknowledged = await waiterAtB.PostAsJsonAsync(
+            $"/api/service-requests/{serviceRequestId}/acknowledge", new { });
+
+        Assert.Equal(HttpStatusCode.OK, acknowledged.StatusCode);
+    }
+
+    /// <summary>
+    /// A staff token for one branch cannot settle or write off another branch's bill.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The money path, and the one where getting this wrong costs actual cash: marking a tab paid
+    /// closes it with nothing in the drawer, and writing one off erases the balance outright. Both
+    /// routes carry <c>tabId</c>, so <c>BranchScoped</c> can cover them and now does - the service
+    /// guard is checked underneath it as well, because the policy resolves the branch through a
+    /// database read and a route that stopped carrying <c>tabId</c> would silently lose the cover.
+    /// </para>
+    /// <para>
+    /// The controls assert <b>not</b> 403 rather than a specific success: the fixture tab has no
+    /// orders on it, so a cash payment against a zero balance is legitimately refused on its own
+    /// terms. What is being tested is who gets past authorisation, not what the arithmetic says.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_staff_token_for_branch_A_cannot_settle_branch_Bs_bill()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branchA;
+        AuthBranch branchB;
+        AuthTab tabAtB;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branchA = await AuthTestData.CreateBranchAsync(db);
+            branchB = await AuthTestData.CreateBranchAsync(db);
+
+            tabAtB = await AuthTestData.CreateOpenTabAsync(
+                db, branchB, branchB.FirstTableId, factory.Clock.UtcNow);
+        }
+
+        using var waiterAtA = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branchA));
+
+        var cash = await waiterAtA.PostAsJsonAsync(
+            $"/api/tabs/{tabAtB.TabId}/payments/cash",
+            new { amountAmd = 5_000L, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Forbidden, cash.StatusCode);
+
+        using var managerAtA = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInManagerAsync(factory, branchA));
+
+        var writeOff = await managerAtA.PostAsJsonAsync(
+            $"/api/tabs/{tabAtB.TabId}/abandon", new { reason = "not my venue" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, writeOff.StatusCode);
+
+        // Nothing was taken and nothing was written off.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var tab = await db.Tabs.AsNoTracking().FirstAsync(t => t.Id == tabAtB.TabId);
+
+            Assert.Equal(TabStatus.Open, tab.Status);
+
+            Assert.Empty(
+                await db.Payments.AsNoTracking().Where(p => p.TabId == tabAtB.TabId).ToListAsync());
+        }
+
+        // The staff who do work there get past the boundary.
+        using var waiterAtB = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branchB));
+
+        var ownCash = await waiterAtB.PostAsJsonAsync(
+            $"/api/tabs/{tabAtB.TabId}/payments/cash",
+            new { amountAmd = 5_000L, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.NotEqual(HttpStatusCode.Forbidden, ownCash.StatusCode);
+
+        using var managerAtB = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInManagerAsync(factory, branchB));
+
+        var ownWriteOff = await managerAtB.PostAsJsonAsync(
+            $"/api/tabs/{tabAtB.TabId}/abandon", new { reason = "walked out" });
+
+        Assert.NotEqual(HttpStatusCode.Forbidden, ownWriteOff.StatusCode);
     }
 
     private YallaApiFactory NewFactory() =>

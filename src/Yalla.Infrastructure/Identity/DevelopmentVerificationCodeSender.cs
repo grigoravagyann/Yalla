@@ -13,10 +13,12 @@ namespace Yalla.Infrastructure.Identity;
 /// nothing about sign-in should have waited for it to be settled.
 /// </para>
 /// <para>
-/// It is safe to leave registered outside Development in the sense that it sends nothing to
-/// anybody - but it does write a live credential to the log, so a real sender must replace it
-/// before this reaches production. The startup warning below is there to make that impossible to
-/// forget.
+/// <b>Registered in Development only.</b> It writes a live credential to the log, so
+/// <c>DependencyInjection.AddAuthenticationServices</c> chooses it from the host environment
+/// rather than from configuration - an environment variable must not be able to switch this on in
+/// a deployed environment. Everywhere else <see cref="UnconfiguredVerificationCodeSender"/> takes
+/// its place and logs the failure without the credential. <c>Program.cs</c> says at startup which
+/// of the two is live.
 /// </para>
 /// </remarks>
 internal sealed class DevelopmentVerificationCodeSender(ILogger<DevelopmentVerificationCodeSender> logger)

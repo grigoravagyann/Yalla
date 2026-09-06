@@ -31,4 +31,17 @@ RUN dotnet publish "./Yalla.Api.csproj" -c $BUILD_CONFIGURATION -o /app/publish 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+
+# The photo root and the Serilog file sink are both relative to the content root, and
+# LocalDiskPhotoStorage refuses to start when its root is not writable - deliberately, because a
+# photo pipeline that silently drops uploads is worse than one that will not boot. So both
+# directories have to exist and belong to the app user before the switch below, or the container
+# fails on start rather than at the first upload.
+RUN mkdir -p /app/.photos /app/Logs && chown -R $APP_UID /app/.photos /app/Logs
+
+# Not root. The aspnet image ships this user (UID 1654) but does not select it, and the default
+# Visual Studio template's USER line was missing here - so any code-execution primitive in the API
+# ran with nothing left to escalate to.
+USER $APP_UID
+
 ENTRYPOINT ["dotnet", "Yalla.Api.dll"]

@@ -363,3 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 # Uploaded photos. Local storage root - never in the repository.
 .photos/
+
+# gstack audit output and local artefacts stay on this machine.
+.gstack/
