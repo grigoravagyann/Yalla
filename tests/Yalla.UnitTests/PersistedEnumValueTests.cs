@@ -1,4 +1,4 @@
-using Yalla.Domain.Enums;
+﻿using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 
 namespace Yalla.UnitTests;
@@ -201,6 +201,14 @@ public class PersistedEnumValueTests
         Assert.Equal(1, (int)StayHint.OneHour);
         Assert.Equal(2, (int)StayHint.TwoHours);
         Assert.Equal(3, (int)StayHint.ThreeHoursPlus);
+
+        // Zero is a real member here, unlike every other enum in this file. Every booking that
+        // predates the column reads back as Unknown, and the database default is 0 - so the value
+        // has to mean "not stated" rather than be a sentinel nothing holds.
+        Assert.Equal(0, (int)ReservationChannel.Unknown);
+        Assert.Equal(1, (int)ReservationChannel.App);
+        Assert.Equal(2, (int)ReservationChannel.Web);
+        Assert.Equal(3, (int)ReservationChannel.Staff);
     }
 
     [Fact]
@@ -284,7 +292,8 @@ public class PersistedEnumValueTests
         [
             nameof(ActorType), nameof(AdjustmentKind), nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
-            nameof(RefreshTokenSubject), nameof(ReservationStatus), nameof(ServiceRequestPreset),
+            nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
+            nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
             nameof(TableSessionSource), nameof(TableShape), nameof(TableStatus), nameof(VenueType),

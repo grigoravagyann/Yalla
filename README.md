@@ -9,7 +9,8 @@ tablet, and the owner's admin panel.
 - `SCHEMA.md` — the database schema and the decisions behind it.
 - `docs/` — one document per subsystem: `auth.md`, `reservations.md`, `tabs.md`,
   `platform-admin.md`, `openapi.md`, `billing.md`, `notifications.md`,
-  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`, `contract-tests.md`.
+  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`, `contract-tests.md`,
+  `reports.md`.
 
 ## Running locally
 

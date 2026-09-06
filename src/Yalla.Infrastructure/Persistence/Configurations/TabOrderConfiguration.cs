@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Tabs;
 
@@ -44,5 +44,10 @@ internal sealed class TabOrderConfiguration : EntityConfiguration<TabOrder>
 
         // The kitchen queue: everything outstanding on this tab, oldest first.
         builder.HasIndex(o => new { o.TabId, o.Status });
+
+        // Reporting. Orders are the bridge between a date range and the lines it contains, so every
+        // menu and revenue-by-hour report seeks orders placed inside the range first.
+        builder.HasIndex(o => o.PlacedAtUtc)
+            .HasDatabaseName("IX_TabOrders_PlacedAtUtc");
     }
 }

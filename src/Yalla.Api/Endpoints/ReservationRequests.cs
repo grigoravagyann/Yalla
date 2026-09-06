@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 
@@ -59,6 +59,11 @@ public sealed record ReleaseReservationRequest(
 /// for the same party.
 /// </param>
 /// <param name="StayHint">Advisory only. The interval comes from the branch's turn time.</param>
+/// <param name="Channel">
+/// Where the booking was made from, so the reports can count how many arrive from the public page.
+/// Self-reported and never authorised on. Send <c>Web</c> from the browser and <c>App</c> from the
+/// diner app; a booking a waiter takes over the phone is <c>Staff</c>. See <c>docs/reports.md</c>.
+/// </param>
 public sealed record CreateReservationRequest(
     [Required] Guid BranchId,
     [Required] Guid TableId,
@@ -68,7 +73,8 @@ public sealed record CreateReservationRequest(
     [Required][MaxLength(200)] string GuestName,
     [Required][MaxLength(32)] string GuestPhone,
     [Required] Guid ClientCommandId,
-    StayHint? StayHint = null) : IClientCommandRequest;
+    StayHint? StayHint = null,
+    ReservationChannel Channel = ReservationChannel.Unknown) : IClientCommandRequest;
 
 /// <summary>Body for a diner cancelling their own booking.</summary>
 /// <param name="Reason">Optional free text, recorded on the booking.</param>

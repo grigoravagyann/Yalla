@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
@@ -332,9 +332,37 @@ internal static class ApiExceptionMapper
                 ["duplicateLabels"] = e.DuplicateLabels,
             }),
 
+        // A query string or route value the binder could not turn into what the handler asked for -
+        // a missing required parameter, a date that is not a date. Answered as 400 rather than
+        // falling through to the 500 catch-all: the request never reached any of our code, and
+        // reporting a client's typo as a server fault sends somebody looking in the wrong place
+        // and buries a real error in the log behind it.
+        //
+        // The message is the binder's own and names the parameter, which is what the caller needs.
+        BadHttpRequestException e => new MappedError(
+            StatusCodes.Status400BadRequest,
+            ErrorCodes.InvalidRequest,
+            e.Message,
+            LogAsError: false),
+
+        // A report range nobody meant to ask for. Must stay ABOVE ArgumentOutOfRangeException,
+        // which it derives from, or it would come back as a generic bad request and the client
+        // would have no way to say what the limit is.
+        Yalla.Application.Reports.ReportRangeTooLongException e => new MappedError(
+            StatusCodes.Status400BadRequest,
+            ErrorCodes.ReportRangeTooLong,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["field"] = "range",
+                ["requestedDays"] = e.RequestedDays,
+                ["maxDays"] = e.MaxDays,
+            }),
+
         // Everything else the domain guards refuse. These carry a ParamName that is already the
         // field's name - Guard and every entity constructor pass nameof(theParameter) - so the
-        // sweep is to stop throwing it away, not to invent it. See FieldFrom.
+        // sweep is to stop throwing it away, not to invent it. See ArgumentContext.
         ArgumentOutOfRangeException e => new MappedError(
             StatusCodes.Status400BadRequest,
             ErrorCodes.InvalidRequest,

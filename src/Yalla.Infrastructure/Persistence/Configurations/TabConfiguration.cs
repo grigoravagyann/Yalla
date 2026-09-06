@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Tabs;
 
@@ -61,6 +61,13 @@ internal sealed class TabConfiguration : EntityConfiguration<Tab>
 
         // The staff app's live list: open tabs at this branch.
         builder.HasIndex(t => new { t.BranchId, t.Status });
+
+        // Reporting. Revenue is counted on tabs that closed inside the range, so this is the index
+        // the money reports seek on. Filtered to closed tabs: an open tab has no revenue to report
+        // and there is no point carrying every live tab in the branch through this index.
+        builder.HasIndex(t => new { t.BranchId, t.ClosedAtUtc })
+            .HasFilter("[ClosedAtUtc] IS NOT NULL")
+            .HasDatabaseName("IX_Tabs_BranchId_ClosedAtUtc");
 
         // One tab per seating, enforced by the database. Two phones at a table that has a session
         // but no tab yet both try to attach one; the first wins and the second is caught and

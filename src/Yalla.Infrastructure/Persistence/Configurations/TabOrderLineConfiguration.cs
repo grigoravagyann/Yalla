@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
 using Yalla.Domain.Tabs;
@@ -52,5 +52,12 @@ internal sealed class TabOrderLineConfiguration : EntityConfiguration<TabOrderLi
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasIndex(l => l.TabOrderId);
+
+        // Reporting. "Top items" and "items never ordered" both group lines by menu item over a
+        // date range, and the range lives on the order rather than the line - so this is the index
+        // that makes the join cheap from the line side once the orders are narrowed.
+        builder.HasIndex(l => new { l.MenuItemId, l.TabOrderId })
+            .IncludeProperties(l => new { l.Quantity, l.UnitPriceAmdSnapshot, l.VoidedAtUtc })
+            .HasDatabaseName("IX_TabOrderLines_MenuItemId_TabOrderId_Reporting");
     }
 }

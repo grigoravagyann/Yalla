@@ -1,4 +1,4 @@
-namespace Yalla.Api.Errors;
+﻿namespace Yalla.Api.Errors;
 
 /// <summary>
 /// The stable slugs clients branch on. Add to this list; never reword an existing value, because
@@ -181,6 +181,18 @@ public static class ErrorCodes
     /// </remarks>
     public const string PreconditionFailed = "precondition-failed";
 
+    /// <summary>
+    /// The report range is longer than any report will run. HTTP 400, with the limit and the
+    /// number of days asked for in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than a generic bad request, because the client's correct response is specific:
+    /// narrow the range, or ask for the months separately. A range nobody meant to ask for is a
+    /// table scan nobody meant to run, and a refusal that says the limit is more use than a request
+    /// that times out.
+    /// </remarks>
+    public const string ReportRangeTooLong = "report-range-too-long";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -222,6 +234,7 @@ public static class ErrorCodes
         VenueDeletionBlocked => "Venue cannot be deleted",
         FloorPlanInvalid => "Floor plan invalid",
         BranchNotReady => "Branch is not ready for diners",
+        ReportRangeTooLong => "Report range too long",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

@@ -1,4 +1,4 @@
-using Yalla.Domain.Enums;
+﻿using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Reservations;
 
@@ -24,6 +24,18 @@ namespace Yalla.Application.Reservations;
 /// second table for the same party.
 /// </param>
 /// <param name="StayHint">Advisory only. The interval comes from the branch's turn time.</param>
+/// <param name="Channel">
+/// Where the booking was made from. Self-reported by the client, and a reporting field only - no
+/// rule reads it and no booking is refused because of it, so a client that lies costs one wrong
+/// number in a report.
+/// <para>
+/// Somebody who books from the public branch page has no app and therefore no push channel, so the
+/// reminder, the late nudge and one-tap cancel do not reach them. How often that happens is the
+/// number that decides whether an SMS or Telegram channel is worth paying for - and there is no way
+/// for the server to work it out on its own, because an app's HTTPS request and a browser's look
+/// identical. See <c>docs/reports.md</c>.
+/// </para>
+/// </param>
 public sealed record CreateReservationCommand(
     Guid BranchId,
     Guid TableId,
@@ -33,7 +45,8 @@ public sealed record CreateReservationCommand(
     string GuestName,
     string GuestPhone,
     Guid ClientCommandId,
-    StayHint? StayHint = null);
+    StayHint? StayHint = null,
+    ReservationChannel Channel = ReservationChannel.Unknown);
 
 /// <summary>A diner giving up a booking.</summary>
 /// <param name="ReservationId">The booking to cancel.</param>

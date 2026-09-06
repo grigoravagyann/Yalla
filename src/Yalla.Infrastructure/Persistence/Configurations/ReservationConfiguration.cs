@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
 using Yalla.Domain.Occupancy;
@@ -84,5 +84,17 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
 
         // "What has this diner got booked?" - the /mine screen, and the rolling no-show count.
         builder.HasIndex(r => new { r.DinerUserId, r.StartUtc });
+
+        // Reporting. Every reservation report is "this branch, this local date range, grouped by
+        // outcome", and the existing (BranchId, StartUtc) index seeks the range but then looks up
+        // the status for every row it finds. Including it makes the whole group-by a covering scan.
+        builder.HasIndex(r => new { r.BranchId, r.StartUtc, r.Status })
+            .HasDatabaseName("IX_Reservations_BranchId_StartUtc_Status");
+
+        // Self-reported, defaulted for every row that predates the column - which is what Unknown
+        // means and why it is the zero value.
+        builder.Property(r => r.Channel)
+            .IsRequired()
+            .HasDefaultValue(Yalla.Domain.Enums.ReservationChannel.Unknown);
     }
 }

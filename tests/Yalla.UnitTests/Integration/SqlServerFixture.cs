@@ -301,6 +301,23 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// </remarks>
     internal static BranchReadinessQuery CreateReadinessQuery(YallaDbContext db) => new(db);
 
+    /// <summary>The five report groups over one context, acting as the given caller.</summary>
+    /// <remarks>
+    /// The actor is composed in rather than stubbed because a venue rollup is refused for anyone
+    /// below an owner, and that rule lives in the query rather than at the endpoint - a rollup
+    /// crosses branches, so the branch-scoped policy no longer covers it.
+    /// </remarks>
+    internal static ReportQuery CreateReportQuery(YallaDbContext db, ICurrentActor actor) => new(db, actor);
+
+    /// <summary>The anonymous public surface over one context, with its own cache.</summary>
+    internal static PublicVenueQuery CreatePublicQuery(YallaDbContext db, IClock clock) =>
+        new(
+            db,
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+            clock,
+            CreateMenuQuery(db));
+
     internal BranchSettingsService CreateBranchSettingsService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, NullLogger<BranchSettingsService>.Instance);
 

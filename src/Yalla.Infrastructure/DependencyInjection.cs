@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +13,8 @@ using Yalla.Infrastructure.Notifications;
 using Yalla.Application.Media;
 using Yalla.Application.Menus;
 using Yalla.Application.Platform;
+using Yalla.Application.Public;
+using Yalla.Application.Reports;
 using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Staff;
@@ -66,6 +68,11 @@ public static class DependencyInjection
         // The onboarding checklist, answered by the server. Registered before the platform service
         // because that service consults it: a branch cannot go Paid while its menu has holes in it.
         services.AddScoped<IBranchReadinessQuery, BranchReadinessQuery>();
+
+        // The anonymous surface a link opens, and the reports behind the admin panel. Both are
+        // read-only projections over what is already stored; neither writes anything.
+        services.AddScoped<IPublicVenueQuery, PublicVenueQuery>();
+        services.AddScoped<IReportQuery, ReportQuery>();
 
         // Photos. The storage root is verified once, at construction, so a folder that cannot be
         // written to stops the process rather than surfacing as a broken menu three screens later.

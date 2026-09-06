@@ -1,4 +1,4 @@
-using Yalla.Domain.Common;
+﻿using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
 
@@ -121,6 +121,17 @@ public sealed class Reservation : Entity
     public StayHint? StayHint { get; private set; }
 
     /// <summary>
+    /// Where the booking was made from. Self-reported; see <see cref="ReservationChannel"/>.
+    /// </summary>
+    /// <remarks>
+    /// A reporting column and nothing else - no rule reads it, and no booking is refused because of
+    /// it. It is here because somebody who booked from the public page has no app and therefore no
+    /// push channel, so the reminder that the whole no-show story rests on cannot reach them, and
+    /// how often that happens is the number that decides whether an SMS channel is worth paying for.
+    /// </remarks>
+    public ReservationChannel Channel { get; private set; }
+
+    /// <summary>
     /// Optimistic concurrency token: seating, cancelling and releasing a late booking all race
     /// with each other across the diner and staff apps.
     /// </summary>
@@ -145,7 +156,8 @@ public sealed class Reservation : Entity
         Guid? dinerUserId,
         StayHint? stayHint,
         DateTime? holdExpiresAtUtc,
-        Guid clientCommandId)
+        Guid clientCommandId,
+        ReservationChannel channel)
         : base(Guid.CreateVersion7())
     {
         ClientCommandId = Guard.NotEmpty(clientCommandId, nameof(clientCommandId));
@@ -171,6 +183,7 @@ public sealed class Reservation : Entity
         HoldExpiresAtUtc = holdExpiresAtUtc is null
             ? null
             : Guard.NotLocalTime(holdExpiresAtUtc.Value, nameof(holdExpiresAtUtc));
+        Channel = Guard.Defined(channel, nameof(channel));
     }
 
     /// <summary>
@@ -199,7 +212,8 @@ public sealed class Reservation : Entity
         Guid? dinerUserId = null,
         StayHint? stayHint = null,
         DateTime? holdExpiresAtUtc = null,
-        Guid? clientCommandId = null)
+        Guid? clientCommandId = null,
+        ReservationChannel channel = ReservationChannel.Unknown)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -229,7 +243,8 @@ public sealed class Reservation : Entity
             // A booking taken over the phone by a waiter has no client to generate one, and a
             // booking with no key still needs the column to be unique. Minting one here keeps the
             // index honest without forcing every caller to invent an id it will never replay.
-            clientCommandId ?? Guid.CreateVersion7());
+            clientCommandId ?? Guid.CreateVersion7(),
+            channel);
     }
 
     /// <summary>
