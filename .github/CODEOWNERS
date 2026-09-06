@@ -1,0 +1,19 @@
+# Who must review what.
+#
+# The CI workflow is the gate that runs the build, the pending-migration check and the concurrency
+# suite against a real SQL Server - and the step that fails the run when any test skipped, because
+# a skipped concurrency test reports green while proving nothing. An unreviewed edit to that file
+# can quietly turn the whole check into theatre, so it needs a named owner rather than an ordinary
+# diff review.
+#
+# Pair this with branch protection: Settings -> Branches -> master -> Require review from Code
+# Owners, alongside Require status checks (build-and-test). CODEOWNERS alone is advisory.
+/.github/           @grigoravagyann
+/Directory.Build.props  @grigoravagyann
+/global.json        @grigoravagyann
+/.config/           @grigoravagyann
+
+# The two security boundaries this system rests on: a staff token for branch A must not act on
+# branch B, and a participant token for tab A must not act on tab B.
+/src/Yalla.Api/Authorization/       @grigoravagyann
+/src/Yalla.Infrastructure/Identity/ @grigoravagyann

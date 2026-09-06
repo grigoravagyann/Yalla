@@ -31,6 +31,7 @@ internal sealed class TabOrderService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    StaffBranchGuard branchGuard,
     TabLedger ledger,
     IOutbox outbox,
     ILogger<TabOrderService> logger) : ITabOrderService
@@ -215,7 +216,8 @@ internal sealed class TabOrderService(
         if (actor.Type == ActorType.Staff)
         {
             var staffId = RequireStaff("Place an order");
-            await RequireBranchAsync(staffId, tab.BranchId, cancellationToken);
+            await branchGuard.RequireAsync(
+                staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
             if (command.OnBehalfOfParticipantId is { } onBehalfOf)
             {
@@ -279,7 +281,8 @@ internal sealed class TabOrderService(
         var staffId = RequireStaff("Void a line");
 
         var tab = await ledger.LoadForWriteAsync(command.TabId, cancellationToken);
-        await RequireBranchAsync(staffId, tab.BranchId, cancellationToken);
+        await branchGuard.RequireAsync(
+                staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
         var order = tab.Orders.FirstOrDefault(o => o.Lines.Any(l => l.Id == command.LineId))
                     ?? throw new KeyNotFoundException($"Line {command.LineId} is not on tab {command.TabId}.");
@@ -331,7 +334,8 @@ internal sealed class TabOrderService(
         var staffId = RequireManager("Discount or comp");
 
         var tab = await ledger.LoadForWriteAsync(command.TabId, cancellationToken);
-        await RequireBranchAsync(staffId, tab.BranchId, cancellationToken);
+        await branchGuard.RequireAsync(
+                staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
         if (command.TabOrderLineId is { } lineId
             && !tab.Orders.Any(o => o.Lines.Any(l => l.Id == lineId)))
@@ -384,7 +388,8 @@ internal sealed class TabOrderService(
             ?? throw new KeyNotFoundException($"Adjustment {adjustmentId} was not found.");
 
         var tab = await ledger.LoadForWriteAsync(adjustment.TabId, cancellationToken);
-        await RequireBranchAsync(staffId, tab.BranchId, cancellationToken);
+        await branchGuard.RequireAsync(
+                staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
         adjustment.Void(clock.UtcNow, staffId);
 
@@ -417,7 +422,8 @@ internal sealed class TabOrderService(
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
             ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
 
-        await RequireBranchAsync(staffId, order.Tab.BranchId, cancellationToken);
+        await branchGuard.RequireAsync(
+            staffId, order.Tab.BranchId, "Acting on this tab", "tab", cancellationToken);
         RequireKitchenMayMake(order.Status, next);
 
         var from = order.Status;
@@ -495,7 +501,8 @@ internal sealed class TabOrderService(
         CancellationToken cancellationToken = default)
     {
         var staffId = RequireStaff("Read the order queue");
-        await RequireBranchAsync(staffId, branchId, cancellationToken);
+        await branchGuard.RequireAsync(
+            staffId, branchId, "Acting on this tab", "tab", cancellationToken);
 
         var nowUtc = clock.UtcNow;
 
@@ -618,49 +625,4 @@ internal sealed class TabOrderService(
         return staffId;
     }
 
-    /// <summary>
-    /// Confines a staff member to their own branch.
-    /// </summary>
-    /// <remarks>
-    /// The route-level <c>BranchScoped</c> policy cannot help here: these routes are addressed by
-    /// tab or by order id, so there is no branch route value to compare a claim against and the
-    /// policy would fail closed on every one of them. An owner or manager is venue-scoped rather
-    /// than branch-scoped, which is the point of that account.
-    /// </remarks>
-    private async Task RequireBranchAsync(Guid staffId, Guid branchId, CancellationToken cancellationToken)
-    {
-        var staff = await db.StaffMembers
-            .AsNoTracking()
-            .Where(s => s.Id == staffId)
-            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (staff is not { IsActive: true })
-        {
-            throw new StaffPermissionException("Acting on this tab", actor.Role, StaffRole.Waiter);
-        }
-
-        if (staff.Role == StaffRole.PlatformAdmin)
-        {
-            return;
-        }
-
-        if (staff.BranchId == branchId)
-        {
-            return;
-        }
-
-        var venueOwnsBranch = await db.Branches
-            .AsNoTracking()
-            .AnyAsync(b => b.Id == branchId && b.VenueId == staff.VenueId, cancellationToken);
-
-        if (venueOwnsBranch && staff.Role is StaffRole.Owner or StaffRole.Manager)
-        {
-            return;
-        }
-
-        throw new DomainStateException(
-            "That tab belongs to another branch. Staff act on the branch they are enrolled at, and "
-            + "an owner or manager on the branches of their own venue.");
-    }
 }

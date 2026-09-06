@@ -152,7 +152,8 @@ public static class OrderingEndpoints
     {
         var staff = app.MapGroup("/api/tabs/{tabId:guid}")
             .WithTags(EndpointConventions.StaffTag)
-            .RequireAuthorization(YallaPolicies.WaiterOrAbove);
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
 
         staff.AddEndpointFilter<ClientCommandIdFilter>();
 
@@ -299,7 +300,8 @@ public static class OrderingEndpoints
     {
         var group = app.MapGroup("/api/tabs/{tabId:guid}")
             .WithTags(EndpointConventions.StaffTag)
-            .RequireAuthorization(YallaPolicies.WaiterOrAbove);
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
 
         group.AddEndpointFilter<ClientCommandIdFilter>();
 
@@ -331,6 +333,7 @@ public static class OrderingEndpoints
         app.MapPost("/api/tabs/{tabId:guid}/abandon", AbandonAsync)
             .WithTags(EndpointConventions.StaffTag)
             .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped)
             .WithName("abandonTab")
             .WithSummary("Manager: write off an outstanding balance")
             .WithDescription(

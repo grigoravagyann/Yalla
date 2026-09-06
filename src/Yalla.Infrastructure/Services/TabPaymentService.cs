@@ -32,6 +32,7 @@ internal sealed class TabPaymentService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    StaffBranchGuard branchGuard,
     TabLedger ledger,
     ILogger<TabPaymentService> logger) : ITabPaymentService
 {
@@ -59,6 +60,8 @@ internal sealed class TabPaymentService(
         }
 
         var tab = await ledger.LoadForWriteAsync(command.TabId, cancellationToken);
+        await branchGuard.RequireAsync(
+            staffId, tab.BranchId, "Settling this tab", "tab", cancellationToken);
 
         if (tab.Status is TabStatus.Closed or TabStatus.Abandoned)
         {
@@ -213,6 +216,9 @@ internal sealed class TabPaymentService(
         var staffId = RequireManager("Write off a tab");
 
         var tab = await ledger.LoadForWriteAsync(tabId, cancellationToken);
+        await branchGuard.RequireAsync(
+            staffId, tab.BranchId, "Settling this tab", "tab", cancellationToken);
+
         var bill = ledger.Compute(tab);
 
         tab.ApplyComputedTotals(bill.SubtotalAmd, bill.ServiceChargeAmd, bill.PaidAmd);
@@ -302,4 +308,5 @@ internal sealed class TabPaymentService(
 
         return staffId;
     }
+
 }

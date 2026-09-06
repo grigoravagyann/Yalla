@@ -1,0 +1,23 @@
+# Keeps the build context to the sources the image actually needs. Without this, `COPY . .` in the
+# build stage sweeps in the whole working tree: git history, the host's build output, uploaded
+# photos and local logs. The final stage only takes /app/publish, so this is about the build stage
+# and any exported build cache - and about not shipping a 200MB context to the daemon.
+**/.git
+**/.gitattributes
+**/.gitignore
+**/.github
+**/.vs
+**/.vscode
+**/.idea
+**/bin
+**/obj
+**/artifacts
+**/Logs
+**/.photos
+**/.gstack
+**/*.user
+**/*.suo
+**/docker-compose*.yml
+**/Dockerfile*
+**/.dockerignore
+**/*.md

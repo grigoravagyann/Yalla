@@ -4,6 +4,7 @@ using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Endpoints;
 using Yalla.Api.Middleware;
 using Yalla.Infrastructure;
+using Yalla.Infrastructure.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -77,6 +78,30 @@ if (builder.Environment.IsDevelopment())
 }
 
 var app = builder.Build();
+
+// The warning the sender XML docs promise, and until now did not have: say at startup, once,
+// whether real credential delivery exists - rather than leaving it to be discovered by a venue
+// owner who never receives a reset mail, or by nobody at all.
+var delivery = app.Services.GetRequiredService<CredentialDeliveryReport>();
+
+if (delivery.WritesCredentialsToLog)
+{
+    // Development only - the registration will not choose those senders anywhere else - and still
+    // worth saying on every start, because the log is where the credential ends up.
+    app.Logger.LogWarning(
+        "Verification codes and password reset links are being written to the LOG, in plaintext. "
+        + "That is the Development stand-in for a real provider. Never run an environment whose "
+        + "logs anybody else can read this way.");
+}
+else if (delivery.DeliversNothing)
+{
+    app.Logger.LogError(
+        "No verification code or password reset provider is configured in the {Environment} "
+        + "environment. Phone sign-in and admin password reset will accept requests and deliver "
+        + "nothing. Register a real IVerificationCodeSender and IPasswordResetSender before this "
+        + "serves anyone.",
+        app.Environment.EnvironmentName);
+}
 
 // Enriches log events with TraceId and RequestPath. Does NOT catch or log exceptions -
 // UnifiedExceptionHandler is the single log point.

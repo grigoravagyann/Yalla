@@ -14,6 +14,19 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- Domain/Application carry XML docs but not on every member; don't fail the build for it. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!--
+      Commit a packages.lock.json per project. Direct PackageReference versions here are all exact,
+      which makes direct resolution deterministic, but restore verifies no hashes without a lockfile
+      - so a tampered republish of a transitive package at the same version would be accepted into a
+      process that holds the JWT signing key and the database credentials. With the lockfile
+      committed, restore fails on the hash mismatch instead.
+
+      CI restores in locked mode, so a lockfile that drifted from the csproj files fails the build
+      rather than being silently regenerated. Locally, adding or bumping a PackageReference updates
+      the lockfile on the next restore; commit it with the csproj change.
+    -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
 </Project>

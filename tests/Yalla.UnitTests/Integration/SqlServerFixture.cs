@@ -252,19 +252,29 @@ public sealed class SqlServerFixture : IAsyncLifetime
     internal TabLedger CreateLedger(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, NullLogger<TabLedger>.Instance);
 
+    /// <summary>
+    /// The branch boundary, over one context. Composed in rather than stubbed: it is the check
+    /// that keeps one branch off another's tabs, so a double here could pass while the real one
+    /// was missing - which is exactly how it came to be missing from two services.
+    /// </summary>
+    internal StaffBranchGuard CreateBranchGuard(YallaDbContext db, ICurrentActor actor) =>
+        new(db, actor);
+
     /// <summary>Ordering, voiding and adjusting, over one context.</summary>
     internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateLedger(db, clock, actor), CreateOutbox(db, clock),
-            NullLogger<TabOrderService>.Instance);
+        new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
+            CreateOutbox(db, clock), NullLogger<TabOrderService>.Instance);
 
     /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
     internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<TabPaymentService>.Instance);
+        new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
+            NullLogger<TabPaymentService>.Instance);
 
     /// <summary>Calling a waiter, over one context.</summary>
     internal ServiceRequestService CreateServiceRequests(
         YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateLedger(db, clock, actor), NullLogger<ServiceRequestService>.Instance);
+        new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
+            NullLogger<ServiceRequestService>.Instance);
 
     /// <summary>Shares and the event stream, over one context.</summary>
     internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>

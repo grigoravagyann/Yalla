@@ -274,6 +274,20 @@ internal static class ApiExceptionMapper
                 ["requiredRole"] = (int)e.RequiredRole,
             }),
 
+        // The other half of the same boundary. 403 and not 409: the caller is not entitled to the
+        // thing, which is what every endpoint on this path already declares. Raised only where the
+        // route-level BranchScoped policy cannot reach - routes addressed by a bare entity id -
+        // so the two layers now answer a cross-branch attempt with the same status.
+        StaffBranchScopeException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.Forbidden,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["subject"] = e.Subject,
+            }),
+
         // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are
         // built internally and never arrive over HTTP, so this is a bug in our code, not bad
         // input, and no caller can act on it. Must stay ABOVE ArgumentException, which it derives

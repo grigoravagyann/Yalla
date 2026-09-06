@@ -118,6 +118,10 @@ public static class DependencyInjection
         // through it, so the totals cache and the event stream are written in the same SaveChanges
         // as the change itself and neither can drift from the lines.
         services.AddScoped<TabLedger>();
+
+        // One copy of the branch boundary for every staff write that needs it. It was three
+        // identical private helpers, and two services were written without one - see the class.
+        services.AddScoped<StaffBranchGuard>();
         services.AddScoped<IMenuQuery, MenuQuery>();
         services.AddScoped<ITabOrderService, TabOrderService>();
         services.AddScoped<ITabBillingQuery, TabBillingQuery>();
@@ -200,11 +204,38 @@ public static class DependencyInjection
         // service when somebody scans a table or redeems an invitation. This is the minting.
         services.AddScoped<TabParticipantTokens>();
 
-        // The only implementations that ship. Both write a live credential to the log, which is
-        // what makes them useful locally and what makes replacing them a release blocker. They
-        // are registered with TryAdd so a real provider registered first simply wins.
-        services.TryAddScoped<IVerificationCodeSender, DevelopmentVerificationCodeSender>();
-        services.TryAddScoped<IPasswordResetSender, DevelopmentPasswordResetSender>();
+        // No real provider ships yet, so one of two stand-ins is registered - and WHICH one is
+        // decided by the host, not by configuration, for the same reason
+        // ReturnVerificationCodeInResponse is: an environment variable must not be able to switch a
+        // credential leak back on in a deployed environment.
+        //
+        // In Development the senders write the code and the reset link to the log, because that is
+        // the only way to exercise the flows with no SMS or email provider attached. Everywhere
+        // else they are replaced by senders that log the failure at Error and never the credential:
+        // a reset link in a staging log is a working admin password, and the whole point of storing
+        // only the token's hash is that possession of the data is not possession of a way in.
+        //
+        // TryAdd either way, so a real provider registered first simply wins - which is also what
+        // these two checks are asking, before the TryAdds make the answer unknowable.
+        var realCodeSender = services.Any(d => d.ServiceType == typeof(IVerificationCodeSender));
+        var realResetSender = services.Any(d => d.ServiceType == typeof(IPasswordResetSender));
+        var standInUsed = !realCodeSender || !realResetSender;
+
+        if (allowDevelopmentSecretsInResponses)
+        {
+            services.TryAddScoped<IVerificationCodeSender, DevelopmentVerificationCodeSender>();
+            services.TryAddScoped<IPasswordResetSender, DevelopmentPasswordResetSender>();
+        }
+        else
+        {
+            services.TryAddScoped<IVerificationCodeSender, UnconfiguredVerificationCodeSender>();
+            services.TryAddScoped<IPasswordResetSender, UnconfiguredPasswordResetSender>();
+        }
+
+        // Published so Program.cs can warn at startup without naming these internal types.
+        services.AddSingleton(new CredentialDeliveryReport(
+            WritesCredentialsToLog: standInUsed && allowDevelopmentSecretsInResponses,
+            DeliversNothing: standInUsed && !allowDevelopmentSecretsInResponses));
 
         return services;
     }

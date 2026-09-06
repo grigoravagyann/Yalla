@@ -73,18 +73,20 @@ jobs:
           # From global.json, so CI and a developer's machine cannot drift.
           global-json-file: global.json
 
-      # There is no packages.lock.json, so the key is the project files: any
-      # change to a PackageReference invalidates it, and nothing else does.
+      # Keyed on the lockfiles as well as the project files, so the cache tracks the exact
+      # resolved graph. No restore-keys prefix: a partial cache from a different dependency set is
+      # not something to fall back on when restore runs --locked-mode.
       - name: Cache NuGet
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'Directory.Build.props', '.config/dotnet-tools.json') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json', '**/*.csproj', 'global.json', 'Directory.Build.props', '.config/dotnet-tools.json') }}
 
+      # --locked-mode: restore must satisfy the committed packages.lock.json exactly. A drifted
+      # lockfile - a PackageReference changed without committing the regenerated lock - fails here
+      # rather than being silently regenerated, which is the whole point of committing it.
       - name: Restore
-        run: dotnet restore Yalla.sln
+        run: dotnet restore Yalla.sln --locked-mode
 
       # `TreatWarningsAsErrors` is false in Directory.Build.props so a developer
       # can build mid-thought. A command-line property overrides it, which puts
