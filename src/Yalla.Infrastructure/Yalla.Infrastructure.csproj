@@ -28,6 +28,18 @@
     <PackageReference Include="SkiaSharp" Version="3.116.1" />
 
     <!--
+      The Linux native library. SkiaSharp itself ships only the Windows and macOS binaries, so
+      without this every photo path throws DllNotFoundException the moment it runs anywhere else -
+      which is CI today and any Linux host later. It is not a test concern: LocalDiskPhotoStorage
+      cannot decode a byte on a machine that lacks it.
+
+      NoDependencies, not the plain Linux package: that one links against fontconfig, and Yalla
+      decodes and re-encodes images without drawing a single glyph. Requiring a font stack on every
+      host to resize a photograph is a dependency bought for nothing.
+    -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.116.1" />
+
+    <!--
       The per-phone verification-code limiter. Same primitive the pipeline rate limiter uses,
       applied inside the service because the phone number is in the request body.
     -->
