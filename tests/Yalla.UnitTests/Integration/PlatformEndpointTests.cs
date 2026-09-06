@@ -347,6 +347,77 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             (await onFree.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
     }
 
+    // ------------------------------------------------------------ the missing first branch
+
+    /// <summary>
+    /// A body with no firstBranch object is bad input, and was answered as a 500.
+    /// </summary>
+    /// <remarks>
+    /// The service guarded it with <c>ArgumentNullException.ThrowIfNull</c>, which the mapper
+    /// sends back as a 500 and logs as an error - correct for the null objects the domain builds
+    /// for itself, wrong for this one, which arrives over HTTP. The endpoint has always documented
+    /// a 400 here, so the API was contradicting its own contract and filing every malformed
+    /// request as a server fault. The sibling cases below already answered 400 and must keep to it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_create_venue_body_with_no_first_branch_is_refused_as_bad_input_not_a_server_fault()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
+        var marker = Guid.NewGuid().ToString("N")[..8];
+
+        // Nothing at all.
+        var empty = await platform.PostAsJsonAsync("/api/platform/venues", new { });
+
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+
+        // And it names the field, so the console can put the message against the input rather
+        // than asking the owner to quote a traceId.
+        var emptyBody = await empty.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("firstBranch", emptyBody.GetProperty("context").GetProperty("field").GetString());
+
+        // The branch fields sent flat, where the nested object should be. Same null, same answer.
+        var flat = await platform.PostAsJsonAsync("/api/platform/venues", new
+        {
+            name = $"Api Venue {marker}",
+            type = VenueType.Cafe,
+            slug = $"api-venue-{marker}",
+            address = "1 Test Street, Yerevan",
+            timeZoneId = "Asia/Yerevan",
+            floorWidth = 1000,
+            floorHeight = 700,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, flat.StatusCode);
+
+        // The neighbouring refusals, which the deserializer already answered correctly: a scalar
+        // where the object goes, and an undefined venue type.
+        var scalar = await platform.PostAsJsonAsync("/api/platform/venues", new
+        {
+            name = $"Api Venue {marker}",
+            type = VenueType.Cafe,
+            slug = $"api-venue-{marker}",
+            firstBranch = "main",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, scalar.StatusCode);
+
+        // No venue survived any of it.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.Venues.AnyAsync(v => v.Slug == $"api-venue-{marker}"));
+        }
+    }
+
     private static object NewBranch(string slugPart, SubscriptionTier subscriptionTier) => new
     {
         name = $"Branch {slugPart}",
