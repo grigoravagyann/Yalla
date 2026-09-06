@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -709,37 +709,6 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
             GuestName: "Ani Test",
             GuestPhone: "+37411223344",
             ClientCommandId: Guid.CreateVersion7());
-
-    /// <summary>Keeps what would have been pushed, so a test can read the rendered words.</summary>
-    private sealed class RecordingChannel : INotificationChannel
-    {
-        private readonly List<NotificationMessage> messages = [];
-
-        private readonly TaskCompletionSource next =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public string Name => "Recording";
-
-        /// <summary>Completes when a message arrives, so a test never has to poll for one.</summary>
-        public Task NextMessage => next.Task;
-
-        public IReadOnlyList<NotificationMessage> Messages => messages;
-
-        public IReadOnlyList<NotificationMessage> OfKind(string kind) =>
-            [.. messages.Where(m => m.Data.TryGetValue("kind", out var k) && k == kind)];
-
-        public void Clear() => messages.Clear();
-
-        public Task<IReadOnlyList<NotificationDelivery>> SendAsync(
-            NotificationMessage message,
-            CancellationToken cancellationToken = default)
-        {
-            messages.Add(message);
-            next.TrySetResult();
-
-            return Task.FromResult<IReadOnlyList<NotificationDelivery>>([]);
-        }
-    }
 
     /// <summary>Expo, answering with one canned body and counting how often it was asked.</summary>
     private sealed class StubExpo(string body, HttpStatusCode status = HttpStatusCode.OK)

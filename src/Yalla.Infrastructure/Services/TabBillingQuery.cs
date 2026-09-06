@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Ordering;
@@ -33,7 +33,16 @@ internal sealed class TabBillingQuery(
         CancellationToken cancellationToken = default)
     {
         var tab = await ledger.LoadForWriteAsync(tabId, cancellationToken);
-        var bill = ledger.Compute(tab);
+
+        // Computed from the lines, which are the truth, and the cache is brought back in line if it
+        // disagrees. This is the read half of moving the cache out of the order-insert transaction:
+        // a refresh that lost every one of its races leaves stale columns behind, and the bill
+        // screen is exactly where somebody would notice. Writes only when the numbers differ.
+        var bill = await ledger.EnsureTotalsFreshAsync(tab, cancellationToken);
+
+        // Where the stream stands, so a client reading the split knows whether it has missed
+        // anything. Prompt 8 said every tab response carries it; this one did not.
+        var maxSequence = await ledger.MaxSequenceAsync(tabId, cancellationToken);
 
         var names = tab.Participants.ToDictionary(p => p.Id, p => (p.DisplayName, p.Status));
 
@@ -65,7 +74,8 @@ internal sealed class TabBillingQuery(
         if (actingParticipantId is null)
         {
             return new TabSharesView(
-                tabId, null, true, TabLedger.ToSnapshot(bill), shares, bill.AbsorbedFromRemovedAmd);
+                tabId, null, true, TabLedger.ToSnapshot(bill), shares, bill.AbsorbedFromRemovedAmd,
+                maxSequence);
         }
 
         var me = tab.Participants.FirstOrDefault(p => p.Id == actingParticipantId)
@@ -78,11 +88,12 @@ internal sealed class TabBillingQuery(
             // Their own number, and the table aggregate absent rather than zeroed. A zero reads as
             // "nothing owed"; an absent member beside an explicit flag can only be read as "not
             // shown to you".
-            return new TabSharesView(tabId, myShare, false, null, null, 0L);
+            return new TabSharesView(tabId, myShare, false, null, null, 0L, maxSequence);
         }
 
         return new TabSharesView(
-            tabId, myShare, true, TabLedger.ToSnapshot(bill), shares, bill.AbsorbedFromRemovedAmd);
+            tabId, myShare, true, TabLedger.ToSnapshot(bill), shares, bill.AbsorbedFromRemovedAmd,
+            maxSequence);
     }
 
     public async Task<TabEventPage> GetEventsAsync(

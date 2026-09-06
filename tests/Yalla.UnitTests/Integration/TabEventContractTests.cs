@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
@@ -348,24 +348,5 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         }
 
         return (tabId, hostId);
-    }
-
-    /// <summary>Accepts everything and counts, so "the handler ran" is a fact and not an assumption.</summary>
-    private sealed class CountingChannel : INotificationChannel
-    {
-        private int sent;
-
-        public string Name => "Counting";
-
-        public int Sent => Volatile.Read(ref sent);
-
-        public Task<IReadOnlyList<NotificationDelivery>> SendAsync(
-            NotificationMessage message,
-            CancellationToken cancellationToken = default)
-        {
-            Interlocked.Increment(ref sent);
-
-            return Task.FromResult<IReadOnlyList<NotificationDelivery>>([]);
-        }
     }
 }

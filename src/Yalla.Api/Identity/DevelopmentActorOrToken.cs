@@ -36,5 +36,7 @@ internal sealed class DevelopmentActorOrToken(
 
     public Guid? DinerUserId => Current.DinerUserId;
 
+    public Guid? ParticipantId => Current.ParticipantId;
+
     public StaffRole? Role => Current.Role;
 }

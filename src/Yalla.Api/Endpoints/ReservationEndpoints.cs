@@ -1,4 +1,4 @@
-using Yalla.Api.Errors;
+﻿using Yalla.Api.Errors;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Abstractions;
@@ -316,7 +316,8 @@ public static class ReservationEndpoints
                 request.GuestName,
                 request.GuestPhone,
                 request.ClientCommandId,
-                request.StayHint),
+                request.StayHint,
+                request.Channel),
             cancellationToken);
 
         // A replay is answered 200, not 201: the second request created nothing, and telling a

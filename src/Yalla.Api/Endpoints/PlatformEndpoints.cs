@@ -1,4 +1,5 @@
-using Yalla.Api.Authorization;
+﻿using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Platform;
 
 namespace Yalla.Api.Endpoints;
@@ -95,9 +96,20 @@ public static class PlatformEndpoints
             .WithSummary("Name, address, coordinates, timezone, canvas size, active flag, tier")
             .WithDescription(
                 "`subscriptionTier` is set here, per branch. Moving a branch to Free switches off "
-                + "tabs and ordering there; the tab endpoints answer `feature-not-enabled`.")
+                + "tabs and ordering there; the tab endpoints answer `feature-not-enabled`. It is "
+                + "refused while the branch has open tabs, because hiding a live bill from the people "
+                + "who owe it strands real money on a real table.\n\n"
+                + "**Moving a branch to Paid is refused while its menu has unfinished items.** This is "
+                + "where the rule that a dish needs a photo, ingredients, allergens, a portion size and "
+                + "a prep time is actually enforced - at the moment the branch starts taking diners, "
+                + "rather than at the moment somebody types a name and a price. The refusal is "
+                + "`branch-not-ready` and carries `incompleteMenuItemCount`; "
+                + "`GET /api/branches/{branchId}/readiness` lists which items are left.")
             .Produces<BranchSummary>()
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblem<BranchNotReadyProblem>(
+                StatusCodes.Status409Conflict,
+                "Going Paid with an unfinished menu, or going Free with open tabs.");
 
         return app;
     }

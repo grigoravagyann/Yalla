@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Ordering;
@@ -95,7 +95,11 @@ internal sealed class ServiceRequestService(
             "Table {TableLabel} at branch {BranchId} asked for {Preset}.",
             tab.DiningTable.Label, tab.BranchId, preset);
 
-        return ToView(request, tab.DiningTable.Label, nowUtc);
+        return ToView(
+            request,
+            tab.DiningTable.Label,
+            nowUtc,
+            await ledger.MaxSequenceAsync(tab.Id, cancellationToken));
     }
 
     public async Task<IReadOnlyList<ServiceRequestView>> GetOpenAsync(
@@ -115,7 +119,10 @@ internal sealed class ServiceRequestService(
             .Select(r => new { Request = r, TableLabel = r.DiningTable.Label })
             .ToListAsync(cancellationToken);
 
-        return [.. rows.Select(row => ToView(row.Request, row.TableLabel, nowUtc))];
+        // Zero rather than a per-row query. This list spans every tab in the branch, so there is no
+        // single stream to be caught up with - and it is a staff screen, which follows the floor
+        // rather than one tab's events.
+        return [.. rows.Select(row => ToView(row.Request, row.TableLabel, nowUtc, tabEventSequence: 0L))];
     }
 
     public async Task<ServiceRequestView> AcknowledgeAsync(
@@ -144,10 +151,18 @@ internal sealed class ServiceRequestService(
             await ledger.SaveAppendedAsync(cancellationToken);
         }
 
-        return ToView(request, request.DiningTable.Label, nowUtc);
+        return ToView(
+            request,
+            request.DiningTable.Label,
+            nowUtc,
+            await ledger.MaxSequenceAsync(request.TabId, cancellationToken));
     }
 
-    private static ServiceRequestView ToView(ServiceRequest request, string tableLabel, DateTime nowUtc) =>
+    private static ServiceRequestView ToView(
+        ServiceRequest request,
+        string tableLabel,
+        DateTime nowUtc,
+        long tabEventSequence) =>
         new(
             request.Id,
             request.TabId,
@@ -157,7 +172,8 @@ internal sealed class ServiceRequestService(
             request.RequestedByParticipantId,
             request.CreatedAtUtc,
             (int)Math.Max(0d, ((request.AcknowledgedAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
-            request.AcknowledgedAtUtc);
+            request.AcknowledgedAtUtc,
+            tabEventSequence);
 
     private Guid RequireStaff(string operation) =>
         actor.Type == ActorType.Staff && actor.StaffMemberId is { } id

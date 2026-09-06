@@ -62,6 +62,11 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
 
         builder.Ignore(b => b.IsPaid);
 
+        // Null until somebody saves the policy form. Not a flag: the timestamp answers "when did
+        // anyone last look at this?", which is the question a venue that was onboarded eight months
+        // ago actually raises.
+        builder.Property(b => b.ReservationPolicyReviewedAtUtc);
+
         // The reservation policy is owned: it lives in extra columns on this table rather than in
         // a table of its own, because a branch always has exactly one and it is never queried
         // apart from its branch.

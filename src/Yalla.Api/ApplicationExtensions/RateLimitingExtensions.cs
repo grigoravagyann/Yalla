@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
@@ -51,6 +51,34 @@ public static class RateLimitingExtensions
     public const string AvailabilityPolicy = "availability";
 
     /// <summary>
+    /// The public branch pages: anonymous, unauthenticated, and the surface a scraper finds first.
+    /// </summary>
+    /// <remarks>
+    /// <b>Tighter than the app routes, not looser.</b> Everything else anonymous here is reached by
+    /// somebody who has at least scanned a QR code at a table; this is reached by anybody with the
+    /// URL, and the URL is meant to be pasted into Instagram. A per-address limit is what stops one
+    /// client walking the estate.
+    /// </remarks>
+    public const string PublicPolicy = "public";
+
+    /// <summary>
+    /// A cap on one branch's public traffic, whoever is asking.
+    /// </summary>
+    /// <remarks>
+    /// The per-address limit above does nothing about a distributed scrape, and the thing worth
+    /// protecting is a branch's free-table count - the one number here that is not cached for long.
+    /// This is the second half: past it, everyone gets a 429 for that branch until the window turns.
+    /// Deliberately generous enough that a venue whose link goes round a group chat is unaffected.
+    /// <para>
+    /// Applied through the <b>global chain</b> rather than as an endpoint policy, because an
+    /// endpoint carries one policy: a second <c>RequireRateLimiting</c> replaces the first rather
+    /// than composing with it, which silently disabled the per-address limit the first time this
+    /// was written that way.
+    /// </para>
+    /// </remarks>
+    public const string PublicPathPrefix = "/api/public";
+
+    /// <summary>
     /// Whether rate limiting is switched on for this environment. Both the registration and the
     /// middleware read this one decision - asking the configuration twice is how you end up
     /// calling <c>UseRateLimiter</c> without the services behind it.
@@ -81,19 +109,47 @@ public static class RateLimitingExtensions
         var pinPermitLimit = section.GetValue<int?>("PinPermitLimit") ?? 10;
         var pinWindowSeconds = section.GetValue<int?>("PinWindowSeconds") ?? 60;
 
+        // Thirty a minute per address is a person browsing; it is not a crawler walking the estate.
+        var publicPermitLimit = section.GetValue<int?>("PublicPermitLimit") ?? 30;
+        var publicWindowSeconds = section.GetValue<int?>("PublicWindowSeconds") ?? 60;
+
+        // And a ceiling per branch, whoever is asking, for the distributed case.
+        var publicBranchPermitLimit = section.GetValue<int?>("PublicBranchPermitLimit") ?? 300;
+        var publicBranchWindowSeconds = section.GetValue<int?>("PublicBranchWindowSeconds") ?? 60;
+
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-                RateLimitPartition.GetFixedWindowLimiter(
-                    PartitionKey(context),
-                    _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = globalPermitLimit,
-                        Window = TimeSpan.FromSeconds(globalWindowSeconds),
-                        QueueLimit = 0,
-                    }));
+            // Chained, not two policies. An endpoint carries one rate-limiting policy - a second
+            // RequireRateLimiting replaces the first rather than composing with it - so the
+            // per-branch ceiling lives here, where chaining is the supported shape. Every request
+            // passes the per-address global limiter; only the public routes also pass the second.
+            options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
+                PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                    RateLimitPartition.GetFixedWindowLimiter(
+                        PartitionKey(context),
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = globalPermitLimit,
+                            Window = TimeSpan.FromSeconds(globalWindowSeconds),
+                            QueueLimit = 0,
+                        })),
+
+                // One branch's public page has one budget, however many addresses are asking for
+                // it - which is the half a per-address limit cannot do anything about. Off the
+                // public routes this is a no-op.
+                PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                    context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase)
+                        ? RateLimitPartition.GetFixedWindowLimiter(
+                            PublicBranchPartitionKey(context),
+                            _ => new FixedWindowRateLimiterOptions
+                            {
+                                PermitLimit = publicBranchPermitLimit,
+                                Window = TimeSpan.FromSeconds(publicBranchWindowSeconds),
+                                QueueLimit = 0,
+                            })
+                        : RateLimitPartition.GetNoLimiter<string>("not-public")));
 
             options.AddPolicy(AuthPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
@@ -122,6 +178,16 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = availabilityPermitLimit,
                         Window = TimeSpan.FromSeconds(availabilityWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            options.AddPolicy(PublicPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = publicPermitLimit,
+                        Window = TimeSpan.FromSeconds(publicWindowSeconds),
                         QueueLimit = 0,
                     }));
 
@@ -167,6 +233,29 @@ public static class RateLimitingExtensions
         });
 
         return services;
+    }
+
+    /// <summary>
+    /// Which branch a public request is about, for the per-branch ceiling.
+    /// </summary>
+    /// <remarks>
+    /// Read from the route, which is where every public branch route carries it - either as a
+    /// <c>branchId</c> or as the venue/branch slug pair. Requests with neither (the browse list)
+    /// share one partition, which is correct: the browse list is one thing and has one budget.
+    /// </remarks>
+    private static string PublicBranchPartitionKey(HttpContext context)
+    {
+        var route = context.Request.RouteValues;
+
+        if (route.TryGetValue("branchId", out var branchId) && branchId is not null)
+        {
+            return $"branch:{branchId}";
+        }
+
+        return route.TryGetValue("venueSlug", out var venueSlug)
+               && route.TryGetValue("branchSlug", out var branchSlug)
+            ? $"slug:{venueSlug}/{branchSlug}"
+            : "public:browse";
     }
 
     /// <summary>

@@ -60,9 +60,15 @@ public static class OrderingEndpoints
                 + "**Sold-out items are returned with `isAvailable: false`, not hidden.** A dish that "
                 + "silently vanishes looks like a broken menu and sends the diner to ask a waiter - "
                 + "the exact question this feature exists to remove. Grey it out and keep the price.\n\n"
-                + "Every descriptive field is always present: ingredients, allergens, portion size, "
-                + "spice level and prep minutes are required on the item precisely so the app can "
-                + "answer what a guest would otherwise ask.")
+                + "**Unfinished items are excluded entirely, which is the opposite rule for the "
+                + "opposite reason.** Since the photo requirement moved from create-time to "
+                + "go-live-time an item can exist without a photo, a description, ingredients, "
+                + "allergens, a portion size or a prep time - that is how a menu gets typed in before "
+                + "it gets photographed - and none of those may reach a diner. Somebody reading an "
+                + "empty allergen list reasonably concludes there are none.\n\n"
+                + "So every descriptive field on this read is always present and `isComplete` is "
+                + "always true. The console's `GET /api/branches/{branchId}/menu/manage` is where the "
+                + "unfinished ones are visible.")
             .Produces<BranchMenuView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblemDetails(

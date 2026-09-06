@@ -65,3 +65,36 @@ public enum TableSessionSource
     /// <summary>Seated without a booking - the majority of cafe traffic, and anyone who scans the table QR code.</summary>
     WalkIn = 2,
 }
+
+/// <summary>
+/// Where a booking was made from.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Self-reported by the client, and a metric rather than a boundary.</b> Nothing is authorised
+/// on it and nothing refuses a booking because of it, so a client that lies costs a wrong number in
+/// a report and nothing else. Recording it needs the client's cooperation because the server cannot
+/// tell an app's HTTPS request from a browser's.
+/// </para>
+/// <para>
+/// It exists to answer one question that is about to force a commercial decision: a diner who books
+/// from the public branch page has no app, so the reminder, the late nudge and one-tap cancel - the
+/// entire no-show story - cannot reach them. <c>docs/reports.md</c> explains what number would
+/// justify integrating an SMS or Telegram channel, and this is half of that number. The other half
+/// is whether they have a live push device, which the server does know.
+/// </para>
+/// </remarks>
+public enum ReservationChannel
+{
+    /// <summary>Not stated. Every booking made before the column existed, and any client that omits it.</summary>
+    Unknown = 0,
+
+    /// <summary>The diner app, which can be pushed to.</summary>
+    App = 1,
+
+    /// <summary>The public branch page. No app, so no push channel.</summary>
+    Web = 2,
+
+    /// <summary>Taken by a person - over the phone, or at the door.</summary>
+    Staff = 3,
+}

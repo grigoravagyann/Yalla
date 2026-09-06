@@ -1,4 +1,6 @@
-# Yalla backend
+﻿# Yalla backend
+
+[![backend](https://github.com/grigoravagyann/Yalla/actions/workflows/backend.yml/badge.svg)](https://github.com/grigoravagyann/Yalla/actions/workflows/backend.yml)
 
 Table reservation and in-app ordering for restaurants and cafes, launching in Yerevan. ASP.NET
 Core 9, EF Core, SQL Server, minimal APIs. Three clients consume this API: the diner app, the staff
@@ -6,7 +8,9 @@ tablet, and the owner's admin panel.
 
 - `SCHEMA.md` — the database schema and the decisions behind it.
 - `docs/` — one document per subsystem: `auth.md`, `reservations.md`, `tabs.md`,
-  `platform-admin.md`, `openapi.md`.
+  `platform-admin.md`, `openapi.md`, `billing.md`, `notifications.md`,
+  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`, `contract-tests.md`,
+  `reports.md`.
 
 ## Running locally
 
@@ -102,3 +106,47 @@ netsh advfirewall firewall add rule name="Yalla API dev HTTP" dir=in action=allo
 Also check that the phone and the machine are on the same network (a guest wifi or a personal
 hotspot often isolates clients from each other), and that you used the HTTP URL - the phone will
 reject HTTPS with the dev certificate.
+
+## Continuous integration
+
+`.github/workflows/backend.yml` runs on every push and pull request. It restores, builds with
+`-warnaserror`, checks for pending model changes, and runs the whole suite against **a real SQL
+Server service container**.
+
+The container is not optional. The tests that are most likely to be quietly broken by a later change
+are the concurrency ones — two racing bookings, two racing scans, ten racing orders, two racing cash
+payments, two scheduler instances leasing one message — and every one of them proves something only
+a real server does: `rowversion` tokens, filtered unique indexes, application locks. The in-memory
+provider would pass each assertion while enforcing none of it.
+
+Three details in that workflow are load-bearing:
+
+- **The wait for SQL Server is a health-check loop on the connection, not a sleep.** The container
+  reports itself started long before it accepts logins.
+- **A skipped test fails the build.** `SqlServerFixture` skips rather than fails when it finds no
+  server, which is right on a laptop and a silent disaster in CI — it would report green while
+  proving nothing. The workflow greps the `.trx` for `NotExecuted` and fails if there are any.
+- **`dotnet ef migrations has-pending-model-changes` fails the build.** An entity edited without a
+  migration is the most common way this breaks, and it is invisible locally because your database
+  already has the column.
+
+To run the model check yourself:
+
+```
+dotnet tool restore
+dotnet tool run dotnet-ef migrations has-pending-model-changes --project src/Yalla.Infrastructure
+```
+
+It touches no database — `YallaDbContextFactory` builds the context offline, which is why the check
+needs neither a connection string nor a running API.
+
+### Branch protection
+
+Set once, in the repository settings, and not something the workflow file can do for itself:
+**Settings → Branches → Add rule** on the default branch — which is `master` here, not `main` —
+with *Require status checks to pass before merging* and the `build-and-test` check selected.
+Without it the workflow is advisory and a red run can still be merged.
+
+The workflow triggers on pushes to both `main` and `master` for the same reason: a workflow naming
+only `main` would fire on pull requests alone, leaving the branch everything actually lands on as
+the one branch with no check.

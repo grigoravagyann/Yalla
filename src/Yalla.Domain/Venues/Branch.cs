@@ -92,6 +92,18 @@ public sealed class Branch : Entity
     /// <summary>Owned value: persisted as extra columns on this row, never as its own table.</summary>
     public ReservationPolicy ReservationPolicy { get; private set; } = null!;
 
+    /// <summary>
+    /// When somebody last saved the reservation policy for this branch, or null if nobody ever has.
+    /// </summary>
+    /// <remarks>
+    /// A branch ships with <see cref="ReservationPolicy.DefaultFor"/>, so "has a policy" is true
+    /// from the moment it is created and answers nothing. What the onboarding checklist needs to
+    /// know is whether a human has <i>looked</i> at the defaults - a 90-minute cover and a 14-day
+    /// window are a guess about a venue nobody has visited - and that is a different fact, which
+    /// nothing else on the row records.
+    /// </remarks>
+    public DateTime? ReservationPolicyReviewedAtUtc { get; private set; }
+
     public IReadOnlyCollection<OpeningHours> OpeningHours => _openingHours;
 
     public IReadOnlyCollection<FloorArea> FloorAreas => _floorAreas;
@@ -152,10 +164,16 @@ public sealed class Branch : Entity
     public void SetTimeZone(string timeZoneId) => TimeZoneId = NormaliseTimeZoneId(timeZoneId);
 
     /// <summary>Replaces the whole policy. The admin panel edits it as one form.</summary>
-    public void UpdateReservationPolicy(ReservationPolicy policy)
+    /// <remarks>
+    /// Saving the form is what counts as reviewing it, which is why the timestamp is stamped here
+    /// rather than by a separate "I have read this" action nobody would click.
+    /// </remarks>
+    public void UpdateReservationPolicy(ReservationPolicy policy, DateTime reviewedAtUtc)
     {
         ArgumentNullException.ThrowIfNull(policy);
+
         ReservationPolicy = policy;
+        ReservationPolicyReviewedAtUtc = Guard.NotLocalTime(reviewedAtUtc, nameof(reviewedAtUtc));
     }
 
     public void ResizeFloor(int floorWidth, int floorHeight)

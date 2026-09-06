@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -17,6 +18,11 @@ namespace Yalla.Infrastructure.Services;
 /// It also does not check that the caller belongs to the tab: the <c>TabParticipant</c> policy
 /// has already refused anyone who does not, and the projection returns null for a participant id
 /// that is not on the tab, so the handler answers 404 rather than inventing a view.
+/// </para>
+/// <para>
+/// <b>Voided lines and adjustments are read, not filtered.</b> Whether a diner sees them is a
+/// question for the projection, and the answer is that they do - a bill that quietly loses a line
+/// is a bill somebody stops trusting.
 /// </para>
 /// </remarks>
 internal sealed class TabQuery(YallaDbContext db) : ITabQuery
@@ -39,9 +45,10 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
     }
 
     /// <summary>
-    /// Three reads on one connection: the tab and its table, the participants, the lines with
-    /// their shares. Untracked throughout - this is a read model, and the service that may have
-    /// just written these rows reads them back through here after its own SaveChanges.
+    /// Five reads on one connection: the tab and its table, the participants, the lines with
+    /// their shares, the adjustments, and the stream's high-water mark. Untracked throughout -
+    /// this is a read model, and the service that may have just written these rows reads them back
+    /// through here after its own SaveChanges.
     /// </summary>
     private async Task<TabSnapshot?> LoadSnapshotAsync(Guid tabId, CancellationToken cancellationToken)
     {
@@ -53,6 +60,10 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 t.Id,
                 t.BranchId,
                 Tier = t.Branch.SubscriptionTier,
+
+                // The branch's wall clock. Every instant below is UTC and the client renders it in
+                // this zone; without it on the response the client had to fetch the branch as well.
+                t.Branch.TimeZoneId,
                 t.DiningTableId,
                 TableLabel = t.DiningTable.Label,
                 t.Status,
@@ -60,6 +71,7 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 t.SettlementModeLockedAtUtc,
                 t.HideTotalFromGuests,
                 t.HostParticipantId,
+                t.ServiceChargePercentSnapshot,
                 t.OpenedAtUtc,
                 t.ClosedAtUtc,
                 t.SubtotalAmd,
@@ -99,26 +111,66 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             .Select(l => new
             {
                 l.Id,
+                l.TabOrderId,
+                l.MenuItemId,
                 l.TabOrder.PlacedByParticipantId,
+                OrderStatus = l.TabOrder.Status,
                 l.NameSnapshot,
                 l.UnitPriceAmdSnapshot,
                 l.Quantity,
+                l.Note,
                 l.IsShared,
-                IsVoided = l.VoidedAtUtc != null,
+                l.VoidedAtUtc,
+                l.VoidReason,
                 Shares = l.Shares.Select(s => s.TabParticipantId).ToList(),
             })
             .ToListAsync(cancellationToken);
+
+        // Voided adjustments are read too. One that was reversed stays on the record, marked - the
+        // diner saw the discount arrive and has to be able to see it go.
+        var adjustments = await db.TabAdjustments
+            .AsNoTracking()
+            .Where(a => a.TabId == tabId)
+            .OrderBy(a => a.CreatedAtUtc)
+            .Select(a => new
+            {
+                a.Id,
+                a.TabOrderLineId,
+                a.Kind,
+                a.Percent,
+                a.AmountAmd,
+                a.Reason,
+                a.CreatedAtUtc,
+                a.VoidedAtUtc,
+            })
+            .ToListAsync(cancellationToken);
+
+        var maxSequence = await db.TabEvents
+            .AsNoTracking()
+            .Where(e => e.TabId == tabId)
+            .MaxAsync(e => (long?)e.Sequence, cancellationToken) ?? 0L;
+
+        // What each adjustment actually took off. Computed here rather than stored, from the same
+        // base the bill uses: a percentage against the line it names, or against the tab subtotal
+        // when it names none.
+        var lineTotals = lines.ToDictionary(
+            l => l.Id,
+            l => l.VoidedAtUtc is null ? l.UnitPriceAmdSnapshot * l.Quantity : 0L);
+
+        var liveSubtotal = lineTotals.Values.Sum();
 
         return new TabSnapshot(
             tab.Id,
             tab.BranchId,
             tab.DiningTableId,
             tab.TableLabel,
+            tab.TimeZoneId,
             tab.Status,
             tab.SettlementMode,
             tab.SettlementModeLockedAtUtc,
             tab.HideTotalFromGuests,
             tab.HostParticipantId,
+            tab.ServiceChargePercentSnapshot,
             tab.OpenedAtUtc,
             tab.ClosedAtUtc,
             tab.SubtotalAmd,
@@ -126,16 +178,60 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             tab.TotalAmd,
             tab.PaidAmd,
             tab.RemainingAmd,
+            maxSequence,
             participants,
-            lines.Select(l => new TabLineSnapshot(
+            [
+                .. lines.Select(l => new TabLineSnapshot(
                     l.Id,
+                    l.TabOrderId,
+                    l.MenuItemId,
                     l.PlacedByParticipantId,
                     l.NameSnapshot,
                     l.UnitPriceAmdSnapshot,
                     l.Quantity,
+                    l.Note,
+                    l.OrderStatus,
                     l.IsShared,
-                    l.IsVoided,
-                    l.Shares))
-                .ToList());
+                    IsVoided: l.VoidedAtUtc is not null,
+                    l.VoidedAtUtc,
+                    l.VoidReason,
+                    l.Shares)),
+            ],
+            [
+                .. adjustments.Select(a => new TabAdjustmentSnapshot(
+                    a.Id,
+                    a.TabOrderLineId,
+                    a.Kind,
+                    a.Percent,
+                    a.AmountAmd,
+                    ReductionAmd: a.VoidedAtUtc is not null
+                        ? 0L
+                        : Reduction(a.Percent, a.AmountAmd, a.TabOrderLineId, lineTotals, liveSubtotal),
+                    a.Reason,
+                    a.CreatedAtUtc,
+                    IsVoided: a.VoidedAtUtc is not null)),
+            ]);
+    }
+
+    /// <summary>
+    /// What one adjustment takes off, against the line it names or the tab as a whole.
+    /// </summary>
+    /// <remarks>
+    /// Uses <see cref="TabAdjustment.ReductionOn"/> so the number a diner reads on the bill comes
+    /// out of the same rounding rule the bill itself was computed with. A second implementation
+    /// here would show a diner a discount that does not add up to the total beneath it.
+    /// </remarks>
+    private static long Reduction(
+        decimal? percent,
+        long? amountAmd,
+        Guid? lineId,
+        IReadOnlyDictionary<Guid, long> lineTotals,
+        long liveSubtotal)
+    {
+        var baseAmd = lineId is { } id
+            ? lineTotals.GetValueOrDefault(id)
+            : liveSubtotal;
+
+        return TabAdjustment.ReductionFor(percent, amountAmd, baseAmd);
     }
 }

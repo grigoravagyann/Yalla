@@ -269,6 +269,13 @@ public class SwaggerExposureTests
             ["PaymentExceedsRemainingProblem"] = ["tabId", "requestedAmd", "remainingAmd"],
             ["ServiceRequestRateLimitedProblem"] = ["tabId", "limit", "windowMinutes"],
             ["LockTimeoutProblem"] = ["tableId", "tableLabel", "timeoutMilliseconds", "retryable"],
+
+            // The one the console deletes its label-to-field lookup table for. `field` is the
+            // property a form highlights and `fields` is every violation in the request, so a
+            // generated client can read both without a cast.
+            ["ValidationFailedProblem"] = ["field", "fields"],
+
+            ["BranchNotReadyProblem"] = ["branchId", "incompleteMenuItemCount"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

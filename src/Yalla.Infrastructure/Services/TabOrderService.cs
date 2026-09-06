@@ -40,7 +40,9 @@ internal sealed class TabOrderService(
     /// </summary>
     /// <remarks>
     /// Exposed so the concurrency test can assert the retry is doing real work rather than being
-    /// dead code that happens never to fire.
+    /// dead code that happens never to fire. Note that this counts the <b>cache refresh</b>, which
+    /// happens after the order has already committed - it is not a count of attempts to place the
+    /// order, which never retries because it no longer contends with anything.
     /// </remarks>
     internal int RetryAttemptsUsed => ledger.LastAttemptCount;
 
@@ -96,7 +98,17 @@ internal sealed class TabOrderService(
             }),
         });
 
-        await ledger.SaveWithTotalsAsync(tab, cancellationToken);
+        // The order, its lines and the event, in one transaction - and deliberately nothing else.
+        // The tab's totals are a cache, and the authoritative total is the sum of the lines, so the
+        // insert does not need to touch the tab row to be correct. Not touching it is what makes
+        // ten simultaneous orders safe: they write nothing in common, so there is no row version to
+        // lose and no concurrency error for a diner to see. See TabLedger and docs/tab-totals.md.
+        await ledger.SaveAppendedAsync(cancellationToken);
+
+        // And then the cache, in its own short transaction. This can lose a race against another
+        // order and simply try again; it never throws, because the diner's order is already placed
+        // and telling them otherwise would be a lie about work that succeeded.
+        await ledger.RecomputeTotalsAsync(tab.Id, cancellationToken);
 
         logger.LogInformation(
             "Order {OrderId} placed on tab {TabId} with {LineCount} lines, due about {EstimatedReadyAtUtc}.",
@@ -176,7 +188,12 @@ internal sealed class TabOrderService(
                 }
             }
 
-            longestPrep = Math.Max(longestPrep, item.PrepMinutes);
+            // An item with no prep time contributes nothing to the estimate rather than defaulting
+            // to some invented number. It can only be one a diner never saw - the diner-facing menu
+            // drops incomplete items - so this is a waiter ordering from the console for a dish
+            // still being entered, and a made-up "ready in 15 minutes" would be worse than an
+            // estimate drawn from the items that do know how long they take.
+            longestPrep = Math.Max(longestPrep, item.PrepMinutes ?? 0);
         }
 
         // The longest, not the sum: a kitchen cooks an order together and sends it out together.
@@ -221,7 +238,14 @@ internal sealed class TabOrderService(
 
         // A diner. The participant id comes from their own token, never from the body: a phone
         // must not be able to order in somebody else's name by sending their id.
-        var participantId = actor.DinerUserId
+        //
+        // From ParticipantId, not DinerUserId. This line read DinerUserId until Prompt 11, and
+        // ClaimsCurrentActor returns null for that unless the principal is a Diner - so with real
+        // auth every participant token fell straight through to the refusal below, and the one
+        // feature this product is built around had never functioned outside a test. The test double
+        // put the participant id into DinerUserId, which production never does, so 522 green tests
+        // said otherwise. See docs/auth.md and CurrentActorContract.
+        var participantId = actor.ParticipantId
                             ?? throw new TabPermissionException("Ordering", "somebody on this tab");
 
         var participant = tab.Participants.FirstOrDefault(p => p.Id == participantId)

@@ -595,7 +595,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("Allergens")
-                        .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
@@ -603,7 +602,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Description")
-                        .IsRequired()
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
@@ -611,7 +609,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("Ingredients")
-                        .IsRequired()
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
@@ -626,15 +623,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<Guid>("PhotoId")
+                    b.Property<Guid?>("PhotoId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("PortionSize")
-                        .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<int>("PrepMinutes")
+                    b.Property<int?>("PrepMinutes")
                         .HasColumnType("int");
 
                     b.Property<long>("PriceAmd")
@@ -727,6 +723,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("CancelledAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int>("Channel")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
                     b.Property<Guid>("ClientCommandId")
                         .HasColumnType("uniqueidentifier");
 
@@ -804,6 +805,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("DinerUserId", "StartUtc");
 
+                    b.HasIndex("BranchId", "StartUtc", "Status")
+                        .HasDatabaseName("IX_Reservations_BranchId_StartUtc_Status");
+
                     b.HasIndex("DiningTableId", "StartUtc", "EndUtc");
 
                     b.ToTable("Reservations", (string)null);
@@ -858,6 +862,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("ReservationId");
 
                     b.HasIndex("SeatedByStaffId");
+
+                    b.HasIndex("BranchId", "SeatedAtUtc")
+                        .HasDatabaseName("IX_TableSessions_BranchId_SeatedAtUtc_Reporting");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("BranchId", "SeatedAtUtc"), new[] { "ClosedAtUtc", "Source", "PartySize" });
 
                     b.HasIndex("DiningTableId", "SeatedAtUtc");
 
@@ -1106,6 +1115,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_Tabs_TableSessionId");
 
+                    b.HasIndex("BranchId", "ClosedAtUtc")
+                        .HasDatabaseName("IX_Tabs_BranchId_ClosedAtUtc")
+                        .HasFilter("[ClosedAtUtc] IS NOT NULL");
+
                     b.HasIndex("BranchId", "Status");
 
                     b.ToTable("Tabs", (string)null);
@@ -1270,6 +1283,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("OnBehalfOfParticipantId");
 
+                    b.HasIndex("PlacedAtUtc")
+                        .HasDatabaseName("IX_TabOrders_PlacedAtUtc");
+
                     b.HasIndex("PlacedByParticipantId");
 
                     b.HasIndex("PlacedByStaffId");
@@ -1326,11 +1342,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MenuItemId");
-
                     b.HasIndex("TabOrderId");
 
                     b.HasIndex("VoidedByStaffId");
+
+                    b.HasIndex("MenuItemId", "TabOrderId")
+                        .HasDatabaseName("IX_TabOrderLines_MenuItemId_TabOrderId_Reporting");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("MenuItemId", "TabOrderId"), new[] { "Quantity", "UnitPriceAmdSnapshot", "VoidedAtUtc" });
 
                     b.ToTable("TabOrderLines", (string)null);
                 });
@@ -1460,6 +1479,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("NotifyOnOrderReady")
                         .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ReservationPolicyReviewedAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("Slug")
                         .IsRequired()
@@ -1777,8 +1799,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasOne("Yalla.Domain.Media.Photo", "Photo")
                         .WithMany()
                         .HasForeignKey("PhotoId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("MenuCategory");
 

@@ -16,6 +16,9 @@ internal sealed class UnifiedExceptionHandler(
     ILogger<UnifiedExceptionHandler> logger)
     : IExceptionHandler
 {
+    /// <summary>The media type every failure is written as. Shared with the OpenAPI declaration.</summary>
+    private const string ProblemMediaType = Filters.ErrorResponsesOperationFilter.ProblemMediaType;
+
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
         Exception exception,
@@ -63,8 +66,13 @@ internal sealed class UnifiedExceptionHandler(
 
         // RFC 7807's media type, not application/json. It is what tells a generic client, a proxy
         // or a browser devtools pane that this body is a problem document rather than the payload
-        // the endpoint normally returns.
-        httpContext.Response.ContentType = "application/problem+json";
+        // the endpoint normally returns - and it is what every endpoint's OpenAPI declaration says
+        // its failures come back as.
+        //
+        // Set here AND passed to WriteAsJsonAsync below, because that overload assigns
+        // "application/json; charset=utf-8" unconditionally and was silently overwriting this one.
+        // The schema promised application/problem+json and the wire delivered application/json.
+        httpContext.Response.ContentType = ProblemMediaType;
 
         // A 401 that does not say how to authenticate is not a 401 a client can act on.
         if (mapped.Status == StatusCodes.Status401Unauthorized
@@ -83,8 +91,14 @@ internal sealed class UnifiedExceptionHandler(
                 Instance = httpContext.Request.Path.Value,
                 Code = mapped.Code,
                 TraceId = traceId,
+
+                // Omitted entirely when there are none - the envelope ignores nulls - so only the
+                // failures that are actually about the payload carry a field map.
+                Errors = mapped.Errors,
                 Context = mapped.Context,
             },
+            options: null,
+            contentType: ProblemMediaType,
             cancellationToken);
 
         return true;

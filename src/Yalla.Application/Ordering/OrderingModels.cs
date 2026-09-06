@@ -1,4 +1,4 @@
-using Yalla.Domain.Enums;
+﻿using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Ordering;
 
@@ -198,13 +198,19 @@ public sealed record ParticipantShareView(
 /// <param name="Totals">The table aggregate. Absent when not visible.</param>
 /// <param name="Shares">Everyone's share. Absent when not visible.</param>
 /// <param name="AbsorbedFromRemovedAmd">How much fell to the host from removed participants.</param>
+/// <param name="MaxSequence">
+/// Where the tab's event stream stands, so a client that just read the split knows whether it has
+/// missed anything. Prompt 8 said every tab response carries it; this one did not, which made the
+/// bill screen - the screen where being out of date matters most - the one that had to ask twice.
+/// </param>
 public sealed record TabSharesView(
     Guid TabId,
     ParticipantShareView? MyShare,
     bool TableTotalVisible,
     TabTotalsSnapshot? Totals,
     IReadOnlyList<ParticipantShareView>? Shares,
-    long AbsorbedFromRemovedAmd);
+    long AbsorbedFromRemovedAmd,
+    long MaxSequence);
 
 /// <summary>An order on the kitchen queue.</summary>
 /// <param name="OrderId">The order.</param>
@@ -235,6 +241,12 @@ public sealed record KitchenOrderView(
 /// <param name="CreatedAtUtc">When.</param>
 /// <param name="WaitingMinutes">How long they have been waiting.</param>
 /// <param name="AcknowledgedAtUtc">When a waiter picked it up, if they have.</param>
+/// <param name="TabEventSequence">
+/// Where the tab's event stream stands. Raising or acknowledging a request appends an event, so the
+/// response says where that left the stream - otherwise the phone that just called a waiter is the
+/// one client guaranteed to be behind. Zero on the branch-wide list, which spans many tabs and so
+/// has no single stream to be caught up with.
+/// </param>
 public sealed record ServiceRequestView(
     Guid ServiceRequestId,
     Guid TabId,
@@ -244,7 +256,8 @@ public sealed record ServiceRequestView(
     Guid? RequestedByParticipantId,
     DateTime CreatedAtUtc,
     int WaitingMinutes,
-    DateTime? AcknowledgedAtUtc);
+    DateTime? AcknowledgedAtUtc,
+    long TabEventSequence);
 
 /// <summary>A cash payment, as recorded.</summary>
 /// <param name="PaymentId">The payment.</param>

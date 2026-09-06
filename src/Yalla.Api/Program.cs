@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Endpoints;
@@ -128,6 +128,8 @@ app.MapVenueAdminEndpoints();
 app.MapOrderingEndpoints();
 app.MapPhotoEndpoints();
 app.MapNotificationEndpoints();
+app.MapPublicEndpoints();
+app.MapReportEndpoints();
 
 // Development only: on start, log the LAN address with both ports - the value that goes into the
 // frontend config - so nobody hunts for it in ipconfig.

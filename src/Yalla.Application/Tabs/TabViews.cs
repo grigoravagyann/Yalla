@@ -1,4 +1,4 @@
-using Yalla.Application.Auth;
+﻿using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Tabs;
@@ -90,24 +90,48 @@ public sealed record TabJoinTokenResult(
 /// listed in <paramref name="MyLines"/> with <c>isShared</c> set and are apportioned by the
 /// splitting task, not here.
 /// </param>
+/// <param name="TimeZoneId">
+/// The branch's IANA zone, e.g. <c>Asia/Yerevan</c>. <b>Every time on this response is to be
+/// rendered in it, never in the device's.</b> A tourist's phone is on the wrong zone, and a diner
+/// who has just landed is the exact person least able to work out the offset - and without this the
+/// client had to make a second call to a different endpoint to find out.
+/// </param>
+/// <param name="ServiceChargePercent">
+/// The branch's service charge as it stood when this tab opened, snapshotted onto the tab.
+/// <b>Present for everyone</b>, including a guest whose host has hidden the total: the percentage
+/// is a fact about the venue rather than an aggregate, and the bill has to state it from the first
+/// item. It was manager-only, sitting on the reservation policy behind <c>ManagerOrAbove</c>.
+/// </param>
+/// <param name="MaxSequence">
+/// The tab's newest event position. On every tab response, so a client knows where it stands
+/// without a second call to <c>/events</c> purely to ask.
+/// </param>
+/// <param name="Adjustments">
+/// Comps and discounts, with the reason the manager typed. Present for everyone, for the same
+/// reason voided lines are: a total that drops with no visible cause makes people distrust the app.
+/// </param>
 /// <param name="TableTotalVisible">Whether the two members below are present.</param>
 /// <param name="TableTotal">The table aggregate. <b>Absent</b> when not visible - never zero, never null-as-free.</param>
-/// <param name="TableLines">Every live line on the tab with who placed it. Absent when the total is hidden.</param>
+/// <param name="TableLines">Every line on the tab with who placed it, voided ones included. Absent when the total is hidden.</param>
 public sealed record TabView(
     Guid TabId,
     Guid BranchId,
     string TableLabel,
+    string TimeZoneId,
     TabStatus Status,
     SettlementMode SettlementMode,
     bool SettlementModeLocked,
     bool HideTotalFromGuests,
     Guid? HostParticipantId,
+    decimal ServiceChargePercent,
     DateTime OpenedAtUtc,
     DateTime? ClosedAtUtc,
+    long MaxSequence,
     TabParticipantView Me,
     IReadOnlyList<TabParticipantSummary> Participants,
     IReadOnlyList<TabLineView> MyLines,
     long MyItemsSubtotalAmd,
+    IReadOnlyList<TabAdjustmentView> Adjustments,
     bool TableTotalVisible,
     TabTotalsView? TableTotal,
     IReadOnlyList<TabLineView>? TableLines);
@@ -149,22 +173,78 @@ public sealed record TabParticipantSummary(
 
 /// <summary>One item on the tab, as snapshotted when it was ordered.</summary>
 /// <param name="LineId">The order line.</param>
+/// <param name="OrderId">The order it was part of, so the client can group a round together.</param>
+/// <param name="MenuItemId">The item, so the client can link back to the menu entry.</param>
 /// <param name="PlacedByParticipantId">Who ordered it from their phone. Null when a waiter keyed it in.</param>
 /// <param name="PlacedByDisplayName">Their name at the time of reading.</param>
 /// <param name="Name">The item name as it read on the menu when ordered.</param>
 /// <param name="UnitPriceAmd">Unit price in whole dram as it stood when ordered.</param>
 /// <param name="Quantity">How many.</param>
-/// <param name="LineTotalAmd">Unit price times quantity, in whole dram.</param>
+/// <param name="LineTotalAmd">Unit price times quantity, in whole dram. <b>Zero once voided.</b></param>
+/// <param name="Note">The kitchen note that was sent with it, e.g. "no onions".</param>
+/// <param name="OrderStatus">
+/// Where this line's order is on the kitchen rail, so a diner watches their own dish move to the
+/// kitchen and out to the floor rather than watching nothing happen.
+/// </param>
 /// <param name="IsShared">True when the item belongs to the table and is split across those present.</param>
+/// <param name="SharedWithCount">
+/// How many people a shared line is split between. <b>From the line's own participant snapshot, not
+/// the current roster</b>: a friend who joined ten minutes after the bottle was poured is not on it,
+/// and a badge computed from the roster would silently re-split every existing line each time
+/// somebody else scanned the code.
+/// </param>
+/// <param name="IsVoided">
+/// True once staff took it off the bill. <b>The line stays here, labelled.</b> It is excluded from
+/// every total, and a diner watching their bill must still see that the coffee was removed.
+/// </param>
+/// <param name="VoidedAtUtc">When it was removed.</param>
+/// <param name="VoidReason">Why, in the waiter's own words.</param>
 public sealed record TabLineView(
     Guid LineId,
+    Guid OrderId,
+    Guid MenuItemId,
     Guid? PlacedByParticipantId,
     string? PlacedByDisplayName,
     string Name,
     long UnitPriceAmd,
     int Quantity,
     long LineTotalAmd,
-    bool IsShared);
+    string? Note,
+    TabOrderStatus OrderStatus,
+    bool IsShared,
+    int SharedWithCount,
+    bool IsVoided,
+    DateTime? VoidedAtUtc,
+    string? VoidReason);
+
+/// <summary>
+/// One comp or discount, as the diner sees it.
+/// </summary>
+/// <remarks>
+/// Present on the diner's tab for the same reason a voided line is: money coming off a bill with no
+/// visible cause reads as a mistake, and the person who then has to explain it is a waiter standing
+/// at the table. The manager's <paramref name="Reason"/> is most of the point - "sorry about the
+/// wait" is an apology the diner should get to read.
+/// </remarks>
+/// <param name="AdjustmentId">The adjustment row.</param>
+/// <param name="LineId">The line it applies to, or null for one against the whole tab.</param>
+/// <param name="Kind">1 Discount, 2 Comp.</param>
+/// <param name="Percent">The percentage, when it is one.</param>
+/// <param name="AmountAmd">The flat amount, when it is one.</param>
+/// <param name="ReductionAmd">What it took off, in whole dram.</param>
+/// <param name="Reason">What the manager typed.</param>
+/// <param name="AppliedAtUtc">When it was applied.</param>
+/// <param name="IsVoided">True once it was reversed. It stays on the record, marked.</param>
+public sealed record TabAdjustmentView(
+    Guid AdjustmentId,
+    Guid? LineId,
+    AdjustmentKind Kind,
+    decimal? Percent,
+    long? AmountAmd,
+    long ReductionAmd,
+    string Reason,
+    DateTime AppliedAtUtc,
+    bool IsVoided);
 
 /// <summary>The table aggregate, in whole dram. Server-computed; the client only displays it.</summary>
 public sealed record TabTotalsView(
@@ -183,13 +263,18 @@ public sealed record TabStaffView(
     Guid BranchId,
     Guid DiningTableId,
     string TableLabel,
+    string TimeZoneId,
     TabStatus Status,
     SettlementMode SettlementMode,
     bool SettlementModeLocked,
     Guid? HostParticipantId,
+    decimal ServiceChargePercent,
     DateTime OpenedAtUtc,
     DateTime? ClosedAtUtc,
+    long MaxSequence,
     IReadOnlyList<TabParticipantView> Participants,
+    IReadOnlyList<TabLineView> Lines,
+    IReadOnlyList<TabAdjustmentView> Adjustments,
     TabTotalsView Totals);
 
 /// <summary>Reads a tab for whoever is looking at it.</summary>

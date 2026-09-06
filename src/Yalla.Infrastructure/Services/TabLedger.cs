@@ -15,16 +15,25 @@ namespace Yalla.Infrastructure.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every mutation to a tab goes through here, so the totals cache and the event stream are written
-/// in the same <c>SaveChanges</c> as the change itself. Neither can therefore disagree with the
-/// tab - there is no state in which the wine was ordered and the total does not include it, or in
-/// which it was ordered and nothing on the stream says so.
+/// Every mutation to a tab goes through here, so the event stream is written in the same
+/// <c>SaveChanges</c> as the change itself. There is no state in which the wine was ordered and
+/// nothing on the stream says so.
 /// </para>
 /// <para>
 /// <b>The stored totals are a cache.</b> <c>Tab.SubtotalAmd</c> and its siblings are denormalised
 /// exactly like <c>DiningTable.Status</c>: the authoritative total is, and remains, the sum of the
 /// lines. They exist because the floor screen lists thirty tabs and cannot recompute each one, not
 /// because they are the truth.
+/// </para>
+/// <para>
+/// <b>That is why the cache is no longer written by the order-insert transaction.</b> It used to
+/// be, and the shared <c>Tab</c> row was then a contention point that six genuinely simultaneous
+/// orders could exhaust - surfacing a concurrency error to a diner adding a coffee, which is the
+/// worst-looking failure in the product because the fault is invisible and the app simply appears
+/// broken. Raising the retry ceiling would have moved that point rather than removed it. Inserting
+/// the order without touching the tab row removes it: two orders no longer write anything in
+/// common, so they cannot collide. See <see cref="RecomputeTotalsAsync"/> and
+/// <c>docs/tab-totals.md</c>.
 /// </para>
 /// </remarks>
 internal sealed class TabLedger(
@@ -37,13 +46,20 @@ internal sealed class TabLedger(
     /// How many times a totals recomputation may lose the row-version race before giving up.
     /// </summary>
     /// <remarks>
-    /// See <see cref="SaveWithTotalsAsync"/> for why retrying is correct here and forbidden on the
-    /// table state machine.
+    /// Generous, and safe to be generous with, because a recomputation is idempotent: it derives
+    /// the whole answer from the lines, so losing and repeating it cannot double anything. It is
+    /// also no longer on the path that answers a diner - see <see cref="RecomputeTotalsAsync"/> -
+    /// so exhausting it costs a stale cache that the next read repairs, not a failed order.
     /// </remarks>
-    public const int TotalsRetryAttempts = 3;
+    public const int TotalsRetryAttempts = 10;
 
     /// <summary>How many times an event may be renumbered after losing its place to another writer.</summary>
-    public const int SequenceRetryAttempts = 5;
+    /// <remarks>
+    /// Ten, not five. Renumbering is a pure retry - nothing in the unit of work is re-applied - and
+    /// the number has to cover the worst case rather than the common one: ten phones at one table
+    /// ordering at once all reach for the same position, and the tenth to win has lost nine times.
+    /// </remarks>
+    public const int SequenceRetryAttempts = 10;
 
     private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
 
@@ -205,6 +221,12 @@ internal sealed class TabLedger(
                     "Another writer took the same place in tab {TabId}'s event stream; renumbering "
                     + "(attempt {Attempt} of {Max}).",
                     pending[0].TabId, attempt, SequenceRetryAttempts);
+
+                // Jittered, not fixed. Ten writers that collided once and then all re-read the
+                // maximum on the same tick would simply collide again in the same order; a random
+                // few milliseconds spreads them out, which is what keeps the worst case inside the
+                // attempt budget rather than merely making it less likely.
+                await Task.Delay(Random.Shared.Next(2, 12 * attempt), cancellationToken);
             }
         }
     }
@@ -224,27 +246,29 @@ internal sealed class TabLedger(
     }
 
     /// <summary>
-    /// Recomputes the totals onto the tab and saves, retrying if another writer got there first.
+    /// Writes a change and its recomputed totals in one transaction, retrying a lost row-version
+    /// race.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>This is the one place in Yalla where retrying is correct, and Prompt 2 explicitly forbade
-    /// it everywhere else.</b> That rule is right for the table state machine: a retried "seat this
-    /// table" seats a party at a table that was taken while the request was in flight, and the
-    /// second attempt is a different, wrong action.
+    /// For the staff actions that change what is owed - a void, a discount, a comp - where the
+    /// caller is a manager on one tablet looking at one tab, contention on the tab row is not a
+    /// real phenomenon, and answering with the new total in the same breath is worth more than
+    /// avoiding a collision that does not happen.
     /// </para>
     /// <para>
-    /// Order placement is the opposite case. Two participants tapping "add" at the same moment both
-    /// legitimately succeed - they are inserting different rows, and the operations commute. The
-    /// only thing that collides is the totals cache on the shared <c>Tab</c> row, and a retry there
-    /// re-reads and re-adds rather than repeating an action. Refusing one of the two would be the
-    /// bug: a diner is told their order failed when nothing was wrong with it.
+    /// <b>Order placement no longer comes through here.</b> That is the path where contention is
+    /// real - ten phones at one table - and it now inserts the order without touching the tab row
+    /// at all, recomputing the cache afterwards through
+    /// <see cref="RecomputeTotalsAsync"/>. Payments do not come through here either, for the
+    /// opposite reason: they must take the tab row and must <b>not</b> retry, because reserving
+    /// twice against the same balance is precisely the failure the reserve exists to prevent.
     /// </para>
     /// <para>
-    /// So: catch the row-version clash on the tab, reload it, recompute from what is now there, and
-    /// try again - up to <see cref="TotalsRetryAttempts"/> times with a short backoff. Payments do
-    /// <b>not</b> come through here, because reserving twice is precisely the failure the reserve
-    /// exists to prevent.
+    /// Retrying is correct here for the same reason it is correct there and forbidden on the table
+    /// state machine: a recomputation re-reads and re-derives rather than repeating an action. A
+    /// retried "seat this table" seats a party at a table somebody else just took; a retried
+    /// recomputation produces the same answer over fresher rows.
     /// </para>
     /// </remarks>
     public async Task<TabBill> SaveWithTotalsAsync(Tab tab, CancellationToken cancellationToken)
@@ -279,6 +303,105 @@ internal sealed class TabLedger(
                 await Task.Delay(TimeSpan.FromMilliseconds(15 * attempt), cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    /// Recomputes the totals cache from the lines, in its own short transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Called after the change has already committed, not as part of it.</b> An order insert
+    /// writes the order, its lines and one event, and touches nothing the next order also touches;
+    /// this then brings the denormalised columns on the shared <c>Tab</c> row back in line. Two
+    /// diners ordering at the same instant therefore cannot collide on the thing that used to make
+    /// them collide, and the six-simultaneous-orders failure is gone rather than pushed further out.
+    /// </para>
+    /// <para>
+    /// It still takes the row version, and that is what makes it converge. Suppose one writer
+    /// computes a total from nine orders while another commits the tenth: the first loses the
+    /// version check, reloads, recomputes against ten and wins. Because the recomputation derives
+    /// the whole answer from the lines rather than adding to what is there, repeating it is free
+    /// and losing it costs nothing.
+    /// </para>
+    /// <para>
+    /// <b>Never throws.</b> The caller's work is already committed and its answer is already
+    /// correct; a diner must not be told their order failed because a cache write lost a race. A
+    /// recomputation that cannot win is logged and left, and the next read repairs it - see
+    /// <see cref="EnsureTotalsFreshAsync"/>.
+    /// </para>
+    /// </remarks>
+    /// <returns>The bill as last computed, whether or not the cache write landed.</returns>
+    public async Task<TabBill> RecomputeTotalsAsync(Guid tabId, CancellationToken cancellationToken)
+    {
+        var tab = await LoadForWriteAsync(tabId, cancellationToken);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            LastAttemptCount = attempt;
+
+            var bill = Compute(tab);
+            tab.ApplyComputedTotals(bill.SubtotalAmd, bill.ServiceChargeAmd, bill.PaidAmd);
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+
+                return bill;
+            }
+            catch (DbUpdateConcurrencyException ex) when (IsTabTotalsClash(ex, tab.Id))
+            {
+                if (attempt >= TotalsRetryAttempts)
+                {
+                    // Warning, not an exception. The order is placed and the lines are the truth;
+                    // what is stale is a cache, and saying so is more useful than failing a request
+                    // that succeeded.
+                    logger.LogWarning(
+                        "Tab {TabId}'s totals cache could not be refreshed after {Attempts} attempts; "
+                        + "it will be recomputed on the next read.",
+                        tab.Id, attempt);
+
+                    return bill;
+                }
+
+                logger.LogInformation(
+                    "Another writer changed tab {TabId} while its totals were being recomputed; "
+                    + "reloading and retrying (attempt {Attempt} of {Max}).",
+                    tab.Id, attempt, TotalsRetryAttempts);
+
+                await ReloadForRetryAsync(ex, tab, cancellationToken);
+
+                await Task.Delay(Random.Shared.Next(2, 12 * attempt), cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Repairs the cache on read when it disagrees with the lines.
+    /// </summary>
+    /// <remarks>
+    /// The safety net behind <see cref="RecomputeTotalsAsync"/>, for the case where every writer's
+    /// recomputation lost its race. It costs a comparison on a bill that was being computed anyway,
+    /// and it writes only when the numbers actually differ - so on the overwhelmingly common path
+    /// where the cache is already right, this is free and touches no row.
+    /// </remarks>
+    public async Task<TabBill> EnsureTotalsFreshAsync(Tab tab, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+
+        var bill = Compute(tab);
+
+        if (tab.SubtotalAmd == bill.SubtotalAmd
+            && tab.ServiceChargeAmd == bill.ServiceChargeAmd
+            && tab.PaidAmd == bill.PaidAmd)
+        {
+            return bill;
+        }
+
+        logger.LogInformation(
+            "Tab {TabId}'s totals cache was stale on read ({CachedSubtotal} vs {ComputedSubtotal}); refreshing.",
+            tab.Id, tab.SubtotalAmd, bill.SubtotalAmd);
+
+        return await RecomputeTotalsAsync(tab.Id, cancellationToken);
     }
 
     /// <summary>True when the clash is the tab's own row version rather than something else's.</summary>
@@ -334,9 +457,20 @@ internal sealed class TabLedger(
             bill.SubtotalAmd, bill.ServiceChargeAmd, bill.TotalAmd, bill.PaidAmd, bill.RemainingAmd);
     }
 
+    /// <summary>
+    /// Who an appended event names.
+    /// </summary>
+    /// <remarks>
+    /// <b>The participant first, then the account.</b> Most people who order have no account, so
+    /// reading <c>DinerUserId</c> alone recorded a null actor for very nearly every diner action on
+    /// the stream - a log of "somebody ordered a coffee" is not an audit log. The participant row
+    /// is the id that identifies a phone at a table, and it is the one the tab's own participant
+    /// list can resolve back to a name.
+    /// </remarks>
     private (ActorType Type, Guid? Id) ResolveActor() => actor.Type switch
     {
         ActorType.Staff when actor.StaffMemberId is { } staffId => (ActorType.Staff, staffId),
+        ActorType.Diner when actor.ParticipantId is { } participantId => (ActorType.Diner, participantId),
         ActorType.Diner when actor.DinerUserId is { } dinerId => (ActorType.Diner, dinerId),
         _ => (actor.Type, null),
     };

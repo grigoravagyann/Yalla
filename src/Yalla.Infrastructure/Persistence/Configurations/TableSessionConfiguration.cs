@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Occupancy;
 
@@ -45,6 +45,15 @@ internal sealed class TableSessionConfiguration : EntityConfiguration<TableSessi
 
         // Occupancy history for one table, newest last: the turnover reporting reads this.
         builder.HasIndex(s => new { s.DiningTableId, s.SeatedAtUtc });
+
+        // Reporting. The occupancy reports are all "this branch, seated in this range" - by hour,
+        // by weekday, turn time, walk-in versus booking - and without this every one of them scans
+        // the branch's whole history. Source and ClosedAtUtc are included because turn time is
+        // ClosedAtUtc - SeatedAtUtc and the walk-in split is a group by Source, so the range scan
+        // answers both without a lookup per row.
+        builder.HasIndex(s => new { s.BranchId, s.SeatedAtUtc })
+            .IncludeProperties(s => new { s.ClosedAtUtc, s.Source, s.PartySize })
+            .HasDatabaseName("IX_TableSessions_BranchId_SeatedAtUtc_Reporting");
 
         // At most one open session per table, enforced by the database rather than by service
         // logic alone. This is the backstop for the double-seat: if the state machine is

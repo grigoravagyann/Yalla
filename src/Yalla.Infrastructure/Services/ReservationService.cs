@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
@@ -144,7 +144,8 @@ internal sealed class ReservationService(
             initialStatus: status.Status,
             dinerUserId: dinerUserId,
             stayHint: command.StayHint,
-            clientCommandId: command.ClientCommandId);
+            clientCommandId: command.ClientCommandId,
+            channel: command.Channel);
 
         // The one way a booking row is created. Everything above this line is validation and
         // everything below it is presentation; the concurrency-critical part is all in there.

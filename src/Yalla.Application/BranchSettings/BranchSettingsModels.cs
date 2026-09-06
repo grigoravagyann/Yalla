@@ -1,3 +1,4 @@
+﻿using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
 
@@ -56,10 +57,36 @@ public sealed record ReservationPolicyCommand(
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes = 30)
 {
-    /// <summary>Builds the policy, applying the constructor's own checks and then the editing bounds.</summary>
+    /// <summary>
+    /// Builds the policy, applying the editing bounds first.
+    /// </summary>
+    /// <remarks>
+    /// <b>Bounds before the constructor, deliberately.</b> The constructor throws on the first bad
+    /// number it meets, so validating afterwards could only ever report one problem out of six -
+    /// and it would report it as an <see cref="ArgumentOutOfRangeException"/> naming a C# parameter
+    /// rather than a wire field. Checking the raw values first is what lets a form show every
+    /// broken bound at once, each against its own input.
+    /// </remarks>
+    /// <exception cref="Yalla.Domain.FieldValidationException">
+    /// One or more fields are outside their bounds. Every one of them is named.
+    /// </exception>
     public ReservationPolicy ToPolicy()
     {
-        var policy = new ReservationPolicy(
+        ReservationPolicyLimits.Validate(
+            TurnTimeMinutes,
+            BufferMinutes,
+            GraceMinutes,
+            LateNudgeAfterMinutes,
+            GraceExtensionMinutes,
+            MinLeadMinutes,
+            BookingWindowDays,
+            CancellationDeadlineMinutes,
+            ServiceChargePercent,
+            MaxSeatOverhang,
+            ApprovalRequiredAbovePartySize,
+            WalkInHoldbackMinutes);
+
+        return new ReservationPolicy(
             TurnTimeMinutes,
             BufferMinutes,
             GraceMinutes,
@@ -74,10 +101,6 @@ public sealed record ReservationPolicyCommand(
             MaxSeatOverhang,
             ApprovalRequiredAbovePartySize,
             WalkInHoldbackMinutes);
-
-        ReservationPolicyLimits.Validate(policy);
-
-        return policy;
     }
 }
 
@@ -112,55 +135,93 @@ public static class OpeningHoursRules
     /// Derives <c>ClosesNextDay</c> and refuses blocks that overlap within a day.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A closing time at or before the opening time means the branch closes after midnight -
     /// 18:00 to 01:00 - which is the only reading that is not bad data. Two blocks on one day may
     /// touch (12:00-15:00 then 15:00-23:00) but not overlap.
+    /// </para>
+    /// <para>
+    /// <b>Every bad block is reported, each against its own input.</b> The payload is an array, so
+    /// the field name is indexed - <c>[2].closesAt</c> - which is what a form rendering a row per
+    /// block needs in order to put the message on the right row. Refusing the first problem and
+    /// stopping would make an owner fixing a week's hours submit once per mistake.
+    /// </para>
     /// </remarks>
-    /// <exception cref="ArgumentException">
+    /// <exception cref="FieldValidationException">
     /// Two blocks on the same day overlap, or a block opens and closes at the same minute.
     /// </exception>
     public static IReadOnlyList<OpeningHoursView> Normalise(IReadOnlyList<OpeningHoursBlock> blocks)
     {
         ArgumentNullException.ThrowIfNull(blocks);
 
+        var violations = new List<FieldViolation>();
+
         // Equal times would derive as "closes after midnight" and then be refused by the entity
         // with a message about after-midnight closing, which is not what the caller got wrong.
         // A branch that never shuts says 00:00-23:59; there is no 24-hour block.
-        foreach (var same in blocks.Where(b => b.OpensAt == b.ClosesAt))
+        for (var i = 0; i < blocks.Count; i++)
         {
-            throw new ArgumentException(
-                $"Opening and closing time are both {same.OpensAt:HH\\:mm} on {same.Day}. A block must have a "
-                + "length; for a branch that never closes use 00:00 to 23:59.",
-                nameof(blocks));
+            var block = blocks[i];
+
+            if (block.OpensAt == block.ClosesAt)
+            {
+                violations.Add(new FieldViolation(
+                    Field(i, nameof(OpeningHoursBlock.ClosesAt)),
+                    $"Opening and closing time are both {block.OpensAt:HH\\:mm} on {block.Day}. A block must have a "
+                    + "length; for a branch that never closes use 00:00 to 23:59.",
+                    FieldBounds.Conflict,
+                    Value: block.ClosesAt));
+            }
         }
 
-        var normalised = blocks
-            .Select(b => new OpeningHoursView(b.Day, b.OpensAt, b.ClosesAt, ClosesNextDay: b.ClosesAt <= b.OpensAt))
-            .OrderBy(b => b.Day)
-            .ThenBy(b => b.OpensAt)
+        // Indexed against the payload as sent, so a violation can name the row the client drew.
+        // Ordering for the overlap sweep happens on a copy that keeps the original position.
+        var indexed = blocks
+            .Select((b, index) => (Index: index, View: new OpeningHoursView(
+                b.Day, b.OpensAt, b.ClosesAt, ClosesNextDay: b.ClosesAt <= b.OpensAt)))
+            .OrderBy(b => b.View.Day)
+            .ThenBy(b => b.View.OpensAt)
             .ToList();
 
-        foreach (var day in normalised.GroupBy(b => b.Day))
+        foreach (var day in indexed.GroupBy(b => b.View.Day))
         {
             var ordered = day.ToList();
 
             for (var i = 1; i < ordered.Count; i++)
             {
-                var previous = ordered[i - 1];
+                var previous = ordered[i - 1].View;
                 var current = ordered[i];
 
-                if (Minutes(current.OpensAt) < ClosingMinutes(previous))
+                if (Minutes(current.View.OpensAt) < ClosingMinutes(previous))
                 {
-                    throw new ArgumentException(
+                    violations.Add(new FieldViolation(
+                        Field(current.Index, nameof(OpeningHoursBlock.OpensAt)),
                         $"Opening hours overlap on {day.Key}: {previous.OpensAt:HH\\:mm}-{previous.ClosesAt:HH\\:mm} "
-                        + $"and {current.OpensAt:HH\\:mm}-{current.ClosesAt:HH\\:mm}.",
-                        nameof(blocks));
+                        + $"and {current.View.OpensAt:HH\\:mm}-{current.View.ClosesAt:HH\\:mm}.",
+                        FieldBounds.Conflict,
+                        Min: previous.ClosesAt,
+                        Value: current.View.OpensAt));
                 }
             }
         }
 
-        return normalised;
+        if (violations.Count > 0)
+        {
+            throw new FieldValidationException(violations);
+        }
+
+        return [.. indexed.Select(b => b.View)];
     }
+
+    /// <summary>
+    /// The wire name of one property of one block, e.g. <c>[2].closesAt</c>.
+    /// </summary>
+    /// <remarks>
+    /// The request body is a bare array, so there is no object to prefix with. Index first, then
+    /// the property camel-cased exactly as the schema spells it.
+    /// </remarks>
+    private static string Field(int index, string property) =>
+        $"[{index}].{char.ToLowerInvariant(property[0])}{property[1..]}";
 
     private static int Minutes(TimeOnly time) => (int)time.ToTimeSpan().TotalMinutes;
 

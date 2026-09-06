@@ -1,4 +1,4 @@
-namespace Yalla.Api.Errors;
+﻿namespace Yalla.Api.Errors;
 
 /// <summary>
 /// The stable slugs clients branch on. Add to this list; never reword an existing value, because
@@ -151,6 +151,17 @@ public static class ErrorCodes
     public const string FloorPlanInvalid = "floor-plan-invalid";
 
     /// <summary>
+    /// The branch's menu still has items that are not fit to show a diner, so it cannot be
+    /// switched to Paid. HTTP 409, with <c>incompleteMenuItemCount</c> in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// A conflict rather than a validation failure: nothing in the request is wrong, and nothing
+    /// the caller can change in it would help. The fix is to finish the menu, which is what
+    /// <c>GET /api/branches/{branchId}/readiness</c> is for.
+    /// </remarks>
+    public const string BranchNotReady = "branch-not-ready";
+
+    /// <summary>
     /// The branch is not open for business: its venue is suspended or deleted, or the branch is
     /// switched off. HTTP 409. Distinct from <see cref="FeatureNotEnabled"/>, which is about what a
     /// branch pays for rather than whether it is trading at all.
@@ -169,6 +180,18 @@ public static class ErrorCodes
     /// happened.
     /// </remarks>
     public const string PreconditionFailed = "precondition-failed";
+
+    /// <summary>
+    /// The report range is longer than any report will run. HTTP 400, with the limit and the
+    /// number of days asked for in <c>context</c>.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than a generic bad request, because the client's correct response is specific:
+    /// narrow the range, or ask for the months separately. A range nobody meant to ask for is a
+    /// table scan nobody meant to run, and a refusal that says the limit is more use than a request
+    /// that times out.
+    /// </remarks>
+    public const string ReportRangeTooLong = "report-range-too-long";
 
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
@@ -210,6 +233,8 @@ public static class ErrorCodes
         BranchUnavailable => "Branch not open for business",
         VenueDeletionBlocked => "Venue cannot be deleted",
         FloorPlanInvalid => "Floor plan invalid",
+        BranchNotReady => "Branch is not ready for diners",
+        ReportRangeTooLong => "Report range too long",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a
