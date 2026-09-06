@@ -777,14 +777,21 @@ internal sealed class TableStateService(
     }
 
     /// <summary>
-    /// Who the audit row should name for a transition anyone may perform. A staff member or a
-    /// diner with an account is named; a tab participant has no account by design and a request
-    /// with no token has nobody, so both are recorded as the system - which is what the audit
-    /// row's invariant allows a null actor for.
+    /// Who the audit row should name for a transition anyone may perform. A staff member, a tab
+    /// participant, or a diner with an account is named; a request with no token has nobody and is
+    /// recorded as the system - which is what the audit row's invariant allows a null actor for.
     /// </summary>
+    /// <remarks>
+    /// The participant is preferred over the account for the same reason as on the tab's event
+    /// stream: a participant has no account by design, so naming only account holders left the
+    /// audit row anonymous for very nearly every diner-driven transition. A scan that seats a table
+    /// arrives with no token at all and is still the system, correctly - the participant row does
+    /// not exist until that request creates it.
+    /// </remarks>
     private (ActorType Type, Guid? Id) ResolveActor() => actor.Type switch
     {
         ActorType.Staff when actor.StaffMemberId is { } staffId => (ActorType.Staff, staffId),
+        ActorType.Diner when actor.ParticipantId is { } participantId => (ActorType.Diner, participantId),
         ActorType.Diner when actor.DinerUserId is { } dinerId => (ActorType.Diner, dinerId),
         _ => (ActorType.System, null),
     };

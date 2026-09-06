@@ -130,9 +130,19 @@ public static class TabEndpoints
                 + "only once approved. When hidden they are **absent from the body** - not zero, not "
                 + "null - with `tableTotalVisible: false` beside the gap, so no client can render a "
                 + "hidden total as a free bill.\n"
-                + "- A **pending** participant sees their own row and nothing else.\n\n"
+                + "- A **pending** participant sees their own row and nothing else.\n"
+                + "- **Nothing silently disappears.** A voided line stays in both arrays with "
+                + "`isVoided`, `voidReason` and `voidedAtUtc`, worth zero and counted toward no "
+                + "total; comps and discounts appear in `adjustments` with the reason the manager "
+                + "typed. A bill whose number drops with no visible cause is the fastest way to "
+                + "make somebody distrust the app, and a waiter then has to explain it at the table.\n\n"
                 + "Menu prices are not part of this view and stay visible through the menu, so a "
-                + "guest without the total can always work out what their own order costs.")
+                + "guest without the total can always work out what their own order costs - and "
+                + "`serviceChargePercent` is on the response **for everyone**, hidden total or not, "
+                + "because the percentage is a fact about the venue rather than an aggregate.\n\n"
+                + "`timeZoneId` is the branch's IANA zone: render every instant here in it and "
+                + "never in the device's. `maxSequence` is where the tab's event stream stands, so "
+                + "a client never has to call `/events` purely to find out.")
             .Produces<TabView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such tab.");

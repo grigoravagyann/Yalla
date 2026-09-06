@@ -1,4 +1,4 @@
-using Yalla.Application.Tabs;
+﻿using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests;
@@ -106,24 +106,179 @@ public class TabProjectionTests
     }
 
     /// <summary>
-    /// A voided line is nobody's item and counts toward no total - the same rule the entity applies.
+    /// <b>Test 6, as a unit.</b> A voided line stays on the diner's bill, labelled with the reason,
+    /// and counts toward no total.
     /// </summary>
+    /// <remarks>
+    /// This test asserted the opposite until Prompt 11 - that the line was <i>absent</i> - which is
+    /// what the code did and the reverse of what Prompt 8 specified and what the endpoint's own
+    /// documentation claimed. It is the clearest example of a test written against the
+    /// implementation rather than the specification: a missing field could never fail it.
+    /// <para>
+    /// A total that drops with no visible cause is the fastest way to make somebody distrust the
+    /// app, and the person who then has to explain it is a waiter standing at the table.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public void A_voided_line_is_not_shown_and_not_counted()
+    public void A_voided_line_stays_visible_with_its_reason_and_counts_toward_nothing()
     {
+        var voidedAt = Opened.AddMinutes(20);
+
         var tab = Tab() with
         {
             Lines =
             [
-                new TabLineSnapshot(Guid.CreateVersion7(), AniId, "Cancelled tea", 2_400L, 1, false, IsVoided: true, []),
+                Line(AniId, "Cancelled tea", 2_400L)
+                    with { IsVoided = true, VoidedAtUtc = voidedAt, VoidReason = "wrong order" },
             ],
         };
 
         var view = TabProjection.Project(tab, AniId)!;
 
-        Assert.Empty(view.MyLines);
+        var line = Assert.Single(view.MyLines);
+
+        Assert.True(line.IsVoided);
+        Assert.Equal("wrong order", line.VoidReason);
+        Assert.Equal(voidedAt, line.VoidedAtUtc);
+
+        // Visible, and worth nothing. Both halves matter: the diner sees the coffee was removed,
+        // and no total moves because of it.
+        Assert.Equal(0L, line.LineTotalAmd);
         Assert.Equal(0L, view.MyItemsSubtotalAmd);
     }
+
+    /// <summary>
+    /// <b>Test 7, as a unit.</b> A comp appears on the diner's bill with the manager's reason.
+    /// </summary>
+    [Fact]
+    public void An_adjustment_is_on_the_view_with_the_reason_the_manager_typed()
+    {
+        var tab = Tab() with
+        {
+            Adjustments =
+            [
+                new TabAdjustmentSnapshot(
+                    Guid.CreateVersion7(),
+                    TabOrderLineId: null,
+                    AdjustmentKind.Comp,
+                    Percent: null,
+                    AmountAmd: 2_400L,
+                    ReductionAmd: 2_400L,
+                    Reason: "sorry about the wait",
+                    CreatedAtUtc: Opened.AddMinutes(30),
+                    IsVoided: false),
+            ],
+        };
+
+        var adjustment = Assert.Single(TabProjection.Project(tab, AniId)!.Adjustments);
+
+        Assert.Equal(AdjustmentKind.Comp, adjustment.Kind);
+        Assert.Equal("sorry about the wait", adjustment.Reason);
+        Assert.Equal(2_400L, adjustment.ReductionAmd);
+    }
+
+    /// <summary>
+    /// <b>Test 8, as a unit.</b> The service charge percentage reaches a guest with the total
+    /// hidden, and no aggregate does.
+    /// </summary>
+    /// <remarks>
+    /// The percentage is a fact about the venue rather than an aggregate. A diner who can see their
+    /// own items must be able to work out what they will be charged on them, and Prompt 8 requires
+    /// the bill to state it from the first item - but it lived on the reservation policy behind
+    /// <c>ManagerOrAbove</c>, where no diner could ever read it.
+    /// </remarks>
+    [Fact]
+    public void The_service_charge_percentage_reaches_a_guest_who_cannot_see_the_total()
+    {
+        var view = TabProjection.Project(Tab(aniSeesTotal: false), AniId)!;
+
+        Assert.Equal(10m, view.ServiceChargePercent);
+
+        // And the aggregate is still absent, which is the rule that must not have been loosened to
+        // get the percentage through.
+        Assert.False(view.TableTotalVisible);
+        Assert.Null(view.TableTotal);
+        Assert.Null(view.TableLines);
+    }
+
+    /// <summary>
+    /// <b>Test 11, as a unit.</b> The split badge counts who was there when the line was ordered.
+    /// </summary>
+    /// <remarks>
+    /// Computed from the current roster it would silently re-split every existing line each time
+    /// somebody new scanned the code - so the bottle poured for two would start reading as split
+    /// three ways the moment a third person sat down.
+    /// </remarks>
+    [Fact]
+    public void A_shared_lines_split_count_is_the_snapshot_and_not_the_current_roster()
+    {
+        var tab = Tab() with
+        {
+            Lines =
+            [
+                Line(HostId, "Areni red, bottle", 9_500L)
+                    with { IsShared = true, SharedWithParticipantIds = [HostId, AniId] },
+            ],
+        };
+
+        // Three people are on the tab now; two were there when the bottle was ordered.
+        Assert.Equal(3, tab.Participants.Count);
+
+        var line = Assert.Single(TabProjection.Project(tab, AniId)!.MyLines);
+
+        Assert.True(line.IsShared);
+        Assert.Equal(2, line.SharedWithCount);
+    }
+
+    /// <summary>
+    /// <b>Tests 9, 10 and 12, as units.</b> The fields the client needed and had to make a second
+    /// call for, or could not get at all.
+    /// </summary>
+    [Fact]
+    public void The_view_carries_the_time_zone_the_stream_position_and_each_lines_order_status()
+    {
+        var tab = Tab() with
+        {
+            MaxEventSequence = 42L,
+            Lines = [Line(AniId, "Khachapuri", 3_200L) with { OrderStatus = TabOrderStatus.InKitchen }],
+        };
+
+        var view = TabProjection.Project(tab, AniId)!;
+
+        // Every instant on this response renders in the branch's zone, never the device's.
+        Assert.Equal("Asia/Yerevan", view.TimeZoneId);
+
+        // Where the client stands, without a second call to /events purely to ask.
+        Assert.Equal(42L, view.MaxSequence);
+
+        var line = Assert.Single(view.MyLines);
+
+        // The diner watches their own dish move along the rail.
+        Assert.Equal(TabOrderStatus.InKitchen, line.OrderStatus);
+
+        // And the three ids and the note the client needs to group a round and link to the menu.
+        Assert.NotEqual(Guid.Empty, line.OrderId);
+        Assert.NotEqual(Guid.Empty, line.MenuItemId);
+        Assert.Equal("no onions", line.Note);
+    }
+
+    /// <summary>One ordinary line. Overridden per test with a <c>with</c> expression.</summary>
+    private static TabLineSnapshot Line(Guid? placedBy, string name, long unitPriceAmd) =>
+        new(
+            LineId: Guid.CreateVersion7(),
+            OrderId: Guid.CreateVersion7(),
+            MenuItemId: Guid.CreateVersion7(),
+            PlacedByParticipantId: placedBy,
+            Name: name,
+            UnitPriceAmd: unitPriceAmd,
+            Quantity: 1,
+            Note: "no onions",
+            OrderStatus: TabOrderStatus.New,
+            IsShared: false,
+            IsVoided: false,
+            VoidedAtUtc: null,
+            VoidReason: null,
+            SharedWithParticipantIds: []);
 
     private static TabSnapshot Tab(bool aniSeesTotal = true) =>
         new(
@@ -131,11 +286,13 @@ public class TabProjectionTests
             BranchId: Guid.CreateVersion7(),
             DiningTableId: Guid.CreateVersion7(),
             TableLabel: "7",
+            TimeZoneId: "Asia/Yerevan",
             Status: TabStatus.Open,
             SettlementMode: SettlementMode.AnyonePaysAnyAmount,
             SettlementModeLockedAtUtc: null,
             HideTotalFromGuests: !aniSeesTotal,
             HostParticipantId: HostId,
+            ServiceChargePercentSnapshot: 10m,
             OpenedAtUtc: Opened,
             ClosedAtUtc: null,
             SubtotalAmd: 9_000L,
@@ -143,6 +300,7 @@ public class TabProjectionTests
             TotalAmd: 9_900L,
             PaidAmd: 0L,
             RemainingAmd: 9_900L,
+            MaxEventSequence: 3L,
             Participants:
             [
                 new TabParticipantSnapshot(HostId, "Host", ParticipantRole.Host, ParticipantStatus.Approved, true, true, true, Opened),
@@ -151,7 +309,8 @@ public class TabProjectionTests
             ],
             Lines:
             [
-                new TabLineSnapshot(Guid.CreateVersion7(), HostId, "Coffee", 2_500L, 1, false, false, []),
-                new TabLineSnapshot(Guid.CreateVersion7(), AniId, "Tea", 2_400L, 1, false, false, []),
-            ]);
+                Line(HostId, "Coffee", 2_500L),
+                Line(AniId, "Tea", 2_400L),
+            ],
+            Adjustments: []);
 }

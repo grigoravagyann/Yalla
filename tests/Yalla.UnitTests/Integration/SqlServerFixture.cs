@@ -415,15 +415,41 @@ public sealed class FakeClock(DateTime utcNow) : IClock
 }
 
 /// <summary>A clock the tests drive, so "reserved soon" is deterministic.</summary>
-public sealed class TestClock(DateTime utcNow) : IClock
+/// <remarks>
+/// <b>The instant is normalised to UTC, whatever kind it arrives with.</b> It used to store the
+/// value as given, so a test written with an unspecified-kind literal produced an
+/// unspecified-kind clock - and <c>Guard.NotLocalTime</c>, the one check between a local instant
+/// and a UTC column, passes on unspecified. The real clock always returns
+/// <see cref="DateTimeKind.Utc"/>, so a double that does not is telling the suite something
+/// production cannot. Pinned by <c>ClockContract</c>.
+/// </remarks>
+public sealed class TestClock : IClock
 {
-    public DateTime UtcNow { get; set; } = utcNow;
+    private DateTime _utcNow;
+
+    public TestClock(DateTime utcNow) => UtcNow = utcNow;
+
+    public DateTime UtcNow
+    {
+        get => _utcNow;
+
+        set => _utcNow = value.Kind == DateTimeKind.Utc
+            ? value
+            : DateTime.SpecifyKind(
+                value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : value,
+                DateTimeKind.Utc);
+    }
 
     public void Advance(TimeSpan by) => UtcNow = UtcNow.Add(by);
 }
 
 /// <summary>A stand-in actor, so permission paths can be exercised without authentication.</summary>
-public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? role, Guid? dinerUserId = null)
+public sealed class TestActor(
+    ActorType type,
+    Guid? staffMemberId,
+    StaffRole? role,
+    Guid? dinerUserId = null,
+    Guid? participantId = null)
     : ICurrentActor
 {
     public ActorType Type { get; } = type;
@@ -431,6 +457,8 @@ public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? ro
     public Guid? StaffMemberId { get; } = staffMemberId;
 
     public Guid? DinerUserId { get; } = dinerUserId;
+
+    public Guid? ParticipantId { get; } = participantId;
 
     public StaffRole? Role { get; } = role;
 
@@ -450,13 +478,23 @@ public sealed class TestActor(ActorType type, Guid? staffMemberId, StaffRole? ro
         new(ActorType.Diner, null, null, dinerUserId ?? Guid.CreateVersion7());
 
     /// <summary>
-    /// A phone on a tab, identified by its participant row.
+    /// A phone on a tab, identified by its participant row and by nothing else.
     /// </summary>
     /// <remarks>
-    /// A tab participant has no account, so the participant id is what the token carries and what
-    /// <c>ICurrentActor.DinerUserId</c> holds for them - see <c>docs/auth.md</c>. Ordering reads it
-    /// from there and never from a request body, so one phone cannot order in another's name.
+    /// <para>
+    /// <b>This double used to put the participant id into <c>DinerUserId</c>, and production never
+    /// does.</b> A participant token carries <c>PrincipalType = TabParticipant</c> and a
+    /// <c>participantId</c> claim, and <c>ClaimsCurrentActor.DinerUserId</c> returns null for it -
+    /// correctly, because a tab participant has no account. So every test that exercised ordering
+    /// was asserting against a shape the real actor cannot produce, and the suite reported the
+    /// ordering flow as working when it had never once run with a real token.
+    /// </para>
+    /// <para>
+    /// <c>DinerUserId</c> is left null here deliberately. A participant who <i>also</i> holds a
+    /// diner account still presents a participant token on a tab, so the account id is not on this
+    /// path at all. <c>CurrentActorContract</c> is what now stops this drifting back.
+    /// </para>
     /// </remarks>
     public static TestActor Participant(Guid participantId) =>
-        new(ActorType.Diner, null, null, participantId);
+        new(ActorType.Diner, null, null, dinerUserId: null, participantId: participantId);
 }

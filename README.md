@@ -1,4 +1,4 @@
-# Yalla backend
+﻿# Yalla backend
 
 [![backend](https://github.com/grigoravagyann/Yalla/actions/workflows/backend.yml/badge.svg)](https://github.com/grigoravagyann/Yalla/actions/workflows/backend.yml)
 
@@ -9,7 +9,7 @@ tablet, and the owner's admin panel.
 - `SCHEMA.md` — the database schema and the decisions behind it.
 - `docs/` — one document per subsystem: `auth.md`, `reservations.md`, `tabs.md`,
   `platform-admin.md`, `openapi.md`, `billing.md`, `notifications.md`,
-  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`.
+  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`, `contract-tests.md`.
 
 ## Running locally
 

@@ -238,7 +238,14 @@ internal sealed class TabOrderService(
 
         // A diner. The participant id comes from their own token, never from the body: a phone
         // must not be able to order in somebody else's name by sending their id.
-        var participantId = actor.DinerUserId
+        //
+        // From ParticipantId, not DinerUserId. This line read DinerUserId until Prompt 11, and
+        // ClaimsCurrentActor returns null for that unless the principal is a Diner - so with real
+        // auth every participant token fell straight through to the refusal below, and the one
+        // feature this product is built around had never functioned outside a test. The test double
+        // put the participant id into DinerUserId, which production never does, so 522 green tests
+        // said otherwise. See docs/auth.md and CurrentActorContract.
+        var participantId = actor.ParticipantId
                             ?? throw new TabPermissionException("Ordering", "somebody on this tab");
 
         var participant = tab.Participants.FirstOrDefault(p => p.Id == participantId)

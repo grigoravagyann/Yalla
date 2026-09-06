@@ -31,6 +31,8 @@ public sealed class DevCurrentActor(IOptions<DevActorOptions> options, DevSeedRe
 
     public Guid? DinerUserId => Options.Type == ActorType.Diner ? Options.DinerUserId : null;
 
+    public Guid? ParticipantId => Options.Type == ActorType.Diner ? Options.ParticipantId : null;
+
     public StaffRole? Role => Options.Type == ActorType.Staff ? Options.Role : null;
 
     /// <summary>

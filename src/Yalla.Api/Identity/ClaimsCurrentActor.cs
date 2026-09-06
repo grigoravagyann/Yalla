@@ -49,6 +49,17 @@ internal sealed class ClaimsCurrentActor(IHttpContextAccessor accessor) : ICurre
     public Guid? DinerUserId =>
         PrincipalType == Domain.Enums.PrincipalType.Diner ? ReadGuid(YallaClaims.DinerUserId) : null;
 
+    /// <summary>
+    /// The tab participant this token is for. Null for everyone else.
+    /// </summary>
+    /// <remarks>
+    /// Gated on the principal type rather than merely reading the claim, for the same reason
+    /// <see cref="DinerUserId"/> is: a handler that decides what a token is from which claims
+    /// happen to be present is one forged claim away from treating something else as a participant.
+    /// </remarks>
+    public Guid? ParticipantId =>
+        PrincipalType == Domain.Enums.PrincipalType.TabParticipant ? ReadGuid(YallaClaims.ParticipantId) : null;
+
     public StaffRole? Role =>
         Type == ActorType.Staff
         && Enum.TryParse<StaffRole>(Principal?.FindFirstValue(YallaClaims.Role), out var role)

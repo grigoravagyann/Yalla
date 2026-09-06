@@ -457,9 +457,20 @@ internal sealed class TabLedger(
             bill.SubtotalAmd, bill.ServiceChargeAmd, bill.TotalAmd, bill.PaidAmd, bill.RemainingAmd);
     }
 
+    /// <summary>
+    /// Who an appended event names.
+    /// </summary>
+    /// <remarks>
+    /// <b>The participant first, then the account.</b> Most people who order have no account, so
+    /// reading <c>DinerUserId</c> alone recorded a null actor for very nearly every diner action on
+    /// the stream - a log of "somebody ordered a coffee" is not an audit log. The participant row
+    /// is the id that identifies a phone at a table, and it is the one the tab's own participant
+    /// list can resolve back to a name.
+    /// </remarks>
     private (ActorType Type, Guid? Id) ResolveActor() => actor.Type switch
     {
         ActorType.Staff when actor.StaffMemberId is { } staffId => (ActorType.Staff, staffId),
+        ActorType.Diner when actor.ParticipantId is { } participantId => (ActorType.Diner, participantId),
         ActorType.Diner when actor.DinerUserId is { } dinerId => (ActorType.Diner, dinerId),
         _ => (actor.Type, null),
     };

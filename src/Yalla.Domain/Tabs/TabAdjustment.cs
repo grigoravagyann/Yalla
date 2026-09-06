@@ -134,16 +134,28 @@ public sealed class TabAdjustment : Entity
     /// number downstream - the service charge, the shares, the remaining balance - would then be
     /// arithmetic nobody can explain to a diner.
     /// </remarks>
-    public long ReductionOn(long baseAmd)
+    public long ReductionOn(long baseAmd) =>
+        IsActive ? ReductionFor(Percent, AmountAmd, baseAmd) : 0L;
+
+    /// <summary>
+    /// The same arithmetic over loose values, for a read model that never materialises the entity.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ReductionOn"/> delegates to this rather than repeating it. The diner's bill shows
+    /// each adjustment's reduction beside a total computed by <c>TabBilling</c>, and two
+    /// implementations of the rounding and the clamp would put a discount on screen that does not
+    /// add up to the number under it.
+    /// </remarks>
+    public static long ReductionFor(decimal? percent, long? amountAmd, long baseAmd)
     {
-        if (!IsActive || baseAmd <= 0L)
+        if (baseAmd <= 0L)
         {
             return 0L;
         }
 
-        var raw = Percent is { } percent
-            ? Money.PercentOf(baseAmd, percent)
-            : AmountAmd!.Value;
+        var raw = percent is { } value
+            ? Money.PercentOf(baseAmd, value)
+            : amountAmd ?? 0L;
 
         return Math.Min(raw, baseAmd);
     }
