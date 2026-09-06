@@ -121,13 +121,6 @@ public sealed record VenueUserSignInResult(
     StaffRole Role,
     Guid? VenueId);
 
-/// <summary>One enrolled tablet, as the admin panel lists it.</summary>
-/// <param name="Id">The device.</param>
-/// <param name="Name">What the manager called it.</param>
-/// <param name="BranchId">The branch it is bound to.</param>
-/// <param name="EnrolledAtUtc">When it redeemed its enrolment code.</param>
-/// <param name="LastSeenAtUtc">Last time a token from it was used. Null if never.</param>
-/// <param name="IsRevoked">True once a manager killed it. Revocation is permanent; re-enrol instead.</param>
 /// <summary>
 /// Where an enrolled device thinks it is, shown on the PIN screen before anybody taps.
 /// </summary>
@@ -149,6 +142,13 @@ public sealed record EnrolledDeviceView(
     DateTime EnrolledAtUtc,
     DateTime? LastSeenAtUtc);
 
+/// <summary>One enrolled tablet, as the admin panel lists it.</summary>
+/// <param name="Id">The device.</param>
+/// <param name="Name">What the manager called it.</param>
+/// <param name="BranchId">The branch it is bound to.</param>
+/// <param name="EnrolledAtUtc">When it redeemed its enrolment code.</param>
+/// <param name="LastSeenAtUtc">Last time a token from it was used. Null if never.</param>
+/// <param name="IsRevoked">True once a manager killed it. Revocation is permanent; re-enrol instead.</param>
 public sealed record StaffDeviceSummary(
     Guid Id,
     string Name,

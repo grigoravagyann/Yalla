@@ -154,6 +154,8 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
         var floor = await fixture.CreateFloorQuery(readDb, clock)
             .GetFloorStateAsync(branch.BranchId, clock.UtcNow);
 
+        Assert.NotNull(floor);
+
         var billed = floor.Tables.Single(t => t.TableId == withTab);
         var unbilled = floor.Tables.Single(t => t.TableId == seatedNoTab);
         var empty = floor.Tables.Single(t => t.TableId == branch.TableIds[2]);
@@ -464,6 +466,8 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
 
         var floor = await fixture.CreateFloorQuery(db, clock)
             .GetFloorStateAsync(branch.BranchId, clock.UtcNow);
+
+        Assert.NotNull(floor);
 
         return floor.Tables.Single(t => t.TableId == tableId).RowVersion;
     }

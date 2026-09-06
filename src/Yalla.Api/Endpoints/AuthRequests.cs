@@ -33,6 +33,11 @@ public sealed record RefreshTokenRequest([Required] string RefreshToken);
 
 /// <summary>Body of <c>POST /api/auth/staff/enrol</c>.</summary>
 /// <param name="Code">The one-time enrolment code a manager generated for this branch.</param>
+/// <param name="DeviceId">
+/// The identifier the tablet minted for itself, stable across reinstalls. Enrolling the same one
+/// twice on a branch is refused as a client bug rather than as a credential problem - the tablet is
+/// already enrolled and holding a token it is not using.
+/// </param>
 /// <param name="DeviceName">
 /// What the tablet should be called in the admin panel - "Bar tablet", "Terrace". A manager
 /// revoking a lost device picks it out of a list by this name.
