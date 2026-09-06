@@ -1,3 +1,4 @@
+﻿using Yalla.Domain;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Platform;
@@ -7,7 +8,83 @@ public sealed record CreateVenueCommand(
     string Name,
     VenueType Type,
     string Slug,
-    CreateBranchCommand FirstBranch);
+    CreateBranchCommand FirstBranch)
+{
+    /// <summary>
+    /// Names every required field the payload left out, rather than the first one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An empty body is missing a name, a slug and a whole branch, and reporting one of them at a
+    /// time makes somebody submit three times to find that out. The same argument
+    /// <c>ReservationPolicyLimits</c> was written for, applied to the other form an owner meets
+    /// during onboarding - and this one is about to grow the branch's address and coordinates in
+    /// the console, so it will be submitting a dozen inputs at once.
+    /// </para>
+    /// <para>
+    /// <b>Presence only, deliberately - not bounds.</b> "Is this null or blank?" needs no knowledge
+    /// of any rule, so it can be asked here without a second copy of anything. A <i>bound</i> -
+    /// a latitude of 200, a name of 500 characters - is enforced by the <c>Venue</c> and
+    /// <c>Branch</c> constructors through <c>Guard</c>, and checking those here would mean either
+    /// duplicating every limit or extracting them into a <c>VenueLimits</c> class the way the
+    /// reservation policy has one. Both are real changes to how venue creation validates, which is
+    /// more than this is. So a request with three missing fields reports three, and a request with
+    /// three out-of-range fields still reports the first. See <c>docs/platform-admin.md</c>.
+    /// </para>
+    /// <para>
+    /// Field names are the wire ones, dotted for the nested object - <c>firstBranch.name</c> - in
+    /// the same shape the opening-hours refusal already uses for <c>[1].opensAt</c>.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="FieldValidationException">One or more required fields are missing.</exception>
+    public void Validate()
+    {
+        var violations = new List<FieldViolation>();
+
+        Require(violations, "name", Name);
+        Require(violations, "slug", Slug);
+
+        if (!Enum.IsDefined(Type))
+        {
+            violations.Add(new FieldViolation(
+                "type",
+                "Not a defined venue type. 1 Restaurant, 2 Cafe, 3 Bar.",
+                FieldBounds.Required,
+                Value: (int)Type));
+        }
+
+        if (FirstBranch is null)
+        {
+            // A venue with no branch is useless, so the first branch is created with it - which
+            // makes a missing firstBranch a missing required field like any other, and not the
+            // internal null it used to be reported as.
+            violations.Add(new FieldViolation(
+                "firstBranch",
+                "A venue needs its first branch.",
+                FieldBounds.Required));
+        }
+        else
+        {
+            Require(violations, "firstBranch.name", FirstBranch.Name);
+            Require(violations, "firstBranch.slug", FirstBranch.Slug);
+            Require(violations, "firstBranch.address", FirstBranch.Address);
+            Require(violations, "firstBranch.timeZoneId", FirstBranch.TimeZoneId);
+        }
+
+        if (violations.Count > 0)
+        {
+            throw new FieldValidationException(violations);
+        }
+    }
+
+    private static void Require(List<FieldViolation> violations, string field, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            violations.Add(new FieldViolation(field, "This field is required.", FieldBounds.Required));
+        }
+    }
+}
 
 /// <summary>Add a branch. The tier is per branch - a chain with four locations pays four times.</summary>
 public sealed record CreateBranchCommand(

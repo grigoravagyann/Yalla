@@ -72,6 +72,7 @@ public static class DependencyInjection
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.
         services.AddScoped<IPublicVenueQuery, PublicVenueQuery>();
+        services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 
         // Photos. The storage root is verified once, at construction, so a folder that cannot be
@@ -132,9 +133,11 @@ public static class DependencyInjection
         // The share-link template. Optional in configuration; the default points at the local
         // diner app, which is what a developer with no settings gets.
         services.AddOptions<TabOptions>();
+        services.AddOptions<PublicWebOptions>();
         if (configuration is not null)
         {
             services.Configure<TabOptions>(configuration.GetSection(TabOptions.SectionName));
+            services.Configure<PublicWebOptions>(configuration.GetSection(PublicWebOptions.SectionName));
         }
 
         // Both are plain settings objects rather than IOptions: they are read on nearly every

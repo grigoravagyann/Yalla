@@ -60,6 +60,19 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasForeignKey(b => b.CoverPhotoId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Nullable: a branch is usable before anybody types its number in, and one created through
+        // the platform API has no way to supply one.
+        builder.Property(b => b.PhoneE164)
+            .HasMaxLength(FieldLengths.PhoneE164);
+
+        // False for every existing row, which is the whole point of the flag - see Branch. The
+        // database default covers the rows that predate the column; bool has no spare sentinel, so
+        // unlike SubscriptionTier this cannot distinguish "not set" from "set to false", and does
+        // not need to: false is the answer in both cases.
+        builder.Property(b => b.AcceptsWebBookings)
+            .IsRequired()
+            .HasDefaultValue(false);
+
         builder.Ignore(b => b.IsPaid);
 
         // Null until somebody saves the policy form. Not a flag: the timestamp answers "when did

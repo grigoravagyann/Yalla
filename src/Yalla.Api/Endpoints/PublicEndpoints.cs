@@ -97,6 +97,48 @@ public static class PublicEndpoints
             .Produces<BranchAvailability>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
 
+        group.MapGet("/bookings/{token}", GetBookingAsync)
+            .WithName("getPublicBooking")
+            .WithSummary("One booking, by the manage link that was mailed with it")
+            .WithDescription(
+                "What the confirmation screen renders, for somebody holding nothing but the link: "
+                + "venue, branch, address, table, local date and time, party size, status, the code "
+                + "quoted at the door, and the instant past which cancelling counts as late.\n\n"
+                + "**Nothing else.** No diner id, no phone number, no other bookings, no floor "
+                + "state. The token is the whole credential and it will be pasted into WhatsApp, "
+                + "left in browser history and read by whoever picks the phone up, so this response "
+                + "is a hand-picked subset rather than a trimmed reservation.\n\n"
+                + "**A cancelled, missed or finished booking answers 200 with its state**, not 404. "
+                + "Somebody opening a three-week-old link should learn what happened to their table.\n\n"
+                + "**An unknown token, an expired one and a booking that no longer exists answer "
+                + "identically** - same status, same code, same sentence. The link must not be "
+                + "usable to find out which tokens are real. The link stops working "
+                + "`ManageTokenGraceDays` after the booking ends.")
+            .Produces<PublicBookingView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "The link is not valid. Deliberately indistinguishable from an expired one.");
+
+        group.MapPost("/bookings/{token}/cancel", CancelBookingAsync)
+            .WithName("cancelPublicBooking")
+            .WithSummary("Cancel a booking from its manage link")
+            .WithDescription(
+                "The reason a web booking is not a no-show generator. A diner who booked from this "
+                + "page has no app, so no push reminder and no one-tap cancel reach them - this "
+                + "link is the only way cancelling is ever easier for them than simply not turning "
+                + "up, which is the premise the whole reservation product rests on.\n\n"
+                + "**Free before the branch's deadline, allowed after it and recorded as late, "
+                + "never blocked.** A late cancellation is far better than a no-show: the venue at "
+                + "least knows. `cancellationDeadlineUtc` on the read above is that deadline.\n\n"
+                + "The same cancellation the app performs, not a second one - the booking's "
+                + "reminder is cancelled in the same transaction either way.\n\n"
+                + "**Cancelling an already-cancelled or finished booking is not an error**: the "
+                + "booking comes back as it stands, untouched.")
+            .Produces<PublicBookingView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "The link is not valid. Deliberately indistinguishable from an expired one.");
+
         group.MapGet("/branches/{branchId:guid}/meta", GetMetaAsync)
             .WithName("getPublicBranchMeta")
             .WithSummary("Open Graph and Twitter card fields for this branch")
@@ -123,6 +165,24 @@ public static class PublicEndpoints
     private static async Task<IResult> GetMenuAsync(
         Guid branchId, IPublicVenueQuery venues, CancellationToken ct) =>
         Results.Ok(await venues.GetMenuAsync(branchId, ct));
+
+    private static async Task<IResult> GetBookingAsync(
+        string token, IPublicBookingService bookings, CancellationToken ct) =>
+        Results.Ok(await bookings.GetAsync(token, ct));
+
+    /// <summary>
+    /// Cancels a booking from its manage link.
+    /// </summary>
+    /// <remarks>
+    /// The reason is optional and comes from the body, which may be absent entirely - a diner
+    /// tapping Cancel on a page has nothing to say and should not have to send an empty object.
+    /// </remarks>
+    private static async Task<IResult> CancelBookingAsync(
+        string token,
+        IPublicBookingService bookings,
+        CancellationToken ct,
+        CancelBookingRequest? request = null) =>
+        Results.Ok(await bookings.CancelAsync(token, request?.Reason, ct));
 
     private static async Task<IResult> GetMetaAsync(
         Guid branchId, IPublicVenueQuery venues, CancellationToken ct) =>
@@ -155,3 +215,9 @@ public static class PublicEndpoints
             : Results.Ok(result);
     }
 }
+
+/// <summary>Why a booking was cancelled, if the diner said. Optional in every sense.</summary>
+/// <param name="Reason">
+/// Free text, stored on the booking. Null when the body is absent or the field is omitted.
+/// </param>
+public sealed record CancelBookingRequest(string? Reason = null);

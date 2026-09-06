@@ -63,6 +63,32 @@ public sealed record PublicBranchCard(
 /// The room, in diner shape: the canvas, the areas and the tables with their geometry and whether
 /// each is free. <b>No QR tokens and no staff state</b> - see <see cref="PublicFloorTable"/>.
 /// </param>
+/// <param name="Status">
+/// Open or Closed - see <see cref="PublicBranchStatus"/>. Lets the page tell "shut tonight" from
+/// "this venue is gone", which neither <paramref name="IsOpenNow"/> alone nor a 404 can say.
+/// </param>
+/// <param name="PhoneE164">
+/// The branch's contact number in E.164, or null when nobody has supplied one. The only way a
+/// diner on this page can ask about a high chair or a wheelchair ramp.
+/// </param>
+/// <param name="AcceptsWebBookings">
+/// Whether this branch takes bookings from this page. <b>False unless somebody switched it on</b> -
+/// see <see cref="Yalla.Domain.Venues.Branch.AcceptsWebBookings"/>. When false the page shows the
+/// room, the menu and the hours and offers no booking, which is a perfectly good page.
+/// </param>
+/// <param name="BookingWindowDays">
+/// How many days ahead this branch takes bookings, which is the maximum of the date input.
+/// </param>
+/// <param name="Policy">
+/// The reservation rules a diner needs, and <b>only</b> those - see
+/// <see cref="PublicReservationPolicy"/> for what is deliberately withheld.
+/// </param>
+/// <param name="AsOfUtc">
+/// When the server read the live half of this page. <paramref name="FreeTableCount"/>,
+/// <paramref name="IsOpenNow"/> and each table's <c>isFree</c> are true as of this instant and no
+/// later; the rest is stable. The page shows the staleness rather than implying there is none,
+/// because this link is cached for seconds and shared for days.
+/// </param>
 public sealed record PublicBranchPage(
     string VenueSlug,
     string BranchSlug,
@@ -78,7 +104,72 @@ public sealed record PublicBranchPage(
     bool IsOpenNow,
     int FreeTableCount,
     int TableCount,
-    PublicFloorPlan FloorPlan);
+    PublicFloorPlan FloorPlan,
+    PublicBranchStatus Status,
+    string? PhoneE164,
+    bool AcceptsWebBookings,
+    int BookingWindowDays,
+    PublicReservationPolicy Policy,
+    DateTime AsOfUtc);
+
+/// <summary>
+/// Whether the page is showing a branch a diner can act on.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The page needs to tell "closed tonight" apart from "this venue is gone", and neither
+/// <c>isOpenNow</c> nor a 404 can say it. A closed branch still wants its menu read and its hours
+/// checked; a branch that is no longer published should not be presented as a place to go.
+/// </para>
+/// <para>
+/// <b>There is deliberately no Suspended member.</b> A suspended venue answers 404 and always
+/// will - distinguishing it here would publish a customer's billing status to anybody who guessed
+/// a slug, which is the rule the whole public surface is built around. What is left is the honest
+/// distinction the page can be told.
+/// </para>
+/// </remarks>
+public enum PublicBranchStatus
+{
+    /// <summary>Published and taking diners.</summary>
+    Open = 1,
+
+    /// <summary>Published, but shut at this moment in its own time zone.</summary>
+    Closed = 2,
+}
+
+/// <summary>
+/// The reservation rules a diner needs in order to book, and nothing else.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>A subset, chosen field by field, not a projection of the whole policy.</b> This route has no
+/// authentication at all, so everything on it is published to anybody with a URL. The full
+/// <c>ReservationPolicyView</c> carries commercial and operational settings - the service charge
+/// the venue adds, the party size above which staff vet a booking, how close to a booking a
+/// walk-in may still be seated - and none of those are a diner's business. A scraper reading
+/// <c>walkInHoldbackMinutes</c> across the estate learns how every venue in the city runs its floor.
+/// </para>
+/// <para>
+/// Adding a field here is a decision to publish it. That is why this is its own record rather than
+/// <c>ReservationPolicyView</c> with an attribute or two - a new setting on the policy cannot leak
+/// onto the public page by being added upstream, because this record physically cannot carry it.
+/// </para>
+/// </remarks>
+/// <param name="TurnTimeMinutes">
+/// How long the table is held. The diner is told this before booking because it is the answer to
+/// "can we linger?", and finding out at the table is worse.
+/// </param>
+/// <param name="MinLeadMinutes">
+/// How far ahead a booking must be made, which is what greys out the next available slot.
+/// </param>
+/// <param name="CancellationDeadlineMinutes">
+/// How long before the start a diner may still cancel freely. On the page because a deadline
+/// nobody was told about is a deadline that produces no-shows rather than cancellations.
+/// </param>
+public sealed record PublicReservationPolicy(
+    int TurnTimeMinutes,
+    int MinLeadMinutes,
+    int CancellationDeadlineMinutes);
 
 /// <summary>The room as a diner sees it: a canvas, areas, and tables.</summary>
 public sealed record PublicFloorPlan(

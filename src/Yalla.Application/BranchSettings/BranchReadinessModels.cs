@@ -50,6 +50,15 @@ namespace Yalla.Application.BranchSettings;
 /// <param name="StaffCount">How many.</param>
 /// <param name="DeviceEnrolled">At least one tablet is enrolled and not revoked.</param>
 /// <param name="DeviceCount">How many.</param>
+/// <param name="AcceptsWebBookings">
+/// Whether the branch takes bookings from its public page.
+/// <b>Reported, and deliberately not a blocker.</b> A venue that does not want bookings from
+/// strangers on the internet is not an unfinished venue - most will start this way, and its public
+/// page showing the room, the menu and the hours is a perfectly good page. It is on the checklist
+/// so that leaving it off is something somebody saw and chose, rather than a default they never
+/// knew they had inherited; a line that blocked going live would instead teach every onboarder to
+/// switch it on without reading it, which is the opposite of the point.
+/// </param>
 /// <param name="Blockers">
 /// One sentence per unsatisfied line, in checklist order. The console renders its own labels; this
 /// is for the places that need to say what is wrong without reimplementing the list - a log line,
@@ -74,6 +83,7 @@ public sealed record BranchReadinessView(
     int StaffCount,
     bool DeviceEnrolled,
     int DeviceCount,
+    bool AcceptsWebBookings,
     IReadOnlyList<string> Blockers);
 
 /// <summary>Reads how far along a branch's setup is.</summary>

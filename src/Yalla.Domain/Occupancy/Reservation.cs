@@ -132,6 +132,69 @@ public sealed class Reservation : Entity
     public ReservationChannel Channel { get; private set; }
 
     /// <summary>
+    /// How long past the end of the booking a manage link keeps working.
+    /// </summary>
+    /// <remarks>
+    /// Not zero. Somebody who booked on Friday opens the link on Sunday to check what time they
+    /// actually went, or to show a companion the code - and an error page is a worse answer than
+    /// "this booking is finished". Short, because the link is a bearer capability that will sit in
+    /// a WhatsApp thread forever and there is no reason for it to stay live once nobody could act
+    /// on it.
+    /// </remarks>
+    public const int ManageTokenGraceDays = 7;
+
+    /// <summary>
+    /// Hex SHA-256 of the manage token, or null for a booking made before the column existed and
+    /// for one made by a channel that has no use for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Hashed, like a refresh handle and an enrolment code.</b> The token is 256 bits from a
+    /// CSPRNG, so guessing it is already impossible and the only job left is making a database
+    /// dump useless - which is exactly the split <c>Secrets</c> documents, and exactly why a fast
+    /// unsalted digest is right here: the row is looked up <i>by</i> this hash, which a salted one
+    /// could not do.
+    /// </para>
+    /// <para>
+    /// It matters more here than for a refresh handle. This one is a bearer capability that lives
+    /// in a URL, and that URL gets pasted into WhatsApp, left in browser history and read by
+    /// whoever picks the phone up.
+    /// </para>
+    /// </remarks>
+    public string? ManageTokenHash { get; private set; }
+
+    /// <summary>When the manage link stops working: the end of the booking plus the grace.</summary>
+    /// <remarks>
+    /// Derived rather than stored. The end of the booking is already on the row, the grace is a
+    /// constant, and a stored copy is one more thing that can disagree with the booking it is
+    /// about after somebody moves it.
+    /// </remarks>
+    public DateTime ManageTokenExpiresAtUtc => EndUtc.AddDays(ManageTokenGraceDays);
+
+    /// <summary>Whether the manage link is still live at <paramref name="nowUtc"/>.</summary>
+    public bool ManageTokenIsLiveAt(DateTime nowUtc) =>
+        ManageTokenHash is not null && nowUtc <= ManageTokenExpiresAtUtc;
+
+    /// <summary>
+    /// Attaches the manage token's hash at creation. Once only.
+    /// </summary>
+    /// <remarks>
+    /// Refusing to replace it is what stops a second call quietly invalidating a link a diner has
+    /// already been sent. Rotating one is not a thing this product does: there is no way to deliver
+    /// a replacement to somebody who has no app.
+    /// </remarks>
+    public void AttachManageToken(string tokenHash)
+    {
+        if (ManageTokenHash is not null)
+        {
+            throw new DomainStateException(
+                $"Booking {Code} already has a manage token; issuing a second would break the first link.");
+        }
+
+        ManageTokenHash = Guard.NotBlank(tokenHash, nameof(tokenHash), FieldLengths.TokenHash);
+    }
+
+    /// <summary>
     /// Optimistic concurrency token: seating, cancelling and releasing a late booking all race
     /// with each other across the diner and staff apps.
     /// </summary>

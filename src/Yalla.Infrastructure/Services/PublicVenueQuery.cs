@@ -159,16 +159,32 @@ internal sealed class PublicVenueQuery(
         // Checked again, live, against the branch the cached plan resolved to. The plan itself was
         // only built for a published branch, but it outlives the moment it was built by minutes -
         // and a suspension inside those minutes has to take effect now.
-        await RequirePublicBranchAsync(plan.BranchId, cancellationToken);
+        var live = await LiveBranchAsync(plan.BranchId, cancellationToken);
 
         var free = await FreeTableCountsAsync([plan.BranchId], cancellationToken);
         var occupied = await OccupiedTableLabelsAsync(plan.BranchId, cancellationToken);
         var openNow = await OpenNowAsync([plan.BranchId], cancellationToken);
 
+        var isOpenNow = openNow.Contains(plan.BranchId);
+
         return plan.Page with
         {
             FreeTableCount = free.GetValueOrDefault(plan.BranchId),
-            IsOpenNow = openNow.Contains(plan.BranchId),
+            IsOpenNow = isOpenNow,
+
+            // The branch is published - RequirePublicBranchAsync just said so - which leaves only
+            // the honest distinction: is it open at this moment, or shut until tomorrow?
+            Status = isOpenNow ? PublicBranchStatus.Open : PublicBranchStatus.Closed,
+
+            // Stamped from the server clock, beside the reads it describes. This is what lets the
+            // page say "4 tables free, as of a minute ago" instead of implying it is live - which
+            // matters because the count is cached for seconds and the link is shared for days.
+            AsOfUtc = clock.UtcNow,
+
+            // Read live, not from the cached plan. A venue that switches bookings off must not
+            // have its page go on offering the button - see LiveBranchAsync.
+            PhoneE164 = live.PhoneE164,
+            AcceptsWebBookings = live.AcceptsWebBookings,
             FloorPlan = plan.Page.FloorPlan with
             {
                 Tables =
@@ -258,23 +274,42 @@ internal sealed class PublicVenueQuery(
     /// twelve past. It is one indexed boolean over a row the request is about to read anyway; the
     /// payload behind it is the expensive part and is what the cache is for.
     /// </remarks>
-    public async Task RequirePublicBranchAsync(Guid branchId, CancellationToken cancellationToken = default)
-    {
-        var published = await db.Branches
-            .AsNoTracking()
-            .AnyAsync(
-                b => b.Id == branchId
-                     && b.IsActive
-                     && b.Venue.IsActive
-                     && b.Venue.SuspendedAtUtc == null
-                     && b.Venue.DeletedAtUtc == null,
-                cancellationToken);
+    public async Task RequirePublicBranchAsync(Guid branchId, CancellationToken cancellationToken = default) =>
+        await LiveBranchAsync(branchId, cancellationToken);
 
-        if (!published)
-        {
-            throw new KeyNotFoundException($"Branch {branchId} is not published.");
-        }
+    /// <summary>
+    /// The published check, and the settings that must never be served stale, in one read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b><c>AcceptsWebBookings</c> cannot live in the cached half.</b> It gates the page's whole
+    /// booking UI, and the rule it mirrors is enforced live in the reservation service - so a
+    /// cached copy means a venue switches bookings off and the page goes on offering a button that
+    /// is now refused for minutes afterwards. The phone number rides along because it is on the
+    /// same row and a manager who corrects a wrong number expects to see it corrected.
+    /// </para>
+    /// <para>
+    /// It costs nothing: the published check was already a query against this row, and this reads
+    /// two more columns from it instead of a <c>bool</c>.
+    /// </para>
+    /// </remarks>
+    private async Task<LiveBranch> LiveBranchAsync(Guid branchId, CancellationToken cancellationToken)
+    {
+        var live = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId
+                        && b.IsActive
+                        && b.Venue.IsActive
+                        && b.Venue.SuspendedAtUtc == null
+                        && b.Venue.DeletedAtUtc == null)
+            .Select(b => new LiveBranch(b.PhoneE164, b.AcceptsWebBookings))
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
     }
+
+    /// <summary>The half of the branch page that is read per request rather than cached.</summary>
+    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings);
 
     // ------------------------------------------------------------ the pieces
 
@@ -307,6 +342,10 @@ internal sealed class PublicVenueQuery(
                 VenueName = b.Venue.Name,
                 VenueSlug = b.Venue.Slug,
                 b.Venue.Type,
+                b.ReservationPolicy.BookingWindowDays,
+                b.ReservationPolicy.TurnTimeMinutes,
+                b.ReservationPolicy.MinLeadMinutes,
+                b.ReservationPolicy.CancellationDeadlineMinutes,
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -371,7 +410,25 @@ internal sealed class PublicVenueQuery(
             IsOpenNow: false,
             FreeTableCount: 0,
             TableCount: tables.Count(t => t.IsBookable),
-            new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables));
+            new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables),
+
+            // Status, like IsOpenNow and the free-table count, is live and stitched on by the
+            // caller. Open here is a placeholder the cache never publishes.
+            Status: PublicBranchStatus.Open,
+
+            // Placeholders. Both are read live by the caller and deliberately absent from the
+            // cached plan, so a stale copy of either cannot be served even by accident.
+            PhoneE164: null,
+            AcceptsWebBookings: false,
+            BookingWindowDays: branch.BookingWindowDays,
+            Policy: new PublicReservationPolicy(
+                branch.TurnTimeMinutes,
+                branch.MinLeadMinutes,
+                branch.CancellationDeadlineMinutes),
+
+            // Placeholder. Stamped by the caller, for the same reason as the free-table count: a
+            // cached "as of" would tell the diner the count is fresh when it is minutes old.
+            AsOfUtc: default);
 
         return new BranchPlan(branch.Id, page);
     }

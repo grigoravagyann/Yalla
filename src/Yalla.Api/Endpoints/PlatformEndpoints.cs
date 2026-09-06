@@ -30,9 +30,22 @@ public static class PlatformEndpoints
             .WithSummary("Create a venue with its first branch")
             .WithDescription(
                 "A venue with no branch is useless, so the first branch is created in the same "
-                + "transaction. A failure creates neither. The branch's `subscriptionTier` defaults to Free.")
+                + "transaction. A failure creates neither. The branch's `subscriptionTier` defaults to Free."
+                + "\n\n"
+                + "**Missing fields are reported together.** An empty body names `name`, `slug` and "
+                + "`firstBranch` in one 422, each in `context.fields`, rather than making somebody "
+                + "submit three times to discover three problems. Nested fields are dotted - "
+                + "`firstBranch.address`."
+                + "\n\n"
+                + "**Out-of-range values are still reported one at a time**, as a 400 - a latitude "
+                + "of 200 refuses before the next field is looked at. The bounds live in the `Venue` "
+                + "and `Branch` constructors rather than in a limits class of their own, so "
+                + "collecting them would mean a second copy of every rule. See `docs/platform-admin.md`.")
             .Produces<VenueDetail>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "A field is missing or out of range.")
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "A field is out of range, or the body is malformed.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "Required fields are missing; `context.fields` names every one.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "The venue slug is already taken.");
 
         group.MapGet("/venues", ListVenuesAsync)

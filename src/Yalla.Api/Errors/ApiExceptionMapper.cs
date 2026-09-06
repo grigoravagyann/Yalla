@@ -484,6 +484,16 @@ internal static class ApiExceptionMapper
                 ["futureReservations"] = e.FutureReservations,
             }),
 
+        // The venue has not switched its public page on for bookings. Its own code so the page
+        // can say "call the venue" rather than showing a generic conflict. Must stay ABOVE
+        // DomainStateException, which it derives from.
+        WebBookingsNotAcceptedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.WebBookingsNotAccepted,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 

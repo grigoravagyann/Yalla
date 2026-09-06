@@ -239,6 +239,50 @@ and recording it is what lets somebody answer "which code stopped working". The 
 credential — anyone holding it can open a tab on that table anonymously — so it does not go into an
 append-only log that reporting and backups can reach.
 
+## Creating a venue: which refusals collect, and which do not
+
+`POST /api/platform/venues` answers **two different shapes**, and the split is deliberate rather
+than an accident of where the check happens.
+
+| What is wrong | Status | Reports |
+| --- | --- | --- |
+| A required field is missing or blank | **422** `validation-failed` | **Every** missing field, in `context.fields` |
+| A field is present but out of range | **400** `invalid-request` | The **first** offending field only |
+| The body is not JSON, or a scalar sits where an object goes | **400** | Nothing field-level — the deserialiser refused it |
+
+An empty body therefore names `name`, `slug` and `firstBranch` together, and a body whose branch has
+no name names `firstBranch.name` — nested fields are dotted, the same way the opening-hours refusal
+already names `[1].opensAt`.
+
+### Why the missing half collects and the range half does not
+
+`CreateVenueCommand.Validate()` asks one question — "is this null or blank?" — which needs no
+knowledge of any rule, so it can be asked before construction without a second copy of anything.
+
+Bounds are different. A latitude of 200 or a name of 500 characters is refused by the `Venue` and
+`Branch` constructors through `Guard`, and **the bounds exist nowhere else**. Collecting them the
+way the reservation policy does would mean either duplicating every limit in a validator — two
+places that must agree, and will not — or extracting them into a `VenueLimits` class the way
+`ReservationPolicyLimits` exists for the policy form. That second option is the right end state and
+is a real change to how venue creation validates; it is not a contained one, so it has not been
+made here.
+
+The practical effect is small: missing fields are what an empty or half-filled form produces, and
+out-of-range coordinates are what one typo produces. The first case is the one that made somebody
+submit three times to discover three problems.
+
+### The 500 this replaced
+
+Until this change a body with no `firstBranch` reached `ArgumentNullException.ThrowIfNull` and came
+back as a **500, logged as a server error**. `ApiExceptionMapper` maps `ArgumentNullException` to a
+500 on the grounds that a null where the domain requires an object is a `Venue` or a
+`ReservationPolicy` we failed to build — correct for every other call site, and wrong for this one,
+because `command.FirstBranch` arrives over HTTP. Client input was going through the server-fault
+path: the endpoint contradicted its own documented contract, every malformed request was filed as
+our fault, and the caller was told to quote a `traceId` instead of which field to fix.
+
+The mapper is unchanged. The throw site is what moved.
+
 ## Out of scope
 
 Billing, invoicing or payment collection from venues; photo storage; analytics and reports;
