@@ -1,9 +1,10 @@
+using System.ComponentModel.DataAnnotations;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using Yalla.Domain.Enums;
 using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests.Integration;
 
