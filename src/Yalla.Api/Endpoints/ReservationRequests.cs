@@ -33,7 +33,11 @@ public sealed record MarkNoShowRequest(
 /// </param>
 /// <param name="Reason">Optional free text for the audit row.</param>
 public sealed record ReleaseReservationRequest(
-    [Required] ReleaseOutcome Outcome,
+    // Nullable so that [Required] can actually fire. A non-nullable enum binds its default when the
+    // field is absent, and ReleaseOutcome has no zero member - so an omitted outcome used to arrive
+    // as 0, miss the NoShow branch and be written as CancelledByVenue, silently, with a 200. That is
+    // the outcome that does NOT count against the diner, so a real no-show quietly stopped counting.
+    [Required] ReleaseOutcome? Outcome,
     [Required] Guid ClientCommandId,
     string? Reason = null) : IClientCommandRequest;
 

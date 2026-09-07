@@ -283,7 +283,7 @@ public static class ReservationEndpoints
         ArgumentNullException.ThrowIfNull(request);
 
         return Results.Ok(await reservations.ReleaseAsync(
-            new ReleaseReservationCommand(id, request.Outcome, request.ClientCommandId, request.Reason),
+            new ReleaseReservationCommand(id, request.Outcome!.Value, request.ClientCommandId, request.Reason),
             cancellationToken));
     }
 
