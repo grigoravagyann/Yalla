@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Serilog;
+using Yalla.Api.Filters;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Endpoints;
 using Yalla.Api.Middleware;
@@ -143,18 +144,39 @@ app.UseYallaRateLimiting();
 app.MapControllers();
 
 app.MapYallaHealthChecks();
+
+// The sign-in flows stay OUTSIDE the validation group, deliberately.
+//
+// A credential endpoint answers the same 401 whether the email is unknown, the password is wrong or
+// the body is malformed, and that uniformity is the anti-enumeration posture rather than an
+// oversight. Validating the body first would answer 422 "that is not an email address" before the
+// credentials were ever checked - which leaks nothing about who has an account, but it does
+// restructure a published security-surface contract, and that is a decision to make on purpose
+// rather than as a side effect of switching on a filter. /api/auth/diner/request-code is here for
+// the same reason: its phoneE164 refusal already answers 400 naming the field, and moving it to a
+// 422 would be churn on something that was already right.
 app.MapAuthEndpoints();
-app.MapTabEndpoints();
-app.MapTableStateEndpoints();
-app.MapAdminDeviceEndpoints();
-app.MapReservationEndpoints();
-app.MapPlatformEndpoints();
-app.MapVenueAdminEndpoints();
-app.MapOrderingEndpoints();
-app.MapPhotoEndpoints();
-app.MapNotificationEndpoints();
-app.MapPublicEndpoints();
-app.MapReportEndpoints();
+
+// Everything else, in one place rather than a filter line repeated in eleven map methods. An empty
+// prefix changes no route; what the group adds is the validation filter, so an endpoint added
+// tomorrow is validated because it was mapped, not because somebody remembered.
+//
+// Health checks stay outside it too: a liveness probe must not depend on anything, least of all a
+// filter.
+var api = app.MapGroup(string.Empty)
+    .AddEndpointFilter<RequestValidationFilter>();
+
+api.MapTabEndpoints();
+api.MapTableStateEndpoints();
+api.MapAdminDeviceEndpoints();
+api.MapReservationEndpoints();
+api.MapPlatformEndpoints();
+api.MapVenueAdminEndpoints();
+api.MapOrderingEndpoints();
+api.MapPhotoEndpoints();
+api.MapNotificationEndpoints();
+api.MapPublicEndpoints();
+api.MapReportEndpoints();
 
 // Development only: on start, log the LAN address with both ports - the value that goes into the
 // frontend config - so nobody hunts for it in ipconfig.
