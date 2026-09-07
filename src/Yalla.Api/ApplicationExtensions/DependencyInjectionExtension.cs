@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 using Yalla.Api.ExceptionHandler;
 using Yalla.Infrastructure;
 using Yalla.Infrastructure.Persistence;
@@ -34,6 +34,8 @@ public static class DependencyInjectionExtension
                     : $"If you meant to run locally, set ASPNETCORE_ENVIRONMENT=Development - "
                       + $"appsettings.Development.json carries the local connection string and is not read in '{environmentName}'."));
         }
+
+        RequireManageBookingUrl(builder);
 
         builder.Services.AddInfrastructure(connectionString, configuration);
 
@@ -73,5 +75,87 @@ public static class DependencyInjectionExtension
         builder.Services.AddYallaRateLimiting(configuration, builder.Environment);
 
         return builder;
+    }
+    /// <summary>
+    /// Refuses to start outside Development without a usable manage-booking link template.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This one cannot be repaired after the fact, which is why it fails startup.</b> The manage
+    /// URL is written into the reminder payload at the moment a web booking is created, and the
+    /// server keeps only the token's <i>hash</i> - so a booking made while this setting is wrong
+    /// carries a dead cancel link forever, and no later fix can mint the token again to rewrite it.
+    /// </para>
+    /// <para>
+    /// The person holding that dead link is a diner who booked from the public page: no app, no
+    /// push, and no other way to cancel. A link that goes nowhere turns them into the no-show the
+    /// whole manage-booking feature exists to prevent. A degraded start is worse than no start.
+    /// </para>
+    /// <para>
+    /// <b>Loopback is rejected, not just absence.</b> The default used to sit in
+    /// <c>appsettings.json</c>, which loads in every environment - so the setting was never
+    /// <i>unset</i>, and a check for absence alone would have passed a production deployment
+    /// straight through while it shipped <c>localhost</c> links. The value now lives in
+    /// <c>appsettings.Development.json</c>, and this refuses loopback anyway, because the failure
+    /// being prevented is "points somewhere the diner cannot reach" rather than "is blank".
+    /// </para>
+    /// <para>
+    /// The join-link template is deliberately <i>not</i> guarded here. It is generated per request
+    /// and returned live rather than persisted, so a wrong value is fixed by correcting the setting
+    /// - and the host has the QR code, which is the primary way that token is handed over anyway.
+    /// The distinction is persistence, not importance.
+    /// </para>
+    /// </remarks>
+    private static void RequireManageBookingUrl(WebApplicationBuilder builder)
+    {
+        // Development gets the local default and no argument about it.
+        if (builder.Environment.IsDevelopment())
+        {
+            return;
+        }
+
+        const string key = "PublicWeb:ManageBookingUrlTemplate";
+        var template = builder.Configuration.GetValue<string>(key);
+        var environmentName = builder.Environment.EnvironmentName;
+
+        string? problem = null;
+
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            problem = "it is not set";
+        }
+        else if (!template.Contains("{token}", StringComparison.Ordinal))
+        {
+            // Without the placeholder every booking gets the same link, which is not a link to a
+            // booking at all.
+            problem = "it does not contain the {token} placeholder";
+        }
+        else if (!Uri.TryCreate(
+                     template.Replace("{token}", "t", StringComparison.Ordinal),
+                     UriKind.Absolute,
+                     out var url)
+                 || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
+        {
+            problem = $"'{template}' is not an absolute http or https URL";
+        }
+        else if (url.IsLoopback)
+        {
+            problem = $"'{template}' points at loopback, which no diner's phone can reach";
+        }
+
+        if (problem is null)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{key} is unusable in the '{environmentName}' environment: {problem}. "
+            + "Set it as the PublicWeb__ManageBookingUrlTemplate environment variable, to the public "
+            + "address of the booking page with {token} where the manage token goes - for example "
+            + "https://yalla.app/booking/{token}. "
+            + "This is not optional and startup will not continue without it: the URL is written "
+            + "into a web booking's reminder when the booking is made, only the token's hash is "
+            + "stored, and a booking created with the wrong value carries a dead cancel link that "
+            + "cannot be repaired afterwards.");
     }
 }

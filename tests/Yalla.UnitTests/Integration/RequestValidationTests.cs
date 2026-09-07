@@ -328,6 +328,137 @@ public class RequestValidationTests(SqlServerFixture fixture)
         }
     }
 
+    /// <summary>
+    /// The four fields on a booking that used to answer about something the caller never sent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each was <c>[Required]</c> on a non-nullable value type, which cannot fire, and each reached
+    /// something downstream that answered confidently about the bound default:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>branchId</c> — 404 <i>Branch 00000000-0000-0000-0000-000000000000 was not found.</i></item>
+    /// <item><c>tableId</c> — 404 <i>Table 00000000-0000-0000-0000-000000000000 was not found.</i></item>
+    /// <item><c>date</c> — 422 <i>lead time too short</i>, because <c>0001-01-01</c> is in the past.</item>
+    /// <item><c>time</c> — 422 <i>outside opening hours</i>, because the default is midnight.</item>
+    /// </list>
+    /// <para>
+    /// The last two are the ones worth the contract change: a client debugging "lead time" over a
+    /// field it forgot to send loses a day. The Guids needed no contract change - see
+    /// <c>NotEmptyAttribute</c>, which is internal to the API.
+    /// </para>
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData("branchId")]
+    [InlineData("tableId")]
+    [InlineData("date")]
+    [InlineData("time")]
+    public async Task A_booking_missing_one_field_names_that_field(string omitted)
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
+        var localNow = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone);
+
+        var body = new Dictionary<string, object?>
+        {
+            ["branchId"] = branch.BranchId,
+            ["tableId"] = branch.FirstTableId,
+            ["date"] = DateOnly.FromDateTime(localNow).AddDays(2).ToString("yyyy-MM-dd"),
+            ["time"] = "18:00",
+            ["partySize"] = 2,
+            ["guestName"] = "Ani",
+            ["guestPhone"] = "+37411223344",
+            ["clientCommandId"] = Guid.CreateVersion7(),
+        };
+
+        body.Remove(omitted);
+
+        var response = await diner.PostAsJsonAsync("/api/reservations", body);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("validation-failed", problem.GetProperty("code").GetString());
+        Assert.Equal(omitted, problem.GetProperty("context").GetProperty("field").GetString());
+    }
+
+    /// <summary>
+    /// All four missing at once are reported together, and a complete booking still books.
+    /// </summary>
+    /// <remarks>
+    /// The second half matters as much as the first: a refusal test alone would pass just as
+    /// happily if the endpoint had been broken outright by making the fields nullable.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Every_missing_booking_field_is_reported_at_once_and_a_complete_one_still_books()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var bare = await diner.PostAsJsonAsync("/api/reservations", new
+        {
+            partySize = 2,
+            guestName = "Ani",
+            guestPhone = "+37411223344",
+            clientCommandId = Guid.CreateVersion7(),
+        });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, bare.StatusCode);
+
+        var fields = (await bare.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("context").GetProperty("fields").EnumerateArray()
+            .Select(f => f.GetProperty("field").GetString())
+            .ToList();
+
+        foreach (var expected in new[] { "branchId", "tableId", "date", "time" })
+        {
+            Assert.Contains(expected, fields);
+        }
+
+        // And the same endpoint, supplied properly, still takes a booking.
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
+        var localNow = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone);
+
+        var booked = await diner.PostAsJsonAsync("/api/reservations", new
+        {
+            branchId = branch.BranchId,
+            tableId = branch.FirstTableId,
+            date = DateOnly.FromDateTime(localNow).AddDays(2).ToString("yyyy-MM-dd"),
+            time = "18:00",
+            partySize = 2,
+            guestName = "Ani",
+            guestPhone = "+37411223344",
+            clientCommandId = Guid.CreateVersion7(),
+        });
+
+        Assert.Equal(HttpStatusCode.Created, booked.StatusCode);
+    }
+
     private static async Task<string> SignInDinerAsync(YallaApiFactory factory)
     {
         using var client = factory.CreateClient();

@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using Yalla.Api.Filters;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 
@@ -69,10 +70,22 @@ public sealed record ReleaseReservationRequest(
 /// diner app; a booking a waiter takes over the phone is <c>Staff</c>. See <c>docs/reports.md</c>.
 /// </param>
 public sealed record CreateReservationRequest(
-    [Required] Guid BranchId,
-    [Required] Guid TableId,
-    [Required] DateOnly Date,
-    [Required] TimeOnly Time,
+    // NotEmpty as well as Required: a missing Guid binds Guid.Empty rather than null, so Required
+    // alone let it reach the lookup, which answered "Branch 00000000-0000-0000-0000-000000000000
+    // was not found" - a sentinel quoted at a diner, about a branch nobody asked for. The wire
+    // contract is unchanged; only the refusal is.
+    [Required][NotEmpty] Guid BranchId,
+    [Required][NotEmpty] Guid TableId,
+
+    // Nullable, unlike the two above, because there is no spare value to test for. A missing
+    // DateOnly binds 0001-01-01 and a missing TimeOnly binds midnight - and midnight is a booking
+    // time somebody could genuinely mean, so nothing about the bound value can distinguish absent
+    // from meant. Omitting either used to produce a confident wrong diagnosis: no date answered
+    // "that table can only be booked 30 minutes ahead" because year 1 is in the past, and no time
+    // answered "the branch is not open for a 00:00-02:00 sitting". Both sent a client debugging
+    // lead times and opening hours over a field it had simply left out.
+    [Required] DateOnly? Date,
+    [Required] TimeOnly? Time,
     [Range(1, 100)] int PartySize,
     [Required][MaxLength(200)] string GuestName,
     [Required][MaxLength(32)] string GuestPhone,
