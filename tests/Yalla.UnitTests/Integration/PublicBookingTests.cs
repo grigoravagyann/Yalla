@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -50,13 +50,12 @@ public class PublicBookingTests(SqlServerFixture fixture)
         using var anonymous = factory.CreateClient();
         var page = await ReadAsync(anonymous, world.PageUrl);
 
-        // All six, by name. A missing one is the bug this whole prompt is about.
+        // Every field the page was missing, by name. A missing one is the bug this exists for.
         //
-        // status tracks isOpenNow rather than being a constant: the seeded branch's hours may or
-        // may not cover the moment this test runs, and asserting Open would make the suite depend
-        // on the wall clock. What must hold is that the two agree.
-        var isOpenNow = page.GetProperty("isOpenNow").GetBoolean();
-        Assert.Equal(isOpenNow ? 1 : 2, page.GetProperty("status").GetInt32());
+        // There is no `status`: it was computed from isOpenNow and said nothing new under a name
+        // that implied venue lifecycle. Asserted absent so it cannot come back.
+        Assert.False(page.TryGetProperty("status", out _));
+        Assert.True(page.TryGetProperty("isOpenNow", out _));
 
         // phoneE164 is null here, and the API omits null properties entirely
         // (DefaultIgnoreCondition = WhenWritingNull) - so "absent" is how a branch with no

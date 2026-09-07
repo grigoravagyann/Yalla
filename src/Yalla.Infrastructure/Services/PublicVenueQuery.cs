@@ -165,16 +165,10 @@ internal sealed class PublicVenueQuery(
         var occupied = await OccupiedTableLabelsAsync(plan.BranchId, cancellationToken);
         var openNow = await OpenNowAsync([plan.BranchId], cancellationToken);
 
-        var isOpenNow = openNow.Contains(plan.BranchId);
-
         return plan.Page with
         {
             FreeTableCount = free.GetValueOrDefault(plan.BranchId),
-            IsOpenNow = isOpenNow,
-
-            // The branch is published - RequirePublicBranchAsync just said so - which leaves only
-            // the honest distinction: is it open at this moment, or shut until tomorrow?
-            Status = isOpenNow ? PublicBranchStatus.Open : PublicBranchStatus.Closed,
+            IsOpenNow = openNow.Contains(plan.BranchId),
 
             // Stamped from the server clock, beside the reads it describes. This is what lets the
             // page say "4 tables free, as of a minute ago" instead of implying it is live - which
@@ -411,10 +405,6 @@ internal sealed class PublicVenueQuery(
             FreeTableCount: 0,
             TableCount: tables.Count(t => t.IsBookable),
             new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables),
-
-            // Status, like IsOpenNow and the free-table count, is live and stitched on by the
-            // caller. Open here is a placeholder the cache never publishes.
-            Status: PublicBranchStatus.Open,
 
             // Placeholders. Both are read live by the caller and deliberately absent from the
             // cached plan, so a stale copy of either cannot be served even by accident.

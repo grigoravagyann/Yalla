@@ -15,7 +15,7 @@ and forwarded round a group chat.
 
 Two halves, and the split matters. The **stable** half — address, coordinates, hours, the room,
 the policy, `bookingWindowDays` — is cached for minutes. The **live** half — `freeTableCount`,
-`isOpenNow`, `status`, each table's `isFree`, `acceptsWebBookings` and `phoneE164` — is read per
+`isOpenNow`, each table's `isFree`, `acceptsWebBookings` and `phoneE164` — is read per
 request and stamped with `asOfUtc`.
 
 `acceptsWebBookings` and `phoneE164` are live despite looking stable. They gate and populate the
@@ -27,15 +27,24 @@ query against that row.
 `asOfUtc` exists because this page is cached for seconds and shared for days. A count with no
 timestamp implies it is live; the page shows the staleness instead of pretending there is none.
 
-### `status`
+### There is no `status`, on purpose
 
-`1 Open`, `2 Closed`. It lets the page tell "shut tonight" from "this venue is gone", which neither
-`isOpenNow` alone nor a 404 can say — a closed branch still wants its menu read and its hours
-checked.
+An earlier draft carried `status` (`Open`/`Closed`) beside `isOpenNow`. It was computed as
+`isOpenNow ? Open : Closed` — the same fact under a second name, and a name that implied venue
+lifecycle rather than opening hours. Two fields meaning one thing is how the next mapper picks the
+wrong one, so it is gone.
 
-**There is no `Suspended` member and there will not be one.** A suspended venue answers 404,
-identically to a wrong slug and an inactive branch. A public page that distinguished them would be
-publishing a customer's billing status to anybody who guessed a slug.
+It could not have been made to mean lifecycle either. Every query behind this route filters to
+`IsActive && !Suspended && !Deleted`, so an active/suspended/deleted field here would only ever hold
+one value. That is not an accident — a public page that distinguished a suspended venue from a wrong
+slug would publish a customer's billing status to anybody who guessed one.
+
+So the two states a client needs are carried where they actually live:
+
+| The diner asks | The API says |
+| --- | --- |
+| "Is it worth going tonight?" | **200** with `isOpenNow: false` — closed now, still has hours and a menu to read |
+| "Is this place still on Yalla?" | **404** — suspended, deleted, switched off, or never existed, indistinguishably |
 
 ### `policy` — what is published, and what is not
 
@@ -181,7 +190,6 @@ Opening hours trimmed to two days and the floor plan to two tables; nothing else
       }
     ]
   },
-  "status": 2,
   "phoneE164": "+37411223344",
   "acceptsWebBookings": true,
   "bookingWindowDays": 14,
@@ -196,7 +204,7 @@ Opening hours trimmed to two days and the floor plan to two tables; nothing else
 
 Notes for a mapper:
 
-- `venueType`, `status`, `shape` and `day` are **integers**, not strings. The whole API serialises
+- `venueType`, `shape` and `day` are **integers**, not strings. The whole API serialises
   enums as numbers on purpose - see `docs/openapi.md` - and the schema carries `x-enum-varnames`
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.

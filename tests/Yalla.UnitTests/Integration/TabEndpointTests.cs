@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -256,6 +256,168 @@ public class TabEndpointTests(SqlServerFixture fixture)
         var view = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
         Assert.Equal(TabStatus.Closing, EnumOf<TabStatus>(view.GetProperty("status")));
         Assert.False(view.GetProperty("me").GetProperty("canOrderNow").GetBoolean());
+    }
+
+    // ------------------------------------------------------------ settlement mode, over HTTP
+
+    /// <summary>
+    /// The settlement flow driven the way a client drives it: set, stick, and lock once money exists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every other settlement test calls <c>ITabService</c> directly, which cannot see a request
+    /// body at all. The two that did go over HTTP asserted a 403 - which fires on the participant
+    /// policy, before the body is ever read - and a bare 200. So nothing pinned that the mode a
+    /// <i>client</i> sends is the mode the tab ends up in, and nothing pinned the lock as a status
+    /// code a client has to handle.
+    /// </para>
+    /// <para>
+    /// The body-shape half matters because <c>[Required]</c> on <c>SetSettlementModeRequest</c>
+    /// reaches the OpenAPI schema and nothing enforces it at runtime: there is no validation filter
+    /// in this pipeline. A misnamed or absent field therefore binds
+    /// <c>default(SettlementMode)</c>, which is <c>0</c> and not a defined member, so the refusal
+    /// comes out of the domain guard rather than the edge. It is a good refusal - 400, naming
+    /// <c>settlementMode</c> in <c>context.field</c> - and that is worth holding still, because it
+    /// is what tells a client which field it got wrong.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_settlement_mode_a_client_sends_is_the_mode_the_tab_ends_up_in()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var url = $"/api/tabs/{host.TabId}/settlement-mode";
+
+        // Every mode, set and then read back off a fresh GET - not merely a 200.
+        foreach (var mode in new[]
+                 {
+                     SettlementMode.EveryonePaysOwnItems,
+                     SettlementMode.AnyonePaysAnyAmount,
+                     SettlementMode.HostPaysEverything,
+                 })
+        {
+            var response = await hostClient.PostAsJsonAsync(url, new { settlementMode = mode });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var returned = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(mode, EnumOf<SettlementMode>(returned.GetProperty("settlementMode")));
+
+            var reread = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+            Assert.Equal(mode, EnumOf<SettlementMode>(reread.GetProperty("settlementMode")));
+        }
+
+        // The shapes a client can get wrong. All four answer identically, and the answer names the
+        // field - which is what a client needs in order to find out it sent the wrong one.
+        foreach (var (label, body) in new (string, object)[]
+                 {
+                     ("the field misnamed", new { mode = SettlementMode.EveryonePaysOwnItems }),
+                     ("the field absent", new { }),
+                     ("out of range", new { settlementMode = 99 }),
+                     ("the undefined zero", new { settlementMode = 0 }),
+                 })
+        {
+            var refused = await hostClient.PostAsJsonAsync(url, body);
+
+            Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+
+            var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+
+            Assert.Equal("invalid-request", problem.GetProperty("code").GetString());
+            Assert.Equal(
+                "settlementMode",
+                problem.GetProperty("context").GetProperty("field").GetString());
+
+            // And none of them moved the mode. The last accepted write still stands.
+            var unchanged = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+            Assert.Equal(
+                SettlementMode.HostPaysEverything,
+                EnumOf<SettlementMode>(unchanged.GetProperty("settlementMode")));
+        }
+    }
+
+    /// <summary>
+    /// The other half of the flow: the mode locks the moment money exists, and says so as a 409.
+    /// </summary>
+    /// <remarks>
+    /// Proven at the service level already, but never as a status code. A client that cannot tell
+    /// "you may not change this any more" from "something went wrong" shows the wrong thing to a
+    /// host standing at a table with a waiter waiting for an answer.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_settlement_mode_locks_once_a_payment_exists_and_answers_409()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        IReadOnlyList<string> qrTokens;
+        TestMenu menu;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+            menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+
+            qrTokens = await db.DiningTables.AsNoTracking()
+                .Where(t => t.BranchId == branch.BranchId)
+                .OrderBy(t => t.Label)
+                .Select(t => t.QrToken)
+                .ToListAsync();
+        }
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var url = $"/api/tabs/{host.TabId}/settlement-mode";
+
+        // Before any money: freely changed.
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await hostClient.PostAsJsonAsync(
+                url, new { settlementMode = SettlementMode.EveryonePaysOwnItems })).StatusCode);
+
+        (await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/orders",
+            new
+            {
+                items = new[] { new { menuItemId = menu.Coffee, quantity = 1 } },
+                clientCommandId = Guid.CreateVersion7(),
+            })).EnsureSuccessStatusCode();
+
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var paid = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/payments/cash",
+            new { amountAmd = 100L, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Created, paid.StatusCode);
+
+        // Money exists, so the split is settled. Refused as a conflict, not a 400 or a 403: the
+        // host is entitled to ask and the request is well formed; the tab has moved past it.
+        var locked = await hostClient.PostAsJsonAsync(
+            url, new { settlementMode = SettlementMode.HostPaysEverything });
+
+        Assert.Equal(HttpStatusCode.Conflict, locked.StatusCode);
+
+        // And the mode in force is the one from before the payment, not the refused one.
+        var view = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+
+        Assert.Equal(
+            SettlementMode.EveryonePaysOwnItems,
+            EnumOf<SettlementMode>(view.GetProperty("settlementMode")));
+
+        Assert.True(view.GetProperty("settlementModeLocked").GetBoolean());
     }
 
     // ------------------------------------------------------------ helpers
