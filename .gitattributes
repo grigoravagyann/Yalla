@@ -3,6 +3,11 @@
 ###############################################################################
 * text=auto
 
+# Shell scripts keep LF whatever the platform. A .sh checked out with CRLF fails on Linux with
+# "bad interpreter", which is a confusing way to discover a line-ending rule - and verify.sh is
+# meant to be runnable on a developer's Windows machine and on a Linux runner alike.
+*.sh text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

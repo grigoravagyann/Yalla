@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -246,8 +246,13 @@ public sealed class VenueLifecycleTests(SqlServerFixture fixture)
         {
             branchId = branch.BranchId,
             tableId = branch.FirstTableId,
-            localDate = DateOnly.FromDateTime(local).ToString("yyyy-MM-dd"),
-            localTime = "19:00",
+            // date and time, not localDate/localTime. Those were the names this test sent for as
+            // long as it has existed, and they bind to nothing - the record declares Date and Time.
+            // It passed anyway because the venue gate answers before either is read, so it proved
+            // the 409 while proving nothing about the booking. The same shape as the settlement-mode
+            // bug: a caller sending field names the server does not have, and the server not caring.
+            date = DateOnly.FromDateTime(local).ToString("yyyy-MM-dd"),
+            time = "19:00",
             partySize = 2,
             guestName = "Ani",
             guestPhone = "+37411223344",

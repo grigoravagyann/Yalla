@@ -310,8 +310,10 @@ public static class ReservationEndpoints
             new CreateReservationCommand(
                 request.BranchId,
                 request.TableId,
-                request.Date,
-                request.Time,
+
+                // The filter has already refused a null by the time this runs.
+                request.Date!.Value,
+                request.Time!.Value,
                 request.PartySize,
                 request.GuestName,
                 request.GuestPhone,

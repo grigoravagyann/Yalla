@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -65,6 +65,12 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         ["PlatformAdmin:Email"] = "platform@test.yalla",
         ["PlatformAdmin:Password"] = "platform-admin-test-password",
         ["PlatformAdmin:SeedOnStartup"] = "false",
+
+        // Required outside Development, and for the same reason as the signing key above: this is
+        // what a deployment supplies as PublicWeb__ManageBookingUrlTemplate, not a workaround for
+        // the check. A test host running as Staging is a deployment-shaped host and has to look
+        // like one. The tests that are about the check itself override this.
+        ["PublicWeb:ManageBookingUrlTemplate"] = "https://test.yalla.app/booking/{token}",
     };
 
     /// <summary>Overrides one configuration value. Chainable, and applied before the host starts.</summary>

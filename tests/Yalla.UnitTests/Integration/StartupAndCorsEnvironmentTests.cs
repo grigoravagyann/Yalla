@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using Microsoft.Extensions.Hosting;
 
@@ -51,6 +51,80 @@ public class StartupAndCorsEnvironmentTests
         var failure = Record.Exception(() => factory.CreateClient());
 
         Assert.Null(failure);
+    }
+
+    // ------------------------------------------------------------ the manage-booking link
+
+    /// <summary>
+    /// Outside Development, a manage-booking URL that no diner could use refuses to start.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the one setting whose absence writes broken data rather than failing a request. The
+    /// URL goes into a web booking's reminder payload when the booking is made, and the server
+    /// keeps only the token's hash - so a booking created under a wrong value carries a dead cancel
+    /// link permanently, and nothing later can mint the token again to repair it.
+    /// </para>
+    /// <para>
+    /// The diner holding that link has no app and no other way to cancel, which makes a dead link
+    /// the no-show the manage-booking feature was built to prevent.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("", "it is not set")]
+    [InlineData("   ", "it is not set")]
+    [InlineData("https://yalla.app/booking", "{token}")]
+    [InlineData("/booking/{token}", "absolute")]
+    [InlineData("ftp://yalla.app/booking/{token}", "absolute")]
+    [InlineData("http://localhost:5173/booking/{token}", "loopback")]
+    [InlineData("https://127.0.0.1/booking/{token}", "loopback")]
+    public void An_unusable_manage_booking_url_refuses_to_start_outside_Development(
+        string template, string expected)
+    {
+        using var factory = new YallaApiFactory()
+            .WithEnvironment(Environments.Staging)
+            .With("PublicWeb:ManageBookingUrlTemplate", template);
+
+        var failure = Record.Exception(() => factory.CreateClient());
+
+        Assert.NotNull(failure);
+
+        var text = failure!.ToString();
+
+        // The message carries the fix and the reason, because the person reading it is looking at
+        // a process that will not start.
+        Assert.Contains("PublicWeb__ManageBookingUrlTemplate", text, StringComparison.Ordinal);
+        Assert.Contains(expected, text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot be repaired", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>A real public address starts, which is the whole point of refusing the others.</summary>
+    [Fact]
+    public void A_real_manage_booking_url_starts_outside_Development()
+    {
+        using var factory = new YallaApiFactory()
+            .WithEnvironment(Environments.Staging)
+            .With("PublicWeb:ManageBookingUrlTemplate", "https://yalla.app/booking/{token}");
+
+        Assert.Null(Record.Exception(() => factory.CreateClient()));
+    }
+
+    /// <summary>
+    /// Development is exempt, and loopback is exactly what it should have.
+    /// </summary>
+    /// <remarks>
+    /// A developer with no settings gets a working local link rather than a startup failure. The
+    /// value that is correct here is the one that is refused everywhere else, which is why the
+    /// check is on the environment rather than on the value alone.
+    /// </remarks>
+    [Fact]
+    public void Development_starts_on_the_loopback_default()
+    {
+        using var factory = new YallaApiFactory()
+            .WithEnvironment(Environments.Development)
+            .With("PublicWeb:ManageBookingUrlTemplate", "http://localhost:5173/booking/{token}");
+
+        Assert.Null(Record.Exception(() => factory.CreateClient()));
     }
 
     // ------------------------------------------------------------ CORS outside Development
