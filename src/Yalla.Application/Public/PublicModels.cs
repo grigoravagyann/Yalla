@@ -1,4 +1,4 @@
-using Yalla.Application.BranchSettings;
+﻿using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Domain.Enums;
 
@@ -56,16 +56,22 @@ public sealed record PublicBranchCard(
 /// wrong zone, and a tourist is a named primary user of this surface.
 /// </param>
 /// <param name="OpeningHours">The weekly hours.</param>
-/// <param name="IsOpenNow">Whether it is open at this moment, decided in the branch's own zone.</param>
+/// <param name="IsOpenNow">
+/// Whether it is open at this moment, decided in the branch's own zone.
+/// <para>
+/// <b>This is the only "is it worth going" signal, and there is deliberately no second one.</b> An
+/// earlier draft carried a <c>status</c> of Open/Closed beside it, which was computed from this
+/// field and therefore said nothing new under a name that implied venue lifecycle. A branch that is
+/// suspended, deleted or switched off never reaches this response at all - every query behind it
+/// filters those out and the route answers 404 - so "shut tonight" is this field being false, and
+/// "this venue is gone" is the 404. Two names for one fact is how a mapper picks the wrong one.
+/// </para>
+/// </param>
 /// <param name="FreeTableCount">Tables with nobody at them right now.</param>
 /// <param name="TableCount">How many bookable tables there are, so the count has a denominator.</param>
 /// <param name="FloorPlan">
 /// The room, in diner shape: the canvas, the areas and the tables with their geometry and whether
 /// each is free. <b>No QR tokens and no staff state</b> - see <see cref="PublicFloorTable"/>.
-/// </param>
-/// <param name="Status">
-/// Open or Closed - see <see cref="PublicBranchStatus"/>. Lets the page tell "shut tonight" from
-/// "this venue is gone", which neither <paramref name="IsOpenNow"/> alone nor a 404 can say.
 /// </param>
 /// <param name="PhoneE164">
 /// The branch's contact number in E.164, or null when nobody has supplied one. The only way a
@@ -105,37 +111,11 @@ public sealed record PublicBranchPage(
     int FreeTableCount,
     int TableCount,
     PublicFloorPlan FloorPlan,
-    PublicBranchStatus Status,
     string? PhoneE164,
     bool AcceptsWebBookings,
     int BookingWindowDays,
     PublicReservationPolicy Policy,
     DateTime AsOfUtc);
-
-/// <summary>
-/// Whether the page is showing a branch a diner can act on.
-/// </summary>
-/// <remarks>
-/// <para>
-/// The page needs to tell "closed tonight" apart from "this venue is gone", and neither
-/// <c>isOpenNow</c> nor a 404 can say it. A closed branch still wants its menu read and its hours
-/// checked; a branch that is no longer published should not be presented as a place to go.
-/// </para>
-/// <para>
-/// <b>There is deliberately no Suspended member.</b> A suspended venue answers 404 and always
-/// will - distinguishing it here would publish a customer's billing status to anybody who guessed
-/// a slug, which is the rule the whole public surface is built around. What is left is the honest
-/// distinction the page can be told.
-/// </para>
-/// </remarks>
-public enum PublicBranchStatus
-{
-    /// <summary>Published and taking diners.</summary>
-    Open = 1,
-
-    /// <summary>Published, but shut at this moment in its own time zone.</summary>
-    Closed = 2,
-}
 
 /// <summary>
 /// The reservation rules a diner needs in order to book, and nothing else.

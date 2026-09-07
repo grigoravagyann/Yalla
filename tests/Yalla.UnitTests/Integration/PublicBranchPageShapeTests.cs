@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Xunit.Abstractions;
@@ -84,7 +84,6 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 "openingHours",
                 "phoneE164",
                 "policy",
-                "status",
                 "tableCount",
                 "timeZoneId",
                 "venueName",
