@@ -413,6 +413,118 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
         Assert.Equal(6, problem.GetProperty("context").GetProperty("partySize").GetInt32());
     }
 
+    /// <summary>
+    /// Declining is the manager's half of the same decision, and the reason they type reaches the
+    /// booking.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Approve is tested above; reject is a separate mapping and can lose any of its refusals on
+    /// its own. Note what the three 403s do <b>not</b> prove: moving this route onto the waiters'
+    /// group leaves every one of them passing, because <c>DecideAsync</c> calls
+    /// <c>RequireManagerForBranchAsync</c> and refuses a waiter a second time further down. The
+    /// route policy and the service check are genuinely redundant here, and no request can tell
+    /// them apart from outside - so this asserts the guarantee, that a waiter cannot decline a
+    /// booking, rather than pretending to pin the layer that delivers it.
+    /// </para>
+    /// <para>
+    /// The <c>reason</c> assertion is the part no service test can make. The service is handed a
+    /// <c>DecideReservationCommand</c> already built; whether the field on the wire reaches it is a
+    /// question about model binding, and a body field that binds to nothing passes every test that
+    /// does not read it back out.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Rejecting_needs_a_manager_of_this_venue_and_the_reason_reaches_the_booking()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        AuthBranch elsewhere;
+        Guid bigTableId;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+            elsewhere = await AuthTestData.CreateBranchAsync(db);
+
+            var testBranch = new TestBranch(
+                branch.VenueId, branch.BranchId, branch.WaiterId, branch.ManagerId,
+                branch.TableIds, "Asia/Yerevan");
+
+            bigTableId = (await TestBranchBuilder.AddTableAsync(db, testBranch, "12", seats: 10)).Id;
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var created = await diner.PostAsJsonAsync(
+            "/api/reservations", NewBooking(factory, branch, tableId: bigTableId, partySize: 9));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        // Not the diner, not a waiter, and not a manager of somewhere else - the same three
+        // refusals as approve, because this route is mapped on its own and could have lost any of
+        // them without a service test noticing.
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await diner.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
+
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await waiter.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
+
+        using var outsider = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInManagerAsync(factory, elsewhere));
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await outsider.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
+
+        using var manager = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInManagerAsync(factory, branch));
+
+        // A reason over the declared 500 is refused before any of that runs. The attribute is
+        // written on a positional record parameter, where a stock validator would never find it.
+        var tooLong = await manager.PostAsJsonAsync(
+            $"/api/reservations/{id}/reject", new { reason = new string('x', 501) });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, tooLong.StatusCode);
+
+        var violation = await tooLong.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("validation-failed", violation.GetProperty("code").GetString());
+        Assert.Equal("reason", violation.GetProperty("context").GetProperty("field").GetString());
+
+        const string Reason = "The kitchen is closed for a private event that evening.";
+
+        var rejected = await manager.PostAsJsonAsync(
+            $"/api/reservations/{id}/reject", new { reason = Reason });
+
+        Assert.Equal(HttpStatusCode.OK, rejected.StatusCode);
+
+        var body = await rejected.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal((int)ReservationStatus.CancelledByVenue, body.GetProperty("status").GetInt32());
+        Assert.Equal(Reason, body.GetProperty("cancellationReason").GetString());
+
+        // Only a pending booking can be declined, and the second attempt says so as a 409 rather
+        // than quietly cancelling an already-cancelled booking again.
+        var again = await manager.PostAsJsonAsync(
+            $"/api/reservations/{id}/reject", new { reason = Reason });
+
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        Assert.Equal(
+            "conflicting-state",
+            (await again.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private YallaApiFactory NewFactory() =>
