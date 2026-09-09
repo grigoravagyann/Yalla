@@ -273,6 +273,21 @@ internal sealed class StaffAuthService(
                 "session-expired", "This session timed out. Tap your PIN again.");
         }
 
+        // Deactivating somebody is how a venue takes them off the floor, and without this it did
+        // nothing to a tablet they were already signed in on: SignInWithPinAsync refused the PIN,
+        // while the session behind it renewed every thirty minutes for as long as anyone kept
+        // tapping. Somebody let go at the end of a shift kept full floor access indefinitely, and
+        // the manager's only real lever was revoking the device - which signs out the whole team.
+        // Both other refresh paths in TokenRefreshService have always checked this.
+        if (!session.StaffMember.IsActive)
+        {
+            session.End(nowUtc);
+            await db.SaveChangesAsync(cancellationToken);
+
+            throw new AuthenticationFailedException(
+                "account-inactive", "This account is no longer active.");
+        }
+
         var successor = Secrets.NewOpaqueToken();
         session.Renew(Secrets.Hash(successor), nowUtc);
         session.StaffDevice.Touch(nowUtc);
