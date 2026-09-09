@@ -1,10 +1,12 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
+using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.ApplicationExtensions;
 
@@ -338,12 +340,62 @@ public static class RateLimitingExtensions
     }
 
     /// <summary>
-    /// Partitions by authenticated user where there is one, falling back to the remote address.
-    /// Identity is a later module; this reads the claim as soon as one exists, without a change
-    /// here.
+    /// One budget per caller: the principal where a request has one, the remote address otherwise.
     /// </summary>
-    private static string PartitionKey(HttpContext context) =>
-        context.User.Identity?.IsAuthenticated == true
-            ? $"user:{context.User.Identity.Name}"
-            : $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
+    /// <remarks>
+    /// <para>
+    /// This read <c>Identity.Name</c>, which <c>AddJwtBearer</c> is configured to take from the
+    /// <c>StaffMemberId</c> claim - and <b>three of the five principal types do not carry one</b>. A
+    /// tab participant, a diner and an enrolled tablet each produced a null name and therefore the
+    /// single key <c>user:</c>, so every caller of all three kinds, everywhere on the platform,
+    /// shared one budget with the other two.
+    /// </para>
+    /// <para>
+    /// Two things followed, and the second is the worse one. The PIN limiter is reached with a
+    /// <b>device</b> token, so ten attempts a minute was ten for every tablet in the product at
+    /// once: anybody holding any valid token of those three kinds could spend it and stop every
+    /// waiter on the platform signing in. And <see cref="RateLimiterOptions.GlobalLimiter"/> keys
+    /// on this for <i>every</i> request, so its three hundred a minute was three hundred shared by
+    /// every diner and every open tab there is. Tab participants are the highest-volume identity in
+    /// the product and ordering is the thing they do; that ceiling is a busy Friday evening rather
+    /// than an attack.
+    /// </para>
+    /// <para>
+    /// The switch covers <see cref="Domain.Enums.PrincipalType"/> member by member on purpose, and
+    /// a test walks the enum and requires each one to produce its own key - so a sixth identity
+    /// type fails that test rather than quietly joining somebody else's bucket, which is how the
+    /// first three got there.
+    /// </para>
+    /// </remarks>
+    internal static string PartitionKey(HttpContext context)
+    {
+        if (context.User.Identity?.IsAuthenticated != true)
+        {
+            return Address(context);
+        }
+
+        var principal = context.User.PrincipalType();
+
+        var subject = principal switch
+        {
+            Domain.Enums.PrincipalType.TabParticipant => context.User.Guid(YallaClaims.ParticipantId),
+            Domain.Enums.PrincipalType.Diner => context.User.Guid(YallaClaims.DinerUserId),
+
+            // A tablet is not a person, but it is the caller the PIN endpoint sees, and one budget
+            // per tablet is exactly what that endpoint wants.
+            Domain.Enums.PrincipalType.StaffDevice => context.User.Guid(YallaClaims.DeviceId),
+
+            Domain.Enums.PrincipalType.StaffSession => context.User.Guid(YallaClaims.StaffMemberId),
+            Domain.Enums.PrincipalType.VenueUser => context.User.Guid(YallaClaims.StaffMemberId),
+            _ => null,
+        };
+
+        // An authenticated token that names nobody falls back to its address rather than to a key
+        // it would share: never worse than an anonymous request, which is the safe direction for
+        // this to be wrong in.
+        return subject is { } id ? $"{principal}:{id}" : Address(context);
+    }
+
+    private static string Address(HttpContext context) =>
+        $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
 }

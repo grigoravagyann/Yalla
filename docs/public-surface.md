@@ -292,9 +292,17 @@ Three, chained:
 
 | Limit | Partition | Default |
 | --- | --- | --- |
-| Global | Client address | 300 / min |
-| Public | Client address | 30 / min |
+| Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
+| Public | Client address — these routes are anonymous | 30 / min |
 | Public booking | Manage token (digest) | 20 / min |
+
+The global row said "client address" and meant it, and for the public routes it is still what
+happens, because nobody arrives at them with a token. Everywhere else it was wrong in a way worth
+recording: the key read `Identity.Name`, which is the `StaffMemberId` claim, and a tab participant,
+a diner and an enrolled tablet carry no such claim. All three keyed on the empty string, so three
+of the five identity types shared **one** budget across the whole platform — three hundred requests
+a minute for every diner and every open tab there is. The key now names the principal per identity
+type, and a test walks `PrincipalType` and requires each member to produce its own.
 
 The per-address limit bounds somebody *guessing* tokens — every guess spends their own budget. What
 it does not bound is a link that went round a group chat being hammered from forty phones, which is
