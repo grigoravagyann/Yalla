@@ -84,6 +84,45 @@ public class PlatformAdminRulesTests
     public void Who_may_assign_which_role(StaffRole actor, StaffRole target, bool allowed) =>
         Assert.Equal(allowed, StaffRoleRules.MayAssign(actor, target));
 
+    // ------------------------------------------------------------ reserved slugs
+
+    /// <summary>
+    /// The console's own first path segments cannot name a venue, because the web app boots the
+    /// console for those and the public page for everything else - a venue called
+    /// <c>reset-password</c> would sit unreachable under the address every reset link points at.
+    /// </summary>
+    [Theory]
+    [InlineData("assets")]
+    [InlineData("dev")]
+    [InlineData("fonts")]
+    [InlineData("platform")]
+    [InlineData("reset-password")]
+    [InlineData("sign-in")]
+    [InlineData("staff")]
+    [InlineData("venue")]
+    public void A_slug_the_console_answers_to_cannot_name_a_venue(string reserved)
+    {
+        var refused = Assert.Throws<ArgumentException>(() => new Venue("Impostor", VenueType.Cafe, reserved));
+
+        Assert.Equal("slug", refused.ParamName);
+        Assert.Contains(reserved, refused.Message, StringComparison.Ordinal);
+
+        // Case is normalised before the list is consulted, so the capitalised spelling is no way round it.
+        Assert.Throws<ArgumentException>(() => new Venue("Impostor", VenueType.Cafe, reserved.ToUpperInvariant()));
+
+        var existing = new Venue("Lumen", VenueType.Cafe, "lumen-coffee");
+        Assert.Throws<ArgumentException>(() => existing.SetSlug(reserved));
+        Assert.Equal("lumen-coffee", existing.Slug);
+    }
+
+    [Fact]
+    public void An_ordinary_slug_is_accepted()
+    {
+        var venue = new Venue("Lumen", VenueType.Cafe, "lumen-coffee");
+
+        Assert.Equal("lumen-coffee", venue.Slug);
+    }
+
     // ------------------------------------------------------------ 9. opening hours
 
     [Fact]

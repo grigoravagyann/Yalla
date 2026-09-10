@@ -1,6 +1,7 @@
 ﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
@@ -334,14 +335,51 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     internal MenuService CreateMenuService(YallaDbContext db) => new(db);
 
-    internal StaffManagementService CreateStaffManagementService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+    internal StaffManagementService CreateStaffManagementService(
+        YallaDbContext db,
+        IClock clock,
+        ICurrentActor actor,
+        ILogger<StaffManagementService>? logger = null) =>
         new(
             db,
             clock,
             actor,
             new SecretHasher(),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
-            NullLogger<StaffManagementService>.Instance);
+            logger ?? NullLogger<StaffManagementService>.Instance);
+
+    /// <summary>
+    /// The admin-panel sign-in and password-reset flows over one context.
+    /// </summary>
+    /// <remarks>
+    /// The real hasher and the real token store, so a test that issues a sign-in through the
+    /// staff service and then consumes the link here is proving the two agree about the hash on
+    /// disk - which is the whole hand-off. The sender is a stand-in that delivers nothing, because
+    /// the issue path never calls it and the request path's delivery is the HTTP tests' concern.
+    /// </remarks>
+    internal VenueUserAuthService CreateVenueUserAuthService(YallaDbContext db, IClock clock)
+    {
+        var jwt = Microsoft.Extensions.Options.Options.Create(new JwtOptions
+        {
+            SigningKey = "test-signing-key-that-is-comfortably-longer-than-thirty-two-bytes",
+        });
+
+        return new VenueUserAuthService(
+            db,
+            clock,
+            new TokenIssuer(jwt, clock),
+            new RefreshTokenStore(db, clock),
+            new SecretHasher(),
+            new SilentPasswordResetSender(),
+            Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            NullLogger<VenueUserAuthService>.Instance);
+    }
+
+    private sealed class SilentPasswordResetSender : IPasswordResetSender
+    {
+        public Task SendAsync(string email, string resetLink, string localeCode, CancellationToken ct) =>
+            Task.CompletedTask;
+    }
 
     internal AvailabilityQuery CreateAvailabilityQuery(YallaDbContext db, IClock clock) => new(db, clock);
 

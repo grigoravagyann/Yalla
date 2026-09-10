@@ -71,7 +71,13 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         // the check. A test host running as Staging is a deployment-shaped host and has to look
         // like one. The tests that are about the check itself override this.
         ["PublicWeb:ManageBookingUrlTemplate"] = "https://test.yalla.app/booking/{token}",
+
+        // Same rule, same reason: the reset link is handed to a person once, so a deployment-shaped
+        // host has to say where the console is. Loopback is refused outside Development.
+        ["Auth:PasswordResetUrlTemplate"] = "https://test.yalla.app/reset-password#token={token}",
     };
+
+    private readonly List<Action<IServiceCollection>> _serviceOverrides = [];
 
     /// <summary>Overrides one configuration value. Chainable, and applied before the host starts.</summary>
     public YallaApiFactory With(string key, string? value)
@@ -101,6 +107,22 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
     /// <summary>Points the API at a test database.</summary>
     public YallaApiFactory WithDatabase(string connectionString) =>
         With("ConnectionStrings:Yalla", connectionString);
+
+    /// <summary>
+    /// Replaces or adds services in the hosted API, after the factory's own test services.
+    /// </summary>
+    /// <remarks>
+    /// For the doubles a test has to <i>read</i> - a sender that records what it was given, where
+    /// the shipped Development sender only logs it. The application registers its senders with
+    /// <c>TryAdd</c> before this runs, so a replacement has to <c>RemoveAll</c> the interface
+    /// first or it is silently ignored; the test that needs one says so at the call site.
+    /// </remarks>
+    public YallaApiFactory WithServices(Action<IServiceCollection> configure)
+    {
+        _serviceOverrides.Add(configure);
+
+        return this;
+    }
 
     /// <summary>Turns Swagger on, optionally behind an IP allowlist.</summary>
     public YallaApiFactory WithSwagger(bool enabled, params string[] allowedIps)
@@ -160,6 +182,11 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         {
             services.AddSingleton<IStartupFilter, RemoteAddressStartupFilter>();
             services.AddSingleton<Yalla.Application.Abstractions.IClock>(Clock);
+
+            foreach (var configure in _serviceOverrides)
+            {
+                configure(services);
+            }
         });
     }
 

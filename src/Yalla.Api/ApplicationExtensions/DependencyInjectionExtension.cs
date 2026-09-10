@@ -36,6 +36,7 @@ public static class DependencyInjectionExtension
         }
 
         RequireManageBookingUrl(builder);
+        RequirePasswordResetUrl(builder);
 
         builder.Services.AddInfrastructure(connectionString, configuration);
 
@@ -118,32 +119,7 @@ public static class DependencyInjectionExtension
         var template = builder.Configuration.GetValue<string>(key);
         var environmentName = builder.Environment.EnvironmentName;
 
-        string? problem = null;
-
-        if (string.IsNullOrWhiteSpace(template))
-        {
-            problem = "it is not set";
-        }
-        else if (!template.Contains("{token}", StringComparison.Ordinal))
-        {
-            // Without the placeholder every booking gets the same link, which is not a link to a
-            // booking at all.
-            problem = "it does not contain the {token} placeholder";
-        }
-        else if (!Uri.TryCreate(
-                     template.Replace("{token}", "t", StringComparison.Ordinal),
-                     UriKind.Absolute,
-                     out var url)
-                 || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
-        {
-            problem = $"'{template}' is not an absolute http or https URL";
-        }
-        else if (url.IsLoopback)
-        {
-            problem = $"'{template}' points at loopback, which no diner's phone can reach";
-        }
-
-        if (problem is null)
+        if (UnusableLinkTemplate(template, "no diner's phone") is not { } problem)
         {
             return;
         }
@@ -157,5 +133,83 @@ public static class DependencyInjectionExtension
             + "into a web booking's reminder when the booking is made, only the token's hash is "
             + "stored, and a booking created with the wrong value carries a dead cancel link that "
             + "cannot be repaired afterwards.");
+    }
+
+    /// <summary>
+    /// Refuses to start outside Development without a password-reset link that points at the
+    /// console.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same shape as <see cref="RequireManageBookingUrl"/>, for a link that is handed over the
+    /// same way: minted once, its hash the only thing kept. An owner issuing a manager's sign-in
+    /// is given this link exactly once and pastes it into a chat, and the forgot-password mail
+    /// carries the same one. The default in <c>appsettings.json</c> is the local console, which
+    /// loads in every environment - so absence alone would pass a staging box straight through
+    /// while every link it issued sent a manager on a phone to <c>localhost</c>.
+    /// </para>
+    /// <para>
+    /// Less permanent than the booking link - a wrong value is fixed by correcting it and issuing
+    /// again - but the person holding the dead link is the one with no other way in, and the
+    /// person who could issue another has already closed the dialog believing the job done.
+    /// </para>
+    /// </remarks>
+    private static void RequirePasswordResetUrl(WebApplicationBuilder builder)
+    {
+        if (builder.Environment.IsDevelopment())
+        {
+            return;
+        }
+
+        const string key = "Auth:PasswordResetUrlTemplate";
+        var template = builder.Configuration.GetValue<string>(key);
+        var environmentName = builder.Environment.EnvironmentName;
+
+        if (UnusableLinkTemplate(template, "nobody outside this machine") is not { } problem)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{key} is unusable in the '{environmentName}' environment: {problem}. "
+            + "Set it as the Auth__PasswordResetUrlTemplate environment variable, to the public "
+            + "address of the admin panel's reset page with {token} in the fragment - for example "
+            + "https://admin.yalla.app/reset-password#token={token}. "
+            + "This is not optional and startup will not continue without it: the link is returned "
+            + "once to whoever issues a manager's sign-in and is what the forgot-password mail "
+            + "carries, and one pointing at loopback sends every one of them nowhere.");
+    }
+
+    /// <summary>
+    /// Why a token-carrying link template could not be handed to a person, or null when it can.
+    /// </summary>
+    /// <param name="template">The configured value.</param>
+    /// <param name="whoCannotReach">Who a loopback address fails, for the message.</param>
+    private static string? UnusableLinkTemplate(string? template, string whoCannotReach)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return "it is not set";
+        }
+
+        if (!template.Contains("{token}", StringComparison.Ordinal))
+        {
+            // Without the placeholder everyone gets the same link, which is not a link to
+            // anything at all.
+            return "it does not contain the {token} placeholder";
+        }
+
+        if (!Uri.TryCreate(
+                template.Replace("{token}", "t", StringComparison.Ordinal),
+                UriKind.Absolute,
+                out var url)
+            || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
+        {
+            return $"'{template}' is not an absolute http or https URL";
+        }
+
+        return url.IsLoopback
+            ? $"'{template}' points at loopback, which {whoCannotReach} can reach"
+            : null;
     }
 }

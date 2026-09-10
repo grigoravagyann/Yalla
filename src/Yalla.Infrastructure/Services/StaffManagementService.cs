@@ -5,6 +5,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Staff;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Staff;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
@@ -183,6 +184,95 @@ internal sealed class StaffManagementService(
         logger.LogInformation("PIN reset for staff member {StaffMemberId} by {ActorId}.", staff.Id, acting.Id);
 
         return ToView(staff, clock.UtcNow);
+    }
+
+    /// <summary>
+    /// The address is typed by the person issuing the sign-in; the password never is. The link
+    /// this returns is the same single-use handle the forgot-password mail would carry, and the
+    /// reset endpoint that consumes it is the only thing that ever sets a password.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Stricter than editing. A sign-in is the whole account, so it is refused for anyone the
+    /// caller does not strictly outrank: an owner may not issue one for a co-owner, because that
+    /// is taking over a peer's account and the audit log would then name the wrong person for
+    /// whatever came next. Refused for oneself for the same reason in the other direction - the
+    /// bearer of a fifteen-minute access token must not be able to turn it into a password.
+    /// </para>
+    /// <para>
+    /// Nothing about the person changes until the link is used. A password they already have keeps
+    /// working and their sessions stay open; consumption is what replaces the one and ends the
+    /// other. What does change now is that every earlier unused link for them dies, so "send a new
+    /// one" is a way to take a lost one back.
+    /// </para>
+    /// </remarks>
+    public async Task<StaffSignInLink> IssueSignInAsync(
+        Guid venueId,
+        Guid staffMemberId,
+        IssueSignInCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        var acting = await RequireActorInVenueAsync("Issue a sign-in", venueId, cancellationToken);
+        var staff = await LoadStaffAsync(venueId, staffMemberId, cancellationToken);
+
+        if (staff.Id == acting.Id)
+        {
+            throw new StaffPermissionException("Issuing your own sign-in", acting.Role, StaffRole.PlatformAdmin);
+        }
+
+        RequireCanHoldPassword(staff.Role, acting.Role);
+
+        if (!StaffRoleRules.Outranks(acting.Role, staff.Role))
+        {
+            throw new StaffPermissionException(
+                $"Issuing a sign-in for a {staff.Role}", acting.Role, StaffRole.PlatformAdmin);
+        }
+
+        if (!staff.IsActive)
+        {
+            throw new DomainStateException(
+                $"{staff.FullName} is deactivated. Reactivate them first, then send a sign-in link.");
+        }
+
+        var emailBefore = staff.Email;
+        var hadPassword = staff.HasPasswordCredentials;
+        staff.SetSignInEmail(command.Email);
+
+        var now = clock.UtcNow;
+
+        var outstanding = await db.PasswordResetTokens
+            .Where(t => t.StaffMemberId == staff.Id && t.ConsumedAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var token in outstanding)
+        {
+            token.Supersede(now);
+        }
+
+        var plain = Secrets.NewOpaqueToken();
+        var issued = new PasswordResetToken(staff.Id, Secrets.Hash(plain), now, PasswordResetToken.InvitationLifetime);
+        db.PasswordResetTokens.Add(issued);
+
+        var link = _options.PasswordResetUrlTemplate.Replace("{token}", Uri.EscapeDataString(plain));
+
+        // Who gave whom a way in, and to which address - never the link, its token or the hash.
+        // The row is the durable record; production logs at Error and keep none of the lines below.
+        PlatformAudit.Record(db, actor, clock, "staff.sign-in-issued", "StaffMember", staff.Id, new
+        {
+            email = staff.Email,
+            emailBefore,
+            expiresAtUtc = issued.ExpiresAtUtc,
+            replacedExistingSignIn = hadPassword,
+        });
+
+        await SaveAsync(cancellationToken);
+
+        logger.LogInformation("Sign-in issued for staff member {StaffMemberId} by {ActorId}.", staff.Id, acting.Id);
+
+        // The only time the plaintext exists. Nothing on the server can produce it again, so
+        // whoever loses it issues another rather than looking it up.
+        return new StaffSignInLink(staff.Id, staff.Email!, link, issued.ExpiresAtUtc, hadPassword);
     }
 
     // ------------------------------------------------------------ helpers
