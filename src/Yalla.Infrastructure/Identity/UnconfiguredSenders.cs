@@ -66,7 +66,7 @@ internal sealed class UnconfiguredPasswordResetSender(
 {
     public Task SendAsync(string email, string resetLink, string localeCode, CancellationToken ct)
     {
-        // The link carries the token in its query string, so the link is a credential and is never
+        // The link carries the token in its fragment, so the link is a credential and is never
         // logged - only the address it was owed to.
         logger.LogError(
             "No email provider is configured, so the password reset for {Email} ({Locale}) was not "

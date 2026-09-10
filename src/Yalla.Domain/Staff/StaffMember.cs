@@ -203,6 +203,20 @@ public sealed class StaffMember : Entity
         PasswordHash = Guard.NotBlank(passwordHash, nameof(passwordHash), FieldLengths.PasswordHash);
     }
 
+    /// <summary>
+    /// Names the address this person will sign in with, without giving them a password.
+    /// </summary>
+    /// <remarks>
+    /// The half of a sign-in an owner is allowed to type for somebody else. The password is the
+    /// other half and only its holder ever chooses it, through the reset link this address is
+    /// about to be sent - so <see cref="PasswordHash"/> is left exactly as it was: null for a
+    /// newcomer, and still working for somebody whose address is merely being corrected.
+    /// Normalised the way sign-in reads it, so a stray space or capital never makes an account
+    /// unreachable.
+    /// </remarks>
+    public void SetSignInEmail(string email) =>
+        Email = Guard.NotBlank(email, nameof(email), FieldLengths.Email).Trim().ToLowerInvariant();
+
     /// <summary>Replaces the password, leaving the address alone.</summary>
     /// <exception cref="DomainStateException">Thrown when this person has no email sign-in.</exception>
     public void SetPasswordHash(string passwordHash)

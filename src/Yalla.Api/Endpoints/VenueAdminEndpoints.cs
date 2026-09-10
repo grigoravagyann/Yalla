@@ -1,8 +1,11 @@
+using System.ComponentModel.DataAnnotations;
+using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Application.Staff;
+using Yalla.Domain.Common;
 
 namespace Yalla.Api.Endpoints;
 
@@ -413,8 +416,11 @@ public static class VenueAdminEndpoints
             .WithSummary("Add a staff member, with a PIN")
             .WithDescription(
                 "A manager may create waiters and kitchen staff; an owner or platform admin may create "
-                + "managers and owners. Nobody creates a role above their own. Email and password are "
-                + "for people who use the admin panel.")
+                + "managers and owners. Nobody creates a role above their own.\n\n"
+                + "A manager or owner gets their admin-panel sign-in through `issueStaffSignIn` after "
+                + "they exist: it stores the address and returns a link they choose their own password "
+                + "by. Sending `email` and `password` here still works, and is the one path where the "
+                + "caller types a password for somebody else.")
             .Produces<StaffMemberView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The role asked for is above what the caller may assign.");
 
@@ -431,6 +437,42 @@ public static class VenueAdminEndpoints
             .WithSummary("Set or reset a PIN")
             .WithDescription("4 to 8 digits. Clears any lockout.")
             .Produces<StaffMemberView>();
+
+        // Mints a credential, so it carries the sign-in budget rather than the global one: ten a
+        // minute per caller is plenty for a person and not much for a script.
+        group.MapPost("/{staffMemberId:guid}/sign-in", IssueSignInAsync)
+            .WithName("issueStaffSignIn")
+            .WithSummary("Give a manager or owner their admin-panel sign-in")
+            .WithDescription(
+                "Stores the address and returns a link the person opens to choose their own password. "
+                + "Nobody types a password for somebody else: the reset endpoint that consumes the link is "
+                + "the only thing that ever sets one.\n\n"
+                + "The link is returned **once** and this is the only copy - the server keeps the token's "
+                + "hash and never logs it, so a lost link is replaced by issuing another. It is good for "
+                + "24 hours and exactly one use. Issuing a new link retires any earlier unused one; two "
+                + "links issued at the same instant can both be live until one is used.\n\n"
+                + "Only somebody the caller strictly outranks: an owner issues for managers, a platform "
+                + "admin for owners and managers, and nobody for a peer or for themselves. A person who "
+                + "already has a password keeps it - and their open sessions - until the link is used, "
+                + "when both are replaced. Their sign-in address changes to the one given as soon as this "
+                + "answers.\n\n"
+                + "Ten a minute per caller: this mints a credential, so it spends the sign-in budget "
+                + "rather than the global one.")
+            .Produces<StaffSignInLink>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not allowed to issue a sign-in for this person: yourself, an equal, or someone above you.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such staff member in this venue.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "A waiter or kitchen hand signs in with a PIN; the person is deactivated; or that address already has an account.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`email` is missing, not an address, or longer than 320 characters; `context.field` names it.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "Too many sign-ins issued in the last minute. Wait, then retry.")
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         // Device enrolment codes and revocation live under /api/branches/{branchId}/devices from
         // the authentication task, with the same policies; nothing is duplicated here.
@@ -457,4 +499,13 @@ public static class VenueAdminEndpoints
     private static async Task<IResult> SetPinAsync(
         Guid venueId, Guid staffMemberId, SetPinRequest request, IStaffManagementService service, CancellationToken ct) =>
         Results.Ok(await service.SetPinAsync(venueId, staffMemberId, request.Pin, ct));
+
+    /// <summary>Body of the sign-in issue.</summary>
+    /// <param name="Email">The address this person will sign in with. Stored lowercased.</param>
+    public sealed record IssueSignInRequest(
+        [Required][EmailAddress][StringLength(FieldLengths.Email)] string Email);
+
+    private static async Task<IResult> IssueSignInAsync(
+        Guid venueId, Guid staffMemberId, IssueSignInRequest request, IStaffManagementService service, CancellationToken ct) =>
+        Results.Ok(await service.IssueSignInAsync(venueId, staffMemberId, new IssueSignInCommand(request.Email), ct));
 }

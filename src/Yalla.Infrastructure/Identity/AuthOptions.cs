@@ -41,7 +41,14 @@ public sealed class AuthOptions
     /// <summary>
     /// Where the password-reset link points. <c>{token}</c> is replaced with the single-use handle.
     /// </summary>
-    public string PasswordResetUrlTemplate { get; set; } = "http://localhost:5173/reset-password?token={token}";
+    /// <remarks>
+    /// The token rides in the fragment, not the query string, because the console is a static
+    /// bundle served by whatever host or CDN the deployment chose - and a fragment never leaves
+    /// the browser, so a live admin credential never lands in an access log this repository
+    /// cannot see. Must point at the console's reset page in every deployment; outside
+    /// Development the host refuses to start on the loopback default below.
+    /// </remarks>
+    public string PasswordResetUrlTemplate { get; set; } = "http://localhost:5173/reset-password#token={token}";
 
     /// <summary>Language used when a caller does not ask for one. Armenian, because most diners are.</summary>
     public string DefaultLocale { get; set; } = "hy";

@@ -171,7 +171,8 @@ is nil and the value of a recovery story people already understand is high.
 - Password reset by emailed link: single use, one hour, stored hashed. Consuming one revokes every
   refresh token the account holds, because the usual reason to reset a password is that somebody
   else might have had it. The sender is abstracted behind `IPasswordResetSender` with a development
-  implementation that logs, same pattern as the code sender, and no provider is integrated.
+  implementation that logs, same pattern as the code sender, and no provider is integrated - which
+  is why the link also travels by hand, below.
 
 Unknown address, wrong password and deactivated account all answer identically, so the sign-in form
 cannot be used to discover which addresses have accounts.
@@ -203,6 +204,64 @@ permission.
 
 Email and password stay what they always were: the admin panel, for owners and managers, who do sit
 down at a desk to do the things it is for.
+
+### How a manager or owner gets their sign-in
+
+**The person above them issues it: the server stores the address, mints a single-use reset link
+good for 24 hours, returns it once, and they hand it over the way everything in this product
+travels - pasted into a chat. The recipient opens it on the console's reset page and chooses a
+password of their own.** `POST /api/venues/{venueId}/staff/{staffMemberId}/sign-in` with
+`{ email }`; the anonymous `reset-password` endpoint that consumes the link stays the only thing
+that ever sets a password.
+
+Why it is shaped this way:
+
+- **No provider delivers anything.** Outside Development the reset sender logs an error and drops
+  the link, so "we'll email them" was a manager created from the console with no way to ever reach
+  the panel - including the first owner of a new venue, whom only a platform admin can create. The
+  console never sent a password at creation, and `UpdateStaffCommand` has no email, so nobody could
+  repair it afterwards either. When a provider arrives, email becomes a second way to deliver the
+  same token, not a replacement.
+- **Not a downgrade.** The same actor may already create a manager and type a password *for* them,
+  which is strictly more than a link the recipient completes with a password of their choosing; and
+  the tablet enrolment code already returns a one-time secret to the same actor. What the mailed
+  flow would add is proof of mailbox control, which is meaningless for an address the owner just
+  typed.
+- **Returned once, and that is the only copy.** The server keeps the token's hash and never logs
+  the link; an audit row (`staff.sign-in-issued`) records who gave whom a way in, to which address
+  and from which, and never the credential. A lost link is replaced by issuing another.
+- **24 hours, not the mailed link's hour.** A link somebody opens from a chat after their shift is
+  not a link somebody is sitting at a screen waiting for; the tablet enrolment code sets the same
+  onboarding window. `PasswordResetToken.InvitationLifetime` is separate from `Lifetime` so the
+  mailed flow keeps its hour.
+- **A new link retires the old one.** Every unused link for the person is superseded - not
+  consumed; no password changed - so "send a new one" is a way to take a lost one back. Two links
+  issued at the same instant can both be live until one is used; stated and accepted.
+- **Nothing else moves until the link is used.** A person who already has a password keeps it, and
+  their sessions stay open, until consumption replaces the one and ends the other. The *address*
+  does change the moment it is issued, so the console warns before re-pointing a working sign-in.
+- **Only somebody strictly above.** An owner issues for managers, a platform admin for owners and
+  managers; a co-owner is refused, because issuing a peer's sign-in is taking over a peer's account
+  and the audit log would then name the wrong person for whatever came next. Oneself is refused,
+  because a bearer holding a fifteen-minute access token must not be able to turn it into a
+  password. A waiter or kitchen hand is refused for the reason above, and a deactivated person is
+  refused until they are reactivated - the deactivation *was* the revocation.
+- **Rate limited as a credential.** The route carries the `auth` policy, ten a minute per caller,
+  rather than the global budget sized for a busy floor.
+
+**The link must point at the console in every deployment.** `Auth:PasswordResetUrlTemplate`
+defaults to the local console, and outside Development the host refuses to start on that value -
+the same guard `PublicWeb:ManageBookingUrlTemplate` has, for the same reason: the link is minted
+once and handed to a person, and one that points at `localhost` sends them nowhere. The token rides
+in the URL fragment, so it never reaches the static host's access log - and the same guard refuses a
+template that puts `{token}` anywhere else, so a deployment cannot quietly move it back into the
+query string.
+
+**Reserved slugs.** The console owns the first path segments `assets`, `dev`, `fonts`, `platform`,
+`reset-password`, `sign-in`, `staff` and `venue`; the web app boots the console for those and the
+public page for everything else. `SlugText` refuses them as a venue or branch slug, mirroring
+`RESERVED_FIRST_SEGMENTS` in the frontend, so no venue can ever sit unreachable under the address a
+reset link points at.
 
 ## Tokens
 
@@ -332,9 +391,11 @@ when their token carries no matching branch claim, the handler asks whether the 
 their venue. A staff session with a branch claim is still confined to it, and a venue user is still
 confined to their own venue.
 
-Two policies are defined but carry no endpoint yet: `TabParticipantCanOrder` has nothing to guard
-until ordering exists, and `VenueScoped` has no venue-level route yet. Both are covered by
-`PolicyHandlerTests` rather than shipped unexercised.
+`VenueScoped` guards the staff routes under `/api/venues/{venueId}/staff`, which are addressed by
+venue because staff belong to one rather than to a branch; the handler passes a platform admin for
+every venue. `VenueAdminEndpointTests` proves a manager of the neighbouring venue is refused.
+`TabParticipantCanOrder` is defined and carries no endpoint yet - it has nothing to guard until
+ordering exists - and is covered by `PolicyHandlerTests` rather than shipped unexercised.
 
 ## The actor stub
 
