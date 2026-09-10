@@ -177,8 +177,9 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// Sending a new link is how a lost one is taken back - and nothing else moves until the new
-    /// one is used: the password they had keeps working, at the address they now have.
+    /// Sending a new link is how a lost one is taken back - only theirs, and nothing else moves
+    /// until the new one is used: the password they had keeps working, at the address they now
+    /// have, and the session they opened with it stays open until the link ends it.
     /// </summary>
     [SkippableFact]
     public async Task Issuing_again_retires_the_earlier_link_and_leaves_a_working_password_alone()
@@ -191,6 +192,7 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         var owner = await SeedOwnerAsync(db, branch.VenueId);
         var asOwner = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
         var auth = fixture.CreateVenueUserAuthService(db, clock);
+        var sessions = new RefreshTokenStore(db, clock);
 
         var hashBefore = (await db.StaffMembers.AsNoTracking().SingleAsync(s => s.Id == branch.ManagerId)).PasswordHash;
         var changed = Address("changed");
@@ -198,6 +200,11 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         var first = await asOwner.IssueSignInAsync(branch.VenueId, branch.ManagerId, new IssueSignInCommand(changed));
 
         Assert.True(first.ReplacedExistingSignIn);
+
+        // Somebody else's live link, held across the re-issue: "every unused link for them" has
+        // to mean theirs, or one owner sending a new link would lock out the rest of the venue.
+        var bystander = await asOwner.CreateAsync(branch.VenueId, Staff("Bystander", StaffRole.Manager));
+        var bystandersLink = await asOwner.IssueSignInAsync(branch.VenueId, bystander.Id, new IssueSignInCommand(Address("bystander")));
 
         // The address moved the moment the owner submitted; the password did not.
         var stillIn = await auth.SignInAsync(changed, AuthTestData.ManagerPassword);
@@ -212,6 +219,11 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
 
         Assert.Equal("reset-token-invalid", lost.ReasonCode);
 
+        // Neither did the session they opened a minute ago: issuing is not a reset.
+        var open = await sessions.FindAsync(stillIn.RefreshToken, default);
+        Assert.NotNull(open);
+        Assert.True(open!.IsUsableAt(clock.UtcNow));
+
         await using (var verify = fixture.CreateContext(clock))
         {
             var tokens = await verify.PasswordResetTokens.AsNoTracking()
@@ -222,6 +234,11 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
             Assert.Equal(2, tokens.Count);
             Assert.NotNull(tokens[0].ConsumedAtUtc);
             Assert.Null(tokens[1].ConsumedAtUtc);
+
+            // The bystander's link was not among the ones taken back.
+            var bystanders = await verify.PasswordResetTokens.AsNoTracking()
+                .SingleAsync(t => t.StaffMemberId == bystander.Id);
+            Assert.Null(bystanders.ConsumedAtUtc);
 
             // Retired is not reset: the hash on the row is the one they signed in with a moment ago.
             var manager = await verify.StaffMembers.AsNoTracking().SingleAsync(s => s.Id == branch.ManagerId);
@@ -242,6 +259,20 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         // Now the old password is gone and the chosen one is the sign-in.
         await Assert.ThrowsAsync<AuthenticationFailedException>(() => auth.SignInAsync(changed, AuthTestData.ManagerPassword));
         Assert.Equal(branch.ManagerId, (await auth.SignInAsync(changed, Password)).StaffMemberId);
+
+        // And the session from before is the one thing consumption does end, for the usual reason.
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            var ended = await verify.RefreshTokens.AsNoTracking()
+                .SingleAsync(t => t.TokenHash == Secrets.Hash(stillIn.RefreshToken));
+
+            Assert.NotNull(ended.RevokedAtUtc);
+            Assert.Equal("password-changed", ended.RevokedReason);
+        }
+
+        // The bystander's link still opens their account.
+        await auth.ResetPasswordAsync(TokenFrom(bystandersLink.ResetLink), Password);
+        Assert.Equal(bystander.Id, (await auth.SignInAsync(bystandersLink.Email, Password)).StaffMemberId);
     }
 
     /// <summary>
@@ -275,6 +306,12 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         var self = await Assert.ThrowsAsync<StaffPermissionException>(
             () => asOwner.IssueSignInAsync(branch.VenueId, owner.Id, new IssueSignInCommand(Address("self"))));
         Assert.Contains("your own", self.Message, StringComparison.Ordinal);
+
+        // Strictly above, not merely different: a manager issuing the owner's sign-in would be
+        // taking over the venue, and "not a peer" alone would let them.
+        var above = await Assert.ThrowsAsync<StaffPermissionException>(
+            () => asManager.IssueSignInAsync(branch.VenueId, owner.Id, new IssueSignInCommand(Address("above"))));
+        Assert.Contains("for a Owner", above.Message, StringComparison.Ordinal);
 
         // A platform admin sits above an owner, so the venue's first owner can be given a way in.
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);

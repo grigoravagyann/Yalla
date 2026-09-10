@@ -108,9 +108,7 @@ including:
   `name`, `priceAmd`, `photoId`, `prepMinutes`, `ingredients`, `allergens`, `portionSize`,
   `description`, `displayOrder`
 - `POST /api/venues/{venueId}/staff` and its patch — `fullName`, `phone`, `pin`, `email`
-- `POST /api/venues/{venueId}/staff/{staffMemberId}/sign-in` — `email` (a malformed or missing
-  address is the filter's 422; an overlong one that slips past `[StringLength]` would be the guard's
-  400, both naming the field)
+- `POST /api/venues/{venueId}/staff/{staffMemberId}/sign-in` — `email`
 - `POST /api/branches/{branchId}/floor-areas` — `name`, `displayOrder`
 - the reservation and tab commands — `partySize`, `guestName`, `guestPhone`, `quantity`, `note`,
   `amountAmd`, `tipAmd`, `displayName`, `deviceId`, and the rest

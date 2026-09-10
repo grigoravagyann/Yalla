@@ -134,15 +134,25 @@ public class StartupAndCorsEnvironmentTests
     /// start.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The default in <c>appsettings.json</c> is the local console and loads everywhere, so a
     /// staging box that forgot the setting would issue links to <c>localhost</c> - returned once,
     /// pasted into a chat, and dead on the phone that opens them. The person who could issue
     /// another has already closed the dialog believing the job done.
+    /// </para>
+    /// <para>
+    /// A token in the query string or the path is refused too, unlike the booking link's. The
+    /// console is a static bundle behind a host this repository cannot see, and only a fragment
+    /// stays out of that host's access log - so a template that reaches a person but logs their
+    /// credential on the way is not one this will start on.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData("", "it is not set")]
     [InlineData("https://admin.yalla.app/reset-password", "{token}")]
     [InlineData("/reset-password#token={token}", "absolute")]
+    [InlineData("https://admin.yalla.app/reset-password?token={token}", "fragment")]
+    [InlineData("https://admin.yalla.app/reset-password/{token}", "fragment")]
     [InlineData("http://localhost:5173/reset-password#token={token}", "loopback")]
     [InlineData("https://127.0.0.1/reset-password#token={token}", "loopback")]
     public void An_unusable_password_reset_url_refuses_to_start_outside_Development(

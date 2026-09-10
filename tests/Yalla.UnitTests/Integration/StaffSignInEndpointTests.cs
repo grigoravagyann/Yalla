@@ -36,8 +36,9 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
     private const string Password = "a-perfectly-long-password";
 
     /// <summary>
-    /// Waiters and neighbouring venues never reach it, a manager cannot hand a fellow manager a
-    /// sign-in, and an owner or platform admin can.
+    /// Waiters and neighbouring venues are refused by the group's policies before the service
+    /// sees them, a manager cannot hand a fellow manager or the owner a sign-in, none of the four
+    /// mints anything, and an owner or platform admin can.
     /// </summary>
     [SkippableFact]
     public async Task The_route_carries_the_hierarchy_and_the_venue_scope()
@@ -69,14 +70,34 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
 
         var route = $"/api/venues/{mine.VenueId}/staff/{secondManagerId}/sign-in";
 
-        Assert.Equal(HttpStatusCode.Forbidden, (await waiter.PostAsJsonAsync(route, Body("waiter"))).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await neighbour.PostAsJsonAsync(route, Body("neighbour"))).StatusCode);
+        // A 403 alone cannot say which layer refused: the service answers the same status to the
+        // same callers. What tells a policy refusal apart is that it never ran the service, so
+        // there is no `context.operation` - only the service's refusal names the operation.
+        var byWaiter = await waiter.PostAsJsonAsync(route, Body("waiter"));
+        var byNeighbour = await neighbour.PostAsJsonAsync(route, Body("neighbour"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, byWaiter.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, byNeighbour.StatusCode);
+        Assert.DoesNotContain("\"operation\"", await byWaiter.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.DoesNotContain("\"operation\"", await byNeighbour.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
         // Same venue, same rank: the policies pass a manager to the route, the service refuses.
         var peer = await manager.PostAsJsonAsync(route, Body("peer"));
 
         Assert.Equal(HttpStatusCode.Forbidden, peer.StatusCode);
         Assert.Equal("forbidden", await CodeAsync(peer));
+
+        // Same venue, higher rank: the owner's account is not a manager's to hand out.
+        var above = await manager.PostAsJsonAsync($"/api/venues/{mine.VenueId}/staff/{owner.StaffMemberId}/sign-in", Body("above"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, above.StatusCode);
+        Assert.Equal("forbidden", await CodeAsync(above));
+
+        // Refused before minting, whichever layer did the refusing.
+        await using (var check = fixture.CreateContext(factory.Clock))
+        {
+            Assert.Equal(0, await check.PasswordResetTokens.CountAsync(t => t.StaffMemberId == secondManagerId || t.StaffMemberId == owner.StaffMemberId));
+        }
 
         var byPlatform = await platform.PostAsJsonAsync(route, Body("platform"));
 
@@ -137,8 +158,13 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// The body is validated before anything is looked up, and the refusal names the field.
+    /// The body is validated before anything is looked up, and the refusal names the field -
+    /// for an address that is malformed, missing, or longer than a column can hold.
     /// </summary>
+    /// <remarks>
+    /// The overlong one is the case the <c>[StringLength]</c> exists for: without it the address
+    /// reaches the domain guard, which refuses with a 400 that names nothing a form can highlight.
+    /// </remarks>
     [SkippableFact]
     public async Task A_bad_or_missing_address_is_a_422_naming_the_field()
     {
@@ -159,7 +185,11 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
 
         var route = $"/api/venues/{mine.VenueId}/staff/{mine.ManagerId}/sign-in";
 
-        foreach (var body in new object[] { new { email = "not-an-address" }, new { } })
+        // 323 characters: past the 320 the column holds, and well-formed enough that only the
+        // length can be what refuses it.
+        var overlong = new string('a', 310) + "@example.test";
+
+        foreach (var body in new object[] { new { email = "not-an-address" }, new { }, new { email = overlong } })
         {
             var refused = await ownerClient.PostAsJsonAsync(route, body);
 
@@ -305,18 +335,34 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Unauthorized, reused.StatusCode);
         Assert.Equal("reset-token-invalid", await CodeAsync(reused));
 
-        // A second link, left for longer than the mailed link's hour.
+        // The hour, from both sides. A second link is still good just inside it - a shorter
+        // lifetime would refuse this one and pass the test below all the same.
         Assert.Equal(
             HttpStatusCode.Accepted,
             (await anonymous.PostAsJsonAsync("/api/auth/venue/request-password-reset", new { email = branch.ManagerEmail })).StatusCode);
 
         Assert.Equal(2, sender.Deliveries.Count);
-        var stale = TokenFrom(sender.Deliveries[1].Link);
+        var fresh = TokenFrom(sender.Deliveries[1].Link);
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(59));
+
+        var inTime = await anonymous.PostAsJsonAsync(
+            "/api/auth/venue/reset-password", new { resetToken = fresh, newPassword = "a-third-long-enough-password" });
+
+        Assert.Equal(HttpStatusCode.NoContent, inTime.StatusCode);
+
+        // And a third, left for longer than the mailed link's hour.
+        Assert.Equal(
+            HttpStatusCode.Accepted,
+            (await anonymous.PostAsJsonAsync("/api/auth/venue/request-password-reset", new { email = branch.ManagerEmail })).StatusCode);
+
+        Assert.Equal(3, sender.Deliveries.Count);
+        var stale = TokenFrom(sender.Deliveries[2].Link);
 
         factory.Clock.Advance(TimeSpan.FromMinutes(61));
 
         var expired = await anonymous.PostAsJsonAsync(
-            "/api/auth/venue/reset-password", new { resetToken = stale, newPassword = "a-third-long-enough-password" });
+            "/api/auth/venue/reset-password", new { resetToken = stale, newPassword = "a-fourth-long-enough-password" });
 
         Assert.Equal(HttpStatusCode.Unauthorized, expired.StatusCode);
         Assert.Equal("reset-token-invalid", await CodeAsync(expired));

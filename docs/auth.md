@@ -253,7 +253,9 @@ Why it is shaped this way:
 defaults to the local console, and outside Development the host refuses to start on that value -
 the same guard `PublicWeb:ManageBookingUrlTemplate` has, for the same reason: the link is minted
 once and handed to a person, and one that points at `localhost` sends them nowhere. The token rides
-in the URL fragment, so it never reaches the static host's access log.
+in the URL fragment, so it never reaches the static host's access log - and the same guard refuses a
+template that puts `{token}` anywhere else, so a deployment cannot quietly move it back into the
+query string.
 
 **Reserved slugs.** The console owns the first path segments `assets`, `dev`, `fonts`, `platform`,
 `reset-password`, `sign-in`, `staff` and `venue`; the web app boots the console for those and the

@@ -165,7 +165,7 @@ public static class DependencyInjectionExtension
         var template = builder.Configuration.GetValue<string>(key);
         var environmentName = builder.Environment.EnvironmentName;
 
-        if (UnusableLinkTemplate(template, "nobody outside this machine") is not { } problem)
+        if (UnusableLinkTemplate(template, "nobody outside this machine", requireFragment: true) is not { } problem)
         {
             return;
         }
@@ -185,7 +185,15 @@ public static class DependencyInjectionExtension
     /// </summary>
     /// <param name="template">The configured value.</param>
     /// <param name="whoCannotReach">Who a loopback address fails, for the message.</param>
-    private static string? UnusableLinkTemplate(string? template, string whoCannotReach)
+    /// <param name="requireFragment">
+    /// Whether <c>{token}</c> has to sit after a <c>#</c>. The reset link says so in its own
+    /// remarks: the console is a static bundle behind a host this repository cannot see, and a
+    /// fragment is the one part of a URL that never reaches that host's access log. Saying it in
+    /// a comment and accepting <c>?token={token}</c> anyway would reintroduce the leak the fragment
+    /// exists to close, one deployment at a time. The booking link keeps its path placeholder: the
+    /// public page is served by this system's own host.
+    /// </param>
+    private static string? UnusableLinkTemplate(string? template, string whoCannotReach, bool requireFragment = false)
     {
         if (string.IsNullOrWhiteSpace(template))
         {
@@ -206,6 +214,17 @@ public static class DependencyInjectionExtension
             || (url.Scheme != Uri.UriSchemeHttps && url.Scheme != Uri.UriSchemeHttp))
         {
             return $"'{template}' is not an absolute http or https URL";
+        }
+
+        if (requireFragment)
+        {
+            var hash = template.IndexOf('#');
+
+            if (hash < 0 || template.IndexOf("{token}", StringComparison.Ordinal) < hash)
+            {
+                return "the {token} placeholder is not in the fragment (#token={token}), so the "
+                    + "credential would reach the console host's access log";
+            }
         }
 
         return url.IsLoopback

@@ -71,8 +71,13 @@ public sealed class PasswordResetToken : Entity
     /// <remarks>
     /// A lost link has to stop working the moment a replacement is sent, or "send a new one" is
     /// not a way to take the old one back. It is not a reset: no password changed and no session
-    /// ended, which is why this is its own word rather than <see cref="Consume"/> - a table that
-    /// showed resets nobody completed would be lying to whoever reads it later.
+    /// ended, which is why this is its own word rather than <see cref="Consume"/>. The row itself
+    /// does not keep the distinction - both write <see cref="ConsumedAtUtc"/>, and every reader of
+    /// that column treats the two alike, which is the point: a superseded link is as dead as a
+    /// used one. What says which happened is the vocabulary here and the record around the row:
+    /// a <c>staff.sign-in-issued</c> audit entry is what retired a link without a reset, and the
+    /// "Password reset completed" log line is what consumed one. A column of its own would be a
+    /// migration for a question nobody has asked.
     /// </remarks>
     public void Supersede(DateTime atUtc) =>
         ConsumedAtUtc ??= Guard.NotLocalTime(atUtc, nameof(atUtc));

@@ -455,7 +455,9 @@ public static class VenueAdminEndpoints
                 + "admin for owners and managers, and nobody for a peer or for themselves. A person who "
                 + "already has a password keeps it - and their open sessions - until the link is used, "
                 + "when both are replaced. Their sign-in address changes to the one given as soon as this "
-                + "answers.")
+                + "answers.\n\n"
+                + "Ten a minute per caller: this mints a credential, so it spends the sign-in budget "
+                + "rather than the global one.")
             .Produces<StaffSignInLink>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
@@ -466,7 +468,10 @@ public static class VenueAdminEndpoints
                 "A waiter or kitchen hand signs in with a PIN; the person is deactivated; or that address already has an account.")
             .ProducesProblem<ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity,
-                "`email` is missing or not an address; `context.field` names it.")
+                "`email` is missing, not an address, or longer than 320 characters; `context.field` names it.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "Too many sign-ins issued in the last minute. Wait, then retry.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         // Device enrolment codes and revocation live under /api/branches/{branchId}/devices from
