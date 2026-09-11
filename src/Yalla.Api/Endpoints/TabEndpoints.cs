@@ -181,8 +181,25 @@ public static class TabEndpoints
             .WithSummary("Host: take someone off the tab")
             .WithDescription(
                 "A status change, never a delete. Their items and any payment they made are "
-                + "financial records and survive them leaving. The host cannot remove themself; staff "
-                + "reassign the host first.");
+                + "financial records and survive them leaving. The host cannot remove themself: they "
+                + "leave, which hands the tab on, or staff reassign the host.");
+
+        mutating.MapPost("/leave", LeaveAsync)
+            .WithName("leaveTab")
+            .WithSummary("Take yourself off the tab")
+            .WithDescription(
+                "The same status change a host's remove makes, never a delete: everything you "
+                + "ordered and anything you paid stays on the bill. Your token stops working on this "
+                + "tab, and you are on no shared line ordered after you leave.\n\n"
+                + "**A host** hands the tab to the approved guest who has been on it longest, who "
+                + "gains sight of the total and the right to pay. With nobody approved to take it the "
+                + "host cannot leave - **409** - and a waiter takes the tab over or closes it.\n\n"
+                + "Refused once the bill has been asked for, like every other change to the tab.")
+            .Produces<TabParticipantView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "The caller hosts the tab and nobody approved is left to hand it to.");
 
         HostAction(mutating, "/participants/{participantId:guid}/permissions", SetPermissionsAsync, "setTabParticipantPermissions")
             .WithSummary("Host: set one person's three flags")
@@ -382,6 +399,22 @@ public static class TabEndpoints
         }
 
         return Results.Ok(await service.RemoveParticipantAsync(tabId, actingId, participantId, cancellationToken));
+    }
+
+    private static async Task<IResult> LeaveAsync(
+        Guid tabId,
+        HttpContext http,
+        ITabService service,
+        CancellationToken cancellationToken)
+    {
+        // Who leaves is whoever the token names. There is no body, so nobody can take somebody else
+        // off by sending their id - that is the host's remove.
+        if (Participant(http) is not { } participantId)
+        {
+            return Results.Forbid();
+        }
+
+        return Results.Ok(await service.LeaveAsync(tabId, participantId, cancellationToken));
     }
 
     private static async Task<IResult> SetPermissionsAsync(

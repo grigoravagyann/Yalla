@@ -13,7 +13,7 @@ namespace Yalla.Application.Public;
 /// </remarks>
 /// <param name="VenueSlug">The public identity. Half of a printed link.</param>
 /// <param name="Name">The venue's name.</param>
-/// <param name="Type">1 Restaurant, 2 Cafe, 3 Bar.</param>
+/// <param name="Type">1 Cafe, 2 Restaurant.</param>
 /// <param name="Branches">Its active branches.</param>
 public sealed record PublicVenueCard(
     string VenueSlug,
@@ -27,17 +27,26 @@ public sealed record PublicVenueCard(
 /// <param name="Name">The branch's name.</param>
 /// <param name="Address">Where it is.</param>
 /// <param name="FreeTableCount">
-/// How many tables have nobody sitting at them right now. The one volatile number here, and the
-/// reason the browse list is cached for seconds rather than minutes.
+/// How many tables have nobody sitting at them right now, walk-in-only stools included - the same
+/// tables the branch page's <c>tableCount</c> counts and its plan draws, so the two can never read
+/// "3 of 2 free" and zero means every seat is taken. The one volatile number here, and the reason
+/// the browse list is cached for seconds rather than minutes.
 /// </param>
 /// <param name="IsOpenNow">Whether it is inside an opening block at this moment, in its own zone.</param>
+/// <param name="TimeZoneId">
+/// The branch's IANA zone, e.g. <c>Asia/Yerevan</c>. A slot a diner picks after browsing is a
+/// wall-clock time at the branch, and a phone set to another zone has to render it in this one
+/// rather than guess - the diner app guessed <c>Asia/Yerevan</c>, because this list is the only
+/// public read in front of its venue and booking screens and it did not say.
+/// </param>
 public sealed record PublicBranchCard(
     Guid BranchId,
     string BranchSlug,
     string Name,
     string Address,
     int FreeTableCount,
-    bool IsOpenNow);
+    bool IsOpenNow,
+    string TimeZoneId);
 
 /// <summary>
 /// One branch's public page.
@@ -47,7 +56,7 @@ public sealed record PublicBranchCard(
 /// <param name="BranchId">The id the menu and availability routes take.</param>
 /// <param name="VenueName">The venue's name.</param>
 /// <param name="BranchName">The branch's name.</param>
-/// <param name="VenueType">1 Restaurant, 2 Cafe, 3 Bar.</param>
+/// <param name="VenueType">1 Cafe, 2 Restaurant.</param>
 /// <param name="Address">Street address, as a person would read it.</param>
 /// <param name="Latitude">For the map pin.</param>
 /// <param name="Longitude">For the map pin.</param>
@@ -67,8 +76,15 @@ public sealed record PublicBranchCard(
 /// "this venue is gone" is the 404. Two names for one fact is how a mapper picks the wrong one.
 /// </para>
 /// </param>
-/// <param name="FreeTableCount">Tables with nobody at them right now.</param>
-/// <param name="TableCount">How many bookable tables there are, so the count has a denominator.</param>
+/// <param name="FreeTableCount">
+/// Tables with nobody at them right now, bookable or walk-in only, so it is always out of
+/// <paramref name="TableCount"/> and always the number of tables the plan draws with
+/// <c>isFree</c> true.
+/// </param>
+/// <param name="TableCount">
+/// How many tables there are - every table on the plan, bookable or not - so the count has a
+/// denominator.
+/// </param>
 /// <param name="FloorPlan">
 /// The room, in diner shape: the canvas, the areas and the tables with their geometry and whether
 /// each is free. <b>No QR tokens and no staff state</b> - see <see cref="PublicFloorTable"/>.

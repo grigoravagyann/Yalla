@@ -29,8 +29,14 @@ internal sealed class DiningTableConfiguration : EntityConfiguration<DiningTable
         builder.Property(t => t.IsActive).IsRequired();
         builder.Property(t => t.Status).IsRequired();
 
+        // Compared exactly, by a collation chosen here rather than whatever the database defaults
+        // to. The lookup lower-cases what was scanned and every stored token is lower-case (see
+        // DiningTable.NormaliseQrToken), so a scan matches by the server's own rule. It used to work
+        // only because the default collation ignored case, which hid the diner app upper-casing
+        // every scan. Binary is also the cheapest comparison for the lookup every walk-in makes.
         builder.Property(t => t.QrToken)
             .HasMaxLength(FieldLengths.QrToken)
+            .UseCollation("Latin1_General_100_BIN2")
             .IsRequired();
 
         // A plain column, not a foreign key: see the remarks on the property. TableSession

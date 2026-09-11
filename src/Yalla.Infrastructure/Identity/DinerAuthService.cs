@@ -99,8 +99,11 @@ internal sealed class DinerAuthService(
 
         if (entity is null)
         {
-            throw new AuthenticationFailedException(
-                "verification-code-invalid", "That code is not valid. Ask for a new one.");
+            // Nothing live for this number, so nothing left to try: say so, and the client offers
+            // a new code rather than a retry. See VerificationCodeInvalidException for why the count
+            // publishes nothing an anonymous caller could not already learn.
+            throw new VerificationCodeInvalidException(
+                attemptsRemaining: 0, "That code is not valid. Ask for a new one.");
         }
 
         if (entity.IsAttemptExhausted)
@@ -126,8 +129,9 @@ internal sealed class DinerAuthService(
             // happened to this request - a code was checked and was wrong - and burning the last
             // attempt does not change that. "Out of attempts" is the answer to the *next*
             // request, which is not checked against anything.
-            throw new AuthenticationFailedException(
-                "verification-code-invalid", "That code is not valid.");
+            throw new VerificationCodeInvalidException(
+                Math.Max(0, PhoneVerificationCode.MaxAttempts - entity.AttemptCount),
+                "That code is not valid.");
         }
 
         entity.Consume(nowUtc);

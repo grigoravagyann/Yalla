@@ -60,6 +60,18 @@ public sealed record ReservationView
     /// </summary>
     public bool CancelledAfterDeadline { get; init; }
 
+    /// <summary>
+    /// The instant past which cancelling is recorded as late: the start less the branch's
+    /// cancellation deadline as it stands, which is what a cancellation made now is judged against.
+    /// Cancelling after it is still allowed - recorded in <see cref="CancelledAfterDeadline"/>, never
+    /// refused.
+    /// </summary>
+    /// <remarks>
+    /// Already past for a booking made inside the window. The app promised free cancellation until
+    /// the start, because nothing here said otherwise.
+    /// </remarks>
+    public required DateTime CancellationDeadlineUtc { get; init; }
+
     public required Guid ClientCommandId { get; init; }
 
     /// <summary>

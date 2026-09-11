@@ -261,6 +261,10 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
                 $"/api/reservations/{booking}/extend-hold",
                 new { clientCommandId = Guid.CreateVersion7() })).StatusCode);
 
+        // Dinner time, and the party is late: until the start there was nothing held to keep.
+        // Every token this test uses is already issued - see RunLateAsync.
+        await RunLateAsync(factory, diner, booking);
+
         var firstTap = Guid.CreateVersion7();
         var extended = await diner.PostAsJsonAsync(
             $"/api/reservations/{booking}/extend-hold", new { clientCommandId = firstTap });
@@ -296,7 +300,7 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
 
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
         Assert.Equal(
-            "conflicting-state",
+            "hold-already-extended",
             (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
 
         // And the waiter watching that table was told, on the branch change sequence, without the
@@ -368,6 +372,7 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
             await StaffAuthTests.SignInWaiterAsync(factory, branch));
 
         await HoldTableAsync(waiter, branch);
+        await RunLateAsync(factory, diner, booking);
 
         var extended = await diner.PostAsJsonAsync(
             $"/api/reservations/{booking}/extend-hold",
@@ -397,6 +402,25 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
             DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone);
 
         return DateOnly.FromDateTime(localNow).AddDays(2);
+    }
+
+    /// <summary>
+    /// Moves the API's clock to eleven minutes past a booking's start - when the late nudge that
+    /// carries "keep my table" is about - so there is a table being held to keep.
+    /// </summary>
+    /// <remarks>
+    /// Only once every token the test needs has been issued. Tokens are stamped with the API's clock
+    /// and checked against the real one, so a token issued after this move would not be valid yet.
+    /// </remarks>
+    private static async Task RunLateAsync(YallaApiFactory factory, HttpClient diner, Guid booking)
+    {
+        var mine = await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
+
+        var startUtc = mine.GetProperty("upcoming").EnumerateArray()
+            .Single(r => r.GetProperty("id").GetGuid() == booking)
+            .GetProperty("startUtc").GetDateTime();
+
+        factory.Clock.UtcNow = startUtc.AddMinutes(11);
     }
 
     /// <summary>Books a table through the real endpoint and answers with the booking's id.</summary>

@@ -82,6 +82,13 @@ are on, so a non-nullable C# `string` does not become `string | null` in TypeScr
 property does not become optional. Without them every generated model is a sea of `?` and the
 frontend writes null checks for values that cannot be null.
 
+**Required nullable values are required.** A `[Required]` member that is nullable in C# only so the
+attribute can tell absent from a default - a booking's `date` (`DateOnly?`) and `time`
+(`TimeOnly?`), a release's `outcome` - is published in `required` and not nullable, by
+`RequiredValueSchemaFilter`. Swashbuckle does not read `[Required]` off a positional record
+parameter and published them optional, so a generated client could build a booking with no date or
+time, satisfy its type, and fail at runtime.
+
 **Integer enums, with names.** Enums serialise as integers, matching the database - a renamed
 member must not orphan existing rows. So that they are not *anonymous* integers, every enum schema
 carries `x-enum-varnames` (which `openapi-typescript` reads to emit named members) and a

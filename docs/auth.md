@@ -77,6 +77,13 @@ thing to forget while standing outside a restaurant in the rain.
 - `POST /api/auth/diner/verify-code` — returns access and refresh tokens, and creates the
   `DinerUser` on the first successful verification. There is no separate registration step, because
   a separate registration step is a step people abandon.
+- A wrong code answers **401 `verification-code-invalid`** with `context.attemptsRemaining`, the tries
+  left on the number's live code. **Zero** when nothing is live - none asked for, already used, or
+  replaced by a newer one - which is the cue to ask for a new code rather than retry. The app read
+  a count the server never sent, defaulted it to zero, and told a diner their code was spent after
+  one slip, so they asked for another and spent the hourly per-number budget. Whether a number has a
+  code outstanding was already visible to an anonymous caller - that case always had its own
+  sentence, and a live code answers 429 after five tries - so the count publishes nothing new.
 
 Six digits is only 20 bits of entropy. That is safe **solely** because all three limits hold at
 once: it dies after five minutes, after five wrong guesses, and on first success. Requesting a new

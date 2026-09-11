@@ -473,6 +473,21 @@ Each table also carries its derived state **at the requested instant** — not a
 `TableStateProjection` the floor plan uses. A table free this afternoon but booked at 20:00 reads as
 `ReservedSoon` when the question is about 20:00.
 
+### What the diner is told before they commit
+
+- **`requiresApproval`** on a table is true when the booking will land `PendingApproval`: the branch
+  approves every booking by hand (`autoConfirm` off), or the party is over
+  `approvalRequiredAbovePartySize` (`ReservationRules.AwaitsApproval`). It was the threshold alone,
+  so a branch with auto-confirm off promised an instant confirmation it was never going to give.
+  The third reason, the diner's own no-show record, needs the diner and is only known once they
+  book - the booking says so in `awaitingApprovalBecause`.
+- **`cancellationDeadlineUtc`** is the instant past which cancelling this slot is recorded as late:
+  the requested start less `cancellationDeadlineMinutes`, both on the response. The same rule
+  (`ReservationRules.CancellationDeadline`) decides `cancelledAfterDeadline`, so the promise and the
+  record cannot disagree - the app had nothing to show and promised free cancellation until the
+  start. It can already be past, since a slot inside the window has no free cancellation, and it is
+  absent when no slot could be computed. Every booking read carries it too.
+
 ---
 
 ## 6. Endpoints
@@ -483,6 +498,7 @@ Each table also carries its derived state **at the requested instant** — not a
 | `POST /api/reservations` | `VerifiedDiner` | — |
 | `GET /api/reservations/mine` | `VerifiedDiner` | filtered to the caller's own `DinerUserId` |
 | `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
+| `POST /api/reservations/{id}/extend-hold` | `VerifiedDiner` | the booking must be theirs, **started**, and not yet extended - see [notifications.md](notifications.md) |
 | `POST /api/reservations/{id}/approve` · `/reject` | `ManagerOrAbove` | the booking's **branch and venue** must be theirs |
 
 Availability is the only anonymous endpoint outside the sign-in flows. Browsing needs no account:
@@ -507,7 +523,9 @@ Cancellation is free until `CancellationDeadlineMinutes` before the start and **
 it**, with the lateness recorded on the booking as `CancelledAfterDeadline`. Refusing a late
 cancellation converts it into a no-show, which costs the venue the same table plus the chance to
 resell it. It is stored rather than derived because the deadline is a setting: an owner who shortens
-it next month must not retroactively reclassify last month's cancellations.
+it next month must not retroactively reclassify last month's cancellations. Every booking read and
+every availability answer states the deadline as an instant, `cancellationDeadlineUtc`, from that
+same rule.
 
 ### On the wire
 
@@ -521,6 +539,9 @@ facts under `context`:
 | the table went first | 409 | `table-already-booked`, with the clashing window and a fresh floor |
 | the command id belongs to another caller | 409 | `client-command-id-in-use` |
 | the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |
+| keep-my-table before the start, or on a booking that is not confirmed | 409 | `hold-not-active`, with `context.startUtc` |
+| keep-my-table a second time | 409 | `hold-already-extended` |
+| keep-my-table at a branch that offers no extensions | 409 | `extensions-not-offered` |
 
 ---
 

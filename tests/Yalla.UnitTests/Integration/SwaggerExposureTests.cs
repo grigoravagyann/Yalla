@@ -197,6 +197,45 @@ public class SwaggerExposureTests
         Assert.False(accessToken.TryGetProperty("nullable", out var nullable) && nullable.GetBoolean());
     }
 
+    /// <summary>
+    /// A <c>[Required]</c> nullable value is required in the schema and not nullable, so a generated
+    /// client that leaves it out does not compile.
+    /// </summary>
+    /// <remarks>
+    /// A booking's date and time are <c>DateOnly?</c> and <c>TimeOnly?</c> so that <c>[Required]</c>
+    /// can tell absent from midnight. Swashbuckle read the <c>?</c> and published both as optional
+    /// and nullable, so a body without them satisfied the generated type and failed only at runtime.
+    /// </remarks>
+    [Fact]
+    public async Task A_required_nullable_value_is_required_and_not_nullable_in_the_schema()
+    {
+        using var document = await GetDocumentAsync();
+
+        var schemas = document.RootElement.GetProperty("components").GetProperty("schemas");
+
+        foreach (var (schemaId, property) in new[]
+                 {
+                     ("Yalla.Api.Endpoints.CreateReservationRequest", "date"),
+                     ("Yalla.Api.Endpoints.CreateReservationRequest", "time"),
+                     ("Yalla.Api.Endpoints.ReleaseReservationRequest", "outcome"),
+                 })
+        {
+            var schema = schemas.GetProperty(schemaId);
+
+            var required = schema.GetProperty("required").EnumerateArray()
+                .Select(v => v.GetString())
+                .ToArray();
+
+            Assert.Contains(property, required);
+
+            var member = schema.GetProperty("properties").GetProperty(property);
+
+            Assert.False(
+                member.TryGetProperty("nullable", out var nullable) && nullable.GetBoolean(),
+                $"{schemaId}.{property} is required and still published as nullable.");
+        }
+    }
+
     /// <summary>The four surfaces the clients are built around.</summary>
     [Fact]
     public async Task Operations_are_tagged_with_the_surface_they_belong_to()
@@ -276,6 +315,11 @@ public class SwaggerExposureTests
             ["ValidationFailedProblem"] = ["field", "fields"],
 
             ["BranchNotReadyProblem"] = ["branchId", "incompleteMenuItemCount"],
+
+            // Keep-my-table's three refusals and a wrong code's count: both read by the diner app
+            // to choose what to say, which an untyped context left to guesswork.
+            ["HoldExtensionRefusedProblem"] = ["reservationId", "startUtc"],
+            ["VerificationCodeInvalidProblem"] = ["attemptsRemaining"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

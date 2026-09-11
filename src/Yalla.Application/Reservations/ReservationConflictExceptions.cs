@@ -133,12 +133,25 @@ public sealed class TableAlreadyBookedException(
 /// plainly that the id is taken, and revealing nothing about the booking that holds it.
 /// </para>
 /// </remarks>
-public sealed class ClientCommandIdAlreadyUsedException(Guid clientCommandId)
-    : Exception(
-        "That clientCommandId already belongs to another booking. Generate a fresh one per booking, "
-        + "and reuse it only when retrying that same booking.")
+public sealed class ClientCommandIdAlreadyUsedException : Exception
 {
-    public Guid ClientCommandId { get; } = clientCommandId;
+    public ClientCommandIdAlreadyUsedException(Guid clientCommandId)
+        : this(
+            clientCommandId,
+            "That clientCommandId already belongs to another booking. Generate a fresh one per "
+            + "booking, and reuse it only when retrying that same booking.")
+    {
+    }
+
+    /// <summary>The same collision, in words that name what the id belongs to.</summary>
+    /// <remarks>An order on a tab uses this: "another booking" would send a developer the wrong way.</remarks>
+    public ClientCommandIdAlreadyUsedException(Guid clientCommandId, string message)
+        : base(message)
+    {
+        ClientCommandId = clientCommandId;
+    }
+
+    public Guid ClientCommandId { get; }
 }
 
 /// <summary>

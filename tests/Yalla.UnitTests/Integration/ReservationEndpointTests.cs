@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 
@@ -526,6 +527,69 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// The free-cancellation deadline is stated before booking and on the booking, as an instant.
+    /// </summary>
+    /// <remarks>
+    /// Neither the availability answer nor the booking carried it, so the app promised free
+    /// cancellation until the slot itself - while the server records a cancellation as late from
+    /// <c>cancellationDeadlineMinutes</c> before the start. A diner who cancelled when the app said
+    /// they still could was written down as a late canceller.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_free_cancellation_deadline_is_stated_before_booking_and_on_the_booking()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        int deadlineMinutes;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+
+            deadlineMinutes = await db.Branches.AsNoTracking()
+                .Where(b => b.Id == branch.BranchId)
+                .Select(b => b.ReservationPolicy.CancellationDeadlineMinutes)
+                .FirstAsync();
+        }
+
+        Assert.True(deadlineMinutes > 0, "With no deadline the deadline is the start, and this proves nothing.");
+
+        var (date, time) = Slot(factory);
+        using var anonymous = factory.CreateClient();
+
+        var availability = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/availability?date={date.ToString("yyyy-MM-dd")}"
+            + $"&time={time.ToString("HH\\:mm")}&partySize=2");
+
+        var requestedStartUtc = availability.GetProperty("requestedStartUtc").GetDateTime();
+
+        Assert.Equal(
+            requestedStartUtc.AddMinutes(-deadlineMinutes),
+            availability.GetProperty("cancellationDeadlineUtc").GetDateTime());
+        Assert.Equal(deadlineMinutes, availability.GetProperty("cancellationDeadlineMinutes").GetInt32());
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var created = await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var booking = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var deadline = booking.GetProperty("cancellationDeadlineUtc").GetDateTime();
+
+        Assert.Equal(booking.GetProperty("startUtc").GetDateTime().AddMinutes(-deadlineMinutes), deadline);
+
+        // And every later read of the booking says the same.
+        var mine = await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
+        var listed = Assert.Single(mine.GetProperty("upcoming").EnumerateArray());
+
+        Assert.Equal(deadline, listed.GetProperty("cancellationDeadlineUtc").GetDateTime());
+    }
 
     private YallaApiFactory NewFactory() =>
         new YallaApiFactory().WithDatabase(fixture.ConnectionString);

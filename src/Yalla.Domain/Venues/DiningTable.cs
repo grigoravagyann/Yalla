@@ -108,13 +108,31 @@ public sealed class DiningTable : Entity
         IsActive = true;
         QrToken = qrToken is null
             ? GenerateQrToken()
-            : Guard.NotBlank(qrToken, nameof(qrToken), FieldLengths.QrToken);
+            : NormaliseQrToken(Guard.NotBlank(qrToken, nameof(qrToken), FieldLengths.QrToken));
         Status = TableStatus.Free;
     }
 
     /// <summary>A fresh, unguessable QR token.</summary>
     public static string GenerateQrToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+
+    /// <summary>
+    /// A QR token as it is stored and looked up: trimmed and lower-case.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written this way and read this way, so a scan matches by the server's own rule. The column
+    /// compares exactly (see <c>DiningTableConfiguration</c>); before it did, scanning worked only
+    /// because it had no collation of its own and SQL Server's default ignores case - which quietly
+    /// hid the diner app upper-casing every scan.
+    /// </para>
+    /// <para>
+    /// Lower-casing cannot make two tokens collide: the unique index already refused two that
+    /// differed only by case. A token read back in capitals off a sticker is the same token.
+    /// </para>
+    /// </remarks>
+    public static string NormaliseQrToken(string? qrToken) =>
+        (qrToken ?? string.Empty).Trim().ToLowerInvariant();
 
     /// <summary>
     /// Seats a party: <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/> to

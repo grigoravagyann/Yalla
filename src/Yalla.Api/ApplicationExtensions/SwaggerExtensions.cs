@@ -76,6 +76,10 @@ public static class SwaggerExtensions
             options.SupportNonNullableReferenceTypes();
             options.NonNullableReferenceTypesAsRequired();
 
+            // And the case those two cannot see: a [Required] nullable value - a booking's date and
+            // time - which is nullable only so the attribute can tell absent from midnight.
+            options.SchemaFilter<RequiredValueSchemaFilter>();
+
             // Records and DTOs from four assemblies share short names. Qualifying the schema id
             // with the namespace keeps two different `TabView`s from silently becoming one.
             options.CustomSchemaIds(type => type.FullName?.Replace('+', '.') ?? type.Name);

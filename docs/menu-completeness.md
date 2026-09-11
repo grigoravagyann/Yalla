@@ -71,6 +71,12 @@ Note that this is also the opposite treatment from a **sold-out** item, which *i
 flagged with `isAvailable: false`. "We are out of khachapuri tonight" is an answer a diner can act
 on. "We have not finished typing this in" is not something to put in front of a customer at all.
 
+**The order endpoint holds the same line.** A diner's phone ordering an item that is not complete -
+its id can only have come from somewhere other than the menu - is refused with 409
+`menu-item-unavailable` naming the dish, as a sold-out one is, and nothing on that order is placed.
+Staff may still key one in from the console, where the unfinished item is visible; that is
+deliberate.
+
 ## 4. What is still required to save
 
 `name`, `priceAmd` and the category. Something without them is not a partially entered item; it is

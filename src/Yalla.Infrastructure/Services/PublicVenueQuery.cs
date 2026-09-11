@@ -85,14 +85,9 @@ internal sealed class PublicVenueQuery(
             ?? [];
 
         // Filtered against the live estate, so a venue suspended since the list was cached drops off
-        // it immediately rather than at the end of the window.
-        var stillPublished = await db.Branches
-            .AsNoTracking()
-            .Where(b => b.IsActive && b.Venue.IsActive && b.Venue.SuspendedAtUtc == null && b.Venue.DeletedAtUtc == null)
-            .Select(b => b.Id)
-            .ToListAsync(cancellationToken);
-
-        var live = stillPublished.ToHashSet();
+        // it within seconds rather than at the end of the five-minute window. See
+        // PublishedBranchIdsAsync for why seconds and not immediately.
+        var live = await PublishedBranchIdsAsync(cancellationToken);
 
         venues =
         [
@@ -123,7 +118,11 @@ internal sealed class PublicVenueQuery(
                             b.Name,
                             b.Address,
                             free.GetValueOrDefault(b.Id),
-                            openNow.Contains(b.Id))),
+                            openNow.Contains(b.Id),
+
+                            // Already in the cached estate, and dropped here until the diner app
+                            // needed it to put a slot on the branch's wall clock.
+                            b.TimeZoneId)),
                     ]))
 
                 // A venue whose every branch is switched off is not a venue anybody can visit.
@@ -305,6 +304,42 @@ internal sealed class PublicVenueQuery(
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
     private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings);
 
+    /// <summary>
+    /// Every branch that may be addressed publicly right now. Cached for seconds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what drops a suspended venue off the browse list. It was read per request, and the
+    /// browse list is now the diner app's Explore as well as the web chooser - every open and every
+    /// pull-to-refresh in the city paid for it. Held for <see cref="LiveFor"/>, the same bound the
+    /// free-table count already lives with: a suspension leaves the list within fifteen seconds.
+    /// </para>
+    /// <para>
+    /// The branch routes do not use it. Each checks its one branch live in
+    /// <see cref="LiveBranchAsync"/>, because there a stale answer would serve a whole page, menu and
+    /// booking button included, for a venue that has stopped trading.
+    /// </para>
+    /// </remarks>
+    private async Task<HashSet<Guid>> PublishedBranchIdsAsync(CancellationToken cancellationToken) =>
+        await cache.GetOrCreateAsync(
+            "public:published",
+            async entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = LiveFor;
+
+                var ids = await db.Branches
+                    .AsNoTracking()
+                    .Where(b => b.IsActive
+                                && b.Venue.IsActive
+                                && b.Venue.SuspendedAtUtc == null
+                                && b.Venue.DeletedAtUtc == null)
+                    .Select(b => b.Id)
+                    .ToListAsync(cancellationToken);
+
+                return ids.ToHashSet();
+            })
+        ?? [];
+
     // ------------------------------------------------------------ the pieces
 
     private sealed record BranchPlan(Guid BranchId, PublicBranchPage Page);
@@ -403,7 +438,10 @@ internal sealed class PublicVenueQuery(
             hours,
             IsOpenNow: false,
             FreeTableCount: 0,
-            TableCount: tables.Count(t => t.IsBookable),
+
+            // Every table the plan draws, bookable or not: the set the free count counts, so the
+            // page's "x of y" is out of the room it shows.
+            TableCount: tables.Count,
             new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables),
 
             // Placeholders. Both are read live by the caller and deliberately absent from the
@@ -427,9 +465,20 @@ internal sealed class PublicVenueQuery(
     /// How many active tables have nobody at them, per branch. Cached for seconds.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Read from <c>DiningTable.Status</c> rather than by counting open sessions: the status is the
     /// denormalisation the whole floor already runs on, and a second way of deciding whether a table
     /// is occupied is a second answer waiting to disagree with the first.
+    /// </para>
+    /// <para>
+    /// <b>Every active table, bookable or not - and the page's <c>TableCount</c> counts the same.</b>
+    /// The denominator used to count bookable tables only, so a bar of empty walk-in stools read
+    /// "18 of 10 free". Narrowing this count to bookable tables made the two agree, but then a room
+    /// with its tables taken and its stools empty read "no tables free" beside a stool the plan
+    /// draws free - to a walk-in, who is who this number is for. So the denominator widened
+    /// instead, and the count is exactly the tables <see cref="OccupiedTableLabelsAsync"/> leaves
+    /// free on the plan.
+    /// </para>
     /// </remarks>
     private async Task<Dictionary<Guid, int>> FreeTableCountsAsync(
         IReadOnlyList<Guid> branchIds,
@@ -482,9 +531,17 @@ internal sealed class PublicVenueQuery(
     /// Which branches are inside an opening block at this moment, decided in each one's own zone.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The hours are wall-clock values and are stored as such, so this converts <i>now</i> into the
     /// branch's local time rather than converting the hours into UTC - which would silently shift a
     /// venue's opening by an hour across a daylight-saving change.
+    /// </para>
+    /// <para>
+    /// Cached for <see cref="LiveFor"/>, like the free count beside it. It reads every opening block
+    /// of every branch on the list, and the list is what the diner app's Explore loads on every open
+    /// and every pull-to-refresh. A branch that opened in the last fifteen seconds may read closed
+    /// for that long.
+    /// </para>
     /// </remarks>
     private async Task<HashSet<Guid>> OpenNowAsync(
         IReadOnlyList<Guid> branchIds,
@@ -495,6 +552,21 @@ internal sealed class PublicVenueQuery(
             return [];
         }
 
+        return await cache.GetOrCreateAsync(
+            $"public:open:{string.Join(',', branchIds.Order())}",
+            async entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = LiveFor;
+
+                return await ComputeOpenNowAsync(branchIds, cancellationToken);
+            })
+            ?? [];
+    }
+
+    private async Task<HashSet<Guid>> ComputeOpenNowAsync(
+        IReadOnlyList<Guid> branchIds,
+        CancellationToken cancellationToken)
+    {
         var rows = await db.OpeningHours
             .AsNoTracking()
             .Where(h => branchIds.Contains(h.BranchId))

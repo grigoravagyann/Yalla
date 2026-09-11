@@ -420,6 +420,333 @@ public class TabEndpointTests(SqlServerFixture fixture)
         Assert.True(view.GetProperty("settlementModeLocked").GetBoolean());
     }
 
+    // ------------------------------------------------------------ the diner-flow fixes
+
+    /// <summary>The tab names the venue and branch it is at, so the phone need not ask elsewhere.</summary>
+    [SkippableFact]
+    public async Task The_tab_names_the_venue_and_the_branch_it_is_at()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+
+        string venueName;
+        string branchName;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var names = await db.Branches.AsNoTracking()
+                .Where(b => b.Id == branch.BranchId)
+                .Select(b => new { b.Name, VenueName = b.Venue.Name })
+                .FirstAsync();
+
+            venueName = names.VenueName;
+            branchName = names.Name;
+        }
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-names");
+
+        using var diner = factory.CreateClientWithToken(host.AccessToken);
+        var tab = await ReadAsync(diner, $"/api/tabs/{host.TabId}");
+
+        Assert.Equal(venueName, tab.GetProperty("venueName").GetString());
+        Assert.Equal(branchName, tab.GetProperty("branchName").GetString());
+    }
+
+    /// <summary>
+    /// An order with no command id is refused before anything is placed.
+    /// </summary>
+    /// <remarks>
+    /// Left out, the field binds <c>Guid.Empty</c>, and the replay lookup answered with whichever
+    /// order first used <c>Guid.Empty</c> - on any tab, with that tab's totals.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_order_without_a_command_id_is_refused_and_places_nothing()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+        var menu = await MenuAsync(branch);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-no-command");
+
+        using var diner = factory.CreateClientWithToken(host.AccessToken);
+
+        var refused = await diner.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/orders",
+            new { items = new[] { new { menuItemId = menu.Coffee, quantity = 1 } } });
+
+        await AssertRefusedForTheCommandIdAsync(refused);
+
+        await using var verify = fixture.CreateContext(factory.Clock);
+
+        Assert.False(await verify.TabOrders.AnyAsync(o => o.TabId == host.TabId));
+    }
+
+    /// <summary>
+    /// The staff money commands refuse a missing command id the same way, before they run.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("void")]
+    [InlineData("adjustment")]
+    [InlineData("cash")]
+    public async Task A_staff_money_command_without_a_command_id_is_refused(string command)
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+        var menu = await MenuAsync(branch);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-money");
+
+        using var diner = factory.CreateClientWithToken(host.AccessToken);
+
+        var ordered = await diner.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/orders",
+            new
+            {
+                items = new[] { new { menuItemId = menu.Coffee, quantity = 1 } },
+                clientCommandId = Guid.CreateVersion7(),
+            });
+
+        Assert.Equal(HttpStatusCode.Created, ordered.StatusCode);
+
+        var lineId = (await ordered.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("lines")[0].GetProperty("lineId").GetGuid();
+
+        using var staff = factory.CreateClientWithToken(command == "adjustment"
+            ? await StaffAuthTests.SignInManagerAsync(factory, branch)
+            : await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var refused = command switch
+        {
+            "void" => await staff.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/lines/{lineId}/void", new { reason = "Wrong dish" }),
+            "adjustment" => await staff.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/adjustments",
+                new { tabOrderLineId = lineId, kind = 2, amountAmd = 100, reason = "Sorry" }),
+            _ => await staff.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/payments/cash", new { amountAmd = 100, tipAmd = 0 }),
+        };
+
+        await AssertRefusedForTheCommandIdAsync(refused);
+
+        await using var verify = fixture.CreateContext(factory.Clock);
+
+        Assert.False(await verify.TabOrderLines.AnyAsync(l => l.Id == lineId && l.VoidedAtUtc != null));
+        Assert.False(await verify.TabAdjustments.AnyAsync(a => a.TabId == host.TabId));
+        Assert.False(await verify.Payments.AnyAsync(p => p.TabId == host.TabId));
+    }
+
+    /// <summary>
+    /// A guest who leaves is taken off the tab, refused on their next call, and not split into what
+    /// is ordered after they walked out.
+    /// </summary>
+    /// <remarks>
+    /// There was no way to leave, so the app faked it: it cleared the tab on the phone while the
+    /// server kept the guest approved - on every shared bottle ordered afterwards and in the split.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_guest_who_leaves_is_off_the_tab_and_off_what_is_ordered_after()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+        var menu = await MenuAsync(branch);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-staying");
+        var guest = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-leaving");
+
+        using var guestClient = factory.CreateClientWithToken(guest.AccessToken);
+
+        var left = await guestClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/leave", new { });
+
+        Assert.Equal(HttpStatusCode.OK, left.StatusCode);
+        Assert.Equal(
+            ParticipantStatus.Removed,
+            EnumOf<ParticipantStatus>((await left.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status")));
+
+        // Their token no longer opens the tab.
+        Assert.Equal(HttpStatusCode.Forbidden, (await guestClient.GetAsync($"/api/tabs/{host.TabId}")).StatusCode);
+
+        // The host no longer sees them at the table.
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var tab = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+
+        Assert.DoesNotContain(
+            tab.GetProperty("participants").EnumerateArray(),
+            p => p.GetProperty("participantId").GetGuid() == guest.ParticipantId);
+
+        // And a bottle ordered after they walked out is not split with them.
+        var ordered = await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/orders",
+            new
+            {
+                items = new[] { new { menuItemId = menu.Wine, quantity = 1, isShared = true } },
+                clientCommandId = Guid.CreateVersion7(),
+            });
+
+        Assert.Equal(HttpStatusCode.Created, ordered.StatusCode);
+
+        var sharedWith = (await ordered.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("lines")[0].GetProperty("sharedWithParticipantIds").EnumerateArray()
+            .Select(p => p.GetGuid())
+            .ToList();
+
+        Assert.Equal([host.ParticipantId], sharedWith);
+    }
+
+    /// <summary>
+    /// A host who leaves hands the tab to whoever has been on it longest, which is what the app
+    /// already tells them will happen.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_host_who_leaves_hands_the_tab_to_whoever_has_been_on_it_longest()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        // Two minutes ago and then one, so "longest" is a fact rather than a tie. Back rather than
+        // forward: a token is not valid before the instant it says it was issued.
+        factory.Clock.UtcNow = DateTime.UtcNow.AddMinutes(-2);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-first");
+        var earlier = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-second");
+
+        factory.Clock.UtcNow = DateTime.UtcNow.AddMinutes(-1);
+
+        var later = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-third");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await hostClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/leave", new { })).StatusCode);
+
+        using var earlierClient = factory.CreateClientWithToken(earlier.AccessToken);
+        var tab = await ReadAsync(earlierClient, $"/api/tabs/{host.TabId}");
+
+        Assert.Equal(earlier.ParticipantId, tab.GetProperty("hostParticipantId").GetGuid());
+        Assert.Equal(ParticipantRole.Host, EnumOf<ParticipantRole>(tab.GetProperty("me").GetProperty("role")));
+
+        // Hosting brings sight of the total and the right to pay, as it does when staff reassign.
+        Assert.True(tab.GetProperty("me").GetProperty("canPay").GetBoolean());
+
+        // The later joiner stays a guest, and the old host is off the tab.
+        using var laterClient = factory.CreateClientWithToken(later.AccessToken);
+        var laterView = await ReadAsync(laterClient, $"/api/tabs/{host.TabId}");
+
+        Assert.Equal(ParticipantRole.Guest, EnumOf<ParticipantRole>(laterView.GetProperty("me").GetProperty("role")));
+        Assert.Equal(HttpStatusCode.Forbidden, (await hostClient.GetAsync($"/api/tabs/{host.TabId}")).StatusCode);
+    }
+
+    /// <summary>With nobody approved to hand it to, the host cannot walk away from the tab.</summary>
+    [SkippableFact]
+    public async Task A_host_alone_on_the_tab_cannot_leave_it()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-alone");
+
+        // Somebody pending does not count: they cannot host a tab they have not been let onto.
+        await OpenAsync(anonymous, qrTokens[0], "phone-waiting");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var refused = await hostClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/leave", new { });
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await hostClient.GetAsync($"/api/tabs/{host.TabId}")).StatusCode);
+    }
+
+    /// <summary>
+    /// A code read back in capitals still opens the tab - by the server's own rule rather than the
+    /// database's default collation.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_qr_code_read_back_in_capitals_opens_the_same_tab()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var shouted = await OpenAsync(anonymous, qrTokens[0].ToUpperInvariant(), "phone-capitals");
+        var typed = await OpenAsync(anonymous, qrTokens[0], "phone-as-printed");
+
+        Assert.Equal(TabOpenOutcome.OpenedNewSession, shouted.Outcome);
+        Assert.Equal(shouted.TabId, typed.TabId);
+    }
+
+    /// <summary>
+    /// The QR token column compares exactly, so the lookup cannot come to depend on a database
+    /// default nobody chose.
+    /// </summary>
+    /// <remarks>
+    /// Scanning worked only because the column had no collation of its own and SQL Server's
+    /// default is case-insensitive, which quietly hid the diner app upper-casing every scan.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_qr_token_column_compares_exactly_rather_than_by_the_database_default()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+
+        var collation = await db.Database
+            .SqlQueryRaw<string>(
+                "SELECT c.collation_name AS [Value] FROM sys.columns c "
+                + "WHERE c.object_id = OBJECT_ID(N'dbo.DiningTables') AND c.name = N'QrToken'")
+            .SingleAsync();
+
+        Assert.EndsWith("_BIN2", collation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The share link is a path on the diner link domain, which the app's /join route and its
+    /// Android intent filter both expect.
+    /// </summary>
+    /// <remarks>
+    /// It was a query string on the web console's local host, which the app's link parser reduced
+    /// to the word "join" and which no phone would ever open in the app.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_share_link_is_a_path_on_the_diner_link_domain()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-sharing");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var invite = await hostClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/join-tokens", new { });
+
+        Assert.Equal(HttpStatusCode.OK, invite.StatusCode);
+
+        var body = await invite.Content.ReadFromJsonAsync<JsonElement>();
+        var token = body.GetProperty("token").GetString()!;
+
+        Assert.Equal($"https://yalla.am/join/{Uri.EscapeDataString(token)}", body.GetProperty("shareUrl").GetString());
+    }
+
     // ------------------------------------------------------------ helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
@@ -436,6 +763,49 @@ public class TabEndpointTests(SqlServerFixture fixture)
             .ToListAsync();
 
         return (branch, qrTokens);
+    }
+
+    private async Task<TestMenu> MenuAsync(AuthBranch branch)
+    {
+        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+
+        return await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+    }
+
+    /// <summary>Scans onto a tab that is already open, and is approved by its host.</summary>
+    private static async Task<Opened> JoinApprovedAsync(
+        YallaApiFactory factory,
+        HttpClient anonymous,
+        Opened host,
+        string qrToken,
+        string deviceId)
+    {
+        var joined = await OpenAsync(anonymous, qrToken, deviceId);
+
+        Assert.Equal(TabOpenOutcome.JoinedExistingTab, joined.Outcome);
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+
+        var approved = await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/participants/{joined.ParticipantId}/approve", new { });
+
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+
+        return joined;
+    }
+
+    /// <summary>A 400 from the command-id filter itself, not merely some 400.</summary>
+    private static async Task AssertRefusedForTheCommandIdAsync(HttpResponseMessage refused)
+    {
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+
+        var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("invalid-request", problem.GetProperty("code").GetString());
+        Assert.Contains(
+            "clientCommandId",
+            problem.GetProperty("detail").GetString(),
+            StringComparison.Ordinal);
     }
 
     private sealed record Opened(Guid TabId, Guid ParticipantId, string AccessToken, TabOpenOutcome Outcome);

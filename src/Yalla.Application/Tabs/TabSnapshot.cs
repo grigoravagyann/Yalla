@@ -25,6 +25,8 @@ namespace Yalla.Application.Tabs;
 /// </remarks>
 /// <param name="TabId">The tab.</param>
 /// <param name="BranchId">The branch.</param>
+/// <param name="VenueName">The venue's name, so the tab can say where it is.</param>
+/// <param name="BranchName">The branch's name.</param>
 /// <param name="DiningTableId">The table.</param>
 /// <param name="TableLabel">The label printed on it.</param>
 /// <param name="TimeZoneId">
@@ -58,6 +60,8 @@ namespace Yalla.Application.Tabs;
 public sealed record TabSnapshot(
     Guid TabId,
     Guid BranchId,
+    string VenueName,
+    string BranchName,
     Guid DiningTableId,
     string TableLabel,
     string TimeZoneId,

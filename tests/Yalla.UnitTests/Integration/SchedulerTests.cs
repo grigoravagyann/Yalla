@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Http;
+using Yalla.Api.Errors;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
@@ -12,6 +14,8 @@ using Yalla.Domain;
 using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
+using Yalla.Domain.Occupancy;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Notifications;
 using Yalla.Infrastructure.Persistence;
@@ -279,7 +283,7 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         // A genuinely new attempt is refused, and says why in words a diner can read.
         await using (var secondDb = fixture.CreateContext(clock))
         {
-            var refused = await Assert.ThrowsAsync<DomainStateException>(
+            var refused = await Assert.ThrowsAsync<HoldExtensionRefusedException>(
                 () => fixture.CreateReservationService(secondDb, clock, diner)
                     .ExtendHoldAsync(new ExtendHoldCommand(booking, Guid.CreateVersion7())));
 
@@ -303,6 +307,111 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         Assert.Equal(TableStatus.Held, change.FromStatus);
         Assert.Equal(TableStatus.Held, change.ToStatus);
     }
+
+    /// <summary>
+    /// "Keep my table" before the booking has started is refused and spends nothing.
+    /// </summary>
+    /// <remarks>
+    /// The app offers the button on every confirmed booking, so a tap three days early spent the
+    /// one extension and pinged the floor tablets about a table nobody was holding. When the real
+    /// late nudge came, the diner was told they had already let the venue know.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Keeping_the_table_before_the_booking_starts_is_refused_and_spends_nothing()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new FakeClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = TestActor.Diner();
+
+        var booking = await BookAsync(branch, branch.FirstTableId, Dinner, clock, diner);
+        var earlyTap = Guid.CreateVersion7();
+
+        Assert.Equal("hold-not-active", await RefusedExtensionCodeAsync(booking, earlyTap, clock, diner));
+
+        await using var verify = fixture.CreateContext(clock);
+
+        var reservation = await verify.Reservations.AsNoTracking().SingleAsync(r => r.Id == booking);
+
+        Assert.Equal(0, reservation.GraceExtensionsUsed);
+        Assert.False(await verify.TableStateChanges.AnyAsync(c => c.ClientCommandId == earlyTap));
+    }
+
+    /// <summary>
+    /// Each refusal to extend says which one it is, so the app never infers "you already let them
+    /// know" from a bare 409.
+    /// </summary>
+    [SkippableFact]
+    public async Task Each_refused_extension_names_its_own_reason()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new FakeClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var offersNone = await TestBranchBuilder.CreateAsync(
+            db, policy: WithoutExtensions(ReservationPolicy.DefaultFor(VenueType.Restaurant)));
+        var offersOne = await TestBranchBuilder.CreateAsync(db);
+        var diner = TestActor.Diner();
+
+        var atOffersNone = await BookAsync(offersNone, offersNone.FirstTableId, Dinner, clock, diner);
+        var atOffersOne = await BookAsync(offersOne, offersOne.FirstTableId, Dinner, clock, diner);
+
+        // Dinner time, and the party is not here yet.
+        clock.Advance(DinnerUtc.AddMinutes(11) - clock.UtcNow);
+
+        Assert.Equal(
+            "extensions-not-offered",
+            await RefusedExtensionCodeAsync(atOffersNone, Guid.CreateVersion7(), clock, diner));
+
+        await using (var extendDb = fixture.CreateContext(clock))
+        {
+            await fixture.CreateReservationService(extendDb, clock, diner)
+                .ExtendHoldAsync(new ExtendHoldCommand(atOffersOne, Guid.CreateVersion7()));
+        }
+
+        Assert.Equal(
+            "hold-already-extended",
+            await RefusedExtensionCodeAsync(atOffersOne, Guid.CreateVersion7(), clock, diner));
+    }
+
+    /// <summary>
+    /// Asks to extend, expects a refusal, and answers with the code the API would send for it.
+    /// </summary>
+    private async Task<string> RefusedExtensionCodeAsync(Guid booking, Guid tap, IClock clock, TestActor diner)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var refused = await Assert.ThrowsAnyAsync<DomainStateException>(
+            () => fixture.CreateReservationService(db, clock, diner)
+                .ExtendHoldAsync(new ExtendHoldCommand(booking, tap)));
+
+        var mapped = ApiExceptionMapper.Map(refused);
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+
+        return mapped.Code;
+    }
+
+    /// <summary>The given policy with hold extensions switched off, and nothing else changed.</summary>
+    private static ReservationPolicy WithoutExtensions(ReservationPolicy policy) =>
+        new(
+            policy.TurnTimeMinutes,
+            policy.BufferMinutes,
+            policy.GraceMinutes,
+            policy.LateNudgeAfterMinutes,
+            graceExtensionMinutes: 0,
+            policy.MinLeadMinutes,
+            policy.BookingWindowDays,
+            policy.CancellationDeadlineMinutes,
+            policy.AutoConfirm,
+            policy.ServiceChargePercent,
+            policy.PricesIncludeVat,
+            policy.MaxSeatOverhang,
+            policy.ApprovalRequiredAbovePartySize,
+            policy.WalkInHoldbackMinutes,
+            policy.ReminderHoursBefore);
 
     // ------------------------------------------------------------ 15. nobody came
 

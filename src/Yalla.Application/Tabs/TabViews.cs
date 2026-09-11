@@ -71,6 +71,11 @@ public sealed record TabJoinTokenResult(
 /// </remarks>
 /// <param name="TabId">The tab.</param>
 /// <param name="BranchId">The branch.</param>
+/// <param name="VenueName">
+/// The venue's name, for the top of the bill. On the tab so a phone that has only scanned a code
+/// need not make a second, public read to say where it is.
+/// </param>
+/// <param name="BranchName">The branch's name, for the same reason.</param>
 /// <param name="TableLabel">The table as printed on the floor, e.g. 7 or T12.</param>
 /// <param name="Status">1 Open, 2 Closing, 3 Closed, 4 Abandoned.</param>
 /// <param name="SettlementMode">1 HostPaysEverything, 2 EveryonePaysOwnItems, 3 AnyonePaysAnyAmount.</param>
@@ -116,6 +121,8 @@ public sealed record TabJoinTokenResult(
 public sealed record TabView(
     Guid TabId,
     Guid BranchId,
+    string VenueName,
+    string BranchName,
     string TableLabel,
     string TimeZoneId,
     TabStatus Status,

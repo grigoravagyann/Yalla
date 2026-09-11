@@ -105,6 +105,8 @@ public static class TabProjection
         return new TabView(
             tab.TabId,
             tab.BranchId,
+            tab.VenueName,
+            tab.BranchName,
             tab.TableLabel,
             tab.TimeZoneId,
             tab.Status,

@@ -259,3 +259,37 @@ public sealed record FloorPlanRejectedProblem : ProblemShape
 {
     public required FloorPlanRejectedContext Context { get; init; }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reservations and sign-in
+// ---------------------------------------------------------------------------------------------
+
+/// <summary>"Keep my table" was refused.</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="StartUtc">When it starts - so a refusal before then can say when to ask again.</param>
+public sealed record HoldExtensionRefusedContext(Guid ReservationId, DateTime StartUtc);
+
+/// <summary>
+/// <c>hold-not-active</c>, <c>hold-already-extended</c> or <c>extensions-not-offered</c>, 409. Branch
+/// on the code: the three need three different sentences.
+/// </summary>
+public sealed record HoldExtensionRefusedProblem : ProblemShape
+{
+    public required HoldExtensionRefusedContext Context { get; init; }
+}
+
+/// <summary>A one-time code that was not accepted, and what is left on it.</summary>
+/// <param name="AttemptsRemaining">
+/// Tries left on the number's live code. <b>Zero</b> when there is no live code, or the last try was
+/// just spent: say "ask for a new code", not "try again".
+/// </param>
+public sealed record VerificationCodeInvalidContext(int AttemptsRemaining);
+
+/// <summary>
+/// <c>verification-code-invalid</c>, 401, with the count. <c>verification-code-expired</c> arrives on
+/// the same status with no <c>context</c>.
+/// </summary>
+public sealed record VerificationCodeInvalidProblem : ProblemShape
+{
+    public VerificationCodeInvalidContext? Context { get; init; }
+}

@@ -249,7 +249,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 row.OpeningHours, localDate.ToDateTime(localTime), zone.ToLocal(endUtc));
 
         var proposed = new BookedInterval(startUtc, endUtc);
-        var needsApproval = ReservationRules.NeedsApproval(request.PartySize, policy);
+        // Every reason knowable before booking: the branch approves everything by hand, or the party
+        // is over its threshold. It was the threshold alone, so a branch with auto-confirm off was
+        // promising an instant confirmation it was never going to give.
+        var needsApproval = ReservationRules.AwaitsApproval(request.PartySize, policy);
 
         var tables = row.Tables
             .Select(t => ProjectTable(t, proposed, zone, policy, request.PartySize, requestReason, needsApproval, nowUtc))
@@ -275,6 +278,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             RequestedEndUtc = endUtc,
             TurnTimeMinutes = policy.TurnTimeMinutes,
             BufferMinutes = policy.BufferMinutes,
+            CancellationDeadlineMinutes = policy.CancellationDeadlineMinutes,
+            CancellationDeadlineUtc = ReservationRules.CancellationDeadline(startUtc, policy),
             UnavailableReason = requestReason,
             AsOfUtc = nowUtc,
             Tables = tables,
@@ -412,6 +417,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             RequestedEndUtc = nowUtc,
             TurnTimeMinutes = row.Policy.TurnTimeMinutes,
             BufferMinutes = row.Policy.BufferMinutes,
+            CancellationDeadlineMinutes = row.Policy.CancellationDeadlineMinutes,
+
+            // No slot, so no deadline to state. Absent rather than a made-up instant.
+            CancellationDeadlineUtc = null,
             UnavailableReason = reason,
             AsOfUtc = nowUtc,
             Tables = row.Tables

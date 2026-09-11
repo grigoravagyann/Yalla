@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Menus;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -345,6 +346,305 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
             (await anonymous.GetAsync($"/api/branches/{world.BranchId}/menu")).StatusCode);
     }
 
+    // ------------------------------------------------------------ 6. the browse list
+
+    /// <summary>
+    /// The browse list carries each branch's time zone, nothing a person in the doorway could not
+    /// see, and no suspended venue.
+    /// </summary>
+    /// <remarks>
+    /// The diner app's venue and booking screens turn a slot into the branch's wall clock, and this
+    /// list is the only public read in front of them. Without the zone they guessed
+    /// <c>Asia/Yerevan</c>. The estate query already selected it into the cache and then dropped it
+    /// while building the card.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_browse_list_carries_each_branch_with_its_zone_and_drops_a_suspended_venue()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var card = Card(await ReadAsync(anonymous, "/api/public/venues"), world.VenueSlug);
+
+        Assert.NotNull(card);
+        Assert.Equal((int)VenueType.Restaurant, card.Value.GetProperty("type").GetInt32());
+
+        var branch = Assert.Single(card.Value.GetProperty("branches").EnumerateArray());
+
+        Assert.Equal(world.BranchId, branch.GetProperty("branchId").GetGuid());
+        Assert.Equal(world.BranchSlug, branch.GetProperty("branchSlug").GetString());
+        Assert.Equal("Asia/Yerevan", branch.GetProperty("timeZoneId").GetString());
+
+        // Field names as well as values, for the reason test 3 gives.
+        foreach (var secret in new[] { "qrToken", "tabId", "participant", "deviceId", "pinHash", "staffMember" })
+        {
+            Assert.DoesNotContain(secret, card.Value.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var venue = await db.Venues.FirstAsync(v => v.Id == world.VenueId);
+            venue.Suspend(factory.Clock.UtcNow);
+            await db.SaveChangesAsync();
+        }
+
+        // Read from a process with nothing cached, so this is a statement about the query. How long
+        // a cached list may lag a suspension is LiveFor, and the statement-count test below pins
+        // that it is the cache answering inside that window.
+        await using var restarted = NewFactory();
+        using var another = restarted.CreateClient();
+
+        Assert.Null(Card(await ReadAsync(another, "/api/public/venues"), world.VenueSlug));
+    }
+
+    /// <summary>
+    /// The free count counts the tables the table count counts - every table on the plan - and a bar
+    /// stool somebody is sitting on is drawn taken and not counted.
+    /// </summary>
+    /// <remarks>
+    /// The free count took every active table and the table count only the bookable ones, so an
+    /// empty bar read as "3 of 2 free". Narrowing the free count to bookable tables made the two
+    /// agree and left walk-in seats out of the one number a walk-in reads; widening the table count
+    /// makes them agree and keeps both equal to what the plan draws.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_free_count_counts_the_same_tables_as_the_table_count()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+
+        // Beside the two bookable tables, two stools that only ever take walk-ins: one stays empty
+        // and one is about to be sat at.
+        string takenStoolQr;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var empty = Stool(world.BranchId, "Bar 1");
+            var taken = Stool(world.BranchId, "Bar 2");
+
+            db.DiningTables.AddRange(empty, taken);
+            await db.SaveChangesAsync();
+
+            takenStoolQr = taken.QrToken;
+        }
+
+        using var anonymous = factory.CreateClient();
+
+        var seated = await anonymous.PostAsJsonAsync(
+            "/api/tabs/open",
+            new { qrToken = takenStoolQr, deviceId = "phone-at-the-bar", clientCommandId = Guid.CreateVersion7() });
+
+        seated.EnsureSuccessStatusCode();
+
+        var page = await ReadAsync(anonymous, $"/api/public/branches/{world.VenueSlug}/{world.BranchSlug}");
+        var tableCount = page.GetProperty("tableCount").GetInt32();
+        var freeCount = page.GetProperty("freeTableCount").GetInt32();
+
+        Assert.Equal(4, tableCount);
+        Assert.True(
+            freeCount <= tableCount,
+            $"The page says {freeCount} of {tableCount} free: the two numbers count different tables.");
+        Assert.Equal(3, freeCount);
+
+        var tables = page.GetProperty("floorPlan").GetProperty("tables").EnumerateArray()
+            .ToDictionary(t => t.GetProperty("label").GetString()!);
+
+        Assert.False(tables["Bar 2"].GetProperty("isFree").GetBoolean());
+        Assert.True(tables["Bar 1"].GetProperty("isFree").GetBoolean());
+
+        // The number under the venue name is the plan's green tables, out of the plan's tables.
+        Assert.Equal(tables.Count, tableCount);
+        Assert.Equal(tables.Values.Count(t => t.GetProperty("isFree").GetBoolean()), freeCount);
+
+        // And the browse card says the same as the page.
+        var card = Card(await ReadAsync(anonymous, "/api/public/venues"), world.VenueSlug);
+
+        Assert.NotNull(card);
+        Assert.Equal(
+            freeCount,
+            Assert.Single(card.Value.GetProperty("branches").EnumerateArray()).GetProperty("freeTableCount").GetInt32());
+    }
+
+    /// <summary>
+    /// An empty walk-in stool is a free table, so a room with every bookable table taken does not
+    /// say "none free" beside an empty seat on its own plan.
+    /// </summary>
+    /// <remarks>
+    /// With the free count narrowed to bookable tables, a bar with empty stools and both tables
+    /// taken read zero - "No tables free right now" on the diner's Explore card and the web page -
+    /// to the walk-in the live count is for, over a plan drawing the stool free.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_empty_walk_in_stool_counts_as_free_when_every_bookable_table_is_taken()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+
+        List<string> bookableQrs;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            db.DiningTables.Add(Stool(world.BranchId, "Bar 1"));
+            await db.SaveChangesAsync();
+
+            bookableQrs = await db.DiningTables
+                .Where(t => t.BranchId == world.BranchId && t.IsBookable)
+                .Select(t => t.QrToken)
+                .ToListAsync();
+        }
+
+        Assert.Equal(2, bookableQrs.Count);
+
+        using var anonymous = factory.CreateClient();
+
+        for (var i = 0; i < bookableQrs.Count; i++)
+        {
+            var seated = await anonymous.PostAsJsonAsync(
+                "/api/tabs/open",
+                new { qrToken = bookableQrs[i], deviceId = $"phone-at-table-{i}", clientCommandId = Guid.CreateVersion7() });
+
+            seated.EnsureSuccessStatusCode();
+        }
+
+        var page = await ReadAsync(anonymous, $"/api/public/branches/{world.VenueSlug}/{world.BranchSlug}");
+        var freeCount = page.GetProperty("freeTableCount").GetInt32();
+
+        Assert.Equal(1, freeCount);
+        Assert.Equal(3, page.GetProperty("tableCount").GetInt32());
+
+        var drawnFree = page.GetProperty("floorPlan").GetProperty("tables").EnumerateArray()
+            .Where(t => t.GetProperty("isFree").GetBoolean())
+            .Select(t => t.GetProperty("label").GetString())
+            .ToList();
+
+        Assert.Equal("Bar 1", Assert.Single(drawnFree));
+
+        var card = Card(await ReadAsync(anonymous, "/api/public/venues"), world.VenueSlug);
+
+        Assert.NotNull(card);
+        Assert.Equal(
+            1,
+            Assert.Single(card.Value.GetProperty("branches").EnumerateArray()).GetProperty("freeTableCount").GetInt32());
+    }
+
+    /// <summary>
+    /// Between refreshes a browse read sends nothing to the database.
+    /// </summary>
+    /// <remarks>
+    /// The estate and the free counts were cached; the published-branch check and the opening-hours
+    /// read behind "open now" were not, so every Explore load and every pull-to-refresh in the city
+    /// cost two queries whatever the cache held.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_second_browse_read_inside_the_live_window_sends_nothing_to_the_database()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            await AuthTestData.CreateBranchAsync(db);
+        }
+
+        var counter = new CommandCountingInterceptor();
+        await using var readDb = fixture.CreateContext(clock, counter);
+        var query = SqlServerFixture.CreatePublicQuery(readDb, clock);
+
+        var first = await query.GetVenuesAsync();
+        var sentForTheFirst = counter.Count;
+
+        Assert.NotEmpty(first);
+
+        var second = await query.GetVenuesAsync();
+
+        Assert.Equal(sentForTheFirst, counter.Count);
+        Assert.Equal(first.Count, second.Count);
+    }
+
+    /// <summary>
+    /// The browse list is refused neither at a branch's ceiling nor at the page budget.
+    /// </summary>
+    /// <remarks>
+    /// It carries no branch in its route, so it fell into the single shared partition under the
+    /// branch ceiling - one budget for every phone in the city - and under the thirty-a-minute page
+    /// budget per address, which a carrier's shared address spends before dinner. Once the diner
+    /// app's Explore reads it, a 429 there is the no-restaurants screen again.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_browse_list_is_not_refused_at_a_branch_ceiling_or_the_page_budget()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int ceiling = 3;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicPermitLimit", ceiling.ToString())
+            .With("RateLimiting:PublicWindowSeconds", "60")
+            .With("RateLimiting:PublicBranchPermitLimit", ceiling.ToString())
+            .With("RateLimiting:PublicBranchWindowSeconds", "60")
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        var world = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        var browse = new List<HttpStatusCode>();
+
+        for (var i = 0; i < ceiling * 3; i++)
+        {
+            browse.Add((await anonymous.GetAsync("/api/public/venues")).StatusCode);
+        }
+
+        Assert.All(browse, status => Assert.Equal(HttpStatusCode.OK, status));
+
+        // Both limits it escaped are live: a branch's page, from the same caller, stops at them.
+        var page = new List<HttpStatusCode>();
+
+        for (var i = 0; i < ceiling + 2; i++)
+        {
+            page.Add((await anonymous.GetAsync($"/api/public/branches/{world.BranchId}/menu")).StatusCode);
+        }
+
+        Assert.Equal(ceiling, page.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, page);
+    }
+
+    /// <summary>The browse list's own two budgets each fire at their own threshold.</summary>
+    [SkippableTheory]
+    [InlineData("RateLimiting:PublicBrowsePermitLimit")]
+    [InlineData("RateLimiting:PublicBrowseCeilingPermitLimit")]
+    public async Task The_browse_list_has_limits_of_its_own(string setting)
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int limit = 4;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With(setting, limit.ToString())
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        using var anonymous = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < limit * 2; i++)
+        {
+            statuses.Add((await anonymous.GetAsync("/api/public/venues")).StatusCode);
+        }
+
+        Assert.Equal(limit, statuses.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private sealed record World(
@@ -383,6 +683,28 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
 
         return await response.Content.ReadFromJsonAsync<JsonElement>();
     }
+
+    /// <summary>One venue's card on the browse list, found by its slug, or null.</summary>
+    /// <remarks>
+    /// The test database is shared, so the list carries every venue any test made. Only ours is
+    /// asserted on.
+    /// </remarks>
+    private static JsonElement? Card(JsonElement list, string venueSlug)
+    {
+        foreach (var venue in list.EnumerateArray())
+        {
+            if (venue.GetProperty("venueSlug").GetString() == venueSlug)
+            {
+                return venue;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A one-seat stool at the bar, which only ever takes walk-ins.</summary>
+    private static DiningTable Stool(Guid branchId, string label) =>
+        new(branchId, label, seats: 1, x: 700, y: 50, width: 40, height: 40, shape: TableShape.Round, isBookable: false);
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
 }

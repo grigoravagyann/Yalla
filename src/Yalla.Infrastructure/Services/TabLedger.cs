@@ -231,6 +231,12 @@ internal sealed class TabLedger(
         }
     }
 
+    /// <summary>
+    /// Forgets events appended in a unit of work that will not be saved - an order that lost a
+    /// uniqueness race to its own retry. The caller has already detached their entities.
+    /// </summary>
+    public void DiscardPending() => pending.Clear();
+
     /// <summary>Gives each appended event the next free position on its tab.</summary>
     private async Task NumberPendingAsync(CancellationToken cancellationToken)
     {

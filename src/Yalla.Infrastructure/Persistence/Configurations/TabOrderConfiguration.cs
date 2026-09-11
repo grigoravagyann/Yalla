@@ -40,6 +40,15 @@ internal sealed class TabOrderConfiguration : EntityConfiguration<TabOrder>
 
         builder.Property(o => o.ClientCommandId).IsRequired();
 
+        // One order per command per tab. The service's replay check reads before it writes, and two
+        // requests carrying one command id - a retry sent while the first is still in flight - both
+        // pass that read; this is what makes the second one lose instead of sending the kitchen the
+        // order twice. Per tab rather than global: the id is the phone's own, and another tab
+        // presenting it is a different command, not a replay of this one.
+        builder.HasIndex(o => new { o.TabId, o.ClientCommandId })
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.TabOrderClientCommand);
+
         builder.Ignore(o => o.OwningParticipantId);
 
         // The kitchen queue: everything outstanding on this tab, oldest first.

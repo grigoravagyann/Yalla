@@ -409,6 +409,7 @@ internal sealed class ReservationService(
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 TableLabel = r.DiningTable.Label,
+                CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
             })
             .ToListAsync(cancellationToken);
 
@@ -459,6 +460,7 @@ internal sealed class ReservationService(
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 TableLabel = r.DiningTable.Label,
+                CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
             })
             .ToListAsync(cancellationToken);
 
@@ -468,6 +470,7 @@ internal sealed class ReservationService(
                 r.BranchName,
                 r.TimeZoneId,
                 r.TableLabel,
+                policy.CancellationDeadlineMinutes,
                 wasReplay: false,
                 trigger: PendingTriggerFor(r.Reservation, policy)))
             .ToList();
@@ -1216,17 +1219,32 @@ internal sealed class ReservationService(
                          ?? string.Empty;
 
         return BuildView(
-            reservation, branch.Name, branch.TimeZoneId, tableLabel, wasReplay, trigger, manageToken);
+            reservation,
+            branch.Name,
+            branch.TimeZoneId,
+            tableLabel,
+            branch.ReservationPolicy.CancellationDeadlineMinutes,
+            wasReplay,
+            trigger,
+            manageToken);
     }
 
     private static ReservationView ToView(MineRow row) =>
-        BuildView(row.Reservation, row.BranchName, row.TimeZoneId, row.TableLabel, wasReplay: false, trigger: null);
+        BuildView(
+            row.Reservation,
+            row.BranchName,
+            row.TimeZoneId,
+            row.TableLabel,
+            row.CancellationDeadlineMinutes,
+            wasReplay: false,
+            trigger: null);
 
     private static ReservationView BuildView(
         Reservation reservation,
         string branchName,
         string timeZoneId,
         string tableLabel,
+        int cancellationDeadlineMinutes,
         bool wasReplay,
         ApprovalTrigger? trigger,
         string? manageToken = null)
@@ -1259,6 +1277,8 @@ internal sealed class ReservationService(
             CancelledAtUtc = reservation.CancelledAtUtc,
             CancellationReason = reservation.CancellationReason,
             CancelledAfterDeadline = reservation.CancelledAfterDeadline,
+            CancellationDeadlineUtc =
+                ReservationRules.CancellationDeadline(reservation.StartUtc, cancellationDeadlineMinutes),
             ClientCommandId = reservation.ClientCommandId,
             WasReplay = wasReplay,
             AwaitingApprovalBecause =
@@ -1281,5 +1301,8 @@ internal sealed class ReservationService(
         public string TimeZoneId { get; init; } = null!;
 
         public string TableLabel { get; init; } = null!;
+
+        /// <summary>The branch's setting as it stands, which a cancellation now is judged by.</summary>
+        public int CancellationDeadlineMinutes { get; init; }
     }
 }

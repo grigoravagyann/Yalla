@@ -1,5 +1,6 @@
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Auth;
 using Yalla.Infrastructure.Identity;
 
@@ -83,12 +84,15 @@ public static class AuthEndpoints
                 "Checks the newest live code for the number. On success the account is created if "
                 + "this is the first time - there is no separate registration step, because a "
                 + "separate registration step is a step people abandon.\n\n"
-                + "A wrong code spends one of five attempts. The sixth attempt is refused outright "
-                + "with 429: the code is dead and a new one is needed.")
+                + "A wrong code spends one of five attempts and says how many are left. The sixth "
+                + "attempt is refused outright with 429: the code is dead and a new one is needed.")
             .Produces<DinerSignInResult>()
-            .ProducesProblemDetails(
+            .ProducesProblem<VerificationCodeInvalidProblem>(
                 StatusCodes.Status401Unauthorized,
-                "The code was wrong or has expired. Codes last five minutes.")
+                "`verification-code-invalid`: the code was wrong, with `context.attemptsRemaining` - "
+                + "zero when nothing is live for the number, which means ask for a new code rather "
+                + "than try again. `verification-code-expired`, with no context: codes last five "
+                + "minutes.")
             .ProducesProblemDetails(
                 StatusCodes.Status429TooManyRequests,
                 "The code is out of attempts. Request a new one.")

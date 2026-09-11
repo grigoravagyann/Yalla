@@ -54,11 +54,21 @@ public static class PublicEndpoints
             .WithSummary("Every venue on Yalla, for the browse case")
             .WithDescription(
                 "Active, non-suspended venues with their active branches: name, type, the slug pair "
-                + "that addresses each branch, and a **live free-table count**.\n\n"
-                + "The estate is cached for minutes and the table counts for seconds, because a "
-                + "stale menu is fine and a stale table count is the one thing here that can waste "
-                + "somebody's evening.")
-            .Produces<IReadOnlyList<PublicVenueCard>>();
+                + "that addresses each branch, its IANA `timeZoneId`, whether it is open now, and a "
+                + "**live free-table count**: every table nobody is sitting at, walk-in-only stools "
+                + "included, the same tables the branch page's `tableCount` counts.\n\n"
+                + "The estate is cached for minutes; the table counts, open-now and which branches "
+                + "are still published for fifteen seconds, because a stale menu is fine and a stale "
+                + "table count is the one thing here that can waste somebody's evening. A suspended "
+                + "venue leaves the list within that window.\n\n"
+                + "**Rate limited on budgets of its own**, per caller and city-wide, not the page "
+                + "budget: this is the diner app's Explore screen, and a phone network puts thousands "
+                + "of phones behind one address.")
+            .Produces<IReadOnlyList<PublicVenueCard>>()
+
+            // Replaces the group's page policy on this one route: an endpoint carries one policy,
+            // and its own wins. See RateLimitingExtensions.PublicBrowsePolicy.
+            .RequireRateLimiting(RateLimitingExtensions.PublicBrowsePolicy);
 
         group.MapGet("/branches/{venueSlug}/{branchSlug}", GetBranchAsync)
             .WithName("getPublicBranch")
