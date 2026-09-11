@@ -40,12 +40,7 @@ internal sealed class PhotoService(
         string contentType,
         CancellationToken cancellationToken = default)
     {
-        var staffId = RequireManager("Upload a photo");
-
-        if (!await db.Branches.AnyAsync(b => b.Id == branchId, cancellationToken))
-        {
-            throw new KeyNotFoundException($"Branch {branchId} was not found.");
-        }
+        var staffId = await RequireActorAtBranchAsync("Upload a photo", branchId, cancellationToken);
 
         // Validation, EXIF stripping and the three variants all happen in here. There is no path
         // that stores the bytes as they arrived.
@@ -174,18 +169,46 @@ internal sealed class PhotoService(
         return orphans.Count;
     }
 
-    private Guid RequireManager(string operation)
+    /// <summary>
+    /// The caller must be an active owner or manager of the venue the branch belongs to, or the
+    /// platform admin.
+    /// </summary>
+    /// <remarks>
+    /// The route carries <c>BranchScoped</c>, which decides the same thing from the token. This is
+    /// decided again from the stored row, so that the lock holds if a route ever forgets the policy,
+    /// and so that a deactivated account's still-valid token is refused here rather than honoured
+    /// until it expires. Same pattern as the staff service's actor check.
+    /// </remarks>
+    private async Task<Guid> RequireActorAtBranchAsync(string operation, Guid branchId, CancellationToken cancellationToken)
     {
         if (actor.Type != ActorType.Staff || actor.StaffMemberId is not { } staffId)
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }
 
-        if (actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+        var acting = await db.StaffMembers.AsNoTracking().FirstOrDefaultAsync(s => s.Id == staffId, cancellationToken)
+                     ?? throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+
+        if (!acting.IsActive)
         {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
         }
 
-        return staffId;
+        var branch = await db.Branches
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        if (acting.IsPlatformAdmin)
+        {
+            return acting.Id;
+        }
+
+        if (branch.VenueId != acting.VenueId || acting.Role is not (StaffRole.Owner or StaffRole.Manager))
+        {
+            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
+        }
+
+        return acting.Id;
     }
 }
