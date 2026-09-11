@@ -150,18 +150,15 @@ internal sealed class StaffAuthService(
                 "device-revoked", "This tablet is no longer enrolled. Ask a manager to enrol it again.");
         }
 
-        var staff = await db.StaffMembers
-            .FirstOrDefaultAsync(s => s.Id == staffMemberId, cancellationToken);
-
         // The branch check is here rather than in a policy because it decides whether a
         // credential is even offered to be checked: this person does not work at this tablet's
         // branch, so as far as this tablet is concerned they do not exist.
-        var belongsHere = staff is not null
-            && staff.IsActive
-            && staff.VenueId == device.VenueId
-            && (staff.BranchId is null || staff.BranchId == device.BranchId);
+        var staff = await db.StaffMembers
+            .Where(s => s.Id == staffMemberId)
+            .Where(SignsInOn(device.VenueId, device.BranchId))
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (staff is null || !belongsHere)
+        if (staff is null)
         {
             throw PinRejected();
         }
@@ -353,12 +350,56 @@ internal sealed class StaffAuthService(
         // somebody holding a device the manager just revoked is the wrong answer twice.
         if (device is null || await IsRevokedAsync(deviceId, cancellationToken))
         {
-            throw new AuthenticationFailedException(
-                "device-revoked", "This device is no longer enrolled. Ask a manager to set it up again.");
+            throw DeviceNoLongerEnrolled();
         }
 
         return device;
     }
+
+    public async Task<IReadOnlyList<StaffRosterEntry>> GetRosterAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        var device = await db.StaffDevices
+            .AsNoTracking()
+            .Where(d => d.Id == deviceId)
+            .Select(d => new { d.VenueId, d.BranchId, Revoked = d.RevokedAtUtc != null })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Refused exactly as GetEnrolledDeviceAsync refuses: the PIN screen this feeds must not
+        // render for a killed tablet, let alone list the names of who works there.
+        if (device is null || device.Revoked)
+        {
+            throw DeviceNoLongerEnrolled();
+        }
+
+        return await db.StaffMembers
+            .AsNoTracking()
+            .Where(SignsInOn(device.VenueId, device.BranchId))
+            .OrderBy(s => s.FullName)
+            .Select(s => new StaffRosterEntry(s.Id, s.FullName, s.Role))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Who may tap a PIN on a device of this venue and branch: active, of the same venue, and at
+    /// that branch or at no particular one.
+    /// </summary>
+    /// <remarks>
+    /// One rule for two readers - the PIN exchange and the roster the PIN screen shows. If they
+    /// drifted, a tablet would list somebody whose PIN it then refuses, or accept a PIN from
+    /// somebody it never listed. A platform admin has no venue, so the venue test alone keeps them
+    /// off every tablet.
+    /// </remarks>
+    private static System.Linq.Expressions.Expression<Func<Yalla.Domain.Staff.StaffMember, bool>> SignsInOn(
+        Guid venueId,
+        Guid branchId) =>
+        s => s.IsActive
+             && s.VenueId == venueId
+             && (s.BranchId == null || s.BranchId == branchId);
+
+    private static AuthenticationFailedException DeviceNoLongerEnrolled() =>
+        new("device-revoked", "This device is no longer enrolled. Ask a manager to set it up again.");
 
     private Task<bool> IsRevokedAsync(Guid deviceId, CancellationToken cancellationToken) =>
         db.StaffDevices.AnyAsync(d => d.Id == deviceId && d.RevokedAtUtc != null, cancellationToken);

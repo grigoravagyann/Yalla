@@ -63,6 +63,19 @@ public interface IStaffAuthService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Everybody who may tap a PIN on this device, sorted by name, for the PIN screen.
+    /// </summary>
+    /// <remarks>
+    /// Exactly the people <see cref="SignInWithPinAsync"/> would accept a PIN from here - the same
+    /// rule, not a copy of it - so a name on the screen is never one whose PIN is refused for
+    /// working somewhere else.
+    /// </remarks>
+    /// <exception cref="Domain.Identity.AuthenticationFailedException">The device is unknown or revoked.</exception>
+    Task<IReadOnlyList<StaffRosterEntry>> GetRosterAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Exchanges a device token and a PIN for a short-lived staff session.
     /// </summary>
     /// <param name="deviceId">The enrolled device, taken from the device token's claims.</param>

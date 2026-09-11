@@ -158,6 +158,22 @@ public static class AuthEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized, "No device token, or the device was revoked.");
 
+        authenticated.MapGet("/staff/roster", GetStaffRosterAsync)
+            .WithName("getStaffRoster")
+            .WithSummary("Who may sign in with a PIN on this device")
+            .WithDescription(
+                "For the PIN screen, so a first sign-in is a name to tap rather than a staff "
+                + "member id to type. Exactly the people `POST /api/auth/staff/pin` would accept "
+                + "here: active, of this device's venue, and either at this device's branch or at "
+                + "no particular branch. Sorted by name.\n\n"
+                + "Three fields per person and nothing else - no phone, email or PIN state - "
+                + "because whoever holds the tablet can read it.\n\n"
+                + "Authenticated by the device token, and refused exactly as "
+                + "`GET /api/auth/staff/device` refuses: no token, or a revoked device, is a 401.")
+            .Produces<IReadOnlyList<StaffRosterEntry>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized, "No device token, or the device was revoked.");
+
         authenticated.MapPost("/staff/pin", StaffPinSignInAsync)
             .WithName("signInStaffWithPin")
             .WithSummary("Exchange a device token and a PIN for a staff session")
@@ -333,6 +349,25 @@ public static class AuthEndpoints
         }
 
         return Results.Ok(await service.GetEnrolledDeviceAsync(deviceId.Value, cancellationToken));
+    }
+
+    /// <summary>
+    /// Who may sign in on this device. Reads the device claim exactly as
+    /// <see cref="GetEnrolledDeviceAsync"/> does, so the two refuse the same callers the same way.
+    /// </summary>
+    private static async Task<IResult> GetStaffRosterAsync(
+        IStaffAuthService service,
+        HttpContext http,
+        CancellationToken cancellationToken)
+    {
+        var deviceId = http.User.Guid(YallaClaims.DeviceId);
+
+        if (deviceId is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        return Results.Ok(await service.GetRosterAsync(deviceId.Value, cancellationToken));
     }
 
     /// <summary>

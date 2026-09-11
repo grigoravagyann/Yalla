@@ -142,6 +142,22 @@ public sealed record EnrolledDeviceView(
     DateTime EnrolledAtUtc,
     DateTime? LastSeenAtUtc);
 
+/// <summary>
+/// One person who may tap a PIN on this tablet, as its PIN screen lists them.
+/// </summary>
+/// <remarks>
+/// Deliberately three fields. The list is readable by anybody standing at a counter holding the
+/// tablet, so no phone, email or PIN state is on it - a name to tap and the id the PIN exchange
+/// needs.
+/// </remarks>
+/// <param name="StaffMemberId">What <c>POST /api/auth/staff/pin</c> takes.</param>
+/// <param name="FullName">The name to tap.</param>
+/// <param name="Role">Their role, so the screen can group or badge people.</param>
+public sealed record StaffRosterEntry(
+    Guid StaffMemberId,
+    string FullName,
+    Domain.Enums.StaffRole Role);
+
 /// <summary>One enrolled tablet, as the admin panel lists it.</summary>
 /// <param name="Id">The device.</param>
 /// <param name="Name">What the manager called it.</param>
