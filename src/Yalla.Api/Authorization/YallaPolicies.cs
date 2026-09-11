@@ -30,6 +30,17 @@ public static class YallaPolicies
     /// <summary>A live staff session whose role is Waiter, Manager, Owner or PlatformAdmin.</summary>
     public const string WaiterOrAbove = "WaiterOrAbove";
 
+    /// <summary>
+    /// As <see cref="WaiterOrAbove"/>, and the Kitchen role as well.
+    /// </summary>
+    /// <remarks>
+    /// Only the kitchen display carries it: the queue and the order rail. It lets a cook through
+    /// the door and nothing more - what they may do past it is the service's rule, and on the rail
+    /// that is exactly <c>InKitchen -> Ready</c>. The floor, the tabs and the service requests stay
+    /// <see cref="WaiterOrAbove"/>.
+    /// </remarks>
+    public const string KitchenOrAbove = "KitchenOrAbove";
+
     /// <summary>A live staff or admin-panel session whose role is Manager, Owner or PlatformAdmin.</summary>
     public const string ManagerOrAbove = "ManagerOrAbove";
 

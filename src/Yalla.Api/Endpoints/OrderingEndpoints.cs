@@ -221,7 +221,7 @@ public static class OrderingEndpoints
     {
         app.MapGet("/api/branches/{branchId:guid}/orders", GetBranchOrdersAsync)
             .WithTags(EndpointConventions.StaffTag)
-            .RequireAuthorization(YallaPolicies.WaiterOrAbove, YallaPolicies.BranchScoped)
+            .RequireAuthorization(YallaPolicies.KitchenOrAbove, YallaPolicies.BranchScoped)
             .WithName("getBranchOrders")
             .WithSummary("The kitchen queue")
             .WithDescription(
@@ -229,11 +229,13 @@ public static class OrderingEndpoints
                 + "kitchen notes. Omit `status` for everything still outstanding - New, InKitchen and "
                 + "Ready - which is what a kitchen screen shows.")
             .Produces<IReadOnlyList<KitchenOrderView>>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.");
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not kitchen or floor staff at this branch.");
 
+        // Not BranchScoped: the route names an order, not a branch. The service loads the order and
+        // refuses a token whose branch is not the order's, before it looks at the move.
         app.MapPost("/api/orders/{orderId:guid}/status", MoveOrderStatusAsync)
             .WithTags(EndpointConventions.StaffTag)
-            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .RequireAuthorization(YallaPolicies.KitchenOrAbove)
             .WithName("moveOrderStatus")
             .WithSummary("Move an order along the rail")
             .WithDescription(
@@ -243,7 +245,9 @@ public static class OrderingEndpoints
                 + "**The Kitchen role may make exactly one move: `InKitchen -> Ready`.** Serving is a "
                 + "floor action and belongs to whoever carried the plate.")
             .Produces<KitchenOrderView>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "This role may not make that move.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not kitchen or floor staff at the order's branch, or this role may not make that move.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "The rail does not allow that transition.");
     }
 
