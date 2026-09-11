@@ -390,6 +390,15 @@ Two of these are the real security of this system, and both have tests:
   refused and the lock holds if a route ever loses the policy. The photo id a menu item is given
   is caller-supplied, so `MenuService` refuses one uploaded for another branch as not found there,
   the same answer a foreign category gets. `PhotoScopeTests` proves all of it.
+
+  The approval queue those two act on, `GET /api/branches/{branchId}/reservations?status=1`, is
+  addressed by branch and carries `ManagerOrAbove` and `BranchScoped` - and then the same service
+  check as approve and reject, because `BranchScoped` widens a manager with a home branch to the
+  whole venue (below). So a manager lists exactly the bookings they may decide: their home branch
+  only if their record names one, every branch of their venue if it names none, anything for a
+  platform admin. Sorted by local date and start time, capped at 200 rows with no paging.
+  `BranchReservationListTests` proves a manager of a sibling branch, another venue's manager, a
+  waiter and an anonymous caller are refused.
 - **A tab participant token must not touch any other tab.** Two adjacent tables must not be able to
   order on each other's bill.
 

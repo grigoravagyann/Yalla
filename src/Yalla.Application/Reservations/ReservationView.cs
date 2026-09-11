@@ -117,6 +117,17 @@ public enum ApprovalTrigger
     NoShowHistory = 3,
 }
 
+/// <summary>The branch booking list the console's approval panel reads.</summary>
+public static class BranchReservationList
+{
+    /// <summary>
+    /// The most rows one call returns. There is no paging: the list is a queue a manager works
+    /// through, and a branch with two hundred bookings waiting has a problem no page two solves.
+    /// The earliest two hundred come back, so what is cut is what is furthest away.
+    /// </summary>
+    public const int MaxRows = 200;
+}
+
 /// <summary>A diner's own bookings, split the way the app shows them.</summary>
 /// <param name="Upcoming">Bookings that have not finished yet, soonest first.</param>
 /// <param name="Past">Everything else - completed, cancelled, missed - most recent first.</param>

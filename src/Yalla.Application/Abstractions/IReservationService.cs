@@ -1,4 +1,5 @@
 using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Abstractions;
 
@@ -78,6 +79,16 @@ public interface IReservationService
 
     /// <summary>The calling diner's own bookings, upcoming and past.</summary>
     Task<MyReservations> GetMineAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// One branch's bookings in one status, by local date then start time, at most
+    /// <see cref="BranchReservationList.MaxRows"/>. Manager or above, scoped exactly as approve and
+    /// reject are, so a manager sees precisely the bookings they can decide.
+    /// </summary>
+    Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
+        Guid branchId,
+        ReservationStatus status,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// A waiter lets a late booking go, and the table with it.

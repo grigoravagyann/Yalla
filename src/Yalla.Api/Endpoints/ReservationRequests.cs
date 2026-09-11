@@ -93,6 +93,16 @@ public sealed record CreateReservationRequest(
     StayHint? StayHint = null,
     ReservationChannel Channel = ReservationChannel.Unknown) : IClientCommandRequest;
 
+/// <summary>Query of <c>GET /api/branches/{branchId}/reservations</c>.</summary>
+/// <param name="Status">
+/// Which bookings to list, as the <c>ReservationStatus</c> number - <c>1</c> for PendingApproval.
+/// Required: a list of every booking a branch has ever taken is not a thing anybody asked for.
+/// Nullable so that <c>[Required]</c> can fire, and <c>[EnumDataType]</c> refuses a number that is
+/// not a status, both as the house 422.
+/// </param>
+public sealed record ListBranchReservationsQuery(
+    [Required][EnumDataType(typeof(ReservationStatus))] ReservationStatus? Status);
+
 /// <summary>Body for a diner cancelling their own booking.</summary>
 /// <param name="Reason">Optional free text, recorded on the booking.</param>
 public sealed record CancelReservationRequest([MaxLength(500)] string? Reason = null);
