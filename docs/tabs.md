@@ -124,7 +124,7 @@ characters can be part of a code, so dropping them cannot turn one code into ano
 | Booking | Opens | Otherwise |
 | --- | --- | --- |
 | `Confirmed` | from **`StartUtc − WalkInHoldbackMinutes`** until **`EndUtc`** (exclusive) | before: **409 `booking-too-early`**, with `context.earliestUtc`; from `EndUtc`: **409 `booking-ended`** |
-| `Seated` | always — the venue already put the party there, and the sitting holds the table until staff free it | — |
+| `Seated` | while their sitting is open — the venue already put the party there, and the sitting holds the table whatever the clock says | settled, with the sitting closed and the table not yet cleared: **409 `booking-ended`** |
 | `Completed` | — | **409 `booking-ended`** |
 | `PendingApproval`, `CancelledByDiner`, `CancelledByVenue`, `NoShow` | — | **409 `booking-not-active`**, with `context.status` saying which |
 
@@ -138,6 +138,21 @@ table is theirs from the start time.
 
 Late is not refused. Past `GraceMinutes` a waiter *may* release the table; until one does, it is still
 the party's, up to `EndUtc`.
+
+Nor is running over. A `Seated` booking is not measured against the clock at all: `EndUtc` is the turn
+time fixed when the booking was made, a party that sits longer than it is still eating, and their own
+sitting is what holds the table. So a diner who lost their per-tab token — the phone died, the app was
+reinstalled — gets back onto their own open tab with the booking code at any hour.
+
+**Settled, but not cleared.** Paying the last of a bill closes the sitting and deliberately leaves the
+table occupied — the party usually sits on for another twenty minutes — and only a waiter freeing the
+table completes the booking. In that window the booking still reads `Seated` with nothing left to join,
+and the answer is **409 `booking-ended`**. The sticker is no help either: a table that is occupied with
+no open sitting refuses a seating, so anything more goes through a waiter. `TabService` decides this
+rather than letting the seating throw, and that is what keeps the answer in the booking family —
+`SeatBookedPartyAsync` would raise the state machine's "Only a confirmed reservation can be seated;
+DFJFQY is Seated.", which reaches the app as a bare `conflicting-state` with none of the booking's
+facts and the machine's own wording in the diner's face.
 
 Every 409 above carries the same `context` — `reservationId`, `status`, `startUtc`, `endUtc`,
 `earliestUtc` (`BookingTabRefusedProblem`) — and none of them touches the table.

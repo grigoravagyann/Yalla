@@ -390,6 +390,136 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// The bill was settled and nobody has cleared the table yet: the booking is refused in its own
+    /// words, not with the seating's internal sentence.
+    /// </summary>
+    /// <remarks>
+    /// Settling a tab closes its sitting and <b>deliberately leaves the table occupied</b> - a party
+    /// that has paid usually sits on for another twenty minutes - and only freeing the table completes
+    /// the booking. So in that window the booking still reads <c>Seated</c> while there is no sitting
+    /// left to put a tab on, and the app still offers the button on any seated booking. Without a
+    /// decision of its own, the opening walks into seating the party a second time and the domain's
+    /// "Only a confirmed reservation can be seated; DFJFQY is Seated." reaches the diner as a bare
+    /// <c>conflicting-state</c>: the booking's facts gone, and the state machine's wording in their
+    /// face. The refusal has to stay in the booking family.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_bill_settled_before_staff_cleared_the_table_is_refused_in_the_booking_s_own_words()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var menu = await MenuAsync(factory, branch);
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+
+        var opened = await OpenByBookingAsync(diner, booking.Code, "phone-booker");
+
+        Assert.Equal(HttpStatusCode.OK, opened.StatusCode);
+
+        var tabId = (await opened.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        // They eat, and the waiter takes the whole bill in cash.
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var settled = await SettleAsync(waiter, tabId, await OrderAsync(waiter, tabId, menu.Coffee, quantity: 1));
+
+        Assert.True(settled.GetProperty("tabClosed").GetBoolean());
+        Assert.True(settled.GetProperty("tableSessionClosed").GetBoolean());
+
+        // The window this is about: no sitting, and the booking not completed, because the table has
+        // not been freed.
+        Assert.False(await HasOpenSessionAsync(factory, branch.TableIds[0]));
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.Equal(
+                ReservationStatus.Seated,
+                (await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == booking.Id)).Status);
+
+            Assert.Equal(
+                TableStatus.Occupied,
+                (await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == branch.TableIds[0])).Status);
+        }
+
+        // The same phone taps "I'm at my table" again.
+        var refused = await RefusedAsync(
+            await OpenByBookingAsync(diner, booking.Code, "phone-booker"),
+            HttpStatusCode.Conflict,
+            "booking-ended");
+
+        var context = refused.GetProperty("context");
+
+        Assert.Equal(booking.Id, context.GetProperty("reservationId").GetGuid());
+        Assert.Equal((int)ReservationStatus.Seated, context.GetProperty("status").GetInt32());
+
+        // Not the state machine's sentence, which names the booking's code and its internal state.
+        var detail = refused.GetProperty("detail").GetString()!;
+
+        Assert.DoesNotContain("confirmed reservation", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Seated", detail, StringComparison.Ordinal);
+
+        // And nothing was seated a second time.
+        Assert.False(await HasOpenSessionAsync(factory, branch.TableIds[0]));
+    }
+
+    /// <summary>
+    /// A seated party is still let back onto their own open sitting after the booked time has run
+    /// out.
+    /// </summary>
+    /// <remarks>
+    /// <c>EndUtc</c> is the branch's turn time fixed when the booking was made, and a party that sits
+    /// longer than it is still eating - so the clock is deliberately not consulted for a booking the
+    /// venue has already seated. Their sitting is what holds the table, and it is still open. Without
+    /// this, a diner whose per-tab token is gone - the phone died, the app was reinstalled - has only
+    /// the sticker to get back onto a tab that is still theirs.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_seated_party_is_let_back_on_after_the_booked_time_has_run_out()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var now = factory.Clock.UtcNow;
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var seated = await waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{branch.TableIds[0]}/seat-reservation",
+            new { reservationId = booking.Id, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.OK, seated.StatusCode);
+
+        var sessionId = (await seated.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("tableSessionId").GetGuid();
+
+        // The whole booked interval is now in the past, and they are still at the table.
+        await MoveAsync(factory, booking.Id, now.AddMinutes(-150), endUtc: now.AddMinutes(-30));
+
+        var response = await OpenByBookingAsync(diner, booking.Code, "phone-booker");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(TabOpenOutcome.OpenedOnExistingSession, EnumOf<TabOpenOutcome>(body.GetProperty("outcome")));
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var tabId = body.GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        Assert.Equal(sessionId, (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId)).TableSessionId);
+    }
+
+    /// <summary>
     /// A booked table that is out of service is refused exactly as a scan of it is - and so is one
     /// taken off the floor plan, which a scan cannot even find.
     /// </summary>
@@ -783,6 +913,51 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(factory.Clock);
 
         return await db.TableSessions.AnyAsync(s => s.DiningTableId == tableId && s.ClosedAtUtc == null);
+    }
+
+    /// <summary>A menu at the branch, so a bill can be run up and settled.</summary>
+    private async Task<TestMenu> MenuAsync(YallaApiFactory factory, AuthBranch branch)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        return await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+    }
+
+    /// <summary>
+    /// Puts something on the bill as the waiter would, and answers with what the tab now owes - read
+    /// back off the API rather than computed here, so the service charge is whatever the branch says.
+    /// </summary>
+    private static async Task<long> OrderAsync(HttpClient waiter, Guid tabId, Guid menuItemId, int quantity)
+    {
+        var ordered = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{tabId}/staff-orders",
+            new { items = new[] { new { menuItemId, quantity } }, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Created, ordered.StatusCode);
+
+        var view = await waiter.GetAsync($"/api/tabs/{tabId}/participants");
+
+        Assert.Equal(HttpStatusCode.OK, view.StatusCode);
+
+        return (await view.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("totals").GetProperty("remainingAmd").GetInt64();
+    }
+
+    /// <summary>
+    /// Cash for the whole balance. The tab closes and its sitting closes with it; the table is
+    /// deliberately left occupied.
+    /// </summary>
+    private static async Task<JsonElement> SettleAsync(HttpClient waiter, Guid tabId, long amountAmd)
+    {
+        Assert.True(amountAmd > 0L, "Nothing was ordered, so settling proves nothing.");
+
+        var response = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{tabId}/payments/cash",
+            new { amountAmd, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     private static Task<HttpResponseMessage> OpenByBookingAsync(

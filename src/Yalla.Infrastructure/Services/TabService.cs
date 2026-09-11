@@ -144,6 +144,25 @@ internal sealed class TabService(
                 // branch's walk-in holdback as the moment the table starts being kept for them.
                 booking.RequireTableIsTheirsAt(clock.UtcNow, table.Branch.ReservationPolicy.WalkInHoldbackMinutes);
 
+                // Settled, but not cleared yet. Paying the last of a bill closes the sitting and
+                // leaves the table occupied on purpose - the party is still sitting there - and only
+                // a waiter freeing the table completes the booking. Between the two the booking still
+                // reads Seated with no sitting left to join, and seating the party a second time
+                // would throw the state machine's "Only a confirmed reservation can be seated",
+                // which reaches the app as a bare conflicting-state carrying none of the booking's
+                // facts. Decided here instead, so the answer stays in the booking family.
+                if (booking.Status == ReservationStatus.Seated
+                    && !await db.TableSessions.AnyAsync(
+                        s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, token))
+                {
+                    throw new BookingTabRefusedException(
+                        BookingTabRefusedException.Ended,
+                        booking,
+                        booking.TableIsTheirsFromUtc(table.Branch.ReservationPolicy.WalkInHoldbackMinutes),
+                        $"The bill for booking {booking.Code} has been settled. Ask a member of staff to "
+                        + "order anything more - the table has not been cleared yet.");
+                }
+
                 // Taken off the floor plan with the booking still on it. A scan cannot find such a
                 // table at all; this diner holds a booking for it and needs a waiter, so they are told
                 // what an out-of-service table tells a scanner.
