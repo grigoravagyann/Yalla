@@ -382,6 +382,14 @@ Two of these are the real security of this system, and both have tests:
   fails closed rather than passing. They carry `ManagerOrAbove`, and the reservation service
   resolves the booking's own branch and checks it against the acting staff member's branch and
   venue. `ReservationEndpointTests` proves a manager of another venue is refused.
+
+  The photo upload `POST /api/branches/{branchId}/photos` is addressed by branch and carries
+  `BranchScoped` like the rest; it once carried only `ManagerOrAbove`, which let any manager put
+  images into any venue's branch. `PhotoService` also checks the stored staff row - active, and of
+  the branch's venue, platform admin exempt - so a deactivated account's still-valid token is
+  refused and the lock holds if a route ever loses the policy. The photo id a menu item is given
+  is caller-supplied, so `MenuService` refuses one uploaded for another branch as not found there,
+  the same answer a foreign category gets. `PhotoScopeTests` proves all of it.
 - **A tab participant token must not touch any other tab.** Two adjacent tables must not be able to
   order on each other's bill.
 
