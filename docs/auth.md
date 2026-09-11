@@ -379,6 +379,7 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `TabParticipantMutating` | The above, and the tab is genuinely open {M} the receipt grace allows reading a closed tab, never adding to it |
 | `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
 | `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager or Owner |
+| `KitchenOrAbove` | As `WaiterOrAbove`, and the Kitchen role too. Only the kitchen queue and the order rail carry it; on the rail the service then limits Kitchen to `InKitchen -> Ready`. The floor, tabs and service requests stay `WaiterOrAbove` |
 | `ManagerOrAbove` | Role is Manager or Owner |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner or manager acting inside their own venue |
