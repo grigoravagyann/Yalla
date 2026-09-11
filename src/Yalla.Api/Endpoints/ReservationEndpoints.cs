@@ -68,9 +68,51 @@ public static class ReservationEndpoints
         MapAvailability(app);
         MapDinerBookings(app);
         MapStaffDecisions(app);
+        MapBranchBookings(app);
 
         return app;
     }
+
+    private static void MapBranchBookings(IEndpointRouteBuilder app)
+    {
+        // Addressed by branch, so BranchScoped applies - in the house style of the branch settings
+        // group. It widens a home-branch manager to the whole venue; the service narrows them back
+        // with the check approve and reject use, so what a manager can list and decide agree.
+        var group = app.MapGroup("/api/branches/{branchId:guid}")
+            .WithTags(EndpointConventions.AdminTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
+
+        group.MapGet("/reservations", ListBranchReservationsAsync)
+            .WithName("listBranchReservations")
+            .WithSummary("A branch's bookings in one status - the approval queue")
+            .WithDescription(
+                "What the console's *awaiting approval* panel reads before calling `approve` or "
+                + "`reject`. `status` is required (`1` PendingApproval).\n\n"
+                + "Sorted by the branch's local date, then local start time. **No paging: at most "
+                + "200 rows**, the earliest first, so what a cap would cut is what is furthest away.\n\n"
+                + "Scoped like approve and reject: a manager whose record names a home branch lists "
+                + "that branch only; a manager or owner whose record names none, any branch of their "
+                + "venue; a platform admin, any branch. `awaitingApprovalBecause` is worked out "
+                + "against the branch's current policy.")
+            .Produces<IReadOnlyList<ReservationView>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Another venue's staff, a waiter, or a manager of a different branch of this venue.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status422UnprocessableEntity, "`status` is missing or is not a booking status.");
+    }
+
+    private static async Task<IResult> ListBranchReservationsAsync(
+        Guid branchId,
+        [AsParameters] ListBranchReservationsQuery query,
+        IReservationService reservations,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await reservations.ListForBranchAsync(
+
+            // The validation filter has refused a null before this runs.
+            branchId, query.Status!.Value, cancellationToken));
 
     private static void MapAvailability(IEndpointRouteBuilder app)
     {

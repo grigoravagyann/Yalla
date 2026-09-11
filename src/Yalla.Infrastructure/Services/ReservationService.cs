@@ -429,6 +429,77 @@ internal sealed class ReservationService(
         return new MyReservations(upcoming, past);
     }
 
+    public async Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
+        Guid branchId,
+        ReservationStatus status,
+        CancellationToken cancellationToken = default)
+    {
+        // The same check approve and reject make. BranchScoped on the route widens a manager with
+        // a home branch to their whole venue; this narrows them back, so the list never shows a
+        // booking its reader would be refused permission to decide.
+        await RequireManagerForBranchAsync(branchId, "List a branch's bookings", cancellationToken);
+
+        var policy = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId)
+            .Select(b => b.ReservationPolicy)
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        var rows = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId && r.Status == status)
+            .OrderBy(r => r.LocalDate)
+            .ThenBy(r => r.LocalStartTime)
+            .ThenBy(r => r.Id)
+            .Take(BranchReservationList.MaxRows)
+            .Select(r => new MineRow
+            {
+                Reservation = r,
+                BranchName = r.Branch.Name,
+                TimeZoneId = r.Branch.TimeZoneId,
+                TableLabel = r.DiningTable.Label,
+            })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(r => BuildView(
+                r.Reservation,
+                r.BranchName,
+                r.TimeZoneId,
+                r.TableLabel,
+                wasReplay: false,
+                trigger: PendingTriggerFor(r.Reservation, policy)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Why a pending booking is waiting, worked out again at read time.
+    /// </summary>
+    /// <remarks>
+    /// The trigger is not stored on the booking, so this replays <see cref="DecideStatusAsync"/>'s
+    /// order against the branch's current policy: approve-everything first, then the party-size
+    /// threshold, and otherwise the one remaining reason, the diner's no-show history. A policy
+    /// changed since the booking was made can therefore name a different reason than the diner was
+    /// shown - it never names one for a booking that is not pending.
+    /// </remarks>
+    private static ApprovalTrigger? PendingTriggerFor(Reservation reservation, ReservationPolicy policy)
+    {
+        if (reservation.Status != ReservationStatus.PendingApproval)
+        {
+            return null;
+        }
+
+        if (!policy.AutoConfirm)
+        {
+            return ApprovalTrigger.BranchApprovesEveryBooking;
+        }
+
+        return ReservationRules.NeedsApproval(reservation.PartySize, policy)
+            ? ApprovalTrigger.LargeParty
+            : ApprovalTrigger.NoShowHistory;
+    }
+
     /// <summary>
     /// Builds the "somebody is sitting there" refusal, with a fresh floor snapshot attached.
     /// </summary>
