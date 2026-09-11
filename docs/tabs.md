@@ -93,6 +93,86 @@ order, a void, an adjustment or a cash payment with no
 `clientCommandId` is refused with 400 before it runs. The lookup used to match the id across every
 tab, so a missing id - bound as `Guid.Empty` - replayed some other tab's order, totals and all.
 
+### From a booking: `POST /api/tabs/open-by-booking`
+
+A diner who booked through the app arrives, and the app offers "I'm at my table". The request is the
+scan's body with a **`bookingCode`** in place of the `qrToken` — the six characters on their booking,
+`DFJFQY` — and the answer is the scan's answer: the same `TabAccessResult`, the same four cases, the
+same `outcome`, the same host and pending guests, the same replay on `clientCommandId`. The code finds
+the booking, the booking names the table, and from there both routes run one loop in `TabService`
+(`OpenAtTableAsync`), so the two cannot drift.
+
+It exists because the Scan screen's "type the code" field took only the table's QR token — the
+32-character string printed small under the QR — and a diner who typed their booking code into it was
+told it belonged to no table. Nothing led from a booking to its table's tab.
+
+**Whose booking.** This is the one opening that is not anonymous, and only because a booking is not:
+the route carries `VerifiedDiner`, on a group of its own — the scan's group is `AllowAnonymous`, which
+would wave a stacked policy straight through. The booking must be the caller's own
+(`Reservation.DinerUserId`). Somebody else's code, or a phone booking with no account behind it,
+answers **404 `booking-not-found`, word for word** what a code nobody holds gets, with no `context`.
+The code is six characters read out at the door and proves nothing (see `ReservationCode`); a distinct
+"exists, not yours" would tell anybody with an account which codes are live. Ownership is checked
+before the replay and before the table is looked at.
+
+**The code as typed.** Matched in the stored form (`ReservationCode.Normalise`): spaces and every
+Unicode dash removed, upper-cased. `dfj-fqy`, ` DFJ FQY ` and `DFJFQY` are one code; none of those
+characters can be part of a code, so dropping them cannot turn one code into another.
+
+**When the table is theirs** — `Reservation.RequireTableIsTheirsAt`:
+
+| Booking | Opens | Otherwise |
+| --- | --- | --- |
+| `Confirmed` | from **`StartUtc − WalkInHoldbackMinutes`** until **`EndUtc`** (exclusive) | before: **409 `booking-too-early`**, with `context.earliestUtc`; from `EndUtc`: **409 `booking-ended`** |
+| `Seated` | while their sitting is open — the venue already put the party there, and the sitting holds the table whatever the clock says | settled, with the sitting closed and the table not yet cleared: **409 `booking-ended`** |
+| `Completed` | — | **409 `booking-ended`** |
+| `PendingApproval`, `CancelledByDiner`, `CancelledByVenue`, `NoShow` | — | **409 `booking-not-active`**, with `context.status` saying which |
+
+The start is not a number of its own. It is the branch's **walk-in holdback**
+(`ReservationPolicy.WalkInHoldbackMinutes`, 30 by default): the moment the branch starts holding the
+table back from walk-ins for this booking, from which seating anybody else there earns a waiter the
+"reserved 20:00 for 6" warning. Both readers take that instant from
+`SessionOccupancy.HoldbackBeginsAtUtc`, so the venue keeping the table for the party and the party
+being allowed to take it cannot disagree. A branch with a holdback of zero keeps nothing back, and the
+table is theirs from the start time.
+
+Late is not refused. Past `GraceMinutes` a waiter *may* release the table; until one does, it is still
+the party's, up to `EndUtc`.
+
+Nor is running over. A `Seated` booking is not measured against the clock at all: `EndUtc` is the turn
+time fixed when the booking was made, a party that sits longer than it is still eating, and their own
+sitting is what holds the table. So a diner who lost their per-tab token — the phone died, the app was
+reinstalled — gets back onto their own open tab with the booking code at any hour.
+
+**Settled, but not cleared.** Paying the last of a bill closes the sitting and deliberately leaves the
+table occupied — the party usually sits on for another twenty minutes — and only a waiter freeing the
+table completes the booking. In that window the booking still reads `Seated` with nothing left to join,
+and the answer is **409 `booking-ended`**. The sticker is no help either: a table that is occupied with
+no open sitting refuses a seating, so anything more goes through a waiter. `TabService` decides this
+rather than letting the seating throw, and that is what keeps the answer in the booking family —
+`SeatBookedPartyAsync` would raise the state machine's "Only a confirmed reservation can be seated;
+DFJFQY is Seated.", which reaches the app as a bare `conflicting-state` with none of the booking's
+facts and the machine's own wording in the diner's face.
+
+Every 409 above carries the same `context` — `reservationId`, `status`, `startUtc`, `endUtc`,
+`earliestUtc` (`BookingTabRefusedProblem`) — and none of them touches the table.
+
+**Seated as the booking.** On a free or held table the party is seated **against the booking**, by
+`ITableStateService.SeatBookedPartyAsync`: the session is `Source = Reservation` with the booking's id,
+the booking moves to `Seated`, and the audit row reads "seated by the diner from booking DFJFQY" with
+the diner as actor. Seating them as a walk-in, as a scan does, would leave the booking `Confirmed`
+while its party ate — flagged late, nudged, and one tap from a no-show. It takes the table lock and
+races like every other seating: a waiter seating the same booking at the same instant wins or loses on
+the same indexes, and the loser re-reads and lands on the sitting that won.
+
+**Everything else is the scan's**, because it is the scan's code. A table out of service is 409 with the
+scan's sentence — and so is one taken off the floor plan with the booking still on it, which a scan
+could not even find, because this diner holds a booking for it and needs a waiter. A closing tab takes
+nobody new. An occupied table with a tab puts the booker on it as a pending guest, and one with no tab
+makes them its host. If a friend in the party scanned the table first, the booker lands pending on the
+friend's tab and the friend approves them, exactly as for a second scan — and the booking itself stays
+`Confirmed`, as it always has when a booked party scans rather than being seated by a waiter.
+
 ## 3. Inviting others
 
 The host invites; nobody types a code.
@@ -171,6 +251,7 @@ The view also names where the tab is - `venueName` and `branchName` beside `tabl
 | Surface | Policy | Extra check |
 | --- | --- | --- |
 | `/api/tabs/open`, `/api/tabs/join` | anonymous | `clientCommandId` required on open |
+| `/api/tabs/open-by-booking` | `VerifiedDiner`, on a group of its own - the scan's is `AllowAnonymous` | the booking must be the caller's (else 404 `booking-not-found`, identical to an unknown code) and its table theirs now; `clientCommandId` required |
 | `/api/tabs/{tabId}` and the participant actions | `TabParticipant` — the token's `tabId` claim must equal the route, and the participant must not be removed | Host-only actions check the host **inside the service**, so the rule holds for every caller and not only HTTP |
 | `/api/tabs/{tabId}/reassign-host`, `/closing`, `/participants` | `WaiterOrAbove` + `BranchScoped` — the branch is resolved from the tab in the route | The service re-checks the actor is staff |
 

@@ -194,7 +194,7 @@ express, and which is the thing a client actually needs to read.
 
 `[Required]` on a **non-nullable value type** — `Guid`, `DateOnly`, `TimeOnly`, an enum — can never
 fire. A missing one binds its default rather than null, and `RequiredAttribute` only rejects null.
-There are eighteen of them.
+There are nineteen of them.
 
 A documented no-op and an unenforced attribute look identical from the outside, so each was checked
 rather than assumed. **Probe** means a request was actually sent with the field omitted and the
@@ -202,13 +202,13 @@ answer recorded; **trace** means the guard was read in code and no probe was run
 
 | Field | Where | What actually answers | How checked |
 | --- | --- | --- | --- |
-| `clientCommandId` ×9 | reservation, tab, table-state commands | `ClientCommandIdFilter` — rejects `Guid.Empty`, **400** with its own sentence about replays | probe + every one of the nine records implements `IClientCommandRequest` and every endpoint taking one sits under a group carrying the filter |
+| `clientCommandId` ×10 | reservation, tab, table-state commands | `ClientCommandIdFilter` — rejects `Guid.Empty`, **400** with its own sentence about replays | probe + every one of the ten records implements `IClientCommandRequest` and every endpoint taking one sits under a group carrying the filter |
 | `settlementMode` | `SetSettlementModeRequest` | `Guard.Defined` in the domain — **400** naming `settlementMode`, because `(SettlementMode)0` is not a defined member | probe |
 | `staffMemberId` | `StaffPinRequest` | The uniform **401**. `Guid.Empty` matches no staff member and answers exactly as a wrong PIN does — which is the anti-enumeration posture, and correct | trace |
 | `newHostParticipantId` | `ReassignHostRequest` | `KeyNotFoundException("No such participant on that tab.")` — **404**. Accurate, if not diagnostic | trace |
 | `reservationId` | `SeatReservationRequest` | The reservation lookup — **404** | trace |
 
-That is thirteen of the eighteen genuinely covered. **Five were not**, and four still are not.
+That is fourteen of the nineteen genuinely covered. **Five were not**, and four still are not.
 
 #### `outcome` — fixed here, because it was writing the wrong row
 

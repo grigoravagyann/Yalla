@@ -11,7 +11,10 @@ namespace Yalla.Api.Endpoints;
 /// <remarks>
 /// <para>
 /// Three surfaces, kept apart by who holds what. <c>/api/tabs/open</c> and <c>/api/tabs/join</c>
-/// are anonymous - the scanner has no token yet, and <b>no account is ever asked for</b>. Everything
+/// are anonymous - the scanner has no token yet, and <b>no account is ever asked for</b>. The one
+/// opening that is not, <c>/api/tabs/open-by-booking</c>, is the same opening reached from a booking
+/// instead of the QR code: it carries <c>VerifiedDiner</c>, because a booking is what has an account
+/// behind it, and the booking has to be the caller's own. Everything
 /// under <c>/api/tabs/{tabId}</c> that a diner touches carries the <c>TabParticipant</c> policy,
 /// which compares the route's tab id to the token's claim before any handler runs; the staff
 /// actions carry <c>WaiterOrAbove</c> and <c>BranchScoped</c>, the latter resolving the branch from
@@ -40,6 +43,7 @@ public static class TabEndpoints
     public static IEndpointRouteBuilder MapTabEndpoints(this IEndpointRouteBuilder app)
     {
         MapOpening(app);
+        MapBookingOpening(app);
         MapParticipantSurface(app);
         MapStaffSurface(app);
 
@@ -99,6 +103,62 @@ public static class TabEndpoints
                 StatusCodes.Status401Unauthorized, "The invitation is unknown, revoked or expired.")
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict, "The tab is being settled or is closed; nobody new can join.")
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Signed-in diner: the same opening, from a booking instead of the QR code.
+    // ---------------------------------------------------------------------------------------
+    private static void MapBookingOpening(IEndpointRouteBuilder app)
+    {
+        // Its own group, deliberately not the scan's. That one is AllowAnonymous, and an
+        // IAllowAnonymous anywhere in an endpoint's metadata makes the authorization middleware
+        // treat the endpoint as succeeded - a VerifiedDiner requirement stacked on top would look
+        // protective and do nothing.
+        var group = app.MapGroup("/api/tabs")
+            .WithTags(EndpointConventions.DinerTag)
+            .RequireAuthorization(YallaPolicies.VerifiedDiner);
+
+        // As on the scan: without it a retry on flaky wifi cannot be told from a second tap.
+        group.AddEndpointFilter<ClientCommandIdFilter>();
+
+        group.MapPost("/open-by-booking", OpenByBookingAsync)
+            .WithName("openTabByBooking")
+            .WithSummary("\"I'm at my table\": open the tab on your booked table with your booking code")
+            .WithDescription(
+                "For a diner who booked through the app and is at their table: the booking code in "
+                + "place of the table's QR token. The code finds **the caller's own** booking, the "
+                + "booking names the table, and from there it is exactly `POST /api/tabs/open` - the "
+                + "same four cases, the same host and pending guests, the same `outcome`, the same "
+                + "response body.\n\n"
+                + "**Whose.** Only a booking this diner account made opens anything. Somebody else's "
+                + "code answers `404 booking-not-found`, word for word what a code nobody holds gets: "
+                + "a code is read out at the door and proves nothing.\n\n"
+                + "**When.** A `Confirmed` booking opens from the branch's walk-in holdback before its "
+                + "start - the moment the branch starts keeping the table back from walk-ins for it - "
+                + "until its end. Earlier is `409 booking-too-early` with `context.earliestUtc`; from "
+                + "`endUtc` on, `409 booking-ended`. Late is fine: until a waiter releases the table it "
+                + "is still theirs. A `Seated` booking opens whatever the time - the venue already put "
+                + "the party there. Pending-approval, cancelled and no-show bookings answer "
+                + "`409 booking-not-active`, with `context.status` saying which; a completed one, "
+                + "`booking-ended`.\n\n"
+                + "**Seating.** A free table is seated *as the booking*: the sitting names it and the "
+                + "booking becomes `Seated`, so the floor does not go on treating a party that is "
+                + "eating as one that has not arrived.\n\n"
+                + "Case, spaces and dashes in the code do not matter. A double tap with the same "
+                + "`clientCommandId` returns the same tab with `wasReplay` set.")
+            .Produces<TabAccessResult>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Missing device id or clientCommandId.")
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "`booking-not-found`: none of the caller's bookings has that code. Somebody else's "
+                + "booking answers exactly the same.")
+            .ProducesProblem<Errors.BookingTabRefusedProblem>(
+                StatusCodes.Status409Conflict,
+                "`booking-too-early` (`context.earliestUtc` says when), `booking-ended`, or "
+                + "`booking-not-active` (`context.status` says why) - branch on the code. And, as on "
+                + "the scan, the table out of service, the tab there being settled, or this "
+                + "`clientCommandId` used by another device - those with no `context`.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
     }
 
@@ -306,6 +366,24 @@ public static class TabEndpoints
         CancellationToken cancellationToken) =>
         Results.Ok(await service.JoinAsync(
             new JoinTabCommand(request.JoinToken, request.DeviceId, request.DisplayName),
+            cancellationToken));
+
+    // Who is asking comes from the token, by way of ICurrentActor inside the service - never from
+    // the body. There is no field that names a diner, so nobody can open somebody else's booking by
+    // sending their id.
+    private static async Task<IResult> OpenByBookingAsync(
+        OpenTabByBookingRequest request,
+        ITabService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.OpenByBookingAsync(
+            new OpenTabByBookingCommand(
+                request.BookingCode,
+                request.DeviceId,
+                request.ClientCommandId,
+                request.DisplayName,
+                request.PartySize,
+                request.SettlementMode,
+                request.HideTotalFromGuests),
             cancellationToken));
 
     private static async Task<IResult> GetTabAsync(

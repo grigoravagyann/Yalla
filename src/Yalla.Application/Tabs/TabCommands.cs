@@ -37,6 +37,33 @@ public sealed record OpenTabCommand(
     SettlementMode? SettlementMode = null,
     bool? HideTotalFromGuests = null);
 
+/// <summary>
+/// "I'm at my table": open the tab on the caller's own booked table with the booking's code - or
+/// land on the one already open there.
+/// </summary>
+/// <remarks>
+/// Everything <see cref="OpenTabCommand"/> carries, with the booking code in place of the QR token.
+/// The code finds the booking and the booking names the table; from there it is the scan's own
+/// path, so who hosts, who waits for approval and what a retry answers are the same.
+/// </remarks>
+/// <param name="BookingCode">The code on the diner's booking, typed however they typed it.</param>
+/// <param name="DeviceId">The phone. Not an account - see <see cref="OpenTabCommand"/>.</param>
+/// <param name="ClientCommandId">Caller-generated. A retry with the same id returns the same tab.</param>
+/// <param name="DisplayName">Optional. What the host sees; defaults to a numbered guest.</param>
+/// <param name="PartySize">
+/// How many sat down. Only used when this seats the table; defaults to the booked party size.
+/// </param>
+/// <param name="SettlementMode">How the bill will be split. Only used when this opens the tab.</param>
+/// <param name="HideTotalFromGuests">The table default for guests' sight of the total. Only used when this opens the tab.</param>
+public sealed record OpenTabByBookingCommand(
+    string BookingCode,
+    string DeviceId,
+    Guid ClientCommandId,
+    string? DisplayName = null,
+    int? PartySize = null,
+    SettlementMode? SettlementMode = null,
+    bool? HideTotalFromGuests = null);
+
 /// <summary>Join an open tab with the invitation the host passed round.</summary>
 /// <param name="JoinToken">The token from the host's QR or share link. Thirty-minute lifetime.</param>
 /// <param name="DeviceId">The joining phone. Not an account.</param>

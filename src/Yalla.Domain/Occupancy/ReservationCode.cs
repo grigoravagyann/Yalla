@@ -55,4 +55,35 @@ public static class ReservationCode
     /// <summary>Whether a code uses only characters this generator can produce.</summary>
     public static bool IsWellFormed(string? code) =>
         !string.IsNullOrEmpty(code) && code.All(Alphabet.Contains);
+
+    /// <summary>
+    /// A code as somebody typed it, in the form it is stored: every space and every dash removed,
+    /// upper-cased.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// People type a code the way they read it off a screen or hear it at the door - "dfj-fqy",
+    /// "DFJ FQY", with the space a keyboard adds after the last word. None of those characters can be
+    /// part of a code (see <see cref="Alphabet"/>), so dropping them never turns one code into
+    /// another; and every code is stored upper-case, so upper-casing the input matches by the stored
+    /// rule rather than by whatever the column's collation happens to be.
+    /// </para>
+    /// <para>
+    /// Every Unicode dash, not only the hyphen-minus: a phone keyboard or a code copied out of a
+    /// message hands over an en dash just as easily, and it means the same to the person typing it.
+    /// </para>
+    /// </remarks>
+    public static string Normalise(string? code)
+    {
+        if (string.IsNullOrEmpty(code))
+        {
+            return string.Empty;
+        }
+
+        var kept = code.Where(c =>
+            !char.IsWhiteSpace(c)
+            && char.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.DashPunctuation);
+
+        return new string(kept.ToArray()).ToUpperInvariant();
+    }
 }

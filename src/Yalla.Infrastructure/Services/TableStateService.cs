@@ -150,6 +150,77 @@ internal sealed class TableStateService(
             locked);
     }
 
+    public async Task<TableStateChangeResult> SeatBookedPartyAsync(
+        SeatBookedPartyCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        // No RequireStaff, like the QR scan: the party seats themselves from their own phone. The
+        // tab service has already decided the booking is the caller's and its table theirs now, so
+        // what is left is the seating - through the state machine, under the lock, with an audit
+        // row, like every other seating.
+        var (actorType, actorId) = ResolveActor();
+
+        if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
+        {
+            return replayed;
+        }
+
+        // Everything below is read and written inside the table's write lock. A booking
+        // re-checks TableSessions while holding it, so a seating that skipped it could slip a
+        // session in between that check and the booking's commit - and both would succeed.
+        await using var locked = await tableLock.AcquireAsync(command.TableId, null, cancellationToken);
+
+        var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        RequirePrecondition(command, table);
+        var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken);
+
+        var nowUtc = clock.UtcNow;
+        var fromStatus = table.Status;
+
+        // Excludes the booking being seated: warning about the party you are seating would be noise.
+        var next = await FindNextReservationAsync(table.Id, nowUtc, reservation.Id, cancellationToken);
+
+        // Against the booking, never as a walk-in. The sitting names it and the booking is Seated,
+        // so the floor stops treating a party that is eating as one that has not arrived: no late
+        // flag, no nudge, nothing for a waiter to mark a no-show. Throws unless Confirmed.
+        reservation.MarkSeated();
+
+        var session = TableSession.SeatReservation(
+            table.BranchId,
+            table.Id,
+            reservation.Id,
+            command.PartySize ?? reservation.PartySize,
+            nowUtc);
+
+        table.Occupy(session.Id);
+
+        db.TableSessions.Add(session);
+        db.TableStateChanges.Add(new TableStateChange(
+            table.BranchId,
+            table.Id,
+            fromStatus,
+            TableStatus.Occupied,
+            command.Reason ?? $"seated by the diner from booking {reservation.Code}",
+            actorType,
+            nowUtc,
+            command.ClientCommandId,
+            actorId,
+            reservationId: reservation.Id,
+            tableSessionId: session.Id));
+
+        return await CommitAsync(
+            table,
+            fromStatus,
+            command.ClientCommandId,
+            () => Success(
+                table, fromStatus, TableStatus.Occupied, nowUtc, command.ClientCommandId, next,
+                tableSessionId: session.Id,
+                reservationId: reservation.Id,
+                warnings: SeatingWarnings(table, nowUtc, next)),
+            cancellationToken,
+            locked);
+    }
+
     public async Task<TableStateChangeResult> SeatReservationAsync(
         SeatReservationCommand command,
         CancellationToken cancellationToken = default)

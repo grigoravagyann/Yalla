@@ -37,6 +37,15 @@ public interface ITableStateService
     /// </summary>
     Task<TableStateChangeResult> SeatQrScanAsync(SeatQrScanCommand command, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Free or Held to Occupied, for the party whose booking this table is, from their own phone -
+    /// and the booking to Seated. Like <see cref="SeatQrScanAsync"/> it needs no staff member, and
+    /// the audit row names the diner.
+    /// </summary>
+    Task<TableStateChangeResult> SeatBookedPartyAsync(
+        SeatBookedPartyCommand command,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Free to Held, keeping the table for a party expected imminently.</summary>
     Task<TableStateChangeResult> HoldForLatePartyAsync(TableStateCommand command, CancellationToken cancellationToken = default);
 

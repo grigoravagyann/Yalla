@@ -337,6 +337,106 @@ public sealed class Reservation : Entity
         IsLateAt(nowUtc, graceMinutes) ? nowUtc - StartUtc : null;
 
     /// <summary>
+    /// When the table starts being the party's to sit at: the branch's walk-in holdback before the
+    /// start.
+    /// </summary>
+    /// <remarks>
+    /// Not a number of its own. It is the moment the branch starts holding the table back from
+    /// walk-ins for this booking - <see cref="SessionOccupancy.HoldbackBeginsAtUtc"/>, the same instant
+    /// that starts warning a waiter who seats somebody else here - so the venue keeping the table for
+    /// the party and the party being allowed to take it cannot disagree.
+    /// </remarks>
+    public DateTime TableIsTheirsFromUtc(int walkInHoldbackMinutes) =>
+        SessionOccupancy.HoldbackBeginsAtUtc(StartUtc, walkInHoldbackMinutes);
+
+    /// <summary>
+    /// Refuses, with the reason, unless this booking's table is the party's to sit at now - the rule
+    /// behind opening a tab with the booking code.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Seated</b> passes whatever the clock says. The venue has already put the party at the
+    /// table, and the sitting holds it until staff free it - which completes the booking.
+    /// </para>
+    /// <para>
+    /// <b>Confirmed</b> passes from <see cref="TableIsTheirsFromUtc"/> until <see cref="EndUtc"/>,
+    /// which is the interval the table is held for the party. Lateness does not end it: past the grace
+    /// a waiter <i>may</i> release the table, and until one does it is still theirs.
+    /// </para>
+    /// <para>
+    /// Everything else is not expecting its party. <b>Completed</b> has ended; <b>PendingApproval</b>,
+    /// both cancellations and <b>NoShow</b> are not active.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="BookingTabRefusedException">
+    /// <c>booking-too-early</c>, <c>booking-ended</c> or <c>booking-not-active</c>.
+    /// </exception>
+    public void RequireTableIsTheirsAt(DateTime nowUtc, int walkInHoldbackMinutes)
+    {
+        var earliestUtc = TableIsTheirsFromUtc(walkInHoldbackMinutes);
+
+        switch (Status)
+        {
+            case ReservationStatus.Seated:
+                return;
+
+            case ReservationStatus.Confirmed:
+                break;
+
+            case ReservationStatus.Completed:
+                throw new BookingTabRefusedException(
+                    BookingTabRefusedException.Ended,
+                    this,
+                    earliestUtc,
+                    $"Booking {Code} is finished. To order at the table now, scan the code on it.");
+
+            case ReservationStatus.PendingApproval:
+                throw new BookingTabRefusedException(
+                    BookingTabRefusedException.NotActive,
+                    this,
+                    earliestUtc,
+                    $"Booking {Code} is still waiting for the venue to confirm it, so there is no table to "
+                    + "open a tab on yet. Ask a member of staff.");
+
+            case ReservationStatus.NoShow:
+                throw new BookingTabRefusedException(
+                    BookingTabRefusedException.NotActive,
+                    this,
+                    earliestUtc,
+                    $"Booking {Code} was released when nobody arrived. Ask a member of staff for a table.");
+
+            default:
+                throw new BookingTabRefusedException(
+                    BookingTabRefusedException.NotActive,
+                    this,
+                    earliestUtc,
+                    $"Booking {Code} was cancelled. Ask a member of staff for a table.");
+        }
+
+        if (nowUtc < earliestUtc)
+        {
+            throw new BookingTabRefusedException(
+                BookingTabRefusedException.TooEarly,
+                this,
+                earliestUtc,
+                walkInHoldbackMinutes > 0
+                    ? $"It is too early to open the tab for booking {Code}: the table is kept for you from "
+                      + $"{walkInHoldbackMinutes} minutes before it starts. Try again then."
+                    : $"It is too early to open the tab for booking {Code}: the table is yours from the "
+                      + "time it starts. Try again then.");
+        }
+
+        if (nowUtc >= EndUtc)
+        {
+            throw new BookingTabRefusedException(
+                BookingTabRefusedException.Ended,
+                this,
+                earliestUtc,
+                $"Booking {Code} has ended. To order at the table now, scan the code on it.");
+        }
+    }
+
+    /// <summary>
     /// "We are five minutes away." Pushes the hold out by the branch's extension, <b>once</b>.
     /// </summary>
     /// <remarks>

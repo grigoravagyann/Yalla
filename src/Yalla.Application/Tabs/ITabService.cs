@@ -32,6 +32,29 @@ public interface ITabService
     Task<TabAccessResult> OpenAsync(OpenTabCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// "I'm at my table": the signed-in diner opens the tab on their own booked table with the
+    /// booking's code, or lands on the one already open there. The four cases of
+    /// <see cref="OpenAsync"/>, reached from the booking instead of the QR code.
+    /// </summary>
+    /// <remarks>
+    /// A free table is seated <i>as the booking</i> - the sitting names it and the booking moves to
+    /// Seated - rather than as a walk-in, so the floor does not go on treating a party that is eating
+    /// as one that has not arrived.
+    /// </remarks>
+    /// <exception cref="Domain.Occupancy.BookingNotFoundException">
+    /// None of the caller's bookings has that code - answered the same whether or not somebody else's does.
+    /// </exception>
+    /// <exception cref="Domain.Occupancy.BookingTabRefusedException">
+    /// The booking is not expecting its party now: too early, ended, or not active.
+    /// </exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">
+    /// The table is out of service, or the tab there is closing and takes no new participants.
+    /// </exception>
+    Task<TabAccessResult> OpenByBookingAsync(
+        OpenTabByBookingCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// An invitation token was presented. Puts the device on the tab as a pending participant and
     /// issues it a token scoped to that tab.
     /// </summary>

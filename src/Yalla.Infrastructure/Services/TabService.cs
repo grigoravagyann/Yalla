@@ -77,28 +77,216 @@ internal sealed class TabService(
         // The stored form: every token is written lower-case, and the column compares exactly.
         var qrToken = DiningTable.NormaliseQrToken(command.QrToken);
 
-        if (command.ClientCommandId == Guid.Empty)
-        {
-            throw new ArgumentException("A clientCommandId is required.", nameof(command));
-        }
-
-        if (command.PartySize is { } size && size <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(command), size, "Party size must be greater than zero.");
-        }
+        RequireOpening(command.ClientCommandId, command.PartySize);
 
         if (await FindReplayAsync(command.ClientCommandId, device, cancellationToken) is { } replay)
         {
             return replay;
         }
 
+        return await OpenAtTableAsync(
+            new TabOpening(
+                device, command.ClientCommandId, command.DisplayName, command.SettlementMode, command.HideTotalFromGuests),
+            async token =>
+            {
+                var table = await db.DiningTables
+                    .Include(t => t.Branch)
+                        .ThenInclude(b => b.Venue)
+                    .FirstOrDefaultAsync(t => t.QrToken == qrToken && t.IsActive, token)
+                    ?? throw new KeyNotFoundException("That QR code does not belong to a table in service.");
+
+                // Nobody knows who scanned, so a free table is seated as a walk-in.
+                return new TableToOpen(
+                    table,
+                    seatToken => tableState.SeatQrScanAsync(
+                        new SeatQrScanCommand(table.BranchId, table.Id, command.PartySize ?? 1, command.ClientCommandId),
+                        seatToken));
+            },
+            cancellationToken);
+    }
+
+    public async Task<TabAccessResult> OpenByBookingAsync(
+        OpenTabByBookingCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        var device = RequireDevice(command.DeviceId);
+
+        RequireOpening(command.ClientCommandId, command.PartySize);
+
+        var dinerUserId = RequireVerifiedDiner();
+
+        // Whose booking it is, before anything else - before the replay and before the table is
+        // looked at - so nothing further down can tell a caller anything about a booking that is not
+        // theirs.
+        var reservationId = await FindOwnBookingAsync(command.BookingCode, dinerUserId, cancellationToken);
+
+        if (await FindReplayAsync(command.ClientCommandId, device, cancellationToken) is { } replay)
+        {
+            return replay;
+        }
+
+        return await OpenAtTableAsync(
+            new TabOpening(
+                device, command.ClientCommandId, command.DisplayName, command.SettlementMode, command.HideTotalFromGuests),
+            async token =>
+            {
+                // Read again on every attempt. A waiter seating the party between two attempts moves
+                // the booking to Seated and puts a sitting on the table, and the next pass has to see
+                // both rather than try to seat the party a second time.
+                var booking = await db.Reservations.FirstAsync(r => r.Id == reservationId, token);
+
+                var table = await db.DiningTables
+                    .Include(t => t.Branch)
+                        .ThenInclude(b => b.Venue)
+                    .FirstAsync(t => t.Id == booking.DiningTableId, token);
+
+                // Expecting its party, and the table theirs by now - the booking's own rule, with the
+                // branch's walk-in holdback as the moment the table starts being kept for them.
+                booking.RequireTableIsTheirsAt(clock.UtcNow, table.Branch.ReservationPolicy.WalkInHoldbackMinutes);
+
+                // Settled, but not cleared yet. Paying the last of a bill closes the sitting and
+                // leaves the table occupied on purpose - the party is still sitting there - and only
+                // a waiter freeing the table completes the booking. Between the two the booking still
+                // reads Seated with no sitting left to join, and seating the party a second time
+                // would throw the state machine's "Only a confirmed reservation can be seated",
+                // which reaches the app as a bare conflicting-state carrying none of the booking's
+                // facts. Decided here instead, so the answer stays in the booking family.
+                if (booking.Status == ReservationStatus.Seated
+                    && !await db.TableSessions.AnyAsync(
+                        s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, token))
+                {
+                    throw new BookingTabRefusedException(
+                        BookingTabRefusedException.Ended,
+                        booking,
+                        booking.TableIsTheirsFromUtc(table.Branch.ReservationPolicy.WalkInHoldbackMinutes),
+                        $"The bill for booking {booking.Code} has been settled. Ask a member of staff to "
+                        + "order anything more - the table has not been cleared yet.");
+                }
+
+                // Taken off the floor plan with the booking still on it. A scan cannot find such a
+                // table at all; this diner holds a booking for it and needs a waiter, so they are told
+                // what an out-of-service table tells a scanner.
+                if (!table.IsActive)
+                {
+                    throw OutOfService(table);
+                }
+
+                // A free table is seated as the booking, not as a walk-in - see SeatBookedPartyAsync.
+                return new TableToOpen(
+                    table,
+                    seatToken => tableState.SeatBookedPartyAsync(
+                        new SeatBookedPartyCommand(
+                            table.BranchId, table.Id, booking.Id, command.ClientCommandId, command.PartySize),
+                        seatToken));
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The caller's own booking with this code, or the one refusal for every other case.
+    /// </summary>
+    /// <remarks>
+    /// Matched in the stored form (<see cref="ReservationCode.Normalise"/>), so "dfj-fqy" finds
+    /// DFJFQY. Somebody else's booking is refused with exactly the answer a code nobody holds gets:
+    /// the code is read out at the door and proves nothing, and a different answer would tell anybody
+    /// with an account which codes are live.
+    /// </remarks>
+    private async Task<Guid> FindOwnBookingAsync(
+        string? bookingCode,
+        Guid dinerUserId,
+        CancellationToken cancellationToken)
+    {
+        var code = ReservationCode.Normalise(bookingCode);
+
+        // Not a code this system could have issued, so there is nothing to ask the database.
+        if (!ReservationCode.IsWellFormed(code))
+        {
+            throw new BookingNotFoundException();
+        }
+
+        var booking = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.Code == code)
+            .Select(r => new { r.Id, r.DinerUserId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (booking is null || booking.DinerUserId != dinerUserId)
+        {
+            throw new BookingNotFoundException();
+        }
+
+        return booking.Id;
+    }
+
+    /// <summary>
+    /// The calling diner's account. The <c>VerifiedDiner</c> policy on the route has already refused
+    /// anyone else; this is the id the booking is looked up under, and it fails closed if the two
+    /// ever disagree.
+    /// </summary>
+    private Guid RequireVerifiedDiner()
+    {
+        if (actor.Type != ActorType.Diner || actor.DinerUserId is not { } dinerUserId || dinerUserId == Guid.Empty)
+        {
+            throw new UnauthorizedAccessException("Opening a tab from a booking requires a verified diner account.");
+        }
+
+        return dinerUserId;
+    }
+
+    /// <summary>
+    /// What every opening must carry. Named <c>command</c>, which the API reports as a refusal of the
+    /// request as a whole rather than of a field - the filter in front has already refused a missing
+    /// command id with its own sentence, so this is the backstop for any other caller.
+    /// </summary>
+    private static void RequireOpening(Guid clientCommandId, int? partySize)
+    {
+        if (clientCommandId == Guid.Empty)
+        {
+            throw new ArgumentException("A clientCommandId is required.", "command");
+        }
+
+        if (partySize is { } size && size <= 0)
+        {
+            throw new ArgumentOutOfRangeException("command", size, "Party size must be greater than zero.");
+        }
+    }
+
+    private static DomainStateException OutOfService(DiningTable table) =>
+        new($"Table {table.Label} is out of service. Ask a member of staff for another table.");
+
+    /// <summary>What an opening asks for, whichever way it found its table.</summary>
+    private sealed record TabOpening(
+        string Device,
+        Guid ClientCommandId,
+        string? DisplayName,
+        SettlementMode? SettlementMode,
+        bool? HideTotalFromGuests);
+
+    /// <summary>
+    /// The table an opening is for, and how to seat it when nobody is sitting there yet - the one step
+    /// a scan and a booking do differently.
+    /// </summary>
+    private sealed record TableToOpen(
+        DiningTable Table,
+        Func<CancellationToken, Task<TableStateChangeResult>> SeatFreeTable);
+
+    /// <summary>
+    /// The four table-state cases of <c>docs/tabs.md</c>, for a scan and a booking alike.
+    /// </summary>
+    /// <remarks>
+    /// One loop, so the host, the pending guest, the closing tab and every race between two phones
+    /// are the same whichever way the table was found. <paramref name="findTable"/> runs on every
+    /// attempt, because losing a race is new information about the table, and the change tracker is
+    /// cleared before looking again.
+    /// </remarks>
+    private async Task<TabAccessResult> OpenAtTableAsync(
+        TabOpening opening,
+        Func<CancellationToken, Task<TableToOpen>> findTable,
+        CancellationToken cancellationToken)
+    {
         for (var attempt = 1; attempt <= MaxOpenAttempts; attempt++)
         {
-            var table = await db.DiningTables
-                .Include(t => t.Branch)
-                    .ThenInclude(b => b.Venue)
-                .FirstOrDefaultAsync(t => t.QrToken == qrToken && t.IsActive, cancellationToken)
-                ?? throw new KeyNotFoundException("That QR code does not belong to a table in service.");
+            var (table, seatFreeTable) = await findTable(cancellationToken);
 
             // The sticker on the table outlives the business relationship. A suspended or deleted
             // venue seats nobody new, whatever is still printed on the furniture.
@@ -107,8 +295,7 @@ internal sealed class TabService(
 
             if (table.Status == TableStatus.OutOfService)
             {
-                throw new DomainStateException(
-                    $"Table {table.Label} is out of service. Ask a member of staff for another table.");
+                throw OutOfService(table);
             }
 
             // The authoritative answer to "is anyone sitting here", rather than the cached
@@ -126,18 +313,17 @@ internal sealed class TabService(
 
                 try
                 {
-                    seated = await tableState.SeatQrScanAsync(
-                        new SeatQrScanCommand(table.BranchId, table.Id, command.PartySize ?? 1, command.ClientCommandId),
-                        cancellationToken);
+                    seated = await seatFreeTable(cancellationToken);
                 }
                 catch (TableStateConflictException ex)
                 {
                     // Somebody else seated this table between our read and our write - almost
-                    // always another phone at the same table. Their session is now the open one.
-                    // The change tracker still holds our failed attempt, so clear it before
-                    // looking again; on the next pass the table is occupied and we join.
+                    // always another phone at the same table, or a waiter seating the booking. Their
+                    // session is now the open one. The change tracker still holds our failed
+                    // attempt, so clear it before looking again; on the next pass the table is
+                    // occupied and we join.
                     logger.LogInformation(
-                        "QR scan lost the seating race on table {TableId} ({TableLabel}); now {CurrentStatus}. Re-reading.",
+                        "Opening a tab lost the seating race on table {TableId} ({TableLabel}); now {CurrentStatus}. Re-reading.",
                         ex.TableId, ex.TableLabel, ex.CurrentStatus);
 
                     db.ChangeTracker.Clear();
@@ -150,18 +336,18 @@ internal sealed class TabService(
                 outcome = TabOpenOutcome.OpenedNewSession;
             }
 
-            // Case 2 - the session already has a tab. No second tab: the scanner joins it.
+            // Case 2 - the session already has a tab. No second tab: the newcomer joins it.
             var existingTab = await LoadTabBySessionAsync(session.Id, cancellationToken);
 
             if (existingTab is not null)
             {
-                var joined = await JoinExistingAsync(existingTab, device, command.DisplayName, cancellationToken);
+                var joined = await JoinExistingAsync(existingTab, opening.Device, opening.DisplayName, cancellationToken);
 
                 return await ResultAsync(existingTab, joined, TabOpenOutcome.JoinedExistingTab, wasReplay: false, cancellationToken);
             }
 
             // Case 1 continued, or case 3 - a seated party with no tab yet. Open one on the
-            // session with this scanner as host.
+            // session with this phone as host.
             var nowUtc = clock.UtcNow;
 
             var tab = new Tab(
@@ -170,11 +356,12 @@ internal sealed class TabService(
                 session.Id,
                 nowUtc,
                 table.Branch.ReservationPolicy.ServiceChargePercent,
-                command.SettlementMode ?? SettlementMode.AnyonePaysAnyAmount,
-                command.HideTotalFromGuests ?? false,
-                command.ClientCommandId);
+                opening.SettlementMode ?? SettlementMode.AnyonePaysAnyAmount,
+                opening.HideTotalFromGuests ?? false,
+                opening.ClientCommandId);
 
-            var host = TabParticipant.Host(tab.Id, NameOrDefault(command.DisplayName, 1), device, nowUtc, actor.DinerUserId);
+            var host = TabParticipant.Host(
+                tab.Id, NameOrDefault(opening.DisplayName, 1), opening.Device, nowUtc, actor.DinerUserId);
 
             tab.SetHostParticipant(host.Id);
             session.AttachTab(tab.Id);
@@ -190,23 +377,23 @@ internal sealed class TabService(
             {
                 // Another phone attached a tab to this very session first. Drop ours and join theirs.
                 logger.LogInformation(
-                    "QR scan lost the tab race on session {SessionId}; joining the tab that won.", session.Id);
+                    "Opening a tab lost the tab race on session {SessionId}; joining the tab that won.", session.Id);
 
                 db.ChangeTracker.Clear();
                 continue;
             }
             catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabClientCommand))
             {
-                // The same scan arrived twice at once and the other copy won. Answer from it.
+                // The same request arrived twice at once and the other copy won. Answer from it.
                 db.ChangeTracker.Clear();
 
-                return await FindReplayAsync(command.ClientCommandId, device, cancellationToken)
+                return await FindReplayAsync(opening.ClientCommandId, opening.Device, cancellationToken)
                        ?? throw new InvalidOperationException(
-                           $"Command {command.ClientCommandId} violated the tab idempotency index but no tab was found.");
+                           $"Command {opening.ClientCommandId} violated the tab idempotency index but no tab was found.");
             }
 
             logger.LogInformation(
-                "Tab {TabId} opened on table {TableId} by device with no account; outcome {Outcome}.",
+                "Tab {TabId} opened on table {TableId}; outcome {Outcome}.",
                 tab.Id, table.Id, outcome);
 
             return await ResultAsync(tab, host, outcome, wasReplay: false, cancellationToken);

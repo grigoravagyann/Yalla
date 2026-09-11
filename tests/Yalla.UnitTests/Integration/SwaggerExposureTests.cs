@@ -320,6 +320,10 @@ public class SwaggerExposureTests
             // to choose what to say, which an untyped context left to guesswork.
             ["HoldExtensionRefusedProblem"] = ["reservationId", "startUtc"],
             ["VerificationCodeInvalidProblem"] = ["attemptsRemaining"],
+
+            // "I'm at my table" refused: the app says "from 19:10" off earliestUtc, and tells a
+            // pending booking from a cancelled one by status.
+            ["BookingTabRefusedProblem"] = ["reservationId", "status", "startUtc", "endUtc", "earliestUtc"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

@@ -78,7 +78,22 @@ public static class SessionOccupancy
             return false;
         }
 
-        // Already started, or starting inside the holdback window.
-        return startUtc <= nowUtc.AddMinutes(walkInHoldbackMinutes);
+        // Already started, or starting inside the holdback window: from the instant the branch
+        // starts holding the table back, by the one definition of that instant below.
+        return nowUtc >= HoldbackBeginsAtUtc(startUtc, walkInHoldbackMinutes);
     }
+
+    /// <summary>
+    /// The instant the branch starts holding a table back for the booking that starts at
+    /// <paramref name="startUtc"/>: its walk-in holdback before the start.
+    /// </summary>
+    /// <remarks>
+    /// One definition, two readers. From here a waiter who seats somebody else at the table is
+    /// warned (<see cref="WithinWalkInHoldback"/>), and from here the booked party may take the table
+    /// with their booking code (<c>Reservation.RequireTableIsTheirsAt</c>) - the moment the venue
+    /// starts keeping the table for somebody is the moment it is theirs to sit at, and two numbers
+    /// for the one moment would sooner or later disagree.
+    /// </remarks>
+    public static DateTime HoldbackBeginsAtUtc(DateTime startUtc, int walkInHoldbackMinutes) =>
+        startUtc.AddMinutes(-walkInHoldbackMinutes);
 }
