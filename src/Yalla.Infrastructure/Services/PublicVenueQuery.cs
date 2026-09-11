@@ -438,7 +438,10 @@ internal sealed class PublicVenueQuery(
             hours,
             IsOpenNow: false,
             FreeTableCount: 0,
-            TableCount: tables.Count(t => t.IsBookable),
+
+            // Every table the plan draws, bookable or not: the set the free count counts, so the
+            // page's "x of y" is out of the room it shows.
+            TableCount: tables.Count,
             new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables),
 
             // Placeholders. Both are read live by the caller and deliberately absent from the
@@ -459,7 +462,7 @@ internal sealed class PublicVenueQuery(
     }
 
     /// <summary>
-    /// How many active, bookable tables have nobody at them, per branch. Cached for seconds.
+    /// How many active tables have nobody at them, per branch. Cached for seconds.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -468,11 +471,13 @@ internal sealed class PublicVenueQuery(
     /// is occupied is a second answer waiting to disagree with the first.
     /// </para>
     /// <para>
-    /// <b>Bookable only, because the page's <c>TableCount</c> is.</b> This counted every active
-    /// table while the denominator counted the bookable ones, so a bar of empty walk-in stools read
-    /// "18 of 10 free". Only the count changes: which drawn tables are free is
-    /// <see cref="OccupiedTableLabelsAsync"/>, and filtering that one too would draw an occupied
-    /// stool as empty.
+    /// <b>Every active table, bookable or not - and the page's <c>TableCount</c> counts the same.</b>
+    /// The denominator used to count bookable tables only, so a bar of empty walk-in stools read
+    /// "18 of 10 free". Narrowing this count to bookable tables made the two agree, but then a room
+    /// with its tables taken and its stools empty read "no tables free" beside a stool the plan
+    /// draws free - to a walk-in, who is who this number is for. So the denominator widened
+    /// instead, and the count is exactly the tables <see cref="OccupiedTableLabelsAsync"/> leaves
+    /// free on the plan.
     /// </para>
     /// </remarks>
     private async Task<Dictionary<Guid, int>> FreeTableCountsAsync(
@@ -494,7 +499,7 @@ internal sealed class PublicVenueQuery(
 
                 return await db.DiningTables
                     .AsNoTracking()
-                    .Where(t => branchIds.Contains(t.BranchId) && t.IsActive && t.IsBookable && t.Status == TableStatus.Free)
+                    .Where(t => branchIds.Contains(t.BranchId) && t.IsActive && t.Status == TableStatus.Free)
                     .GroupBy(t => t.BranchId)
                     .Select(g => new { BranchId = g.Key, Count = g.Count() })
                     .ToDictionaryAsync(g => g.BranchId, g => g.Count, cancellationToken);

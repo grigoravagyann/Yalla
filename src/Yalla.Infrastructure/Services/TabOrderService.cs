@@ -573,22 +573,35 @@ internal sealed class TabOrderService(
     /// order would be treated as a replay of an order that does not exist.
     /// </para>
     /// <para>
-    /// <b>Scoped to the tab and to the caller.</b> This matched the command id alone, across every
-    /// tab there is, so another tab presenting the same id - and any client that left the field
-    /// out, binding <c>Guid.Empty</c> - got the first order back with that tab's totals. A replay is
-    /// the same phone or the same waiter sending the same order again; anybody else presenting the
-    /// id is a client bug, and the honest answer is that it is taken.
+    /// <b>Scoped to the tab, and to who may be retrying.</b> This matched the command id alone,
+    /// across every tab there is, so another tab presenting the same id - and any client that left
+    /// the field out, binding <c>Guid.Empty</c> - got the first order back with that tab's totals. A
+    /// phone's replay is the same participant sending the same order again; another participant
+    /// presenting the id is a client bug, and the honest answer is that it is taken.
+    /// </para>
+    /// <para>
+    /// <b>A staff replay is any staff-placed order on the tab, whichever waiter placed it.</b> The
+    /// tablet queues per device, not per waiter, and sends under whoever is signed in when the
+    /// connection returns - so an order whose answer was lost comes back under the next waiter's
+    /// PIN. Matching the waiter as well answered that with 409, which the tablet files as refused,
+    /// and the next step was keying the order in again and the kitchen cooking it twice. The
+    /// branch check runs first, because it is now the only thing between the order and a staff
+    /// caller who holds its tab id and command id.
     /// </para>
     /// </remarks>
     /// <exception cref="ClientCommandIdAlreadyUsedException">
-    /// Somebody else on this tab placed the order this command id names.
+    /// The order this command id names is not one this caller can be retrying: another
+    /// participant's, a phone's when the caller is staff, or staff's when the caller is a phone.
+    /// </exception>
+    /// <exception cref="Yalla.Domain.Staff.StaffBranchScopeException">
+    /// A staff caller, and the tab is not on a branch they may act on.
     /// </exception>
     private async Task<Guid?> FindReplayAsync(Guid tabId, Guid clientCommandId, CancellationToken cancellationToken)
     {
         var existing = await db.TabOrders
             .AsNoTracking()
             .Where(o => o.TabId == tabId && o.ClientCommandId == clientCommandId)
-            .Select(o => new { o.Id, o.PlacedByParticipantId, o.PlacedByStaffId })
+            .Select(o => new { o.Id, o.PlacedByParticipantId, o.PlacedByStaffId, o.Tab.BranchId })
             .FirstOrDefaultAsync(cancellationToken);
 
         if (existing is null)
@@ -596,11 +609,21 @@ internal sealed class TabOrderService(
             return null;
         }
 
-        var sameCaller = actor.Type == ActorType.Staff
-            ? existing.PlacedByStaffId is { } staffId && staffId == actor.StaffMemberId
-            : existing.PlacedByParticipantId is { } participantId && participantId == actor.ParticipantId;
+        bool isReplay;
 
-        return sameCaller
+        if (actor.Type == ActorType.Staff)
+        {
+            await branchGuard.RequireAsync(
+                RequireStaff("Place an order"), existing.BranchId, "Acting on this tab", "tab", cancellationToken);
+
+            isReplay = existing.PlacedByStaffId is not null;
+        }
+        else
+        {
+            isReplay = existing.PlacedByParticipantId is { } participantId && participantId == actor.ParticipantId;
+        }
+
+        return isReplay
             ? existing.Id
             : throw new ClientCommandIdAlreadyUsedException(
                 clientCommandId,

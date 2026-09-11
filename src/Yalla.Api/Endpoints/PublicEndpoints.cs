@@ -55,7 +55,8 @@ public static class PublicEndpoints
             .WithDescription(
                 "Active, non-suspended venues with their active branches: name, type, the slug pair "
                 + "that addresses each branch, its IANA `timeZoneId`, whether it is open now, and a "
-                + "**live free-table count** of its bookable tables.\n\n"
+                + "**live free-table count**: every table nobody is sitting at, walk-in-only stools "
+                + "included, the same tables the branch page's `tableCount` counts.\n\n"
                 + "The estate is cached for minutes; the table counts, open-now and which branches "
                 + "are still published for fifteen seconds, because a stale menu is fine and a stale "
                 + "table count is the one thing here that can waste somebody's evening. A suspended "

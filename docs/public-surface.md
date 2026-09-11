@@ -26,7 +26,7 @@ venue id on the public surface; the slug is the public identity. Each branch car
 | `name`, `address` | As a person would read them |
 | `timeZoneId` | The branch's IANA zone. A slot a diner picks after browsing is a wall-clock time at the branch, and a phone set to another zone renders it in this one rather than guessing - the app guessed `Asia/Yerevan` |
 | `isOpenNow` | Inside an opening block at this moment, in the branch's own zone |
-| `freeTableCount` | **Bookable** tables with nobody at them - the same tables the page's `tableCount` counts |
+| `freeTableCount` | Tables with nobody at them, **walk-in-only stools included** - the same tables the page's `tableCount` counts and its plan draws. Zero means every seat is taken |
 
 **Caching.** The estate - venues, branches, names, zones - is held for five minutes. Everything
 live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, and *which branches are
@@ -241,9 +241,11 @@ Notes for a mapper:
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.
 - `isFree` on a table and `freeTableCount` are true as of `asOfUtc`, not as of render time.
-- `tableCount` counts **bookable** tables, and so does `freeTableCount`, so the page can never
-  read "3 of 2 free" - it did, when the free count took every active table. A walk-in stool
-  somebody is sitting at is still drawn taken: `isFree` is per table, bookable or not.
+- `tableCount` counts **every active table**, bookable or walk-in only, and so does
+  `freeTableCount`: the count is exactly the tables drawn with `isFree: true`, out of the tables
+  drawn. It once read "3 of 2 free", when the denominator took bookable tables only. Narrowing the
+  free count to bookable tables instead said "no tables free" beside an empty stool on the plan -
+  to a walk-in, who is who the live count is for.
 - There is no `qrToken` on a public table and there never will be: it is the credential that opens
   a tab.
 

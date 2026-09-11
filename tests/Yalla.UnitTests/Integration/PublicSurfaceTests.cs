@@ -401,13 +401,14 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// The free count counts the tables the table count counts, and a bar stool somebody is sitting
-    /// on is still drawn taken.
+    /// The free count counts the tables the table count counts - every table on the plan - and a bar
+    /// stool somebody is sitting on is drawn taken and not counted.
     /// </summary>
     /// <remarks>
     /// The free count took every active table and the table count only the bookable ones, so an
-    /// empty bar read as "3 of 2 free". The fix is to the count only: which drawn tables are free
-    /// is a separate read, and filtering that one as well would draw an occupied stool as empty.
+    /// empty bar read as "3 of 2 free". Narrowing the free count to bookable tables made the two
+    /// agree and left walk-in seats out of the one number a walk-in reads; widening the table count
+    /// makes them agree and keeps both equal to what the plan draws.
     /// </remarks>
     [SkippableFact]
     public async Task The_free_count_counts_the_same_tables_as_the_table_count()
@@ -444,11 +445,11 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         var tableCount = page.GetProperty("tableCount").GetInt32();
         var freeCount = page.GetProperty("freeTableCount").GetInt32();
 
-        Assert.Equal(2, tableCount);
+        Assert.Equal(4, tableCount);
         Assert.True(
             freeCount <= tableCount,
             $"The page says {freeCount} of {tableCount} free: the two numbers count different tables.");
-        Assert.Equal(2, freeCount);
+        Assert.Equal(3, freeCount);
 
         var tables = page.GetProperty("floorPlan").GetProperty("tables").EnumerateArray()
             .ToDictionary(t => t.GetProperty("label").GetString()!);
@@ -456,12 +457,80 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         Assert.False(tables["Bar 2"].GetProperty("isFree").GetBoolean());
         Assert.True(tables["Bar 1"].GetProperty("isFree").GetBoolean());
 
+        // The number under the venue name is the plan's green tables, out of the plan's tables.
+        Assert.Equal(tables.Count, tableCount);
+        Assert.Equal(tables.Values.Count(t => t.GetProperty("isFree").GetBoolean()), freeCount);
+
         // And the browse card says the same as the page.
         var card = Card(await ReadAsync(anonymous, "/api/public/venues"), world.VenueSlug);
 
         Assert.NotNull(card);
         Assert.Equal(
             freeCount,
+            Assert.Single(card.Value.GetProperty("branches").EnumerateArray()).GetProperty("freeTableCount").GetInt32());
+    }
+
+    /// <summary>
+    /// An empty walk-in stool is a free table, so a room with every bookable table taken does not
+    /// say "none free" beside an empty seat on its own plan.
+    /// </summary>
+    /// <remarks>
+    /// With the free count narrowed to bookable tables, a bar with empty stools and both tables
+    /// taken read zero - "No tables free right now" on the diner's Explore card and the web page -
+    /// to the walk-in the live count is for, over a plan drawing the stool free.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_empty_walk_in_stool_counts_as_free_when_every_bookable_table_is_taken()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+
+        List<string> bookableQrs;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            db.DiningTables.Add(Stool(world.BranchId, "Bar 1"));
+            await db.SaveChangesAsync();
+
+            bookableQrs = await db.DiningTables
+                .Where(t => t.BranchId == world.BranchId && t.IsBookable)
+                .Select(t => t.QrToken)
+                .ToListAsync();
+        }
+
+        Assert.Equal(2, bookableQrs.Count);
+
+        using var anonymous = factory.CreateClient();
+
+        for (var i = 0; i < bookableQrs.Count; i++)
+        {
+            var seated = await anonymous.PostAsJsonAsync(
+                "/api/tabs/open",
+                new { qrToken = bookableQrs[i], deviceId = $"phone-at-table-{i}", clientCommandId = Guid.CreateVersion7() });
+
+            seated.EnsureSuccessStatusCode();
+        }
+
+        var page = await ReadAsync(anonymous, $"/api/public/branches/{world.VenueSlug}/{world.BranchSlug}");
+        var freeCount = page.GetProperty("freeTableCount").GetInt32();
+
+        Assert.Equal(1, freeCount);
+        Assert.Equal(3, page.GetProperty("tableCount").GetInt32());
+
+        var drawnFree = page.GetProperty("floorPlan").GetProperty("tables").EnumerateArray()
+            .Where(t => t.GetProperty("isFree").GetBoolean())
+            .Select(t => t.GetProperty("label").GetString())
+            .ToList();
+
+        Assert.Equal("Bar 1", Assert.Single(drawnFree));
+
+        var card = Card(await ReadAsync(anonymous, "/api/public/venues"), world.VenueSlug);
+
+        Assert.NotNull(card);
+        Assert.Equal(
+            1,
             Assert.Single(card.Value.GetProperty("branches").EnumerateArray()).GetProperty("freeTableCount").GetInt32());
     }
 

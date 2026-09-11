@@ -338,6 +338,116 @@ public sealed class OrderingTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A waiter's order replayed under another waiter's sign-in answers with the original order.
+    /// </summary>
+    /// <remarks>
+    /// The tablet queues a spoken order per device, not per waiter, and sends it under whoever is
+    /// signed in when the connection returns. Waiter A's order reached the kitchen, the answer was
+    /// lost, and waiter B unlocked the tablet with a PIN. The replay matched the staff member as well
+    /// as the tab, so B's send got 409, the queue filed it as refused, and the natural next step was
+    /// keying the order in again - and the kitchen cooking it twice.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_staff_order_replayed_under_another_waiters_sign_in_returns_the_original()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var waiterB = new StaffMember(
+            world.Branch.VenueId,
+            "Second Waiter",
+            $"+3743{Guid.NewGuid().ToString("N")[..7]}",
+            StaffRole.Waiter,
+            "hash",
+            world.Branch.BranchId);
+
+        db.StaffMembers.Add(waiterB);
+        await db.SaveChangesAsync();
+
+        var command = new PlaceOrderCommand(
+            world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7());
+
+        var first = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(command);
+
+        await using var tabletDb = fixture.CreateContext(world.Clock);
+
+        var replayed = await fixture.CreateOrderService(tabletDb, world.Clock, TestActor.Waiter(waiterB.Id))
+            .PlaceOrderAsync(command);
+
+        Assert.True(replayed.WasReplay);
+        Assert.Equal(first.OrderId, replayed.OrderId);
+
+        await using var verify = fixture.CreateContext(world.Clock);
+
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// A waiter presenting a phone's command id on the same tab is refused rather than replayed.
+    /// </summary>
+    /// <remarks>
+    /// A staff replay matches any staff-placed order on the tab, whichever waiter placed it. It must
+    /// stay a staff rule: a diner's order is not the answer to a waiter's command.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_waiter_presenting_a_diners_command_id_is_refused_rather_than_replayed()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+        var commandId = Guid.CreateVersion7();
+
+        await fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(world.TabId, [new OrderItemInput(world.Menu.Wine, 1)], commandId));
+
+        await using var staffDb = fixture.CreateContext(world.Clock);
+
+        await Assert.ThrowsAsync<ClientCommandIdAlreadyUsedException>(
+            () => fixture.CreateOrderService(staffDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                .PlaceOrderAsync(new PlaceOrderCommand(
+                    world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], commandId)));
+
+        await using var verify = fixture.CreateContext(world.Clock);
+
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// Another branch's waiter presenting a staff command id is refused by branch, not answered with
+    /// the order.
+    /// </summary>
+    /// <remarks>
+    /// A staff replay no longer asks which waiter placed the order, so the only thing between that
+    /// order and a stranger holding its tab id and command id is the branch check. The service ran
+    /// that check on a new order only, after the replay lookup had already answered.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_staff_command_id_from_another_branchs_waiter_is_refused_by_branch()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+        var elsewhere = await TestBranchBuilder.CreateAsync(db);
+
+        var command = new PlaceOrderCommand(
+            world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7());
+
+        await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(command);
+
+        await using var strangerDb = fixture.CreateContext(world.Clock);
+
+        await Assert.ThrowsAsync<StaffBranchScopeException>(
+            () => fixture.CreateOrderService(strangerDb, world.Clock, TestActor.Waiter(elsewhere.WaiterId))
+                .PlaceOrderAsync(command));
+    }
+
+    /// <summary>
     /// Two requests with one command id that race past the replay check together place one order.
     /// </summary>
     /// <remarks>

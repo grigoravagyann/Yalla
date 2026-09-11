@@ -82,8 +82,14 @@ tab it names.
 **Orders follow the same rule, per tab.** `UX_TabOrders_TabId_ClientCommandId` makes a retry that
 races its original lose, and answer with the order that won, rather than send the kitchen the order
 twice - the replay check alone is a read followed by an insert, and both requests passed it. A
-replay is matched on the tab and the caller only: another participant presenting the id gets 409
-`client-command-id-in-use`. And an order, a void, an adjustment or a cash payment with no
+phone's replay is matched on the tab and the participant: another participant presenting the id
+gets 409 `client-command-id-in-use`. A staff replay is matched on the tab and **any** staff-placed
+order on it, whichever waiter placed it: the tablet queues per device and sends under whoever is
+signed in when the connection returns, so waiter A's order whose answer was lost comes back under
+waiter B's PIN, and B gets A's order with `wasReplay: true` rather than a 409 that ends with the
+order keyed in twice. The branch check runs before that answer, so a waiter from another branch
+gets 403. A waiter presenting a phone's command id, or a phone a waiter's, still gets 409. And an
+order, a void, an adjustment or a cash payment with no
 `clientCommandId` is refused with 400 before it runs. The lookup used to match the id across every
 tab, so a missing id - bound as `Guid.Empty` - replayed some other tab's order, totals and all.
 

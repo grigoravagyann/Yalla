@@ -27,9 +27,10 @@ public sealed record PublicVenueCard(
 /// <param name="Name">The branch's name.</param>
 /// <param name="Address">Where it is.</param>
 /// <param name="FreeTableCount">
-/// How many bookable tables have nobody sitting at them right now - the same tables the branch
-/// page's <c>tableCount</c> counts, so the two can never read "3 of 2 free". The one volatile
-/// number here, and the reason the browse list is cached for seconds rather than minutes.
+/// How many tables have nobody sitting at them right now, walk-in-only stools included - the same
+/// tables the branch page's <c>tableCount</c> counts and its plan draws, so the two can never read
+/// "3 of 2 free" and zero means every seat is taken. The one volatile number here, and the reason
+/// the browse list is cached for seconds rather than minutes.
 /// </param>
 /// <param name="IsOpenNow">Whether it is inside an opening block at this moment, in its own zone.</param>
 /// <param name="TimeZoneId">
@@ -76,11 +77,14 @@ public sealed record PublicBranchCard(
 /// </para>
 /// </param>
 /// <param name="FreeTableCount">
-/// Bookable tables with nobody at them right now, so it is always out of <paramref name="TableCount"/>.
-/// A walk-in-only stool somebody is sitting at is still drawn taken on the plan: that is each
-/// table's own <c>isFree</c>, which every active table has, bookable or not.
+/// Tables with nobody at them right now, bookable or walk-in only, so it is always out of
+/// <paramref name="TableCount"/> and always the number of tables the plan draws with
+/// <c>isFree</c> true.
 /// </param>
-/// <param name="TableCount">How many bookable tables there are, so the count has a denominator.</param>
+/// <param name="TableCount">
+/// How many tables there are - every table on the plan, bookable or not - so the count has a
+/// denominator.
+/// </param>
 /// <param name="FloorPlan">
 /// The room, in diner shape: the canvas, the areas and the tables with their geometry and whether
 /// each is free. <b>No QR tokens and no staff state</b> - see <see cref="PublicFloorTable"/>.
