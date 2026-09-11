@@ -51,22 +51,22 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         AuthBranch theirs;
         PlatformAdminAccount admin;
         Guid secondManagerId;
-        OwnerAccount owner;
+        PanelAccount owner;
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             mine = await AuthTestData.CreateBranchAsync(db);
             theirs = await AuthTestData.CreateBranchAsync(db);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
-            owner = await SeedOwnerAsync(db, mine.VenueId);
-            secondManagerId = await SeedManagerAsync(db, mine.VenueId);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
         }
 
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
         using var neighbour = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, theirs));
         using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, mine));
         using var platform = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin));
-        using var ownerClient = factory.CreateClientWithToken(await SignInAsync(factory, owner.Email, owner.Password));
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
 
         var route = $"/api/venues/{mine.VenueId}/staff/{secondManagerId}/sign-in";
 
@@ -132,17 +132,17 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
             .With("RateLimiting:GlobalPermitLimit", "1000");
 
         AuthBranch mine;
-        OwnerAccount owner;
+        PanelAccount owner;
         Guid secondManagerId;
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             mine = await AuthTestData.CreateBranchAsync(db);
-            owner = await SeedOwnerAsync(db, mine.VenueId);
-            secondManagerId = await SeedManagerAsync(db, mine.VenueId);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
         }
 
-        using var ownerClient = factory.CreateClientWithToken(await SignInAsync(factory, owner.Email, owner.Password));
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
 
         var route = $"/api/venues/{mine.VenueId}/staff/{secondManagerId}/sign-in";
 
@@ -173,15 +173,15 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         await using var factory = NewFactory();
 
         AuthBranch mine;
-        OwnerAccount owner;
+        PanelAccount owner;
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             mine = await AuthTestData.CreateBranchAsync(db);
-            owner = await SeedOwnerAsync(db, mine.VenueId);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
         }
 
-        using var ownerClient = factory.CreateClientWithToken(await SignInAsync(factory, owner.Email, owner.Password));
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
 
         var route = $"/api/venues/{mine.VenueId}/staff/{mine.ManagerId}/sign-in";
 
@@ -217,17 +217,17 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         await using var factory = NewFactory();
 
         AuthBranch mine;
-        OwnerAccount owner;
+        PanelAccount owner;
         Guid newcomerId;
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             mine = await AuthTestData.CreateBranchAsync(db);
-            owner = await SeedOwnerAsync(db, mine.VenueId);
-            newcomerId = await SeedManagerAsync(db, mine.VenueId);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+            newcomerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
         }
 
-        using var ownerClient = factory.CreateClientWithToken(await SignInAsync(factory, owner.Email, owner.Password));
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
 
         var email = $"newcomer-{Guid.NewGuid():N}@example.test";
         var issued = await ownerClient.PostAsJsonAsync(
@@ -371,45 +371,6 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
     // ---------------------------------------------------------------- helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
-
-    /// <summary>An owner who can sign in to the panel, seeded the way the fixture manager is.</summary>
-    private sealed record OwnerAccount(Guid StaffMemberId, string Email, string Password);
-
-    private static async Task<OwnerAccount> SeedOwnerAsync(YallaDbContext db, Guid venueId)
-    {
-        var email = $"owner-{Guid.NewGuid():N}@example.test";
-        const string password = "owner-password-that-is-long-enough";
-
-        var owner = new StaffMember(venueId, "Founder", $"+374{Random.Shared.Next(10_000_000, 99_999_999)}", StaffRole.Owner, "hash");
-        owner.SetPasswordCredentials(email, new SecretHasher().Hash(password));
-
-        db.StaffMembers.Add(owner);
-        await db.SaveChangesAsync();
-
-        return new OwnerAccount(owner.Id, email, password);
-    }
-
-    /// <summary>A manager with a PIN and nothing else - the console's own creation, as shipped.</summary>
-    private static async Task<Guid> SeedManagerAsync(YallaDbContext db, Guid venueId)
-    {
-        var manager = new StaffMember(venueId, "Second Manager", $"+374{Random.Shared.Next(10_000_000, 99_999_999)}", StaffRole.Manager, "hash");
-
-        db.StaffMembers.Add(manager);
-        await db.SaveChangesAsync();
-
-        return manager.Id;
-    }
-
-    private static async Task<string> SignInAsync(YallaApiFactory factory, string email, string password)
-    {
-        using var client = factory.CreateClient();
-
-        var response = await client.PostAsJsonAsync("/api/auth/venue/sign-in", new { email, password });
-
-        response.EnsureSuccessStatusCode();
-
-        return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!;
-    }
 
     private static object Body(string part) => new { email = $"{part}-{Guid.NewGuid():N}@example.test" };
 

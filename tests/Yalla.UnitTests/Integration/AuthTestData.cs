@@ -1,8 +1,11 @@
+using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 
@@ -27,6 +30,12 @@ internal sealed record AuthTab(Guid TabId, Guid TableId, Guid SessionId, Guid Ho
 
 /// <summary>A seeded platform admin and the credentials that sign them in.</summary>
 internal sealed record PlatformAdminAccount(Guid StaffMemberId, string Email, string Password);
+
+/// <summary>
+/// An owner or manager seeded with an admin-panel sign-in, and the venue and branch their stored
+/// row names. <see cref="BranchId"/> is null for somebody who works across the whole venue.
+/// </summary>
+internal sealed record PanelAccount(Guid StaffMemberId, Guid VenueId, Guid? BranchId, string Email, string Password);
 
 /// <summary>
 /// Fixture data for the authentication tests: a branch whose staff have real hashed credentials,
@@ -76,6 +85,111 @@ internal static class AuthTestData
             WaiterPin,
             branch.TableIds);
     }
+
+    /// <summary>
+    /// An owner who can sign in to the panel. No branch unless one is given: an owner's row
+    /// normally names none, which is also why their token carries no branch claim.
+    /// </summary>
+    public static async Task<PanelAccount> SeedOwnerAsync(
+        YallaDbContext db,
+        Guid venueId,
+        Guid? branchId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var email = $"owner-{Guid.NewGuid():N}@example.test";
+        const string password = "owner-password-that-is-long-enough";
+
+        var owner = new StaffMember(venueId, "Founder", Phone(), StaffRole.Owner, "hash", branchId);
+        owner.SetPasswordCredentials(email, new SecretHasher().Hash(password));
+
+        db.StaffMembers.Add(owner);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new PanelAccount(owner.Id, venueId, branchId, email, password);
+    }
+
+    /// <summary>
+    /// A second manager of the venue, at a branch or across all of them. With
+    /// <paramref name="canSignIn"/> false they have a PIN and nothing else - the console's own
+    /// creation, as shipped - which the sign-in issue tests rely on.
+    /// </summary>
+    public static async Task<PanelAccount> SeedManagerAsync(
+        YallaDbContext db,
+        Guid venueId,
+        Guid? branchId = null,
+        bool canSignIn = true,
+        CancellationToken cancellationToken = default)
+    {
+        var email = $"manager-{Guid.NewGuid():N}@example.test";
+
+        var manager = new StaffMember(venueId, "Second Manager", Phone(), StaffRole.Manager, "hash", branchId);
+
+        if (canSignIn)
+        {
+            manager.SetPasswordCredentials(email, new SecretHasher().Hash(ManagerPassword));
+        }
+
+        db.StaffMembers.Add(manager);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return new PanelAccount(manager.Id, venueId, branchId, email, ManagerPassword);
+    }
+
+    /// <summary>Another branch of an existing venue, with its own time zone and no staff of its own.</summary>
+    public static async Task<Guid> AddBranchAsync(
+        YallaDbContext db,
+        Guid venueId,
+        string timeZoneId,
+        string? name = null,
+        bool isActive = true,
+        int tableCount = 0,
+        CancellationToken cancellationToken = default)
+    {
+        var venue = await db.Venues.FirstAsync(v => v.Id == venueId, cancellationToken);
+        var unique = Guid.NewGuid().ToString("N")[..12];
+
+        var branch = new Branch(
+            venue,
+            name: name ?? $"Second Branch {unique}",
+            slug: $"second-branch-{unique}",
+            address: "2 Test Street, Yerevan",
+            latitude: 40.19,
+            longitude: 44.52,
+            timeZoneId: timeZoneId,
+            floorWidth: 1000,
+            floorHeight: 700,
+            subscriptionTier: SubscriptionTier.Paid);
+
+        branch.SetActive(isActive);
+        db.Branches.Add(branch);
+
+        for (var i = 1; i <= tableCount; i++)
+        {
+            db.DiningTables.Add(new DiningTable(
+                branch.Id, label: i.ToString(), seats: 4, x: 50 * i, y: 100, width: 90, height: 90, shape: TableShape.Round));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        return branch.Id;
+    }
+
+    /// <summary>Signs a seeded owner or manager in through the real endpoint and returns their access token.</summary>
+    public static Task<string> SignInAsync(YallaApiFactory factory, PanelAccount account) =>
+        SignInAsync(factory, account.Email, account.Password);
+
+    public static async Task<string> SignInAsync(YallaApiFactory factory, string email, string password)
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/auth/venue/sign-in", new { email, password });
+
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!;
+    }
+
+    private static string Phone() => $"+374{Random.Shared.Next(10_000_000, 99_999_999)}";
 
     /// <summary>
     /// The first platform admin, created the way startup creates them: through the seeder, from

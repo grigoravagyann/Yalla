@@ -19,6 +19,7 @@ using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Staff;
 using Yalla.Application.Tabs;
+using Yalla.Application.Venues;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Media;
 using Yalla.Infrastructure.Persistence;
@@ -62,6 +63,10 @@ public static class DependencyInjection
         // The platform tier and venue configuration: everything needed to onboard a venue through
         // the API instead of by hand in SQL.
         services.AddScoped<IPlatformService, PlatformService>();
+
+        // The venue read for the people who work there. Separate from the platform service on
+        // purpose: that one is PlatformAdminOnly and carries fields the platform keeps to itself.
+        services.AddScoped<IManagedVenueQuery, ManagedVenueQuery>();
         services.AddScoped<IBranchSettingsService, BranchSettingsService>();
         services.AddScoped<IMenuService, MenuService>();
 
