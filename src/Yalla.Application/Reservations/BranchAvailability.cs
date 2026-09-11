@@ -54,6 +54,30 @@ public sealed record BranchAvailability
     public required int BufferMinutes { get; init; }
 
     /// <summary>
+    /// How long before the start a diner may still cancel freely - the branch's setting as it stands
+    /// now, which is what a cancellation is judged against.
+    /// </summary>
+    public required int CancellationDeadlineMinutes { get; init; }
+
+    /// <summary>
+    /// The instant past which cancelling the slot asked about is recorded as late: the requested
+    /// start less <see cref="CancellationDeadlineMinutes"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What "free cancellation until" means, stated by the server. The app had nothing to show, so
+    /// it promised free cancellation until the start - and a diner who cancelled at the time it gave
+    /// them was recorded as a late canceller.
+    /// </para>
+    /// <para>
+    /// <b>Can already be past</b>: a slot inside the window has no free cancellation at all, and a
+    /// client should say so rather than promise one. Absent when no slot could be computed, because
+    /// the local time asked about does not exist.
+    /// </para>
+    /// </remarks>
+    public DateTime? CancellationDeadlineUtc { get; init; }
+
+    /// <summary>
     /// A rule that refused the whole request before any table was considered - the date is too far
     /// out, the slot is too soon, the branch is shut. Null when the request itself was fine.
     /// </summary>
@@ -170,10 +194,14 @@ public sealed record TableAvailability
     public ReservationRejectionReason? UnavailableReason { get; init; }
 
     /// <summary>
-    /// True when booking this table will land as <c>PendingApproval</c> rather than confirmed -
-    /// a party over the branch's threshold. Not a refusal, and worth saying before the diner
-    /// commits.
+    /// True when booking this table will land as <c>PendingApproval</c> rather than confirmed: the
+    /// branch approves every booking by hand, or the party is over its threshold. Not a refusal,
+    /// and worth saying before the diner commits.
     /// </summary>
+    /// <remarks>
+    /// The one reason it cannot know is the diner's own no-show record, which needs the diner and is
+    /// only known once they book - the booking carries it in <c>awaitingApprovalBecause</c>.
+    /// </remarks>
     public required bool RequiresApproval { get; init; }
 
     /// <summary>Start of the window on offer. The requested slot, when the table is available.</summary>

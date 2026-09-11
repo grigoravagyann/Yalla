@@ -4,6 +4,7 @@ using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
+using Yalla.Domain.Venues;
 using Xunit.Abstractions;
 
 namespace Yalla.UnitTests.Integration;
@@ -202,6 +203,44 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.All(availability.Tables, t => Assert.True(t.RequiresApproval));
     }
 
+    /// <summary>
+    /// A branch that approves every booking by hand says so before the diner confirms, whatever the
+    /// party size - and the booking does land waiting, so the promise is the truth.
+    /// </summary>
+    /// <remarks>
+    /// Only the party-size threshold used to set <c>RequiresApproval</c>, while booking at a branch
+    /// with auto-confirm off lands every booking pending. The sheet and the confirm button promised
+    /// an instant confirmation the branch was never going to give.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_branch_that_approves_every_booking_says_so_before_the_diner_confirms()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(
+            db, tableCount: 1, policy: ApprovingEverything(ReservationPolicy.DefaultFor(VenueType.Restaurant)));
+
+        await using var readDb = fixture.CreateContext(clock);
+        var availability = await fixture.CreateAvailabilityQuery(readDb, clock)
+            .GetAvailabilityAsync(new AvailabilityRequest(branch.BranchId, 2, BookingDate, SixPm));
+
+        Assert.NotNull(availability);
+
+        var table = Assert.Single(availability.Tables);
+
+        Assert.True(table.IsAvailable);
+        Assert.True(
+            table.RequiresApproval,
+            "Two people, under any threshold, at a branch that approves every booking by hand.");
+
+        var booked = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, table.TableId, SixPm));
+
+        Assert.Equal(ReservationStatus.PendingApproval, booked.Status);
+    }
+
     [SkippableFact]
     public async Task A_request_the_branch_cannot_serve_at_all_says_so_once_rather_than_per_table()
     {
@@ -360,6 +399,25 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         // booked, which are the ones a diner most wants to see.
         Assert.DoesNotContain("INNER JOIN [Reservations]", sql, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>The given policy with auto-confirm switched off, and nothing else changed.</summary>
+    private static ReservationPolicy ApprovingEverything(ReservationPolicy policy) =>
+        new(
+            policy.TurnTimeMinutes,
+            policy.BufferMinutes,
+            policy.GraceMinutes,
+            policy.LateNudgeAfterMinutes,
+            policy.GraceExtensionMinutes,
+            policy.MinLeadMinutes,
+            policy.BookingWindowDays,
+            policy.CancellationDeadlineMinutes,
+            autoConfirm: false,
+            policy.ServiceChargePercent,
+            policy.PricesIncludeVat,
+            policy.MaxSeatOverhang,
+            policy.ApprovalRequiredAbovePartySize,
+            policy.WalkInHoldbackMinutes,
+            policy.ReminderHoursBefore);
 
     private static CreateReservationCommand Booking(
         TestBranch branch,

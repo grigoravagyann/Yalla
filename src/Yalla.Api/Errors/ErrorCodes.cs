@@ -199,6 +199,22 @@ public static class ErrorCodes
     /// </remarks>
     public const string ReportRangeTooLong = "report-range-too-long";
 
+    /// <summary>
+    /// "Keep my table" with no table being held: the booking has not started, or is not a confirmed
+    /// one. HTTP 409, with <c>reservationId</c> and <c>startUtc</c> in <c>context</c>. Offer the button
+    /// from the late nudge, or once the start has passed. Minted by <c>HoldExtensionRefusedException</c>.
+    /// </summary>
+    public const string HoldNotActive = "hold-not-active";
+
+    /// <summary>The booking's one hold extension is already used. HTTP 409.</summary>
+    public const string HoldAlreadyExtended = "hold-already-extended";
+
+    /// <summary>
+    /// The branch offers no hold extensions. HTTP 409. Not the diner's doing, so never "you have
+    /// already let them know": say to speak to the venue.
+    /// </summary>
+    public const string ExtensionsNotOffered = "extensions-not-offered";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -241,6 +257,9 @@ public static class ErrorCodes
         FloorPlanInvalid => "Floor plan invalid",
         BranchNotReady => "Branch is not ready for diners",
         ReportRangeTooLong => "Report range too long",
+        HoldNotActive => "No table being held yet",
+        HoldAlreadyExtended => "Hold already extended",
+        ExtensionsNotOffered => "Hold extensions not offered",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

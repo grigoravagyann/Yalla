@@ -61,6 +61,11 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 t.BranchId,
                 Tier = t.Branch.SubscriptionTier,
 
+                // Named on the tab so the phone need not make a second, public read to put the venue
+                // and branch at the top of the bill.
+                VenueName = t.Branch.Venue.Name,
+                BranchName = t.Branch.Name,
+
                 // The branch's wall clock. Every instant below is UTC and the client renders it in
                 // this zone; without it on the response the client had to fetch the branch as well.
                 t.Branch.TimeZoneId,
@@ -162,6 +167,8 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
         return new TabSnapshot(
             tab.Id,
             tab.BranchId,
+            tab.VenueName,
+            tab.BranchName,
             tab.DiningTableId,
             tab.TableLabel,
             tab.TimeZoneId,

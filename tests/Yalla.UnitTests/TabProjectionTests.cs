@@ -284,6 +284,8 @@ public class TabProjectionTests
         new(
             TabId: Guid.CreateVersion7(),
             BranchId: Guid.CreateVersion7(),
+            VenueName: "Ararat",
+            BranchName: "Opera",
             DiningTableId: Guid.CreateVersion7(),
             TableLabel: "7",
             TimeZoneId: "Asia/Yerevan",

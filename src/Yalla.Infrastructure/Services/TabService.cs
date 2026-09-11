@@ -74,7 +74,8 @@ internal sealed class TabService(
         CancellationToken cancellationToken = default)
     {
         var device = RequireDevice(command.DeviceId);
-        var qrToken = (command.QrToken ?? string.Empty).Trim();
+        // The stored form: every token is written lower-case, and the column compares exactly.
+        var qrToken = DiningTable.NormaliseQrToken(command.QrToken);
 
         if (command.ClientCommandId == Guid.Empty)
         {
@@ -370,6 +371,87 @@ internal sealed class TabService(
             tabId, actingParticipantId, participantId, "Removing a participant",
             TabEventType.ParticipantRemoved,
             (participant, nowUtc) => participant.Remove(nowUtc), cancellationToken);
+
+    /// <summary>
+    /// A participant takes themself off the tab - the same status change a host's remove makes, so
+    /// their lines and payments stay answerable and they stop being put on shared lines.
+    /// </summary>
+    /// <remarks>
+    /// The app used to fake this: it cleared the tab on the phone while the server kept the guest
+    /// approved, on every shared bottle ordered after they walked out and in the split. A host hands
+    /// over to the longest-standing approved guest, which is what the app already tells them; a host
+    /// with nobody approved to hand to is refused, rather than leaving a tab nobody can let anyone
+    /// onto.
+    /// </remarks>
+    public async Task<TabParticipantView> LeaveAsync(
+        Guid tabId,
+        Guid participantId,
+        CancellationToken cancellationToken = default)
+    {
+        var tab = await LoadTabAsync(tabId, cancellationToken);
+
+        var leaving = tab.Participants.FirstOrDefault(p => p.Id == participantId && !p.IsRemoved)
+                      ?? throw new TabPermissionException("Leaving this tab", "a participant on this tab");
+
+        TabParticipant? successor = null;
+
+        if (leaving.IsHost && tab.HostParticipantId == leaving.Id)
+        {
+            // Approved only: somebody still waiting to be let on cannot let anybody else on. Join
+            // order, then approval order for two phones that scanned in the same instant.
+            successor = tab.Participants
+                .Where(p => p.Id != leaving.Id && p.Status == ParticipantStatus.Approved)
+                .OrderBy(p => p.JoinedAtUtc)
+                .ThenBy(p => p.ApprovedAtUtc)
+                .FirstOrDefault()
+                ?? throw new DomainStateException(
+                    "You are the only one on this tab, so there is nobody to hand it to. Ask a waiter "
+                    + "to take it over or close it.");
+
+            // The order ReassignHostAsync keeps: the tab refuses a closed bill before either row is
+            // touched, and the new host must be approved before they can take the role.
+            tab.ReassignHost(successor.Id);
+            successor.BecomeHost();
+            leaving.BecomeGuest();
+
+            ledger.Append(tab.Id, TabEventType.HostReassigned, new
+            {
+                fromParticipantId = leaving.Id,
+                toParticipantId = successor.Id,
+            });
+        }
+
+        leaving.Remove(clock.UtcNow);
+
+        // The roster event every phone at the table already handles, marked as their own doing.
+        ledger.Append(tab.Id, TabEventType.ParticipantRemoved, new
+        {
+            participantId = leaving.Id,
+            displayName = leaving.DisplayName,
+            status = (int)leaving.Status,
+            canOrder = leaving.CanOrder,
+            canSeeTableTotal = leaving.CanSeeTableTotal,
+            canPay = leaving.CanPay,
+            left = true,
+        });
+
+        await ledger.SaveAppendedAsync(cancellationToken);
+
+        // Their token has to stop working now rather than when the cached standing lapses, and the
+        // new host's standing changed with the role.
+        authority.InvalidateParticipant(tab.Id, leaving.Id);
+
+        if (successor is not null)
+        {
+            authority.InvalidateParticipant(tab.Id, successor.Id);
+        }
+
+        logger.LogInformation(
+            "Participant {ParticipantId} left tab {TabId}; the host is now {HostParticipantId}.",
+            leaving.Id, tab.Id, tab.HostParticipantId);
+
+        return ToView(leaving, tab.Status);
+    }
 
     /// <summary>
     /// The entity refuses <c>CanPay</c> without <c>CanSeeTableTotal</c>; nothing here corrects the

@@ -35,6 +35,12 @@ Booking needs an account because a no-show has to be counted against somebody. O
 `clientCommandId`. The answer is always **the one tab for that table**; which of four cases
 applied is reported in `outcome`.
 
+The token is matched **lower-cased, on a column that compares exactly** (`Latin1_General_100_BIN2`).
+Every token is written lower-case and a scan is lower-cased before the lookup, so a code read back
+in capitals still opens its table - by the server's own rule. It used to work only because the
+column had no collation of its own and the database's default ignores case, which hid the diner app
+upper-casing every scan.
+
 | Table state when scanned | What happens | `outcome` | Scanner becomes |
 | --- | --- | --- | --- |
 | **Free** — no open `TableSession` | A `TableSession` opens (`Source = WalkIn`) through the table state machine, which writes the `TableStateChange` audit row (`Free → Occupied`, reason "opened by QR scan"). A `Tab` opens on that session. | `OpenedNewSession` (1) | **Host**, approved, may order, see the total and pay |
@@ -73,6 +79,14 @@ would lose the race between two simultaneous retries; the index does not. A diff
 presenting someone else's command id gets 409 — the id is taken — rather than a token onto the
 tab it names.
 
+**Orders follow the same rule, per tab.** `UX_TabOrders_TabId_ClientCommandId` makes a retry that
+races its original lose, and answer with the order that won, rather than send the kitchen the order
+twice - the replay check alone is a read followed by an insert, and both requests passed it. A
+replay is matched on the tab and the caller only: another participant presenting the id gets 409
+`client-command-id-in-use`. And an order, a void, an adjustment or a cash payment with no
+`clientCommandId` is refused with 400 before it runs. The lookup used to match the id across every
+tab, so a missing id - bound as `Guid.Empty` - replayed some other tab's order, totals and all.
+
 ## 3. Inviting others
 
 The host invites; nobody types a code.
@@ -80,7 +94,10 @@ The host invites; nobody types a code.
 - `POST /api/tabs/{tabId}/join-tokens` (host only) creates a `TabJoinToken` and returns the token
   and a **share URL** carrying it. The **same token** backs the QR the host shows the table and the
   link they paste into WhatsApp or Telegram for the friend who is fifteen minutes late. Two ways to
-  hand over one thing.
+  hand over one thing. The share URL is a **path on the diner link domain** -
+  `https://yalla.am/join/{token}` by default (`Tabs:JoinUrlTemplate`) - which the app's
+  `/join/[token]` route and its Android intent filter match. It was a query string on the web
+  console's local address, which the app's link parser read as the word "join".
 - Tokens live **30 minutes**. The host refreshes by asking for another, which also **revokes any
   earlier one still live** — so a refresh kills a screenshot doing the rounds, and a screenshot from
   last Tuesday gets 401 whatever it once pointed at.
@@ -129,11 +146,15 @@ The rules that decide what a participant may *do* (`TabPermissions`) are the sam
 projection uses to tell the client what they may do, so the app never draws a button that returns
 403.
 
+The view also names where the tab is - `venueName` and `branchName` beside `tableLabel` and
+`timeZoneId` - so a phone that has only scanned a code can head the bill without a second read.
+
 ## 5. Host and lifecycle
 
 | Action | Endpoint | Who | Notes |
 | --- | --- | --- | --- |
 | Remove a participant | `POST .../participants/{id}/remove` | Host | A **status change, never a delete**. Their order lines and any payment they made are financial records and survive them leaving. The host cannot remove themself. |
+| Leave the tab | `POST .../leave` | The participant themself | The same status change, so their lines and payments stay, they are on no shared line ordered afterwards, and their token stops working. **A host** hands the tab to the approved guest who has been on it longest, who gains sight of the total and the right to pay. With nobody approved to take it the host cannot leave (409) and a waiter takes the tab over or closes it. The app used to fake leaving on the phone while the server kept the guest on the bill. |
 | Reassign the host | `POST .../reassign-host` | **Staff**, `WaiterOrAbove` + `BranchScoped` | The host left early or their phone died; otherwise the tab is stuck with nobody able to approve or change the split. The new host must be approved; they gain sight of the total and the right to pay. The old host stays as a guest with their flags unchanged. |
 | Set the settlement mode | `POST .../settlement-mode` | Host | Chosen at open; changeable **until the first payment lands** (reserved or succeeded), then locked and `SettlementModeLockedAtUtc` stamped. After that, 409. |
 | Mark closing | `POST .../closing` | **Staff** | The bill has been asked for. No new participants, no new orders, every live invitation revoked. |

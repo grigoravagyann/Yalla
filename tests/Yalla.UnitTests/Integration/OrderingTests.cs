@@ -1,5 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Yalla.Application.Menus;
 using Yalla.Application.Ordering;
+using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
@@ -271,6 +275,159 @@ public sealed class OrderingTests(SqlServerFixture fixture)
 
         Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
         Assert.Equal(2 * TestMenu.KhachapuriAmd, (await TabAsync(verify, world.TabId)).SubtotalAmd);
+    }
+
+    // ------------------------------------------------------------ command ids, and what a phone may order
+
+    /// <summary>
+    /// A command id another tab already used is not a replay of that tab's order.
+    /// </summary>
+    /// <remarks>
+    /// The replay lookup matched the command id alone, across every tab there is. So a second tab
+    /// presenting the same id got the first tab's order back, totals and all, and its own order
+    /// was silently never placed.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_command_id_from_another_tab_places_this_tabs_own_order()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var theirs = await ArrangeAsync();
+        await using var theirDb = theirs.Db;
+        var mine = await ArrangeAsync();
+        await using var db = mine.Db;
+
+        var commandId = Guid.CreateVersion7();
+
+        var theirOrder = await fixture.CreateOrderService(theirDb, theirs.Clock, TestActor.Participant(theirs.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(theirs.TabId, [new OrderItemInput(theirs.Menu.Wine, 1)], commandId));
+
+        var myOrder = await fixture.CreateOrderService(db, mine.Clock, TestActor.Participant(mine.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(mine.TabId, [new OrderItemInput(mine.Menu.Coffee, 1)], commandId));
+
+        Assert.Equal(mine.TabId, myOrder.TabId);
+        Assert.False(myOrder.WasReplay);
+        Assert.NotEqual(theirOrder.OrderId, myOrder.OrderId);
+    }
+
+    /// <summary>
+    /// Somebody else's command id on the same tab is refused rather than answered with their order.
+    /// </summary>
+    [SkippableFact]
+    public async Task Another_participants_command_id_on_the_same_tab_is_refused_rather_than_replayed()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+        var commandId = Guid.CreateVersion7();
+
+        await fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(world.TabId, [new OrderItemInput(world.Menu.Wine, 1)], commandId));
+
+        await using var guestDb = fixture.CreateContext(world.Clock);
+
+        await Assert.ThrowsAsync<ClientCommandIdAlreadyUsedException>(
+            () => fixture.CreateOrderService(guestDb, world.Clock, TestActor.Participant(world.GuestId))
+                .PlaceOrderAsync(new PlaceOrderCommand(
+                    world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], commandId)));
+
+        await using var verify = fixture.CreateContext(world.Clock);
+
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// Two requests with one command id that race past the replay check together place one order.
+    /// </summary>
+    /// <remarks>
+    /// The replay check is a read followed by an insert. A retry sent after a timeout, while the
+    /// first attempt is still in flight, passes the read on both - and with nothing unique behind it
+    /// both inserts land and the kitchen cooks the order twice. The interceptor makes the race
+    /// happen every run rather than on the unlucky evening: the second request commits in full
+    /// between the first one's check and its insert.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Two_requests_racing_with_one_command_id_place_one_order()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var command = new PlaceOrderCommand(
+            world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7());
+
+        OrderView? overtaker = null;
+
+        var race = new BeforeFirstInsertInto("TabOrders", async () =>
+        {
+            await using var otherDb = fixture.CreateContext(world.Clock);
+
+            overtaker = await fixture.CreateOrderService(otherDb, world.Clock, TestActor.Participant(world.HostId))
+                .PlaceOrderAsync(command);
+        });
+
+        await using var racingDb = fixture.CreateContext(world.Clock, race);
+
+        var late = await fixture.CreateOrderService(racingDb, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(command);
+
+        Assert.True(race.Fired, "The race never happened, so this proves nothing.");
+        Assert.NotNull(overtaker);
+
+        await using var verify = fixture.CreateContext(world.Clock);
+
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+        Assert.Equal(overtaker.OrderId, late.OrderId);
+        Assert.True(late.WasReplay);
+    }
+
+    /// <summary>
+    /// An item the diner menu does not publish cannot be ordered from a phone; a waiter can still
+    /// key it in.
+    /// </summary>
+    /// <remarks>
+    /// The menu read drops an unfinished item - no photo, no allergens - but the order endpoint only
+    /// checked availability, so anybody holding its id could order it from the table.
+    /// </remarks>
+    [SkippableFact]
+    public async Task An_unfinished_item_is_refused_to_a_diner_and_still_orderable_by_staff()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var unfinished = (await fixture.CreateMenuService(db).CreateItemAsync(
+            world.Branch.BranchId, world.Menu.CategoryId, new CreateMenuItemCommand("Chef's mystery", 4_500L))).Id;
+
+        await using (var dinerDb = fixture.CreateContext(world.Clock))
+        {
+            var refused = await Assert.ThrowsAsync<MenuItemUnavailableException>(
+                () => fixture.CreateOrderService(dinerDb, world.Clock, TestActor.Participant(world.HostId))
+                    .PlaceOrderAsync(new PlaceOrderCommand(
+                        world.TabId,
+                        [new OrderItemInput(world.Menu.Coffee, 1), new OrderItemInput(unfinished, 1)],
+                        Guid.CreateVersion7())));
+
+            Assert.Equal(unfinished, refused.MenuItemId);
+            Assert.Equal("Chef's mystery", refused.ItemName);
+        }
+
+        await using (var verify = fixture.CreateContext(world.Clock))
+        {
+            // Refused whole, like a sold-out dish: the coffee did not go through on its own.
+            Assert.Equal(0, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+        }
+
+        await using var staffDb = fixture.CreateContext(world.Clock);
+
+        var keyedIn = await fixture.CreateOrderService(staffDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(world.TabId, [new OrderItemInput(unfinished, 1)], Guid.CreateVersion7()));
+
+        Assert.False(keyedIn.WasReplay);
+        Assert.Equal(unfinished, Assert.Single(keyedIn.Lines).MenuItemId);
     }
 
     // ------------------------------------------------------------ 6 and 7. voids
@@ -700,6 +857,49 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             foreach (var context in contexts)
             {
                 await context.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs something once, just before the first statement that inserts into one table executes.
+    /// </summary>
+    private sealed class BeforeFirstInsertInto(string table, Func<Task> action) : DbCommandInterceptor
+    {
+        private int _fired;
+
+        public bool Fired => _fired == 1;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            await RunOnceIfInsertAsync(command);
+
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await RunOnceIfInsertAsync(command);
+
+            return result;
+        }
+
+        private async Task RunOnceIfInsertAsync(DbCommand command)
+        {
+            var inserts = command.CommandText.Contains($"INSERT INTO [{table}]", StringComparison.OrdinalIgnoreCase)
+                          || command.CommandText.Contains($"MERGE [{table}]", StringComparison.OrdinalIgnoreCase);
+
+            if (inserts && Interlocked.Exchange(ref _fired, 1) == 0)
+            {
+                await action();
             }
         }
     }

@@ -17,7 +17,9 @@ public sealed record OrderItemRequest(Guid MenuItemId, int Quantity, bool IsShar
 /// <param name="Items">What was ordered. At least one line.</param>
 /// <param name="ClientCommandId">
 /// The caller's own id. A double-tap over flaky wifi returns the first order rather than sending
-/// the kitchen two.
+/// the kitchen two. <b>Required</b>: left out, it bound <c>Guid.Empty</c> and replayed whichever order
+/// first used that, on any tab; now it is refused with 400. A replay is matched on this tab and this
+/// caller only.
 /// </param>
 /// <param name="OnBehalfOfParticipantId">
 /// <b>Staff only.</b> Who the spoken order was for. Leave it out when the waiter did not know, and
@@ -26,7 +28,7 @@ public sealed record OrderItemRequest(Guid MenuItemId, int Quantity, bool IsShar
 public sealed record PlaceOrderRequest(
     IReadOnlyList<OrderItemRequest> Items,
     Guid ClientCommandId,
-    Guid? OnBehalfOfParticipantId = null)
+    Guid? OnBehalfOfParticipantId = null) : IClientCommandRequest
 {
     public PlaceOrderCommand ToCommand(Guid tabId) =>
         new(tabId, [.. Items.Select(i => i.ToInput())], ClientCommandId, OnBehalfOfParticipantId);
@@ -35,7 +37,7 @@ public sealed record PlaceOrderRequest(
 /// <summary>Taking a line off the bill. It stays visible to the diner, labelled.</summary>
 /// <param name="Reason">Why. Shown to the diner.</param>
 /// <param name="ClientCommandId">Idempotency.</param>
-public sealed record VoidLineRequest(string Reason, Guid ClientCommandId);
+public sealed record VoidLineRequest(string Reason, Guid ClientCommandId) : IClientCommandRequest;
 
 /// <summary>A discount or a comp.</summary>
 /// <param name="TabOrderLineId">The line, or null for the whole tab.</param>
@@ -50,7 +52,7 @@ public sealed record AddAdjustmentRequest(
     decimal? Percent,
     long? AmountAmd,
     string Reason,
-    Guid ClientCommandId);
+    Guid ClientCommandId) : IClientCommandRequest;
 
 /// <summary>Moving an order along the kitchen rail.</summary>
 /// <param name="Status">2 InKitchen, 3 Ready, 4 Served.</param>
@@ -70,7 +72,7 @@ public sealed record RecordCashRequest(
     long AmountAmd,
     Guid? TabParticipantId,
     long TipAmd,
-    Guid ClientCommandId)
+    Guid ClientCommandId) : IClientCommandRequest
 {
     public RecordCashPaymentCommand ToCommand(Guid tabId) =>
         new(tabId, AmountAmd, TabParticipantId, TipAmd, ClientCommandId);

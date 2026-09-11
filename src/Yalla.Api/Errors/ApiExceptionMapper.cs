@@ -255,6 +255,20 @@ internal static class ApiExceptionMapper
             e.Message,
             LogAsError: false),
 
+        // A one-time code not accepted, with what is left on it. Must stay ABOVE the general
+        // authentication arm it derives from, which carries no context: the app read a count the
+        // server never sent, defaulted it to zero, and told a diner their code was spent after the
+        // first slip.
+        VerificationCodeInvalidException e => new MappedError(
+            StatusCodes.Status401Unauthorized,
+            e.ReasonCode,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["attemptsRemaining"] = e.AttemptsRemaining,
+            }),
+
         // Every other sign-in failure. The slug comes from the exception, which is deliberately
         // never specific enough to say whether an account exists - see AuthenticationFailedException.
         AuthenticationFailedException e => new MappedError(
@@ -493,6 +507,21 @@ internal static class ApiExceptionMapper
             e.Message,
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        // "Keep my table" refused, and which refusal: not started yet or not a confirmed booking,
+        // the one extension spent, or none offered. Each its own code, because the app inferred
+        // "you already let them know" from a bare 409 - and told a diner at a branch with no
+        // extensions exactly that. Must stay ABOVE DomainStateException, which it derives from.
+        HoldExtensionRefusedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            e.Code,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["startUtc"] = e.StartUtc,
+            }),
 
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),

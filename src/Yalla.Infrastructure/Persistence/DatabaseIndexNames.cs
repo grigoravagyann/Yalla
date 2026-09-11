@@ -50,6 +50,13 @@ internal static class DatabaseIndexNames
     public const string TabClientCommand = "UX_Tabs_ClientCommandId";
 
     /// <summary>
+    /// Unique on the command that placed an order, per tab. A violation means the same order is
+    /// being sent twice at once - a retry racing its original - and the loser answers with the
+    /// order that won rather than sending the kitchen a second one.
+    /// </summary>
+    public const string TabOrderClientCommand = "UX_TabOrders_TabId_ClientCommandId";
+
+    /// <summary>
     /// Unique on one live push token. Filtered, so a phone that moves between diner accounts can be
     /// registered again after the previous owner's row is revoked.
     /// </summary>

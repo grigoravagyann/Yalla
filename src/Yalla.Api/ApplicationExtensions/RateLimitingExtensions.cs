@@ -66,6 +66,36 @@ public static class RateLimitingExtensions
     public const string PublicPolicy = "public";
 
     /// <summary>
+    /// The browse list, <c>GET /api/public/venues</c>: its own budget per caller, instead of the page
+    /// budget above.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It is the diner app's Explore screen as well as the web chooser, so phones open it far more
+    /// often than any one page - and a carrier puts thousands of phones behind one address, which
+    /// spent the thirty-a-minute page budget before dinner. A 429 there is the no-restaurants
+    /// screen. The page budget exists to stop one client walking the estate page by page; this
+    /// route <i>is</i> the estate, in one cached response, so there is nothing to walk.
+    /// </para>
+    /// <para>
+    /// It also has its own city-wide ceiling in the chained limiter, instead of the branch-sized one
+    /// it used to share - see <see cref="PublicBrowsePath"/>.
+    /// </para>
+    /// </remarks>
+    public const string PublicBrowsePolicy = "public-browse";
+
+    /// <summary>
+    /// The browse list's path, which carries no branch.
+    /// </summary>
+    /// <remarks>
+    /// With no branch id and no slug pair in its route it fell through to one shared partition under
+    /// the per-branch ceiling - three hundred a minute for every phone in the city at once. It is
+    /// cached for seconds and costs next to nothing between refreshes, so it gets a ceiling of its
+    /// own, sized for a city rather than for one branch.
+    /// </remarks>
+    public const string PublicBrowsePath = "/api/public/venues";
+
+    /// <summary>
     /// A cap on one branch's public traffic, whoever is asking.
     /// </summary>
     /// <remarks>
@@ -132,6 +162,12 @@ public static class RateLimitingExtensions
         var publicBranchPermitLimit = section.GetValue<int?>("PublicBranchPermitLimit") ?? 300;
         var publicBranchWindowSeconds = section.GetValue<int?>("PublicBranchWindowSeconds") ?? 60;
 
+        // The browse list: its own budget per caller, and its own city-wide ceiling.
+        var publicBrowsePermitLimit = section.GetValue<int?>("PublicBrowsePermitLimit") ?? 120;
+        var publicBrowseWindowSeconds = section.GetValue<int?>("PublicBrowseWindowSeconds") ?? 60;
+        var publicBrowseCeilingPermitLimit = section.GetValue<int?>("PublicBrowseCeilingPermitLimit") ?? 6000;
+        var publicBrowseCeilingWindowSeconds = section.GetValue<int?>("PublicBrowseCeilingWindowSeconds") ?? 60;
+
         // And a ceiling per manage token, for the link that went round a group chat.
         var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
         var publicBookingWindowSeconds = section.GetValue<int?>("PublicBookingWindowSeconds") ?? 60;
@@ -156,19 +192,40 @@ public static class RateLimitingExtensions
                         })),
 
                 // One branch's public page has one budget, however many addresses are asking for
-                // it - which is the half a per-address limit cannot do anything about. Off the
-                // public routes this is a no-op.
+                // it - which is the half a per-address limit cannot do anything about. The browse
+                // list, which is no branch's, has a city-sized budget of its own. Off the public
+                // routes this is a no-op.
                 PartitionedRateLimiter.Create<HttpContext, string>(context =>
-                    context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase)
-                        ? RateLimitPartition.GetFixedWindowLimiter(
-                            PublicBranchPartitionKey(context),
+                {
+                    if (!context.Request.Path.StartsWithSegments(PublicPathPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return RateLimitPartition.GetNoLimiter<string>("not-public");
+                    }
+
+                    // Its own key and its own options. A partition keeps the options of whichever
+                    // request created it, so the browse list must never share a key with anything
+                    // sized differently.
+                    if (IsBrowseList(context))
+                    {
+                        return RateLimitPartition.GetFixedWindowLimiter(
+                            BrowsePartitionKey,
                             _ => new FixedWindowRateLimiterOptions
                             {
-                                PermitLimit = publicBranchPermitLimit,
-                                Window = TimeSpan.FromSeconds(publicBranchWindowSeconds),
+                                PermitLimit = publicBrowseCeilingPermitLimit,
+                                Window = TimeSpan.FromSeconds(publicBrowseCeilingWindowSeconds),
                                 QueueLimit = 0,
-                            })
-                        : RateLimitPartition.GetNoLimiter<string>("not-public")),
+                            });
+                    }
+
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        PublicBranchPartitionKey(context),
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = publicBranchPermitLimit,
+                            Window = TimeSpan.FromSeconds(publicBranchWindowSeconds),
+                            QueueLimit = 0,
+                        });
+                }),
 
                 // And one manage link has one budget. Chained rather than an endpoint policy for
                 // the same reason as the branch ceiling above: an endpoint carries one policy, and
@@ -226,6 +283,17 @@ public static class RateLimitingExtensions
                         QueueLimit = 0,
                     }));
 
+            // The browse list's own per-caller budget, replacing the page budget on that one route.
+            options.AddPolicy(PublicBrowsePolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = publicBrowsePermitLimit,
+                        Window = TimeSpan.FromSeconds(publicBrowseWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
             options.AddPolicy(PinPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     PartitionKey(context),
@@ -275,8 +343,8 @@ public static class RateLimitingExtensions
     /// </summary>
     /// <remarks>
     /// Read from the route, which is where every public branch route carries it - either as a
-    /// <c>branchId</c> or as the venue/branch slug pair. Requests with neither (the browse list)
-    /// share one partition, which is correct: the browse list is one thing and has one budget.
+    /// <c>branchId</c> or as the venue/branch slug pair. The browse list, which has neither, never
+    /// gets here: it has a partition of its own, sized for a city - see <see cref="PublicBrowsePath"/>.
     /// </remarks>
     /// <summary>
     /// One manage link's partition, keyed by a digest of the token rather than the token.
@@ -315,8 +383,19 @@ public static class RateLimitingExtensions
         return route.TryGetValue("venueSlug", out var venueSlug)
                && route.TryGetValue("branchSlug", out var branchSlug)
             ? $"slug:{venueSlug}/{branchSlug}"
-            : "public:browse";
+
+            // Not the browse list's key: that one is sized for a city, and a partition keeps the
+            // options of whichever request created it.
+            : "public:unaddressed";
     }
+
+    /// <summary>The browse list's one city-wide partition under the chained public limiter.</summary>
+    private const string BrowsePartitionKey = "public:browse";
+
+    /// <summary>Whether this request is the browse list, with or without a trailing slash.</summary>
+    private static bool IsBrowseList(HttpContext context) =>
+        context.Request.Path.StartsWithSegments(PublicBrowsePath, StringComparison.OrdinalIgnoreCase, out var rest)
+        && (!rest.HasValue || rest.Value == "/");
 
     /// <summary>
     /// Adds the limiter to the pipeline, but only when it was registered. Call this after routing

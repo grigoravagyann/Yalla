@@ -3,9 +3,11 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
 using Yalla.Application.Ordering;
+using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Menus;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
@@ -60,7 +62,7 @@ internal sealed class TabOrderService(
             throw new ArgumentException("An order must contain at least one item.", nameof(command));
         }
 
-        if (await FindReplayAsync(command.ClientCommandId, cancellationToken) is { } replay)
+        if (await FindReplayAsync(command.TabId, command.ClientCommandId, cancellationToken) is { } replay)
         {
             logger.LogInformation(
                 "Order command {ClientCommandId} was already applied as {OrderId}; returning the original.",
@@ -104,7 +106,29 @@ internal sealed class TabOrderService(
         // insert does not need to touch the tab row to be correct. Not touching it is what makes
         // ten simultaneous orders safe: they write nothing in common, so there is no row version to
         // lose and no concurrency error for a diner to see. See TabLedger and docs/tab-totals.md.
-        await ledger.SaveAppendedAsync(cancellationToken);
+        try
+        {
+            await ledger.SaveAppendedAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabOrderClientCommand))
+        {
+            // The same command, from a request that passed the replay check at the same moment and
+            // committed first - a retry racing its original. Nothing of this attempt was written, so
+            // answer with the order that won, exactly as a replay would.
+            db.ChangeTracker.Clear();
+            ledger.DiscardPending();
+
+            var winner = await FindReplayAsync(command.TabId, command.ClientCommandId, cancellationToken)
+                         ?? throw new InvalidOperationException(
+                             $"Order command {command.ClientCommandId} lost a uniqueness race on tab "
+                             + $"{command.TabId} to an order that cannot be read back.");
+
+            logger.LogInformation(
+                "Order command {ClientCommandId} raced its own retry on tab {TabId}; answering with {OrderId}.",
+                command.ClientCommandId, command.TabId, winner);
+
+            return await BuildOrderViewAsync(winner, wasReplay: true, cancellationToken);
+        }
 
         // And then the cache, in its own short transaction. This can lose a race against another
         // order and simply try again; it never throws, because the diner's order is already placed
@@ -137,6 +161,20 @@ internal sealed class TabOrderService(
             .Select(i => new { i.Id, i.Name, i.PriceAmd, i.IsAvailable, i.PrepMinutes, i.MenuCategory.BranchId })
             .ToListAsync(cancellationToken);
 
+        // The diner menu never publishes an unfinished item - no photo, no allergens - so a phone
+        // could only hold its id from somewhere other than the menu. Refused on the diner path by
+        // name, as a sold-out dish is. A waiter may still key one in from the console, where a dish
+        // being entered is visible and ordering it is deliberately allowed.
+        var unpublished = actor.Type == ActorType.Staff
+            ? new HashSet<Guid>()
+            : (await db.MenuItems
+                    .AsNoTracking()
+                    .Where(i => wanted.Contains(i.Id))
+                    .Where(MenuItemCompleteness.Incomplete)
+                    .Select(i => i.Id)
+                    .ToListAsync(cancellationToken))
+                .ToHashSet();
+
         // Whoever is at the table right now, in join order. Snapshotted onto every shared line, so
         // a friend who joins ten minutes later is not on the bottle that has already been poured.
         var presentNow = tab.Participants
@@ -159,7 +197,7 @@ internal sealed class TabOrderService(
 
             // Refused whole, not silently trimmed - a partial order is a decision made on the
             // diner's behalf, and they find out about it when the food arrives.
-            if (!item.IsAvailable)
+            if (!item.IsAvailable || unpublished.Contains(item.Id))
             {
                 throw new MenuItemUnavailableException(item.Id, item.Name);
             }
@@ -527,18 +565,48 @@ internal sealed class TabOrderService(
 
     // ---------------------------------------------------------------- helpers
 
-    /// <summary>The order this command already created, if it has one.</summary>
+    /// <summary>The order this command already created on this tab, if it has one.</summary>
     /// <remarks>
+    /// <para>
     /// Nullable on purpose. <c>Guid</c> is a value type, so a plain <c>Guid</c> return would make
     /// the caller's <c>is { }</c> pattern match <c>Guid.Empty</c> as well - and every first-time
     /// order would be treated as a replay of an order that does not exist.
+    /// </para>
+    /// <para>
+    /// <b>Scoped to the tab and to the caller.</b> This matched the command id alone, across every
+    /// tab there is, so another tab presenting the same id - and any client that left the field
+    /// out, binding <c>Guid.Empty</c> - got the first order back with that tab's totals. A replay is
+    /// the same phone or the same waiter sending the same order again; anybody else presenting the
+    /// id is a client bug, and the honest answer is that it is taken.
+    /// </para>
     /// </remarks>
-    private Task<Guid?> FindReplayAsync(Guid clientCommandId, CancellationToken cancellationToken) =>
-        db.TabOrders
+    /// <exception cref="ClientCommandIdAlreadyUsedException">
+    /// Somebody else on this tab placed the order this command id names.
+    /// </exception>
+    private async Task<Guid?> FindReplayAsync(Guid tabId, Guid clientCommandId, CancellationToken cancellationToken)
+    {
+        var existing = await db.TabOrders
             .AsNoTracking()
-            .Where(o => o.ClientCommandId == clientCommandId)
-            .Select(o => (Guid?)o.Id)
+            .Where(o => o.TabId == tabId && o.ClientCommandId == clientCommandId)
+            .Select(o => new { o.Id, o.PlacedByParticipantId, o.PlacedByStaffId })
             .FirstOrDefaultAsync(cancellationToken);
+
+        if (existing is null)
+        {
+            return null;
+        }
+
+        var sameCaller = actor.Type == ActorType.Staff
+            ? existing.PlacedByStaffId is { } staffId && staffId == actor.StaffMemberId
+            : existing.PlacedByParticipantId is { } participantId && participantId == actor.ParticipantId;
+
+        return sameCaller
+            ? existing.Id
+            : throw new ClientCommandIdAlreadyUsedException(
+                clientCommandId,
+                "That clientCommandId already belongs to another order on this tab. Generate a fresh "
+                + "one per order, and reuse it only when retrying that same order.");
+    }
 
     private async Task<OrderView> BuildOrderViewAsync(
         Guid orderId,

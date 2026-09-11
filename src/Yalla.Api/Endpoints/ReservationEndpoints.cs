@@ -188,13 +188,20 @@ public static class ReservationEndpoints
                 + "a reason a diner can read. Repeated requests for five more minutes are how a table "
                 + "stays held all evening for somebody who is not coming.\n\n"
                 + "The extension goes onto the branch change sequence, so the waiter watching that "
-                + "table sees it immediately rather than in a column nothing reads.")
+                + "table sees it immediately rather than in a column nothing reads.\n\n"
+                + "**Not before the booking starts.** Nothing is held until then, so there is nothing "
+                + "to keep: offer the button from the late nudge, or once `startUtc` has passed. A tap "
+                + "days early used to spend the one extension and ping the floor about a table nobody "
+                + "was holding.")
             .Produces<ExtendHoldResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not the diner who made the booking.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
-            .ProducesProblemDetails(
+            .ProducesProblem<HoldExtensionRefusedProblem>(
                 StatusCodes.Status409Conflict,
-                "The one extension is already used, or the booking is not one that holds a table.");
+                "Refused, with one of three codes - branch on it. `hold-not-active`: the booking has "
+                + "not started, so nothing is held yet, or it is not confirmed. `hold-already-extended`: "
+                + "the one extension is used. `extensions-not-offered`: the branch offers none - not "
+                + "the diner's doing, so never tell them they already let the venue know.");
 
         group.MapPost("/{id:guid}/cancel", CancelAsync)
             .WithName("cancelReservation")

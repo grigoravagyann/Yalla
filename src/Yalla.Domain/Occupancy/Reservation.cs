@@ -352,28 +352,54 @@ public sealed class Reservation : Entity
     /// a deadline that has passed.
     /// </para>
     /// </remarks>
-    /// <exception cref="DomainStateException">
-    /// The extension was already used, or the booking is not in a state that can hold a table.
+    /// <exception cref="HoldExtensionRefusedException">
+    /// The booking has not started or is not confirmed (<c>hold-not-active</c>), its one extension is
+    /// spent (<c>hold-already-extended</c>), or the branch offers none (<c>extensions-not-offered</c>).
     /// </exception>
     public void ExtendHold(DateTime nowUtc, int extensionMinutes)
     {
         if (Status != ReservationStatus.Confirmed)
         {
-            throw new DomainStateException(
+            throw new HoldExtensionRefusedException(
+                HoldExtensionRefusedException.NotActive,
+                Id,
+                StartUtc,
                 $"Only a confirmed booking can have its table held; {Code} is {Status}.");
+        }
+
+        // Before "already used": a branch that offers none has nothing to have used, and telling
+        // that diner they have already let the venue know is the mistake this order avoids.
+        if (extensionMinutes <= 0)
+        {
+            throw new HoldExtensionRefusedException(
+                HoldExtensionRefusedException.NotOffered,
+                Id,
+                StartUtc,
+                "This branch does not offer hold extensions. Speak to the venue.");
         }
 
         if (GraceExtensionsUsed > 0)
         {
-            throw new DomainStateException(
+            throw new HoldExtensionRefusedException(
+                HoldExtensionRefusedException.AlreadyExtended,
+                Id,
+                StartUtc,
                 "This booking has already had its one extension. The table is being held for other "
                 + "guests too, so a waiter decides what happens next.");
         }
 
-        if (extensionMinutes <= 0)
+        // Nothing is held before the booking starts, so there is nothing to keep. The late nudge
+        // that carries this button fires after the start; the app also offered it on every
+        // confirmed booking, and a tap days early spent the one extension and told the floor about
+        // a table nobody was holding.
+        if (nowUtc < StartUtc)
         {
-            throw new DomainStateException(
-                "This branch does not offer hold extensions. Speak to the venue.");
+            throw new HoldExtensionRefusedException(
+                HoldExtensionRefusedException.NotActive,
+                Id,
+                StartUtc,
+                "This booking has not started yet, so there is no table being held to keep. Ask once "
+                + "you are running late.");
         }
 
         var from = HoldExpiresAtUtc is { } current && current > nowUtc ? current : nowUtc;

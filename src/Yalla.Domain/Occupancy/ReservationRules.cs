@@ -163,6 +163,23 @@ public static class ReservationRules
     }
 
     /// <summary>
+    /// Whether a booking will wait for a human for a reason that is knowable before it is made: the
+    /// branch approves every booking by hand, or the party is over its threshold.
+    /// </summary>
+    /// <remarks>
+    /// What availability tells a diner before they commit. The third reason - their own no-show
+    /// record - needs the diner, so it is only known once they book, and the booking says so in
+    /// <c>awaitingApprovalBecause</c>. Availability used <see cref="NeedsApproval"/> alone, so a
+    /// branch with auto-confirm off promised an instant confirmation it was never going to give.
+    /// </remarks>
+    public static bool AwaitsApproval(int partySize, ReservationPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        return !policy.AutoConfirm || NeedsApproval(partySize, policy);
+    }
+
+    /// <summary>
     /// Whether a cancellation at <paramref name="nowUtc"/> is past the branch's free-cancellation
     /// deadline.
     /// </summary>
@@ -174,6 +191,26 @@ public static class ReservationRules
     {
         ArgumentNullException.ThrowIfNull(policy);
 
-        return nowUtc > startUtc.AddMinutes(-policy.CancellationDeadlineMinutes);
+        return nowUtc > CancellationDeadline(startUtc, policy);
     }
+
+    /// <summary>
+    /// The instant past which cancelling a booking that starts at <paramref name="startUtc"/> is
+    /// recorded as late.
+    /// </summary>
+    /// <remarks>
+    /// The one definition, so what availability and the booking promise a diner and what
+    /// <see cref="IsLateCancellation"/> then records cannot disagree. It used to exist only inside
+    /// that check, and the app - with nothing to show - promised free cancellation until the start.
+    /// </remarks>
+    public static DateTime CancellationDeadline(DateTime startUtc, ReservationPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        return CancellationDeadline(startUtc, policy.CancellationDeadlineMinutes);
+    }
+
+    /// <summary>The same deadline from the minutes alone, for a read that projected only those.</summary>
+    public static DateTime CancellationDeadline(DateTime startUtc, int cancellationDeadlineMinutes) =>
+        startUtc.AddMinutes(-cancellationDeadlineMinutes);
 }

@@ -65,7 +65,46 @@ public class DinerAuthTests(SqlServerFixture fixture)
             "/api/auth/diner/verify-code", new { phoneE164 = phone, code = Wrong(code!) });
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Equal("verification-code-invalid", await ErrorCodeAsync(response));
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("verification-code-invalid", problem.GetProperty("code").GetString());
+
+        // What is left on this code, so the screen can say so rather than guess. The app used to
+        // read a count the server never sent, default it to zero, and tell the diner their code was
+        // spent after the first slip.
+        Assert.Equal(
+            PhoneVerificationCode.MaxAttempts - 1,
+            problem.GetProperty("context").GetProperty("attemptsRemaining").GetInt32());
+    }
+
+    /// <summary>
+    /// A code checked against a number with nothing live behind it answers with no attempts left,
+    /// so the screen says to ask for a new one.
+    /// </summary>
+    /// <remarks>
+    /// The same slug as a wrong code, on purpose, with the count at zero. Whether a number has a
+    /// code outstanding was already visible to an anonymous caller - the two cases carried
+    /// different sentences, and a live code answers 429 after five tries - so this publishes
+    /// nothing new.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_code_with_nothing_live_behind_it_has_no_attempts_left()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/auth/diner/verify-code", new { phoneE164 = NewPhone(), code = "123456" });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("verification-code-invalid", problem.GetProperty("code").GetString());
+        Assert.Equal(0, problem.GetProperty("context").GetProperty("attemptsRemaining").GetInt32());
     }
 
     /// <summary>
@@ -90,6 +129,13 @@ public class DinerAuthTests(SqlServerFixture fixture)
                 "/api/auth/diner/verify-code", new { phoneE164 = phone, code = wrong });
 
             Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
+
+            // Counting down, and the fifth says there is nothing left rather than inviting a sixth.
+            var refusal = await refused.Content.ReadFromJsonAsync<JsonElement>();
+
+            Assert.Equal(
+                PhoneVerificationCode.MaxAttempts - attempt,
+                refusal.GetProperty("context").GetProperty("attemptsRemaining").GetInt32());
         }
 
         // The sixth is not checked at all: the code is dead. 429 rather than 401, because the

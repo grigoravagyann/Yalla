@@ -77,6 +77,24 @@ public interface ITabService
         Guid participantId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// A participant takes themself off the tab. A status change, never a delete: their items and
+    /// payments stay on the bill, and they are on no shared line ordered afterwards.
+    /// </summary>
+    /// <remarks>
+    /// A host hands the tab to the approved guest who has been on it longest - the rule the app
+    /// already states - who gains sight of the total and the right to pay. With nobody approved to
+    /// take it, the host cannot leave.
+    /// </remarks>
+    /// <exception cref="Domain.Tabs.TabPermissionException">The caller is not on the tab.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">
+    /// The caller hosts the tab and nobody approved is left to hand it to.
+    /// </exception>
+    Task<TabParticipantView> LeaveAsync(
+        Guid tabId,
+        Guid participantId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>The host sets one person's three flags.</summary>
     /// <exception cref="Domain.Tabs.TabPermissionException">The caller is not the host.</exception>
     /// <exception cref="ArgumentException"><c>CanPay</c> true with <c>CanSeeTableTotal</c> false.</exception>

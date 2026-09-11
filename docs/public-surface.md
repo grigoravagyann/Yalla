@@ -9,6 +9,38 @@ and forwarded round a group chat.
 
 ---
 
+## The browse list
+
+`GET /api/public/venues`
+
+Every active, non-suspended venue with its active branches. It is the web chooser, and the diner
+app's Explore screen too: the app used to call `/api/venues`, which never existed, and showed no
+restaurants at all.
+
+A venue card carries `venueSlug`, `name`, `type` (1 Cafe, 2 Restaurant) and `branches`. There is no
+venue id on the public surface; the slug is the public identity. Each branch card:
+
+| Field | Meaning |
+| --- | --- |
+| `branchId`, `branchSlug` | The id the menu and availability routes take, and the other half of a printed link |
+| `name`, `address` | As a person would read them |
+| `timeZoneId` | The branch's IANA zone. A slot a diner picks after browsing is a wall-clock time at the branch, and a phone set to another zone renders it in this one rather than guessing - the app guessed `Asia/Yerevan` |
+| `isOpenNow` | Inside an opening block at this moment, in the branch's own zone |
+| `freeTableCount` | **Bookable** tables with nobody at them - the same tables the page's `tableCount` counts |
+
+**Caching.** The estate - venues, branches, names, zones - is held for five minutes. Everything
+live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, and *which branches are
+still published*. Between refreshes a read sends nothing to the database, which matters because
+every Explore open and pull-to-refresh in the city lands here. So a suspended venue leaves the list
+within fifteen seconds. The branch routes still check their one branch live, per request, because a
+stale answer there would serve a whole page, booking button included.
+
+**Its own rate limits** - see [Rate limits](#rate-limits). It used to share the page budget per
+address and, having no branch in its route, one partition under the per-branch ceiling: three
+hundred a minute for every phone in the city. A 429 there is the no-restaurants screen again.
+
+---
+
 ## The branch page
 
 `GET /api/public/branches/{venueSlug}/{branchSlug}`
@@ -204,12 +236,14 @@ Opening hours trimmed to two days and the floor plan to two tables; nothing else
 
 Notes for a mapper:
 
-- `venueType`, `shape` and `day` are **integers**, not strings. The whole API serialises
+- `venueType` (1 Cafe, 2 Restaurant), `shape` and `day` are **integers**, not strings. The whole API serialises
   enums as numbers on purpose - see `docs/openapi.md` - and the schema carries `x-enum-varnames`
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.
 - `isFree` on a table and `freeTableCount` are true as of `asOfUtc`, not as of render time.
-- `tableCount` counts **bookable** tables, so it is the denominator for `freeTableCount`.
+- `tableCount` counts **bookable** tables, and so does `freeTableCount`, so the page can never
+  read "3 of 2 free" - it did, when the free count took every active table. A walk-in stool
+  somebody is sitting at is still drawn taken: `isFree` is per table, bookable or not.
 - There is no `qrToken` on a public table and there never will be: it is the credential that opens
   a tab.
 
@@ -288,13 +322,22 @@ they had already given back.
 
 ### Rate limits
 
-Three, chained:
+Chained, so a request passes every one that applies to it:
 
 | Limit | Partition | Default |
 | --- | --- | --- |
 | Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
 | Public | Client address — these routes are anonymous | 30 / min |
+| Public branch ceiling | One branch, whoever is asking | 300 / min |
+| Browse list, per caller | The caller, on `GET /api/public/venues` only - replaces the page budget there | 120 / min |
+| Browse list ceiling | The whole city: one partition for the list, sized for it rather than for one branch | 6,000 / min |
 | Public booking | Manage token (digest) | 20 / min |
+
+The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
+of phones behind one address, so the page budget was spent before dinner. The page budget exists to
+stop one client walking the estate page by page; the list *is* the estate, in one cached response,
+so there is nothing to walk. Configured as `PublicBrowsePermitLimit` / `PublicBrowseWindowSeconds`
+and `PublicBrowseCeilingPermitLimit` / `PublicBrowseCeilingWindowSeconds`.
 
 The global row said "client address" and meant it, and for the public routes it is still what
 happens, because nobody arrives at them with a token. Everywhere else it was wrong in a way worth

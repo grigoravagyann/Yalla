@@ -271,6 +271,13 @@ nudge:
 - Once, enforced by `GraceExtensionsUsed`. "Just five more minutes" granted repeatedly is how a table
   stays held all evening for somebody who is not coming, and the venue loses the cover without ever
   making a decision.
+- **Only once the booking has started.** Nothing is held before then, so there is nothing to keep.
+  The app offered the button on every confirmed booking, and a tap days early spent the one
+  extension and pinged the floor about a table nobody was holding. Refused with `hold-not-active`,
+  and nothing is spent.
+- Each refusal has its own code - `hold-not-active`, `hold-already-extended`,
+  `extensions-not-offered` - so the app never tells a diner at a branch with no extensions that
+  they have already let the venue know.
 - It flows through the branch change sequence as a `Held → Held` transition: nothing about the table
   changed, something happened at it, and every tablet in the room finds out.
 

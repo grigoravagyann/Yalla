@@ -42,3 +42,27 @@ public sealed class AccountLockedException(DateTime? lockedUntilUtc, string mess
 /// </summary>
 public sealed class TooManyAttemptsException(string message)
     : AuthenticationFailedException("too-many-attempts", message);
+
+/// <summary>
+/// A one-time code was not accepted, and how many tries are left on the number's live code.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The same slug as before, <c>verification-code-invalid</c>, so nothing that branched on it
+/// breaks; the count rides along in the problem's <c>context</c>. The diner app used to read a count
+/// the server never sent, default it to zero, and tell a diner their code was spent after one slip -
+/// so they asked for another and spent the hourly per-number budget instead.
+/// </para>
+/// <para>
+/// <b>Zero when nothing is live for the number</b>: none was asked for, it was used, or a newer one
+/// replaced it. That is the client's cue to offer a new code rather than a retry. Whether a number
+/// has a code outstanding was already visible to an anonymous caller - that case always carried its
+/// own sentence, and a live code answers 429 after five tries - so the count publishes nothing new.
+/// </para>
+/// </remarks>
+public sealed class VerificationCodeInvalidException(int attemptsRemaining, string message)
+    : AuthenticationFailedException("verification-code-invalid", message)
+{
+    /// <summary>Tries left on the live code. Zero when there is none, or the last one was just spent.</summary>
+    public int AttemptsRemaining { get; } = attemptsRemaining;
+}
