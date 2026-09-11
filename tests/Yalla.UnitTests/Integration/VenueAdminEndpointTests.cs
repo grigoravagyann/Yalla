@@ -2,6 +2,9 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Yalla.Application.Venues;
 using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests.Integration;
@@ -402,6 +405,256 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             HttpStatusCode.Forbidden,
             (await neighbour.PatchAsJsonAsync($"{route}/{waiterId}", new { fullName = "Hijacked" })).StatusCode);
     }
+
+    // ------------------------------------------------------------ the managed-venue read
+
+    /// <summary>
+    /// <b>B1.</b> The one read the console opens a venue with. Coverage comes from the caller's
+    /// own staff row: an owner and a venue-wide manager see every branch, a manager with a home
+    /// branch sees that branch only, the platform admin sees everything - and the platform's own
+    /// venue read stays closed to all of them.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_managed_venue_read_lists_the_branches_the_callers_own_row_covers()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+        AuthBranch theirs;
+        Guid secondBranchId;
+        PanelAccount owner;
+        PanelAccount venueWideManager;
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+            theirs = await AuthTestData.CreateBranchAsync(db);
+            secondBranchId = await AuthTestData.AddBranchAsync(db, mine.VenueId, "Europe/London", tableCount: 1);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+            venueWideManager = await AuthTestData.SeedManagerAsync(db, mine.VenueId);
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
+        using var branchManager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        using var wideManager = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, venueWideManager));
+        using var neighbour = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, theirs));
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, mine));
+        using var platform = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin));
+        using var anonymous = factory.CreateClient();
+
+        var route = $"/api/venues/{mine.VenueId}/manage";
+        var both = new HashSet<Guid> { mine.BranchId, secondBranchId };
+
+        var asOwner = await ownerClient.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, asOwner.StatusCode);
+        var ownerBody = await asOwner.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(mine.VenueId, ownerBody.GetProperty("venueId").GetGuid());
+        Assert.Equal(both, BranchIds(ownerBody));
+        Assert.Equal(
+            new Dictionary<Guid, string> { [mine.BranchId] = "Asia/Yerevan", [secondBranchId] = "Europe/London" },
+            ownerBody.GetProperty("branches").EnumerateArray()
+                .ToDictionary(b => b.GetProperty("branchId").GetGuid(), b => b.GetProperty("timeZoneId").GetString()!));
+
+        // The fixture manager's row names the first branch, so that is all the console shows them.
+        var asBranchManager = await branchManager.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, asBranchManager.StatusCode);
+        Assert.Equal([mine.BranchId], BranchIds(await asBranchManager.Content.ReadFromJsonAsync<JsonElement>()));
+
+        var asWideManager = await wideManager.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, asWideManager.StatusCode);
+        Assert.Equal(both, BranchIds(await asWideManager.Content.ReadFromJsonAsync<JsonElement>()));
+
+        var asPlatform = await platform.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, asPlatform.StatusCode);
+        Assert.Equal(both, BranchIds(await asPlatform.Content.ReadFromJsonAsync<JsonElement>()));
+
+        // Only the platform tier can address a venue that is not its own, so only it can see a 404.
+        Assert.Equal(HttpStatusCode.NotFound, (await platform.GetAsync($"/api/venues/{Guid.CreateVersion7()}/manage")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await neighbour.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await waiter.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ownerClient.GetAsync($"/api/venues/{theirs.VenueId}/manage")).StatusCode);
+
+        // And nothing about this read opens the platform's own venue read to a venue user.
+        Assert.Equal(HttpStatusCode.Forbidden, (await ownerClient.GetAsync($"/api/platform/venues/{mine.VenueId}")).StatusCode);
+    }
+
+    /// <summary>
+    /// The property names of the 200 body, exactly, because the console's mapper reads them by
+    /// name off the generated schema and a rename here is a blank console there.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_managed_venue_body_carries_exactly_the_properties_the_console_reads()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+        PanelAccount owner;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db, tableCount: 2);
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+        }
+
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
+
+        var response = await ownerClient.GetAsync($"/api/venues/{mine.VenueId}/manage");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(
+            ["venueId", "name", "type", "slug", "isSuspended", "isDeleted", "branches"],
+            body.EnumerateObject().Select(p => p.Name).ToArray());
+
+        Assert.Equal(mine.VenueId, body.GetProperty("venueId").GetGuid());
+        Assert.Equal(JsonValueKind.String, body.GetProperty("name").ValueKind);
+        Assert.Equal(JsonValueKind.String, body.GetProperty("slug").ValueKind);
+        Assert.Equal((int)VenueType.Restaurant, body.GetProperty("type").GetInt32());
+        Assert.False(body.GetProperty("isSuspended").GetBoolean());
+        Assert.False(body.GetProperty("isDeleted").GetBoolean());
+
+        var branch = Assert.Single(body.GetProperty("branches").EnumerateArray());
+
+        Assert.Equal(
+            ["branchId", "venueId", "name", "slug", "timeZoneId", "isActive", "subscriptionTier", "tableCount"],
+            branch.EnumerateObject().Select(p => p.Name).ToArray());
+
+        Assert.Equal(mine.BranchId, branch.GetProperty("branchId").GetGuid());
+        Assert.Equal(mine.VenueId, branch.GetProperty("venueId").GetGuid());
+        Assert.Equal(JsonValueKind.String, branch.GetProperty("name").ValueKind);
+        Assert.Equal(JsonValueKind.String, branch.GetProperty("slug").ValueKind);
+        Assert.Equal("Asia/Yerevan", branch.GetProperty("timeZoneId").GetString());
+        Assert.True(branch.GetProperty("isActive").GetBoolean());
+        Assert.Equal((int)SubscriptionTier.Paid, branch.GetProperty("subscriptionTier").GetInt32());
+        Assert.Equal(2, branch.GetProperty("tableCount").GetInt32());
+    }
+
+    /// <summary>
+    /// <b>B3.</b> The list is never wider than what the server allows: every branch the read
+    /// offers a caller answers 200 on a per-branch read for that caller. For the owner and the
+    /// venue-wide manager it is also never narrower than the venue.
+    /// </summary>
+    [SkippableFact]
+    public async Task Every_branch_the_managed_venue_read_offers_answers_a_branch_read_for_the_same_caller()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+        Guid secondBranchId;
+        PanelAccount owner;
+        PanelAccount venueWideManager;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+            // A neighbour exists so that a query which forgot to filter by venue has something to leak.
+            _ = await AuthTestData.CreateBranchAsync(db);
+            secondBranchId = await AuthTestData.AddBranchAsync(db, mine.VenueId, "Europe/London");
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+            venueWideManager = await AuthTestData.SeedManagerAsync(db, mine.VenueId);
+        }
+
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
+        using var branchManager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        using var wideManager = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, venueWideManager));
+
+        var both = new HashSet<Guid> { mine.BranchId, secondBranchId };
+
+        foreach (var (client, wholeVenue) in new[] { (ownerClient, true), (branchManager, false), (wideManager, true) })
+        {
+            var response = await client.GetAsync($"/api/venues/{mine.VenueId}/manage");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var offered = BranchIds(await response.Content.ReadFromJsonAsync<JsonElement>());
+            Assert.NotEmpty(offered);
+
+            foreach (var branchId in offered)
+            {
+                Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/branches/{branchId}/floor-plan")).StatusCode);
+            }
+
+            if (wholeVenue)
+            {
+                Assert.Equal(both, offered);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The route's own policies, pinned with the query out of the picture. The query refuses a
+    /// neighbour too, so with the real one in place the test above stays green whether or not the
+    /// route carries <c>VenueScoped</c>. Here the query says yes to everyone, and the route alone
+    /// has to say no.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_managed_venue_route_refuses_a_neighbour_and_a_waiter_before_the_query_is_asked()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var stub = new AlwaysYesManagedVenueQuery();
+
+        await using var factory = NewFactory().WithServices(services =>
+        {
+            services.RemoveAll<IManagedVenueQuery>();
+            services.AddSingleton<IManagedVenueQuery>(stub);
+        });
+
+        AuthBranch mine;
+        AuthBranch theirs;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+            theirs = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        using var neighbour = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, theirs));
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, mine));
+
+        var route = $"/api/venues/{mine.VenueId}/manage";
+
+        // The stub is really the one answering: the venue's own manager gets its sentinel back.
+        var asManager = await manager.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, asManager.StatusCode);
+        Assert.Equal(
+            AlwaysYesManagedVenueQuery.Sentinel,
+            (await asManager.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("name").GetString());
+        Assert.Equal([mine.VenueId], stub.Asked);
+
+        // VenueScoped: another venue's manager never reaches the query.
+        Assert.Equal(HttpStatusCode.Forbidden, (await neighbour.GetAsync(route)).StatusCode);
+        // ManagerOrAbove: neither does a waiter of this venue.
+        Assert.Equal(HttpStatusCode.Forbidden, (await waiter.GetAsync(route)).StatusCode);
+        Assert.Equal([mine.VenueId], stub.Asked);
+    }
+
+    /// <summary>A query with no lock of its own, so that only the route's policies can refuse.</summary>
+    private sealed class AlwaysYesManagedVenueQuery : IManagedVenueQuery
+    {
+        public const string Sentinel = "stubbed venue";
+
+        public List<Guid> Asked { get; } = [];
+
+        public Task<ManagedVenueView> GetAsync(Guid venueId, CancellationToken cancellationToken = default)
+        {
+            Asked.Add(venueId);
+
+            return Task.FromResult(new ManagedVenueView(
+                venueId, Sentinel, VenueType.Restaurant, "stubbed", IsSuspended: false, IsDeleted: false, []));
+        }
+    }
+
+    private static HashSet<Guid> BranchIds(JsonElement body) =>
+        body.GetProperty("branches").EnumerateArray().Select(b => b.GetProperty("branchId").GetGuid()).ToHashSet();
 
     // ------------------------------------------------------------ 7 and 8, on the wire
 

@@ -130,6 +130,30 @@ public class PolicyHandlerTests
     }
 
     /// <summary>
+    /// <b>B4.</b> An owner's token carries no branch claim at all - their row names no branch -
+    /// and that must read as "every branch of the venue", not as "no branch". This is the shape
+    /// the console mistook for no access.
+    /// </summary>
+    [Fact]
+    public async Task BranchScoped_admits_an_owner_whose_token_names_no_branch_on_any_branch_of_their_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.Owner, tokenVenueId: VenueId, tokenBranchId: null,
+            routeBranchId: BranchId, branchVenueId: VenueId);
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task VenueScoped_admits_an_owner_acting_in_their_own_venue()
+    {
+        var context = await EvaluateVenueAsync(
+            role: StaffRole.Owner, tokenVenueId: VenueId, routeVenueId: VenueId);
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    /// <summary>
     /// The venue can be implied by the branch being addressed rather than named directly, and the
     /// same claim has to be checked either way.
     /// </summary>

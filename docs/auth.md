@@ -391,9 +391,23 @@ when their token carries no matching branch claim, the handler asks whether the 
 their venue. A staff session with a branch claim is still confined to it, and a venue user is still
 confined to their own venue.
 
-`VenueScoped` guards the staff routes under `/api/venues/{venueId}/staff`, which are addressed by
-venue because staff belong to one rather than to a branch; the handler passes a platform admin for
-every venue. `VenueAdminEndpointTests` proves a manager of the neighbouring venue is refused.
+`VenueScoped` guards the venue read `GET /api/venues/{venueId}/manage` and the staff routes under
+`/api/venues/{venueId}/staff`, which are addressed by venue because staff belong to one rather
+than to a branch; the handler passes a platform admin for every venue. `VenueAdminEndpointTests`
+proves a manager of the neighbouring venue is refused.
+
+The venue read is what the console opens a venue with, and **which branches it lists is decided
+from the caller's stored staff row, never from the token** - a token names at most one branch and
+an owner's names none, which is the shape the console once mistook for "no branch". An owner
+covers every branch, with or without a home branch; a manager whose row names no branch covers
+every branch; a manager whose row names a branch is listed that branch only; a platform admin is
+listed everything. The query checks the row itself, so it refuses a neighbour and a deactivated
+account even if the policy were lost from the route (`ManagedVenueQueryTests`). Note that the
+branch manager's narrowing is **in the console only**: `BranchScoped` still widens their token to
+the whole venue on the server, as above, and whether that should change is a decision not taken
+here. What is guaranteed is the safe direction - the console never lists a branch the server
+would refuse.
+
 `TabParticipantCanOrder` is defined and carries no endpoint yet - it has nothing to guard until
 ordering exists - and is covered by `PolicyHandlerTests` rather than shipped unexercised.
 

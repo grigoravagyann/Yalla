@@ -130,6 +130,14 @@ hard delete anywhere.
 
 `ManagerOrAbove` within scope, or a platform admin.
 
+**The venue itself** (`GET /api/venues/{id}/manage`) — the read the console opens a venue with:
+name, type, slug, the suspended and deleted flags, and the branches the caller's own staff row
+covers (id, name, slug, time zone, active flag, tier, table count), active ones first. An owner
+and a manager with no home branch get every branch; a manager whose row names a branch gets that
+one; a platform admin gets everything. **Venue users never read `/api/platform`** — everything
+there is `PlatformAdminOnly`, and this read carries none of what the platform keeps to itself
+(tier rollup, paid-branch count, suspension timestamps).
+
 **Reservation policy** (`GET`/`PUT /api/branches/{id}/reservation-policy`) — every field of the
 owned `ReservationPolicy`, replaced as one form. Out-of-range values are **refused, never
 clamped**: a turn time of 5 minutes or 12 hours gets a 400 that names the field and the value.

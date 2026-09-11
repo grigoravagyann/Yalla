@@ -5,6 +5,7 @@ using Yalla.Api.Errors;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Application.Staff;
+using Yalla.Application.Venues;
 using Yalla.Domain.Common;
 
 namespace Yalla.Api.Endpoints;
@@ -16,8 +17,14 @@ namespace Yalla.Api.Endpoints;
 /// <para>
 /// <c>ManagerOrAbove</c> within scope, or a platform admin - the scope handlers pass the platform
 /// tier for every branch and venue, so no route here needs a role check of its own. Branch routes
-/// carry <c>BranchScoped</c>; the staff routes are addressed by venue and carry <c>VenueScoped</c>;
-/// the one table route resolves its branch from the table.
+/// carry <c>BranchScoped</c>; the venue read and the staff routes are addressed by venue and carry
+/// <c>VenueScoped</c>; the one table route resolves its branch from the table.
+/// </para>
+/// <para>
+/// The venue read is the one a signed-in owner or manager opens the console with. It is the only
+/// read of the venue itself a venue user can make (the staff list below is addressed by venue
+/// too, but lists people): everything under <c>/api/platform</c> is the platform tier's, and a
+/// console that tried to read the venue from there got a 403 and drew "no branch".
 /// </para>
 /// <para>
 /// This is the tooling the team uses to draw the first twenty venues' floor plans during
@@ -29,12 +36,52 @@ public static class VenueAdminEndpoints
 {
     public static IEndpointRouteBuilder MapVenueAdminEndpoints(this IEndpointRouteBuilder app)
     {
+        MapVenue(app);
         MapBranchSettings(app);
         MapMenu(app);
         MapStaff(app);
 
         return app;
     }
+
+    // ------------------------------------------------------------ the venue itself
+
+    private static void MapVenue(IEndpointRouteBuilder app)
+    {
+        // Addressed by venue, like the staff routes: the venue is what an owner signs in to, and
+        // VenueScoped compares the token's venue claim. The query then checks the caller's stored
+        // row as well, so a neighbour is refused twice and a deactivated account once.
+        var group = app.MapGroup("/api/venues/{venueId:guid}")
+            .WithTags(EndpointConventions.AdminTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .RequireAuthorization(YallaPolicies.VenueScoped);
+
+        // Deliberately not "/" - that is the diner-facing GET /api/venues/{venueId}, awaiting its
+        // route, and two operations cannot share a path in OpenAPI 3.0. Same convention as the
+        // admin menu read under /menu/manage.
+        group.MapGet("/manage", GetManagedVenueAsync)
+            .WithName("getManagedVenue")
+            .WithSummary("The venue you work in, with the branches your account covers")
+            .WithDescription(
+                "The read the console opens a venue with. **Which branches come back is decided "
+                + "from the caller's own staff record, not from the token**: an owner covers every "
+                + "branch of the venue, whether or not their record names a home branch; a manager "
+                + "whose record names no branch covers every branch; a manager whose record names a "
+                + "branch is given that branch only; a platform admin is given everything.\n\n"
+                + "Branches are listed active first, then by name. An inactive branch is listed and "
+                + "flagged rather than hidden.\n\n"
+                + "This is not `GET /api/platform/venues/{id}`, which is the platform tier's and "
+                + "refuses every venue user. Nothing here is platform-only: no tier rollup, no "
+                + "paid-branch count, no suspension timestamps.")
+            .Produces<ManagedVenueView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Another venue's staff, a waiter or kitchen hand, or an account that has been deactivated.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such venue. Only a platform admin can reach this.");
+    }
+
+    private static async Task<IResult> GetManagedVenueAsync(Guid venueId, IManagedVenueQuery query, CancellationToken ct) =>
+        Results.Ok(await query.GetAsync(venueId, ct));
 
     // ------------------------------------------------------------ branch settings
 
