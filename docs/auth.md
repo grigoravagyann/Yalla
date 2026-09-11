@@ -138,6 +138,20 @@ is enough.
 The device token can do exactly one thing: offer a PIN. It names a branch but no person, so an
 enrolled tablet with nobody signed in cannot seat a table.
 
+**Who the PIN screen lists.** `GET /api/auth/staff/roster`, authenticated by the device token and
+refused exactly as `GET /api/auth/staff/device` refuses (401 with no token, 401 `device-revoked` for a
+revoked tablet), returns the people who may tap a PIN on this tablet, sorted by name:
+
+```json
+[{ "staffMemberId": "…", "fullName": "Anna Petrosyan", "role": 3 }]
+```
+
+"May tap a PIN here" is one rule, `StaffAuthService.SignsInOn`, read by both the roster and the PIN
+exchange: **active, of the device's venue, and at the device's branch or at no particular branch.**
+A platform admin has no venue and so is on no tablet. Without this the first sign-in on a fresh
+tablet meant typing a staff member id by hand. The list carries those three fields and nothing
+else - no phone, email or PIN state - because anybody holding the tablet can read it.
+
 **Per-person PIN.** Each `StaffMember` has a four-digit PIN, hashed, never logged. Tapping it
 exchanges the device token for a **staff session token** carrying `staffMemberId`, `role` and
 `branchId`, good for 30 minutes.
@@ -282,7 +296,7 @@ a counter for a year:
 | **Bearer only** | No cookie, no session affinity. It is sent as a header and nothing else. |
 | **Branch-scoped** | It carries one `branchId`, copied onto every session opened on it. A waiter at branch A cannot act on branch B however the request is addressed. |
 | **Revocable** | `StaffDevice.RevokedAtUtc` is checked on **every** request, so a laptop left in a taxi stops working on its next call rather than when its year-long token expires — and so does any PIN session already open on it. |
-| **Grants nothing** | It carries a branch and a device and **no role claim at all**, so every staff policy fails on it. The tablet is not a person; it can offer a PIN and read which venue it is bound to, and that is the whole list. |
+| **Grants nothing** | It carries a branch and a device and **no role claim at all**, so every staff policy fails on it. The tablet is not a person; it can offer a PIN, read which venue it is bound to, and read the names of who may sign in on it, and that is the whole list. |
 
 `StaffAuthTests.A_device_token_alone_can_do_nothing_but_offer_a_pin` asserts the last one across
 reads and a write, because "by construction" is exactly the kind of claim that stops being true the
