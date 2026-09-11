@@ -17,7 +17,9 @@ namespace Yalla.Api.Endpoints;
 /// </para>
 /// <para>
 /// Serving is anonymous on purpose. A menu photo is public - the diner reading it has no account and
-/// the QR code on the table is the only credential anyone has. The upload is not.
+/// the QR code on the table is the only credential anyone has. The upload is not: it is
+/// <c>BranchScoped</c> like every other admin route addressed by branch, so a manager of one venue
+/// cannot put images into another's branch, and the service checks the stored staff row again.
 /// </para>
 /// </remarks>
 public static class PhotoEndpoints
@@ -37,6 +39,7 @@ public static class PhotoEndpoints
         app.MapPost("/api/branches/{branchId:guid}/photos", UploadAsync)
             .WithTags(EndpointConventions.AdminTag)
             .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped)
             .DisableAntiforgery()
             .WithName("uploadBranchPhoto")
             .WithSummary("Upload a photo for a menu item or a venue card")
@@ -53,7 +56,9 @@ public static class PhotoEndpoints
                 + "`wasDeduplicated: true`. A photo nothing attaches to is deleted after 24 hours.")
             .Accepts<IFormFile>("multipart/form-data")
             .Produces<PhotoUploadResult>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Requires the Manager role.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Requires the Manager role, at a branch of the caller's own venue, on an account that is still active.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,

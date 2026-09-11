@@ -119,6 +119,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     {
         ArgumentNullException.ThrowIfNull(command);
         var category = await LoadCategoryAsync(branchId, categoryId, cancellationToken);
+        await RequirePhotoAtBranchAsync(branchId, command.PhotoId, cancellationToken);
 
         // A name and a price, and nothing else is insisted on here. The descriptive fields are what
         // make the item fit to show a diner, and that is enforced where it belongs: the item comes
@@ -151,6 +152,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     {
         ArgumentNullException.ThrowIfNull(command);
         var item = await LoadItemAsync(branchId, itemId, cancellationToken);
+        await RequirePhotoAtBranchAsync(branchId, command.PhotoId, cancellationToken);
 
         var describes = command.Name is not null || command.Description is not null || command.PhotoId is not null
                         || command.Ingredients is not null || command.Allergens is not null
@@ -282,6 +284,30 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             .ThenInclude(i => i.Photo)
             .FirstOrDefaultAsync(c => c.Id == categoryId && c.BranchId == branchId, cancellationToken)
         ?? throw new KeyNotFoundException($"Menu category {categoryId} was not found at this branch.");
+
+    /// <summary>
+    /// A photo is attached only to an item of the branch it was uploaded for.
+    /// </summary>
+    /// <remarks>
+    /// The photo id in the command is caller-supplied, and ids are not secret - one venue's card
+    /// URL names the photo. Without this a manager could put any venue's picture on their own
+    /// menu. Refused the way a category from another branch is refused: the id is simply not found
+    /// at this branch.
+    /// </remarks>
+    private async Task RequirePhotoAtBranchAsync(Guid branchId, Guid? photoId, CancellationToken cancellationToken)
+    {
+        // Nothing supplied is nothing to check. An empty guid is not a foreign id but a malformed
+        // one, and the entity refuses it as such; left to it so that answer does not change here.
+        if (photoId is not { } id || id == Guid.Empty)
+        {
+            return;
+        }
+
+        if (!await db.Photos.AnyAsync(p => p.Id == id && p.BranchId == branchId, cancellationToken))
+        {
+            throw new KeyNotFoundException($"Photo {id} was not found at this branch.");
+        }
+    }
 
     private async Task<MenuItem> LoadItemAsync(Guid branchId, Guid itemId, CancellationToken cancellationToken) =>
         await db.MenuItems

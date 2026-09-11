@@ -383,6 +383,14 @@ Two of these are the real security of this system, and both have tests:
   resolves the booking's own branch and checks it against the acting staff member's branch and
   venue. `ReservationEndpointTests` proves a manager of another venue is refused.
 
+  The photo upload `POST /api/branches/{branchId}/photos` is addressed by branch and carries
+  `BranchScoped` like the rest; it once carried only `ManagerOrAbove`, which let any manager put
+  images into any venue's branch. `PhotoService` also checks the stored staff row - active, and of
+  the branch's venue, platform admin exempt - so a deactivated account's still-valid token is
+  refused and the lock holds if a route ever loses the policy. The photo id a menu item is given
+  is caller-supplied, so `MenuService` refuses one uploaded for another branch as not found there,
+  the same answer a foreign category gets. `PhotoScopeTests` proves all of it.
+
   The approval queue those two act on, `GET /api/branches/{branchId}/reservations?status=1`, is
   addressed by branch and carries `ManagerOrAbove` and `BranchScoped` - and then the same service
   check as approve and reject, because `BranchScoped` widens a manager with a home branch to the
