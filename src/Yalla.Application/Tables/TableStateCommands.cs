@@ -122,6 +122,27 @@ public sealed record SeatQrScanCommand(
     TableStatus? ExpectedFromStatus = null,
     string? ExpectedRowVersion = null) : ITableStateCommand;
 
+/// <summary>
+/// Seat a booked party at their own table from their own phone, against the booking - which moves
+/// it to Seated exactly as a waiter's <see cref="SeatReservationCommand"/> does.
+/// </summary>
+/// <remarks>
+/// The booking-code counterpart of <see cref="SeatQrScanCommand"/>: no staff member performs it.
+/// Whether the booking is the caller's, and whether its table is theirs yet, is decided before this
+/// is sent - by the tab service, against the booking's own rule - so this is only the seating.
+/// <c>PartySize</c> defaults to the booked size.
+/// </remarks>
+public sealed record SeatBookedPartyCommand(
+    Guid BranchId,
+    Guid TableId,
+    Guid ReservationId,
+    Guid ClientCommandId,
+    int? PartySize = null,
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : ITableStateCommand;
+
 /// <summary>Write off an outstanding balance. Manager-only.</summary>
 public sealed record AbandonTabCommand(
     Guid BranchId,

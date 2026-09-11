@@ -37,6 +37,40 @@ public sealed record OpenTabRequest(
     SettlementMode? SettlementMode = null,
     bool? HideTotalFromGuests = null) : IClientCommandRequest;
 
+/// <summary>Body of <c>POST /api/tabs/open-by-booking</c>.</summary>
+/// <remarks>
+/// The scan's body with the booking code in place of the QR token. The code finds the caller's own
+/// booking, the booking names the table, and from there it is the scan: the same host, the same
+/// approval, the same replay, the same answer.
+/// </remarks>
+/// <param name="BookingCode">
+/// The code on the diner's booking - "DFJFQY" - typed however they typed it. Case, spaces and dashes
+/// do not matter.
+/// </param>
+/// <param name="DeviceId">See <see cref="OpenTabRequest.DeviceId"/>.</param>
+/// <param name="ClientCommandId">
+/// The caller's own id for this attempt. <b>Required.</b> A retry with the same id returns the same
+/// tab instead of opening a second one.
+/// </param>
+/// <param name="DisplayName">Optional. What the host sees; defaults to a numbered guest.</param>
+/// <param name="PartySize">
+/// Optional. How many sat down. Only used when this seats the table; defaults to the booked party size.
+/// </param>
+/// <param name="SettlementMode">
+/// Optional. As on <c>/api/tabs/open</c>. Only used when this opens the tab.
+/// </param>
+/// <param name="HideTotalFromGuests">
+/// Optional. As on <c>/api/tabs/open</c>. Only used when this opens the tab.
+/// </param>
+public sealed record OpenTabByBookingRequest(
+    [Required] string BookingCode,
+    [Required] string DeviceId,
+    [Required] Guid ClientCommandId,
+    string? DisplayName = null,
+    [Range(1, 100)] int? PartySize = null,
+    SettlementMode? SettlementMode = null,
+    bool? HideTotalFromGuests = null) : IClientCommandRequest;
+
 /// <summary>Body of <c>POST /api/tabs/join</c>.</summary>
 /// <param name="JoinToken">The invitation from the host's QR or share link. Thirty-minute lifetime.</param>
 /// <param name="DeviceId">See <see cref="OpenTabRequest.DeviceId"/>.</param>

@@ -523,6 +523,24 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
             }),
 
+        // "I'm at my table" refused, and which refusal: too early, over, or a booking not expecting
+        // its party. Each its own code with the booking's facts, so the app can say "from 19:10" or
+        // "this booking was cancelled" rather than that something went wrong. Must stay ABOVE
+        // DomainStateException, which it derives from.
+        BookingTabRefusedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            e.Code,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["startUtc"] = e.StartUtc,
+                ["endUtc"] = e.EndUtc,
+                ["earliestUtc"] = e.EarliestUtc,
+            }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 
@@ -544,6 +562,13 @@ internal static class ApiExceptionMapper
             ErrorCodes.Forbidden,
             "You are not allowed to perform this action.",
             LogAsError: false),
+
+        // No booking of the caller's has that code. Its own slug so the app can say "check the
+        // code", and deliberately no context: somebody else's booking answers word for word the
+        // same, and anything more would say which codes are live. Must stay ABOVE
+        // KeyNotFoundException, which it derives from.
+        BookingNotFoundException e => new MappedError(
+            StatusCodes.Status404NotFound, ErrorCodes.BookingNotFound, e.Message, LogAsError: false),
 
         KeyNotFoundException e => new MappedError(
             StatusCodes.Status404NotFound, ErrorCodes.NotFound, e.Message, LogAsError: false),

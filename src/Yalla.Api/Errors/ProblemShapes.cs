@@ -293,3 +293,33 @@ public sealed record VerificationCodeInvalidProblem : ProblemShape
 {
     public VerificationCodeInvalidContext? Context { get; init; }
 }
+
+/// <summary>"I'm at my table" was refused, and the facts a sentence about it needs.</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="Status">
+/// Its status: 1 PendingApproval, 2 Confirmed, 4 Seated, 5 Completed, 6 CancelledByDiner,
+/// 7 CancelledByVenue, 8 NoShow. What tells the kinds of <c>booking-not-active</c> apart.
+/// </param>
+/// <param name="StartUtc">When the booking starts.</param>
+/// <param name="EndUtc">When it ends. From this instant on, <c>booking-ended</c>.</param>
+/// <param name="EarliestUtc">
+/// When the branch starts holding the table for the party - the earliest the code opens the tab.
+/// Before it, <c>booking-too-early</c>: render it in the branch's time zone, "from 19:10".
+/// </param>
+public sealed record BookingTabRefusedContext(
+    Guid ReservationId,
+    ReservationStatus Status,
+    DateTime StartUtc,
+    DateTime EndUtc,
+    DateTime EarliestUtc);
+
+/// <summary>
+/// <c>booking-too-early</c>, <c>booking-ended</c> or <c>booking-not-active</c>, 409, with the
+/// booking's facts. Branch on the code. The other 409s the route shares with the scan - the table out
+/// of service, the tab being settled, the command id taken by another device - arrive on the same
+/// status with no <c>context</c>.
+/// </summary>
+public sealed record BookingTabRefusedProblem : ProblemShape
+{
+    public BookingTabRefusedContext? Context { get; init; }
+}

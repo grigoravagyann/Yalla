@@ -499,6 +499,7 @@ Each table also carries its derived state **at the requested instant** — not a
 | `GET /api/reservations/mine` | `VerifiedDiner` | filtered to the caller's own `DinerUserId` |
 | `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
 | `POST /api/reservations/{id}/extend-hold` | `VerifiedDiner` | the booking must be theirs, **started**, and not yet extended - see [notifications.md](notifications.md) |
+| `POST /api/tabs/open-by-booking` | `VerifiedDiner` | "I'm at my table": the booking whose `code` was sent must be **theirs** - else 404 `booking-not-found`, identical to a code nobody holds - and its table theirs now: `Confirmed` from `StartUtc - walkInHoldbackMinutes` until `EndUtc`, or `Seated`. A free table is seated as the booking. See [tabs.md](tabs.md) |
 | `POST /api/reservations/{id}/approve` · `/reject` | `ManagerOrAbove` | the booking's **branch and venue** must be theirs |
 
 Availability is the only anonymous endpoint outside the sign-in flows. Browsing needs no account:
@@ -542,6 +543,10 @@ facts under `context`:
 | keep-my-table before the start, or on a booking that is not confirmed | 409 | `hold-not-active`, with `context.startUtc` |
 | keep-my-table a second time | 409 | `hold-already-extended` |
 | keep-my-table at a branch that offers no extensions | 409 | `extensions-not-offered` |
+| "I'm at my table" with a code none of the caller's bookings carries - somebody else's included | 404 | `booking-not-found`, no `context`, the same sentence either way |
+| "I'm at my table" before the branch's walk-in holdback | 409 | `booking-too-early`, with `context.earliestUtc` |
+| "I'm at my table" from the booking's end, or once its sitting has finished | 409 | `booking-ended`, with `context.endUtc` |
+| "I'm at my table" on a booking pending approval, cancelled or a no-show | 409 | `booking-not-active`, with `context.status` |
 
 ---
 

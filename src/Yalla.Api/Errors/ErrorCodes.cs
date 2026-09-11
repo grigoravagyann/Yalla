@@ -215,6 +215,29 @@ public static class ErrorCodes
     /// </summary>
     public const string ExtensionsNotOffered = "extensions-not-offered";
 
+    /// <summary>
+    /// "I'm at my table" with a code none of the caller's bookings carries - whether or not somebody
+    /// else's does. HTTP 404 with no <c>context</c>, and word for word the same for both, because the
+    /// code is read out at the door and proves nothing. Minted from <c>BookingNotFoundException</c>.
+    /// </summary>
+    public const string BookingNotFound = "booking-not-found";
+
+    /// <summary>
+    /// The booking is confirmed but its table is not being held for the party yet. HTTP 409, with
+    /// <c>context.earliestUtc</c> - the branch's walk-in holdback before the start - to say when it
+    /// will be. Minted by <c>BookingTabRefusedException</c>, like the two below.
+    /// </summary>
+    public const string BookingTooEarly = "booking-too-early";
+
+    /// <summary>The booking is over: past its end, or its sitting has finished. HTTP 409.</summary>
+    public const string BookingEnded = "booking-ended";
+
+    /// <summary>
+    /// The booking is not expecting its party - waiting for approval, cancelled, or released as a
+    /// no-show. HTTP 409, with <c>context.status</c> saying which.
+    /// </summary>
+    public const string BookingNotActive = "booking-not-active";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -260,6 +283,10 @@ public static class ErrorCodes
         HoldNotActive => "No table being held yet",
         HoldAlreadyExtended => "Hold already extended",
         ExtensionsNotOffered => "Hold extensions not offered",
+        BookingNotFound => "Booking not found",
+        BookingTooEarly => "Too early for this booking",
+        BookingEnded => "Booking has ended",
+        BookingNotActive => "Booking not active",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a
