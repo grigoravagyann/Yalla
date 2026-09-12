@@ -131,7 +131,8 @@ public sealed record PublicBranchPage(
     bool AcceptsWebBookings,
     int BookingWindowDays,
     PublicReservationPolicy Policy,
-    DateTime AsOfUtc);
+    DateTime AsOfUtc,
+    Media.PhotoView? CoverPhoto = null);
 
 /// <summary>
 /// The reservation rules a diner needs in order to book, and nothing else.

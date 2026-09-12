@@ -132,7 +132,14 @@ The same form carries the venue card's picture. `PUT` takes `coverPhotoId` — a
 `coverPhoto` as the three-variant photo view, absent when there is none. A photo uploaded for another
 branch is not found here, and the whole form is refused before anything is written, the same answer a
 menu item gets for a foreign photo. It is what `imageUrl` on the public venue list and `coverPhoto` on
-the public branch page are read from.
+the public branch page are read from. The page carries it inside the cached plan rather than the live
+stitch — the picture changes once during onboarding, and a five-minute-old cover is not a claim about
+the room — so a new cover shows on the public page within the plan's cache window, not instantly.
+
+Photo links everywhere on this surface are **server-relative** (`/api/photos/{id}/card`): the API does
+not know what host it is reachable at. Every client resolves them against the base url it calls the
+API with; a page that used one as a root-relative `<img src>` would ask its own web host for a picture
+only the API has.
 
 ### Null fields are absent, not null
 

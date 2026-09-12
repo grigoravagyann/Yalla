@@ -375,6 +375,16 @@ internal sealed class PublicVenueQuery(
                 b.ReservationPolicy.TurnTimeMinutes,
                 b.ReservationPolicy.MinLeadMinutes,
                 b.ReservationPolicy.CancellationDeadlineMinutes,
+                // The cover, as columns: the read stays one query, so it cannot call
+                // PhotoView.From(Photo). Null-forgiving on the navigation is the EF idiom for an
+                // optional join; every column comes back null when there is no cover.
+                b.CoverPhotoId,
+                CoverIsExternal = (bool?)b.CoverPhoto!.IsExternallyHosted,
+                CoverThumbnailPath = b.CoverPhoto!.ThumbnailPath,
+                CoverCardPath = b.CoverPhoto!.CardPath,
+                CoverFullPath = b.CoverPhoto!.FullPath,
+                CoverWidth = b.CoverPhoto!.Width,
+                CoverHeight = b.CoverPhoto!.Height,
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -382,6 +392,19 @@ internal sealed class PublicVenueQuery(
         {
             return null;
         }
+
+        // In the cached plan rather than stitched on live: the picture changes once during
+        // onboarding, and a five-minute-old cover is not a claim about the room.
+        var cover = branch.CoverPhotoId is { } coverPhotoId
+            ? PhotoView.From(
+                coverPhotoId,
+                branch.CoverIsExternal == true,
+                branch.CoverThumbnailPath!,
+                branch.CoverCardPath!,
+                branch.CoverFullPath!,
+                branch.CoverWidth,
+                branch.CoverHeight)
+            : null;
 
         var hours = await db.OpeningHours
             .AsNoTracking()
@@ -456,7 +479,8 @@ internal sealed class PublicVenueQuery(
 
             // Placeholder. Stamped by the caller, for the same reason as the free-table count: a
             // cached "as of" would tell the diner the count is fresh when it is minutes old.
-            AsOfUtc: default);
+            AsOfUtc: default,
+            CoverPhoto: cover);
 
         return new BranchPlan(branch.Id, page);
     }
