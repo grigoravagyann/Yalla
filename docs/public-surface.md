@@ -126,6 +126,14 @@ is the opposite of the point.
 
 Editing it: `GET`/`PUT /api/branches/{branchId}/public-profile`, manager or above, branch-scoped.
 
+The same form carries the venue card's picture. `PUT` takes `coverPhotoId` — a photo uploaded for
+**this** branch through `POST /api/branches/{branchId}/photos`, or null to clear it — and both
+`GET` and `PUT` answer with
+`coverPhoto` as the three-variant photo view, absent when there is none. A photo uploaded for another
+branch is not found here, and the whole form is refused before anything is written, the same answer a
+menu item gets for a foreign photo. It is what `imageUrl` on the public venue list and `coverPhoto` on
+the public branch page are read from.
+
 ### Null fields are absent, not null
 
 The API serialises with `DefaultIgnoreCondition = WhenWritingNull`, so a branch with no published
