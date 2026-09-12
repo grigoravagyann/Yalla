@@ -216,6 +216,28 @@ public class RequestShapeContractTests
         Assert.Equal(new[] { "branchId", "localDate", "localTime", "nested" }, call.Keys);
     }
 
+    /// <summary>
+    /// A <c>??</c> inside an interpolation hole is C#, not a query string.
+    /// </summary>
+    /// <remarks>
+    /// <c>$"/api/.../tables/{tableId ?? branch.FirstTableId}/hold"</c> is how a test picks a table
+    /// with a fallback, and the normaliser used to split on the first <c>?</c> before it had
+    /// collapsed the holes - so the URL lost its tail, matched no route, and the whole suite went
+    /// red on a call whose shape was perfectly well declared.
+    /// </remarks>
+    [Fact]
+    public void A_null_coalescing_inside_an_interpolation_hole_is_not_a_query_string()
+    {
+        const string url = "/api/branches/{branch.BranchId}/tables/{tableId ?? branch.FirstTableId}/hold";
+        const string pattern = "/api/branches/{branchId:guid}/tables/{tableId:guid}/hold";
+
+        Assert.Equal("/api/branches/*/tables/*/hold", Normalise(url));
+        Assert.Matches(Template(pattern), Normalise(url));
+
+        // A real query string is still dropped.
+        Assert.Equal("/api/reservations", Normalise("/api/reservations?status=1"));
+    }
+
     // ------------------------------------------------------------ the machinery
 
     private sealed record Call(string File, int Line, string Method, string Url, string[] Keys);
@@ -315,8 +337,10 @@ public class RequestShapeContractTests
     /// </summary>
     private static string Normalise(string path)
     {
-        var value = path.Split('?')[0];
-        value = Regex.Replace(value, @"\{[^}]*\}", "*");
+        // Holes first, then the query: a `??` inside `{tableId ?? fallback}` is C#, and splitting
+        // on `?` before collapsing it took the rest of the route for a query string.
+        var value = Regex.Replace(path, @"\{[^}]*\}", "*");
+        value = value.Split('?')[0];
 
         return "/" + value.Trim('/').ToLowerInvariant();
     }
