@@ -10,7 +10,7 @@
 # so. A note telling people to remember the flags is not a fix - this is.
 #
 # Usage:
-#   ./verify.sh              build, check migrations, test, fail on any skip
+#   ./verify.sh              build, migrations, request shapes, test, fail on any skip
 #   ./verify.sh --no-test    the fast half: build and migrations only
 #
 # On Windows, run it from Git Bash. It needs a reachable SQL Server for the integration tests;
@@ -55,6 +55,13 @@ if [ "$RUN_TESTS" -eq 0 ]; then
   printf '\n\033[1mBuild and migrations verified. Tests skipped (--no-test).\033[0m\n'
   exit 0
 fi
+
+# Runs ahead of the full suite on purpose: it takes about a second, and a request body whose keys
+# the endpoint does not declare is worth hearing about now rather than three minutes from now. It
+# also runs inside the suite below, and therefore in CI - which a step in this script does not,
+# because the workflow does not call this script. The suite is the gate; this is the fast warning.
+step "Request shapes (tests post what the endpoints declare)"
+dotnet test tests/Yalla.UnitTests/Yalla.UnitTests.csproj -c Release --no-build   --filter "FullyQualifiedName~RequestShapeContractTests"   --logger "console;verbosity=minimal"
 
 step "Test (Release, whole solution)"
 rm -rf "$RESULTS_DIR"
