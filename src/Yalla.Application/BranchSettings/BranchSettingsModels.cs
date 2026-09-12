@@ -22,15 +22,26 @@ namespace Yalla.Application.BranchSettings;
 /// <see cref="Yalla.Domain.Venues.Branch.AcceptsWebBookings"/> for why this is false until somebody
 /// says otherwise.
 /// </param>
-public sealed record PublicProfileView(string? PhoneE164, bool AcceptsWebBookings);
+/// <param name="CoverPhoto">
+/// The venue card's picture - the first thing a stranger sees on the public page and in the diner
+/// app's list - or null when there is none yet.
+/// </param>
+public sealed record PublicProfileView(
+    string? PhoneE164,
+    bool AcceptsWebBookings,
+    Media.PhotoView? CoverPhoto);
 
-/// <summary>The same two settings, as written. Both are replaced at once.</summary>
+/// <summary>The same settings, as written. All are replaced at once.</summary>
 /// <param name="PhoneE164">
 /// E.164, e.g. <c>+37411223344</c>. Spaces, dashes and brackets are stripped before validation.
 /// Null or blank clears the number.
 /// </param>
 /// <param name="AcceptsWebBookings">Whether to offer booking on the public page.</param>
-public sealed record PublicProfileCommand(string? PhoneE164, bool AcceptsWebBookings);
+/// <param name="CoverPhotoId">
+/// A photo uploaded for <b>this</b> branch, or null to clear the picture. One uploaded for another
+/// branch is not found here, the same answer a menu item gets for a foreign photo.
+/// </param>
+public sealed record PublicProfileCommand(string? PhoneE164, bool AcceptsWebBookings, Guid? CoverPhotoId = null);
 
 // ------------------------------------------------------------------ reservation policy
 

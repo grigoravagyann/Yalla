@@ -114,7 +114,17 @@ internal sealed class PhotoService(
         };
 
         // Every stored variant is WebP - one format, one decoder path in every client.
-        return (await storage.OpenAsync(path, cancellationToken), "image/webp");
+        try
+        {
+            return (await storage.OpenAsync(path, cancellationToken), "image/webp");
+        }
+        catch (FileNotFoundException)
+        {
+            // The row outlived its bytes - a disk restored from an older backup, or a seed row that
+            // never had any. To the client that is "no such picture", exactly what a missing row is;
+            // a 500 here painted a broken image where a placeholder belongs.
+            throw new KeyNotFoundException($"Photo {photoId} has no stored '{variant}' variant.");
+        }
     }
 
     public async Task<int> SweepOrphansAsync(CancellationToken cancellationToken = default)

@@ -100,7 +100,7 @@ public static class VenueAdminEndpoints
 
         group.MapPut("/public-profile", PutPublicProfileAsync)
             .WithName("putBranchPublicProfile")
-            .WithSummary("Set the published phone number and whether the page takes bookings")
+            .WithSummary("Set the published phone number, whether the page takes bookings, and the cover photo")
             .WithDescription(
                 "`acceptsWebBookings` is **false until somebody switches it on**, and stays false "
                 + "for every branch that has never been asked. A venue has not agreed to take "
@@ -111,10 +111,16 @@ public static class VenueAdminEndpoints
                 + "simply offers no booking.\n\n"
                 + "`phoneE164` must be E.164 (`+37411223344`); spaces, dashes and brackets are "
                 + "stripped first. Null or blank clears it. A branch with no number published is "
-                + "a branch a diner on the public page has no way to ask about a high chair.")
+                + "a branch a diner on the public page has no way to ask about a high chair.\n\n"
+                + "`coverPhotoId` is the venue card's picture: a photo uploaded for **this** branch "
+                + "through `POST /api/branches/{branchId}/photos`, or null to clear it. A photo "
+                + "uploaded for another branch is not found here, and the whole form is refused "
+                + "before anything is written.")
             .Produces<PublicProfileView>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`phoneE164` is not a valid E.164 number.")
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "No such branch, or `coverPhotoId` names a photo that was not uploaded for it.");
 
         group.MapGet("/reservation-policy", GetPolicyAsync)
             .WithName("getReservationPolicy")
