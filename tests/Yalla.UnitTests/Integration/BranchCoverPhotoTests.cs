@@ -85,6 +85,42 @@ public sealed class BranchCoverPhotoTests(SqlServerFixture fixture) : IDisposabl
     }
 
     [SkippableFact]
+    public async Task The_public_branch_page_carries_the_cover_once_it_is_set()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+        string venueSlug;
+        string branchSlug;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+            var slugs = await db.Branches
+                .Where(b => b.Id == mine.BranchId)
+                .Select(b => new { b.Slug, VenueSlug = b.Venue.Slug })
+                .SingleAsync();
+            venueSlug = slugs.VenueSlug;
+            branchSlug = slugs.Slug;
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        var photoId = await UploadedPhotoIdAsync(manager, mine.BranchId, Png(4));
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await manager.PutAsJsonAsync(
+                $"/api/branches/{mine.BranchId}/public-profile",
+                new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId = photoId })).StatusCode);
+
+        // The page a stranger sees, with no account: the picture is the first thing on it.
+        using var anyone = factory.CreateClient();
+        var page = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{venueSlug}/{branchSlug}");
+        Assert.Equal(photoId, page.GetProperty("coverPhoto").GetProperty("photoId").GetGuid());
+        Assert.Contains(photoId.ToString(), page.GetProperty("coverPhoto").GetProperty("cardUrl").GetString());
+    }
+
+    [SkippableFact]
     public async Task Another_venues_photo_is_not_found_at_this_branch_and_nothing_changes()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
