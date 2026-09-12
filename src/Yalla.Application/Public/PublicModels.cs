@@ -111,6 +111,11 @@ public sealed record PublicBranchCard(
 /// later; the rest is stable. The page shows the staleness rather than implying there is none,
 /// because this link is cached for seconds and shared for days.
 /// </param>
+/// <param name="CoverPhoto">
+/// The venue card's picture, or null when the owner has not set one. Part of the cached plan, not
+/// the live stitch: it changes once during onboarding, and a stale cover is not a claim about the
+/// room.
+/// </param>
 public sealed record PublicBranchPage(
     string VenueSlug,
     string BranchSlug,
