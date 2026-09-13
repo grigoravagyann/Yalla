@@ -358,6 +358,7 @@ public static class DependencyInjection
         }
 
         services.AddSingleton<DevSeedRegistry>();
+        services.AddScoped<DevListingSeeder>();
         services.AddScoped<DevDataSeeder>();
 
         // Registered as itself, not as ICurrentActor. The host composes it with the real

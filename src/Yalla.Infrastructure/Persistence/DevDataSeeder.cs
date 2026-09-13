@@ -26,6 +26,7 @@ namespace Yalla.Infrastructure.Persistence;
 internal sealed class DevDataSeeder(
     YallaDbContext db,
     DevSeedRegistry registry,
+    DevListingSeeder listing,
     ILogger<DevDataSeeder> logger)
 {
     private const string VenueSlug = "yalla-demo";
@@ -81,6 +82,9 @@ internal sealed class DevDataSeeder(
         await EnsureOpeningHoursAsync(branch, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+
+        // Listing fields, photo pins and reviews for the diner app. Same gate as this seeder.
+        await listing.SeedAsync(branch, cancellationToken);
 
         registry.Publish(venue.Id, branch.Id, waiter.Id, manager.Id);
 
