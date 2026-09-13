@@ -177,6 +177,7 @@ api.MapVenueAdminEndpoints();
 api.MapOrderingEndpoints();
 api.MapPhotoEndpoints();
 api.MapDinerAccountEndpoints();
+api.MapDinerBrowseEndpoints();
 api.MapNotificationEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();

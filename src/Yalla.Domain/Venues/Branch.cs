@@ -109,6 +109,38 @@ public sealed class Branch : Entity
     /// <summary>Turns public-page booking on or off for this branch.</summary>
     public void SetAcceptsWebBookings(bool accepts) => AcceptsWebBookings = accepts;
 
+    /// <summary>The cuisine line on the browse card, e.g. "Armenian &amp; Mediterranean". Free text.</summary>
+    public string? Cuisine { get; private set; }
+
+    /// <summary>A paragraph about the place, for the details screen.</summary>
+    public string? About { get; private set; }
+
+    /// <summary>1 (cheap) to 4 (expensive), or null when the venue has not said.</summary>
+    public int? PriceLevel { get; private set; }
+
+    /// <summary>An http(s) address, or null.</summary>
+    public string? WebsiteUrl { get; private set; }
+
+    /// <summary>Comma-joined keys from <see cref="BranchListingRules.AmenityKeys"/>. See <see cref="Amenities"/>.</summary>
+    public string? AmenityKeys { get; private set; }
+
+    /// <summary>The amenity keys, in the order the venue gave them.</summary>
+    public IReadOnlyList<string> Amenities =>
+        string.IsNullOrEmpty(AmenityKeys) ? [] : AmenityKeys.Split(',', StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>Replaces every listing field at once. The console edits them as one form.</summary>
+    /// <exception cref="FieldValidationException">Every field that broke a rule.</exception>
+    public void UpdateListing(string? cuisine, string? about, int? priceLevel, string? websiteUrl, IEnumerable<string>? amenities)
+    {
+        var listing = BranchListingRules.Normalise(cuisine, about, priceLevel, websiteUrl, amenities);
+
+        Cuisine = listing.Cuisine;
+        About = listing.About;
+        PriceLevel = listing.PriceLevel;
+        WebsiteUrl = listing.WebsiteUrl;
+        AmenityKeys = listing.Amenities.Count == 0 ? null : string.Join(',', listing.Amenities);
+    }
+
     public Guid? CoverPhotoId { get; private set; }
 
     public Media.Photo? CoverPhoto { get; private set; }

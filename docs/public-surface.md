@@ -41,6 +41,36 @@ hundred a minute for every phone in the city. A 429 there is the no-restaurants 
 
 ---
 
+## The diner app's browse routes
+
+`GET /api/public/branches` · `GET /api/public/branches/search?q=&category=&lat=&lng=` ·
+`GET /api/public/branches/{branchId}` · `GET /api/public/branches/{branchId}/reviews?page=` ·
+`GET /api/public/branches/{branchId}/table-markers`
+
+Branch-first rather than venue-first, because the app's place *is* a branch: Explore, search, the
+map, the details screen and the photo table view all key on the branch id the booking flow takes.
+The list and search return `PublicBranchListing`; the details route returns `PublicBranchDetail`,
+whose `listing` is that same card. `/api/public/venues` is unchanged for the web chooser.
+
+- **Nothing is a constant.** `rating`/`reviewCount` come from `BranchReviews`; `badges` are
+  `BranchBadgeRules` over sittings and reviews; `isOpenNow` is the same opening-hours rule the branch
+  page uses (`BranchOpenNow`); `cuisine`, `priceLevel`, `about`, `amenities`, `websiteUrl` and the
+  gallery are what the venue wrote through `PUT /api/branches/{id}/listing`. A field the venue never
+  set is **absent**, and an unreviewed branch has no `rating` at all rather than a zero.
+- **Distance** is computed server-side only when the caller sends `lat` and `lng` together, and then
+  orders the list nearest first. Without a position the list is best rated first.
+- **Table markers** are tables a manager placed on the cover photo (`photoX`/`photoY` on the floor
+  plan), each with the derived `state` the staff floor shows. Tables not placed are simply absent.
+- **Caching**: the list and search hold the estate and every live number for fifteen seconds; the id
+  routes check their branch live, so a suspended venue is a 404 at once. The reviews route reads its
+  aggregate live, since it is the screen somebody opens right after writing one.
+
+Writing a review is `POST`/`PUT /api/diner/branches/{branchId}/review` under the diner policy - one
+review per diner per branch, a phone-verified account only. Reviews are published under a first
+name and last initial.
+
+---
+
 ## The branch page
 
 `GET /api/public/branches/{venueSlug}/{branchSlug}`

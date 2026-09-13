@@ -435,12 +435,13 @@ internal sealed class BranchSettingsService(
             table.SetShape(input.Shape);
             table.AssignToArea(AreaId(areasByName, input.FloorAreaName));
             table.SetBookable(input.IsBookable);
+            table.PlaceOnPhoto(input.PhotoX, input.PhotoY);
             table.SetActive(true);
         }
 
         foreach (var (input, _) in newTables)
         {
-            db.DiningTables.Add(new DiningTable(
+            var created = new DiningTable(
                 branch.Id,
                 input.Label,
                 input.Seats,
@@ -451,7 +452,11 @@ internal sealed class BranchSettingsService(
                 input.Shape,
                 AreaId(areasByName, input.FloorAreaName),
                 input.RotationDegrees,
-                input.IsBookable));
+                input.IsBookable);
+
+            // Where it is on the cover photo, for the diner app's table view. Optional per table.
+            created.PlaceOnPhoto(input.PhotoX, input.PhotoY);
+            db.DiningTables.Add(created);
         }
 
         // Areas the plan dropped. Any table still pointing at one is a deactivated table whose
@@ -685,5 +690,7 @@ internal sealed class BranchSettingsService(
             !db.Reservations.Any(r => r.DiningTableId == t.Id)
             && !db.TableSessions.Any(ts => ts.DiningTableId == t.Id)
             && !db.Tabs.Any(tb => tb.DiningTableId == t.Id)
-            && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id));
+            && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id),
+            t.PhotoX,
+            t.PhotoY);
 }

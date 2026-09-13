@@ -141,6 +141,7 @@ internal sealed class PhotoService(
             .Where(p => p.UploadedAtUtc < cutoff)
             .Where(p => !db.MenuItems.Any(i => i.PhotoId == p.Id))
             .Where(p => !db.Branches.Any(b => b.CoverPhotoId == p.Id))
+            .Where(p => !db.BranchGalleryPhotos.Any(g => g.PhotoId == p.Id))
             .Where(p => !db.DinerUsers.Any(d => d.PhotoId == p.Id))
             .ToListAsync(cancellationToken);
 

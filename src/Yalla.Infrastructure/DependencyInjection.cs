@@ -78,6 +78,10 @@ public static class DependencyInjection
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.
         services.AddScoped<IPublicVenueQuery, PublicVenueQuery>();
+        services.AddScoped<IPublicListingQuery, PublicListingQuery>();
+        services.AddScoped<IBranchListingService, BranchListingService>();
+        services.AddScoped<IBranchReviewService, BranchReviewService>();
+        services.AddScoped<IDinerOrderQuery, DinerOrderQuery>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 

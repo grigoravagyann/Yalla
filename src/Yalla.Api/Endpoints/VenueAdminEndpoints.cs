@@ -122,6 +122,29 @@ public static class VenueAdminEndpoints
                 StatusCodes.Status404NotFound,
                 "No such branch, or `coverPhotoId` names a photo that was not uploaded for it.");
 
+        group.MapGet("/listing", GetListingAsync)
+            .WithName("getBranchListing")
+            .WithSummary("What the diner app's browse screens say about this branch")
+            .Produces<BranchListingView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
+        group.MapPut("/listing", PutListingAsync)
+            .WithName("putBranchListing")
+            .WithSummary("Set cuisine, about, price level, website, amenities, map pin and gallery")
+            .WithDescription(
+                "Every listing field is replaced; null or blank clears it. `priceLevel` is 1-4; "
+                + "`amenities` are keys from `outdoorSeating`, `wifi`, `parking`, `cardPayment`, `vegan`; "
+                + "`websiteUrl` is an absolute http(s) address. Every broken field is reported at once as "
+                + "`422 validation-failed`.\n\n"
+                + "`latitude` and `longitude` move the map pin together (with `address` if sent); neither "
+                + "leaves it where it is.\n\n"
+                + "`galleryPhotoIds` are photos uploaded for **this** branch through "
+                + "`POST /api/branches/{branchId}/photos`, in display order, at most 12. **Null leaves the "
+                + "gallery alone**; `[]` clears it. A photo from another branch is 404 and nothing is written.")
+            .Produces<BranchListingView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or a gallery photo not uploaded for it.")
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, "Fields out of bounds; `context.fields` names each.");
+
         group.MapGet("/reservation-policy", GetPolicyAsync)
             .WithName("getReservationPolicy")
             .WithSummary("Every field of the branch's reservation policy")
@@ -278,6 +301,14 @@ public static class VenueAdminEndpoints
 
     private static async Task<IResult> GetFloorPlanAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.GetFloorPlanAsync(branchId, ct));
+
+    private static async Task<IResult> GetListingAsync(
+        Guid branchId, IBranchListingService service, CancellationToken ct) =>
+        Results.Ok(await service.GetAsync(branchId, ct));
+
+    private static async Task<IResult> PutListingAsync(
+        Guid branchId, BranchListingCommand command, IBranchListingService service, CancellationToken ct) =>
+        Results.Ok(await service.UpdateAsync(branchId, command, ct));
 
     private static async Task<IResult> PutFloorPlanAsync(
         Guid branchId, ReplaceFloorPlanCommand command, IBranchSettingsService service, CancellationToken ct) =>

@@ -146,4 +146,10 @@ internal static class DatabaseIndexNames
     /// collide on null.
     /// </summary>
     public const string StaffMemberEmail = "UX_StaffMembers_Email";
+
+    /// <summary>
+    /// Unique on (branch, diner): one review each. A violation means two submits raced; a create
+    /// answers "already reviewed" and a replace revises the review that won.
+    /// </summary>
+    public const string BranchReviewPerDiner = "UX_BranchReviews_BranchId_DinerUserId";
 }

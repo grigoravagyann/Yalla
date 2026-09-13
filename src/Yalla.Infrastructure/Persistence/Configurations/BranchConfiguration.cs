@@ -75,6 +75,15 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
 
         builder.Ignore(b => b.IsPaid);
 
+        // The diner app's listing fields. All optional: a venue is usable before anybody writes a
+        // cuisine line, and "not said" must read as unknown rather than as a made-up default.
+        builder.Property(b => b.Cuisine).HasMaxLength(FieldLengths.Cuisine);
+        builder.Property(b => b.About).HasMaxLength(FieldLengths.Description);
+        builder.Property(b => b.PriceLevel);
+        builder.Property(b => b.WebsiteUrl).HasMaxLength(FieldLengths.Url);
+        builder.Property(b => b.AmenityKeys).HasMaxLength(FieldLengths.AmenityKeys);
+        builder.Ignore(b => b.Amenities);
+
         // Null until somebody saves the policy form. Not a flag: the timestamp answers "when did
         // anyone last look at this?", which is the question a venue that was onboarded eight months
         // ago actually raises.

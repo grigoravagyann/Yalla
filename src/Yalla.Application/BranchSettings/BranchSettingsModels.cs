@@ -287,7 +287,9 @@ public sealed record FloorTableView(
     bool IsActive,
     string QrToken,
     TableStatus Status,
-    bool IsDeletable);
+    bool IsDeletable,
+    double? PhotoX = null,
+    double? PhotoY = null);
 
 /// <summary>
 /// Canvas size, areas, and every table with its geometry.
@@ -325,6 +327,11 @@ public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
 /// <param name="Shape">1 Rectangle, 2 Round.</param>
 /// <param name="FloorAreaName">Names an area in the same plan, by name. Null for no area.</param>
 /// <param name="IsBookable">False for tables that only ever take walk-ins, e.g. bar stools.</param>
+/// <param name="PhotoX">
+/// Where the table is on the branch's cover photo, 0 (left) to 1 (right). Sent with
+/// <paramref name="PhotoY"/> or not at all; both null takes the table off the photo.
+/// </param>
+/// <param name="PhotoY">0 (top) to 1 (bottom).</param>
 public sealed record FloorTableInput(
     Guid? Id,
     string Label,
@@ -336,7 +343,9 @@ public sealed record FloorTableInput(
     double RotationDegrees,
     TableShape Shape,
     string? FloorAreaName = null,
-    bool IsBookable = true);
+    bool IsBookable = true,
+    double? PhotoX = null,
+    double? PhotoY = null);
 
 /// <summary>The whole plan, replaced in one atomic call.</summary>
 public sealed record ReplaceFloorPlanCommand(

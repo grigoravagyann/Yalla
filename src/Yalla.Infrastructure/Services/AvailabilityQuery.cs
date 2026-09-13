@@ -137,6 +137,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                         FloorAreaDisplayOrder = t.FloorArea == null ? null : t.FloorArea.DisplayOrder,
                         IsBookable = t.IsBookable,
                         Status = t.Status,
+                        PhotoX = t.PhotoX,
+                        PhotoY = t.PhotoY,
 
                         // The open sitting, as a second left join beside the bookings one. This is
                         // what used to be missing: TableSession is the authoritative occupancy
@@ -357,6 +359,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             FloorAreaDisplayOrder = table.FloorAreaDisplayOrder ?? 0,
             IsBookable = table.IsBookable,
             PhysicalStatus = table.Status,
+            PhotoX = table.PhotoX,
+            PhotoY = table.PhotoY,
 
             // Derived for the requested instant, not for now: a table free this afternoon but
             // booked at 20:00 reads as ReservedSoon when the question is about 20:00 - and a table
@@ -440,6 +444,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                     FloorAreaDisplayOrder = t.FloorAreaDisplayOrder ?? 0,
                     IsBookable = t.IsBookable,
                     PhysicalStatus = t.Status,
+                    PhotoX = t.PhotoX,
+                    PhotoY = t.PhotoY,
                     State = TableStateProjection.Derive(t.Status, null, nowUtc, row.Policy.BufferMinutes),
                     IsAvailable = false,
                     UnavailableReason = reason,
@@ -504,6 +510,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         public bool IsBookable { get; init; }
 
         public TableStatus Status { get; init; }
+
+        public double? PhotoX { get; init; }
+
+        public double? PhotoY { get; init; }
 
         /// <summary>When the party currently at this table sat down. Null when nobody is at it.</summary>
         public DateTime? OpenSessionSeatedAtUtc { get; init; }

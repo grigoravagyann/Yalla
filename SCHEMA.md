@@ -43,6 +43,34 @@ with a shipped default, never a constant in code. "How long do we hold a table?"
 answer in a breakfast cafe and a tasting-menu restaurant, and the only default that varies by
 venue type is the turn time: 120 minutes for a cafe, 90 for a restaurant.
 
+**Listing fields**, for the diner app's browse screens, all nullable because "not said" must read
+as unknown rather than as a made-up default: `Cuisine` (free text, 120), `About` (2000),
+`PriceLevel` (1–4), `WebsiteUrl` (absolute http/https) and `AmenityKeys` — a comma-joined subset of
+`outdoorSeating, wifi, parking, cardPayment, vegan`, a closed list because the app has to have words
+for each key. Edited as one form through `PUT /api/branches/{id}/listing`, which also moves the map
+pin (`Latitude`/`Longitude`, which predate it and are required) and replaces the gallery.
+
+### BranchGalleryPhoto
+
+A branch's pictures beyond its cover, in order: `(BranchId, PhotoId, Position)`, at most 12 per
+branch, `(BranchId, PhotoId)` unique. A row per picture rather than a list of ids on the branch so
+the photo is a real foreign key (Restrict) and the orphan sweep can see it is in use. Cascades from
+its branch.
+
+### BranchReview
+
+One diner's rating of one branch: `Rating` 1–5 (check constraint `CK_BranchReviews_Rating`),
+optional `Text` (1000), `UpdatedAtUtc`. **`(BranchId, DinerUserId)` is unique**
+(`UX_BranchReviews_BranchId_DinerUserId`) — one review per diner per branch, revised rather than
+repeated; the service turns a violation into "already reviewed" on create and a revision on replace.
+Only a phone-verified account may write one, checked from the stored row. Both foreign keys Restrict.
+The public name is derived (`Anahit S.`), never stored and never the full name.
+
+Rating, review count and the `popular`/`new` badges on the browse routes are **derived at read
+time, never stored**: average of `Rating`; `new` when the branch row is under 30 days old;
+`popular` when the branch seated 20+ parties (`TableSessions.SeatedAtUtc`) in the last 30 days or
+has 5+ reviews averaging 4.5+. See `BranchBadgeRules`.
+
 ### OpeningHours
 
 When a branch is open on one day of the week, as wall-clock `TimeOnly` values. `ClosesNextDay`
@@ -67,6 +95,11 @@ stored](#why-reserved-and-late-are-derived-not-stored). `TableSession` is author
 be recomputed. `CurrentSessionId` is a pointer, not a foreign key — `TableSession` already points
 at the table, and an opposing key would make the pair circular and uninsertable. `RowVersion`
 stops two waiters seating a walk-in on the same table at the same moment.
+
+`PhotoX` and `PhotoY` (nullable, 0–1, both or neither) place the table on the branch's **cover
+photo**, as fractions of its width and height, so the diner app can draw a marker on the picture of
+the room. Set per table through the floor-plan `PUT`; served on availability and on
+`GET /api/public/branches/{id}/table-markers`.
 
 ### Reservation
 
@@ -163,8 +196,8 @@ constraint (`CK_Photos_OneOwner`) says so, and the owner is the first segment of
 (`{branchId}/…` or `diner-{id}/…`). Uniqueness on `(owner, ContentHash)` is two filtered indexes,
 one per kind of owner, because SQL Server treats two NULLs as equal in a unique index and an
 unfiltered one would let only one diner ever upload a given picture. Referenced by
-`MenuItems.PhotoId`, `Branches.CoverPhotoId` and `DinerUsers.PhotoId`; a row none of the three
-points at is deleted, files included, a day after upload.
+`MenuItems.PhotoId`, `Branches.CoverPhotoId`, `BranchGalleryPhotos.PhotoId` and
+`DinerUsers.PhotoId`; a row none of the four points at is deleted, files included, a day after upload.
 
 ### StaffMember
 

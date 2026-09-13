@@ -587,46 +587,9 @@ internal sealed class PublicVenueQuery(
             ?? [];
     }
 
-    private async Task<HashSet<Guid>> ComputeOpenNowAsync(
+    // Shared with the diner app's listing routes, so the web page and the app cannot disagree.
+    private Task<HashSet<Guid>> ComputeOpenNowAsync(
         IReadOnlyList<Guid> branchIds,
-        CancellationToken cancellationToken)
-    {
-        var rows = await db.OpeningHours
-            .AsNoTracking()
-            .Where(h => branchIds.Contains(h.BranchId))
-            .Select(h => new
-            {
-                h.BranchId,
-                h.Branch.TimeZoneId,
-                h.Day,
-                h.OpensAt,
-                h.ClosesAt,
-                h.ClosesNextDay,
-            })
-            .ToListAsync(cancellationToken);
-
-        var nowUtc = clock.UtcNow;
-        var open = new HashSet<Guid>();
-
-        foreach (var group in rows.GroupBy(r => (r.BranchId, r.TimeZoneId)))
-        {
-            var local = BranchTime.ToLocal(nowUtc, group.Key.TimeZoneId);
-            var today = TimeOnly.FromDateTime(local);
-            var yesterdayDay = local.DayOfWeek == DayOfWeek.Sunday ? DayOfWeek.Saturday : local.DayOfWeek - 1;
-
-            var isOpen = group.Any(h =>
-                (h.Day == local.DayOfWeek && !h.ClosesNextDay && today >= h.OpensAt && today < h.ClosesAt)
-                || (h.Day == local.DayOfWeek && h.ClosesNextDay && today >= h.OpensAt)
-
-                // A block that ran past midnight is still the previous day's block until it closes.
-                || (h.Day == yesterdayDay && h.ClosesNextDay && today < h.ClosesAt));
-
-            if (isOpen)
-            {
-                open.Add(group.Key.BranchId);
-            }
-        }
-
-        return open;
-    }
+        CancellationToken cancellationToken) =>
+        BranchOpenNow.ComputeAsync(db, branchIds, clock.UtcNow, cancellationToken);
 }

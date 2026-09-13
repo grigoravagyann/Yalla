@@ -232,6 +232,20 @@ public sealed class DiningTable : Entity
         Height = Guard.Positive(height, nameof(height));
     }
 
+    /// <summary>
+    /// Where the table is on the branch's cover photo, as a fraction of its width (0 left, 1 right).
+    /// Null when the table is not in that picture.
+    /// </summary>
+    public double? PhotoX { get; private set; }
+
+    /// <summary>As <see cref="PhotoX"/>, down the photo's height (0 top, 1 bottom).</summary>
+    public double? PhotoY { get; private set; }
+
+    /// <summary>Puts the table on the cover photo, or takes it off with two nulls.</summary>
+    /// <exception cref="FieldValidationException">One coordinate without the other, or outside 0-1.</exception>
+    public void PlaceOnPhoto(double? photoX, double? photoY) =>
+        (PhotoX, PhotoY) = BranchListingRules.PhotoPosition(photoX, photoY, Label);
+
     public void SetSeats(int seats) => Seats = Guard.Positive(seats, nameof(seats));
 
     public void SetShape(TableShape shape) => Shape = Guard.Defined(shape, nameof(shape));
