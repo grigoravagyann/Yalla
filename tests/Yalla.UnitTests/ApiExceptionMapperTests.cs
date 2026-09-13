@@ -190,4 +190,71 @@ public class ApiExceptionMapperTests
         Assert.DoesNotContain(secret, mapped.Message);
         Assert.True(mapped.LogAsError);
     }
+
+    /// <summary>
+    /// Three codes, one shape: the field rides in the context so the sign-up form does not map a
+    /// code back to an input by hand.
+    /// </summary>
+    [Theory]
+    [InlineData("username", "username-taken", "username")]
+    [InlineData("email", "email-taken", "email")]
+    [InlineData("phone", "phone-in-use", "phoneE164")]
+    public void A_taken_diner_identifier_becomes_a_409_with_its_own_code_and_field(string kind, string code, string field)
+    {
+        var exception = kind switch
+        {
+            "username" => Yalla.Domain.Identity.DinerIdentifierTakenException.Username(),
+            "email" => Yalla.Domain.Identity.DinerIdentifierTakenException.Email(),
+            _ => Yalla.Domain.Identity.DinerIdentifierTakenException.Phone(),
+        };
+
+        var mapped = ApiExceptionMapper.Map(exception);
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal(code, mapped.Code);
+        Assert.Equal(field, mapped.Context!["field"]);
+        Assert.False(mapped.LogAsError);
+
+        // And the title list knows the slug, so the envelope does not fall back to a humanised one.
+        Assert.NotEqual(ErrorCodes.TitleFor(code), ErrorCodes.TitleFor("some-other-slug").Replace("Some other slug", code));
+    }
+
+    /// <summary>
+    /// An unproved number trying to book is a 403 with its own code, not the generic forbidden: the
+    /// app offers the verify link on it.
+    /// </summary>
+    [Fact]
+    public void An_unverified_phone_becomes_a_403_phone_not_verified()
+    {
+        var mapped = ApiExceptionMapper.Map(
+            new Yalla.Domain.Identity.PhoneNotVerifiedException(Guid.CreateVersion7(), "Booking a table"));
+
+        Assert.Equal(StatusCodes.Status403Forbidden, mapped.Status);
+        Assert.Equal(ErrorCodes.PhoneNotVerified, mapped.Code);
+        Assert.Equal("phone-not-verified", mapped.Code);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Phone number not verified", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
+    /// Not a picture, or too big a one: its own code rather than the generic conflict, because the
+    /// upload screen has two different things to say and neither is "try again".
+    /// </summary>
+    [Fact]
+    public void An_unsupported_image_becomes_a_409_naming_what_the_bytes_were()
+    {
+        var mapped = ApiExceptionMapper.Map(
+            new Yalla.Domain.Media.UnsupportedImageException("That file could not be decoded.", detectedFormat: "gif"));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal(ErrorCodes.UnsupportedImage, mapped.Code);
+        Assert.Equal("gif", mapped.Context!["detectedFormat"]);
+        Assert.False(mapped.LogAsError);
+
+        // No context at all when the format is unknown - never a bare null on the wire.
+        var unknown = ApiExceptionMapper.Map(new Yalla.Domain.Media.UnsupportedImageException("Not an image."));
+
+        Assert.Equal(ErrorCodes.UnsupportedImage, unknown.Code);
+        Assert.Null(unknown.Context);
+    }
 }

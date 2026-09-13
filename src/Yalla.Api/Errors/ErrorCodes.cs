@@ -238,6 +238,44 @@ public static class ErrorCodes
     /// </summary>
     public const string BookingNotActive = "booking-not-active";
 
+    /// <summary>
+    /// A diner's username, email or password did not match a usable account. HTTP 401. Unknown
+    /// identifier, wrong password, an account with no password and a deactivated account all
+    /// arrive as this one code, so the sign-in form cannot be used to discover which exist.
+    /// </summary>
+    public const string InvalidCredentials = "invalid-credentials";
+
+    /// <summary>
+    /// The username on a diner sign-up or profile edit is somebody else's. HTTP 409, with
+    /// <c>context.field</c> naming the input. Minted by <c>DinerIdentifierTakenException</c>, like
+    /// the two below.
+    /// </summary>
+    public const string UsernameTaken = "username-taken";
+
+    /// <summary>The email address on a diner sign-up or profile edit is somebody else's. HTTP 409.</summary>
+    public const string EmailTaken = "email-taken";
+
+    /// <summary>
+    /// The phone number on a diner sign-up already has an account. HTTP 409. The app's answer is
+    /// "log in with a code instead": that account's owner can prove the number, a stranger cannot.
+    /// </summary>
+    public const string PhoneInUse = "phone-in-use";
+
+    /// <summary>
+    /// The diner's phone number has never been proved by a one-time code, and the request would
+    /// land on it: creating a booking, extending its hold, opening a tab from it. HTTP 403. The
+    /// app's answer is the verify link into the code flow. Minted by
+    /// <c>PhoneNotVerifiedException</c>, from the stored account row rather than the token.
+    /// </summary>
+    public const string PhoneNotVerified = "phone-not-verified";
+
+    /// <summary>
+    /// An upload is not a JPEG, PNG or WebP, or is too large to store. HTTP 409, with
+    /// <c>context.detectedFormat</c> when the bytes were an image of some other kind. Decided by
+    /// sniffing the bytes - the declared type and the file name are both the caller's to lie about.
+    /// </summary>
+    public const string UnsupportedImage = "unsupported-image";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -287,6 +325,12 @@ public static class ErrorCodes
         BookingTooEarly => "Too early for this booking",
         BookingEnded => "Booking has ended",
         BookingNotActive => "Booking not active",
+        InvalidCredentials => "Invalid credentials",
+        UsernameTaken => "Username taken",
+        EmailTaken => "Email address taken",
+        PhoneInUse => "Phone number already has an account",
+        PhoneNotVerified => "Phone number not verified",
+        UnsupportedImage => "Unsupported image",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

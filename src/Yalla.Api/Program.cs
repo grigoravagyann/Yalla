@@ -154,7 +154,9 @@ app.MapYallaHealthChecks();
 // restructure a published security-surface contract, and that is a decision to make on purpose
 // rather than as a side effect of switching on a filter. /api/auth/diner/request-code is here for
 // the same reason: its phoneE164 refusal already answers 400 naming the field, and moving it to a
-// 422 would be churn on something that was already right.
+// 422 would be churn on something that was already right. The diner's register and login sit here
+// too: login for the uniform-401 reason above, register because its refusals are the domain's and
+// already name their field - and both carry the per-address limiter the code request does.
 app.MapAuthEndpoints();
 
 // Everything else, in one place rather than a filter line repeated in eleven map methods. An empty
@@ -174,6 +176,7 @@ api.MapPlatformEndpoints();
 api.MapVenueAdminEndpoints();
 api.MapOrderingEndpoints();
 api.MapPhotoEndpoints();
+api.MapDinerAccountEndpoints();
 api.MapNotificationEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();

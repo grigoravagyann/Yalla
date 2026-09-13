@@ -24,6 +24,43 @@ public sealed record VerifyDinerCodeRequest(
     [Required] string Code,
     string? LocaleCode = null);
 
+/// <summary>Body of <c>POST /api/auth/diner/register</c>.</summary>
+/// <remarks>
+/// The annotations here reach the schema and nothing else: this route sits outside the validation
+/// filter with the other sign-in flows, and the domain rules refuse each field by name with a 400.
+/// </remarks>
+/// <param name="Username">
+/// 3-30 characters - letters, digits, dots and underscores, starting with a letter or a digit.
+/// Stored lowercased, unique case-insensitively.
+/// </param>
+/// <param name="Email">An email address. Stored trimmed and lowercased, unique.</param>
+/// <param name="Password">8-128 characters, and not the username or the email. No composition rules.</param>
+/// <param name="PhoneE164">
+/// The number, in E.164 - <c>+37411223344</c>. <b>Not verified by registering:</b> the account's
+/// <c>phoneVerified</c> stays false until a one-time code to it is passed once.
+/// </param>
+/// <param name="DisplayName">What the venue calls this person at the door. 1-100 characters, required.</param>
+/// <param name="LocaleCode">Language for messages: <c>hy</c>, <c>ru</c> or <c>en</c>. Anything else falls back.</param>
+public sealed record RegisterDinerRequest(
+    [Required][StringLength(30, MinimumLength = 3)] string Username,
+    [Required][EmailAddress] string Email,
+    [Required][StringLength(128, MinimumLength = 8)] string Password,
+    [Required] string PhoneE164,
+    [Required][StringLength(100, MinimumLength = 1)] string DisplayName,
+    string? LocaleCode = null);
+
+/// <summary>Body of <c>POST /api/auth/diner/login</c>.</summary>
+/// <param name="Identifier">A username or an email address, case-insensitively.</param>
+/// <param name="Password">The password.</param>
+/// <param name="LocaleCode">
+/// Language to store against the account: <c>hy</c>, <c>ru</c> or <c>en</c>. Left alone when
+/// absent or unrecognised - the account already knows its language.
+/// </param>
+public sealed record LoginDinerRequest(
+    [Required] string Identifier,
+    [Required] string Password,
+    string? LocaleCode = null);
+
 /// <summary>Body of the two refresh endpoints and of sign-out.</summary>
 /// <param name="RefreshToken">
 /// The handle from the last sign-in or refresh. It is spent by this call: use the one in the

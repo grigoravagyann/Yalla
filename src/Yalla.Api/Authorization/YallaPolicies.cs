@@ -54,12 +54,21 @@ public static class YallaPolicies
     public const string VenueScoped = "VenueScoped";
 
     /// <summary>
-    /// A diner who verified a phone number, and therefore has an account.
+    /// A diner with an account: the token's principal type is <c>Diner</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Deliberately not "any diner". A tab participant is a diner too, but has no account by
     /// design - so there is nothing to list their bookings under and nothing to count a no-show
     /// against. Booking needs the account, not just the person.
+    /// </para>
+    /// <para>
+    /// The name predates password registration, when every diner token meant a verified phone.
+    /// A token issued by <c>register</c> or <c>login</c> names an account whose number may still
+    /// be unproved - <c>DinerUser.PhoneVerifiedAtUtc</c> is the fact, not the token - so anything
+    /// that genuinely needs a proved number reads the row. Renaming the policy would touch every
+    /// diner route and change nothing it enforces, so the name stays and this remark says why.
+    /// </para>
     /// </remarks>
     public const string VerifiedDiner = "VerifiedDiner";
 }

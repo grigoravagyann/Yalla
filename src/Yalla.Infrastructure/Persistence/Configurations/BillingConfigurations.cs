@@ -145,7 +145,16 @@ internal sealed class PhotoConfiguration : EntityConfiguration<Photo>
 {
     protected override void ConfigureEntity(EntityTypeBuilder<Photo> builder)
     {
-        builder.ToTable("Photos");
+        // Exactly one owner: a branch for a dish or a venue card, a diner for a profile picture.
+        // The domain constructor refuses anything else; the database refuses it too, because a
+        // row with neither owner is one the sweep can never attribute and one with both would be
+        // served under a branch's key and a person's at once. Counted with CASE because T-SQL has
+        // no boolean type: a comparison of two IS NULL predicates does not parse.
+        builder.ToTable(
+            "Photos",
+            table => table.HasCheckConstraint(
+                "CK_Photos_OneOwner",
+                "CASE WHEN [BranchId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [DinerUserId] IS NULL THEN 0 ELSE 1 END = 1"));
 
         builder.Property(p => p.ContentHash)
             .HasMaxLength(FieldLengths.ContentHash)
@@ -166,11 +175,26 @@ internal sealed class PhotoConfiguration : EntityConfiguration<Photo>
             .HasForeignKey(p => p.BranchId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        // Uploading the same bytes to the same branch twice reuses the row rather than writing a
-        // second one pointing at identical files.
+        // Restrict, like the branch: an account is deactivated, never deleted, and a picture that
+        // outlives its owner is a leak the sweep would otherwise never find.
+        builder.HasOne(p => p.DinerUser)
+            .WithMany()
+            .HasForeignKey(p => p.DinerUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Uploading the same bytes to the same owner twice reuses the row rather than writing a
+        // second one pointing at identical files. Both indexes are filtered to their own kind of
+        // owner: SQL Server treats two NULLs as equal in a unique index, so without the filter the
+        // second diner to upload a given picture would collide with the first on (NULL, hash).
         builder.HasIndex(p => new { p.BranchId, p.ContentHash })
             .IsUnique()
+            .HasFilter("[BranchId] IS NOT NULL")
             .HasDatabaseName(DatabaseIndexNames.PhotoPerBranchContent);
+
+        builder.HasIndex(p => new { p.DinerUserId, p.ContentHash })
+            .IsUnique()
+            .HasFilter("[DinerUserId] IS NOT NULL")
+            .HasDatabaseName(DatabaseIndexNames.PhotoPerDinerContent);
 
         // The orphan sweep's question: what was uploaded before this instant.
         builder.HasIndex(p => p.UploadedAtUtc);

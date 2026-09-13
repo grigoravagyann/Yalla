@@ -44,7 +44,8 @@ internal sealed class PhotoService(
 
         // Validation, EXIF stripping and the three variants all happen in here. There is no path
         // that stores the bytes as they arrived.
-        var stored = await storage.SaveAsync(branchId, content, contentType, cancellationToken);
+        var stored = await storage.SaveAsync(
+            PhotoRules.OwnerKeyForBranch(branchId), content, contentType, cancellationToken);
 
         // Identical bytes for this branch reuse the row. The files are already on disk under the
         // same hash, so writing a second row would give two ids pointing at one set of files - and
@@ -133,11 +134,14 @@ internal sealed class PhotoService(
 
         // Nothing references it, and it has been sitting there long enough. Both halves matter: a
         // photo attached the moment it was uploaded is old and in use, and one uploaded a minute ago
-        // is unattached and still being worked on.
+        // is unattached and still being worked on. Three things can reference a photo - a dish, a
+        // venue card, a diner's profile - and a fourth added without a line here would be swept
+        // out from under whatever it was attached to.
         var orphans = await db.Photos
             .Where(p => p.UploadedAtUtc < cutoff)
             .Where(p => !db.MenuItems.Any(i => i.PhotoId == p.Id))
             .Where(p => !db.Branches.Any(b => b.CoverPhotoId == p.Id))
+            .Where(p => !db.DinerUsers.Any(d => d.PhotoId == p.Id))
             .ToListAsync(cancellationToken);
 
         if (orphans.Count == 0)

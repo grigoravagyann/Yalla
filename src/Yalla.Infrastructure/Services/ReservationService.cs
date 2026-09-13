@@ -97,6 +97,10 @@ internal sealed class ReservationService(
 
         var dinerUserId = RequireDiner("Book a table");
 
+        // Before the replay, too: an account that cannot book has no original to be handed back,
+        // and a booking's reminders and no-show record land on the number, so it must be a real one.
+        await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, "Booking a table", cancellationToken);
+
         // Cheap path first: a retry that arrives after the original committed never reaches the
         // lock at all. The unique index below is what makes the racing case safe.
         if (await reservations.FindReplayAsync(command.ClientCommandId, dinerUserId, cancellationToken)
@@ -847,6 +851,8 @@ internal sealed class ReservationService(
         ArgumentNullException.ThrowIfNull(command);
 
         var dinerUserId = RequireDiner("Extend a hold");
+
+        await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, "Extending a hold", cancellationToken);
         var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
 
         // Their own booking, read from the token rather than the body. A diner must not be able to

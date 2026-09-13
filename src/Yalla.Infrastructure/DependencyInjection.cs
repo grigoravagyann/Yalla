@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
+using Yalla.Application.Diners;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
 using Yalla.Infrastructure.Messaging;
@@ -85,6 +86,11 @@ public static class DependencyInjection
         services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));
         services.AddSingleton<IPhotoStorage, LocalDiskPhotoStorage>();
         services.AddScoped<IPhotoService, PhotoService>();
+
+        // A diner's own account - profile, password, picture. Beside the photo service because
+        // the picture goes through the same storage, and apart from the sign-in flows because
+        // everything here already holds a token.
+        services.AddScoped<IDinerProfileService, DinerProfileService>();
 
         // TimeProvider is what PeriodicTimer in the outbox loop reads, so a test advances a fake one
         // rather than waiting. IClock stays the domain-facing seam - see SystemClock.
@@ -200,6 +206,10 @@ public static class DependencyInjection
 
         services.AddSingleton<SecretHasher>();
         services.AddSingleton<PhoneCodeRateLimiter>();
+
+        // Singleton for the same reason the phone limiter is: the budget is per identifier across
+        // every request, and a scoped one would be a fresh budget per attempt.
+        services.AddSingleton<PasswordAttemptLimiter>();
         services.AddScoped<TokenIssuer>();
         services.AddScoped<RefreshTokenStore>();
 

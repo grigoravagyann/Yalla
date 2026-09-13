@@ -115,6 +115,10 @@ internal sealed class TabService(
 
         var dinerUserId = RequireVerifiedDiner();
 
+        // Read from the row: the token says a diner account, not that its number was ever proved.
+        await DinerPhoneGate.RequireVerifiedPhoneAsync(
+            db, dinerUserId, "Opening a tab from a booking", cancellationToken);
+
         // Whose booking it is, before anything else - before the replay and before the table is
         // looked at - so nothing further down can tell a caller anything about a booking that is not
         // theirs.

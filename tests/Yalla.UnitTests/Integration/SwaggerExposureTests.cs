@@ -324,6 +324,10 @@ public class SwaggerExposureTests
             // "I'm at my table" refused: the app says "from 19:10" off earliestUtc, and tells a
             // pending booking from a cancelled one by status.
             ["BookingTabRefusedProblem"] = ["reservationId", "status", "startUtc", "endUtc", "earliestUtc"],
+
+            // A taken username, email or number on the sign-up form: the field to highlight, so
+            // the form does not map a code back to an input by hand.
+            ["IdentifierTakenProblem"] = ["field"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

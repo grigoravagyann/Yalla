@@ -151,6 +151,21 @@ later. On `MenuItem`, `Ingredients`, `Allergens`, `PortionSize`, `PrepMinutes` a
 big is it, how long will it take, does it have nuts — is static data that belongs on the item,
 and nullable columns here would simply stay empty while the app stayed unable to answer.
 
+### Photo
+
+One uploaded image, kept as three WebP variants and never as the bytes that arrived - the
+original is decoded, stripped of EXIF and re-encoded, so a menu photo off an owner's phone does
+not publish their GPS position. `ContentHash` is the SHA-256 of the processed bytes and the middle
+segment of every storage key, which is what makes identical uploads one row and a replaced
+picture a new URL rather than a changed one. **Exactly one owner**: `BranchId` for a dish or a
+venue card, `DinerUserId` for a profile picture, never both and never neither - a check
+constraint (`CK_Photos_OneOwner`) says so, and the owner is the first segment of the storage key
+(`{branchId}/…` or `diner-{id}/…`). Uniqueness on `(owner, ContentHash)` is two filtered indexes,
+one per kind of owner, because SQL Server treats two NULLs as equal in a unique index and an
+unfiltered one would let only one diner ever upload a given picture. Referenced by
+`MenuItems.PhotoId`, `Branches.CoverPhotoId` and `DinerUsers.PhotoId`; a row none of the three
+points at is deleted, files included, a day after upload.
+
 ### StaffMember
 
 Someone who works for a venue and signs in to the tablet or the admin panel, with a coarse
@@ -167,9 +182,17 @@ carries a unique index filtered on non-null rows, since most staff have none.
 
 Four identity types, described in full in [docs/auth.md](docs/auth.md).
 
-`DinerUser` — a diner who verified a phone number. `PhoneE164` is unique and is the account; there
-is deliberately no password column, because the number exists for booking reminders and no-show
-tracking and a password would only be a thing to forget.
+`DinerUser` — a diner's account. `PhoneE164` is unique and is the account: the one-time code flow
+creates the row with nothing but a number, because the number exists for booking reminders and
+no-show tracking and nothing else is needed to book. Beside it, four optional things for the people
+who want an account they can recognise: `Username` and `Email` (stored lowercased, each under a
+unique index filtered to the rows that have one - most rows are the code flow's and carry
+neither), `PasswordHash` (`PasswordHasher<T>`, null for a code-only account), and `PhotoId` (the
+profile picture, `SET NULL` on delete - unlike a branch's cover photo, nobody else depends on a
+picture of a person). `PhoneVerifiedAtUtc` is when a code to the number first came back: null for
+an account that registered with the number typed and has never proved it, and the column every
+reminder should read rather than assuming the row implies a real number. Existing rows were
+backfilled from their last sign-in, because a code was the only way a row could come to exist.
 
 `PhoneVerificationCode` — six digits, five minutes, five attempts, single use, hashed at rest.
 Indexed on `(PhoneE164, ExpiresAtUtc)` filtered to unconsumed rows, which is the read the

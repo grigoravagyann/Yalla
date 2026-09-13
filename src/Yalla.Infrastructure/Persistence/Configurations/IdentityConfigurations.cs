@@ -23,10 +23,40 @@ internal sealed class DinerUserConfiguration : EntityConfiguration<DinerUser>
 
         builder.Property(d => d.IsActive).IsRequired();
 
-        // The phone number is the account. Unique, and the index the sign-in path reads.
+        builder.Property(d => d.Username).HasMaxLength(FieldLengths.Username);
+        builder.Property(d => d.Email).HasMaxLength(FieldLengths.Email);
+        builder.Property(d => d.PasswordHash).HasMaxLength(FieldLengths.PasswordHash);
+        builder.Property(d => d.PhoneVerifiedAtUtc);
+
+        builder.Ignore(d => d.HasPassword);
+        builder.Ignore(d => d.IsPhoneVerified);
+
+        // The phone number is the account. Unique, and the index the code sign-in reads.
         builder.HasIndex(d => d.PhoneE164)
             .IsUnique()
             .HasDatabaseName(DatabaseIndexNames.DinerUserPhone);
+
+        // The other two sign-in keys, each filtered to the rows that have one: most accounts are
+        // the code flow's and carry neither, and an unfiltered unique index would let exactly one
+        // of them exist. Both are stored lowercased, so uniqueness does not lean on the collation.
+        builder.HasIndex(d => d.Username)
+            .IsUnique()
+            .HasFilter("[Username] IS NOT NULL")
+            .HasDatabaseName(DatabaseIndexNames.DinerUserUsername);
+
+        builder.HasIndex(d => d.Email)
+            .IsUnique()
+            .HasFilter("[Email] IS NOT NULL")
+            .HasDatabaseName(DatabaseIndexNames.DinerUserEmail);
+
+        // The profile picture. SetNull rather than Restrict, unlike a branch's cover photo: a
+        // picture of a person is nothing anybody else depends on, and a swept or removed one
+        // should leave an account with no picture rather than an account that cannot be touched.
+        // Configured explicitly so the navigation uses PhotoId rather than a shadow key beside it.
+        builder.HasOne(d => d.Photo)
+            .WithMany()
+            .HasForeignKey(d => d.PhotoId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

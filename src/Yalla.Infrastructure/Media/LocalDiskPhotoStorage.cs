@@ -25,10 +25,12 @@ public sealed class PhotoStorageOptions
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Layout:</b> <c>{root}/{branchId}/{contentHash}/{variant}.webp</c>. The branch prefix is what
-/// makes an object store a drop-in later - the same keys work with no rethinking - and the hash
-/// segment is what makes replacing a photo need no cache bust and identical uploads deduplicate for
-/// nothing.
+/// <b>Layout:</b> <c>{root}/{ownerKey}/{contentHash}/{variant}.webp</c>, where the owner key is a
+/// branch id for a menu or venue-card photo and <c>diner-{id}</c> for a profile picture - see
+/// <see cref="PhotoRules.OwnerKeyForBranch"/> and <see cref="PhotoRules.OwnerKeyForDiner"/>. The
+/// owner prefix is what makes an object store a drop-in later - the same keys work with no
+/// rethinking - and the hash segment is what makes replacing a photo need no cache bust and
+/// identical uploads deduplicate for nothing.
 /// </para>
 /// <para>
 /// <b>The original bytes never reach the disk.</b> They are decoded into a bitmap and re-encoded,
@@ -84,12 +86,22 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
     }
 
     public async Task<StoredPhoto> SaveAsync(
-        Guid branchId,
+        string ownerKey,
         Stream content,
         string contentType,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
+
+        // The owner key is ours - minted by PhotoRules from an id - and is checked anyway, for the
+        // same reason Resolve checks a stored key: "nothing untrusted reaches this" is a property
+        // of today's call sites, and a segment that could hold a separator would put a photo
+        // outside its owner's folder.
+        if (string.IsNullOrWhiteSpace(ownerKey) || ownerKey.AsSpan().IndexOfAny('/', '\\', '.') >= 0)
+        {
+            throw new ArgumentException(
+                "The owner key must be a single path segment.", nameof(ownerKey));
+        }
 
         var original = await ReadCappedAsync(content, cancellationToken);
 
@@ -127,7 +139,7 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
         // produce different files; the same file uploaded twice produces the same variants, and that
         // is the case worth deduplicating.
         var hash = Hash(encoded[PhotoRules.FullName]);
-        var folder = Path.Combine(root, branchId.ToString(), hash);
+        var folder = Path.Combine(root, ownerKey, hash);
 
         var deduplicated = Directory.Exists(folder)
                            && variants.All(v => File.Exists(Path.Combine(folder, v.Name)));
@@ -135,8 +147,8 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
         if (deduplicated)
         {
             logger.LogInformation(
-                "Photo {ContentHash} for branch {BranchId} is already stored; nothing was written.",
-                hash, branchId);
+                "Photo {ContentHash} for owner {OwnerKey} is already stored; nothing was written.",
+                hash, ownerKey);
         }
         else
         {
@@ -152,9 +164,9 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
 
         return new StoredPhoto(
             hash,
-            Key(branchId, hash, PhotoRules.ThumbnailName),
-            Key(branchId, hash, PhotoRules.CardName),
-            Key(branchId, hash, PhotoRules.FullName),
+            Key(ownerKey, hash, PhotoRules.ThumbnailName),
+            Key(ownerKey, hash, PhotoRules.CardName),
+            Key(ownerKey, hash, PhotoRules.FullName),
             full.Width,
             full.Height,
             encoded.Values.Sum(b => (long)b.Length),
@@ -218,8 +230,8 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
     }
 
     /// <summary>Forward slashes in the stored key, whatever this machine's separator is.</summary>
-    private static string Key(Guid branchId, string hash, string variant) =>
-        string.Create(CultureInfo.InvariantCulture, $"{branchId}/{hash}/{variant}");
+    private static string Key(string ownerKey, string hash, string variant) =>
+        string.Create(CultureInfo.InvariantCulture, $"{ownerKey}/{hash}/{variant}");
 
     /// <summary>
     /// Reads the upload, stopping the moment it goes over the cap.

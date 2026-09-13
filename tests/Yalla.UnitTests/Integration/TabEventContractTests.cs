@@ -282,6 +282,9 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         var unique = Guid.NewGuid().ToString("N")[..9];
         var diner = new DinerUser($"+3748{unique}", "en");
 
+        // The code flow's account: the number came back with a code, so it may book.
+        diner.ProveNumberByCode(clock.UtcNow);
+
         db.DinerUsers.Add(diner);
         db.DinerDevices.Add(new DinerDevice(
             diner.Id, $"ExponentPushToken[{unique}]", DevicePlatform.Android, "en", clock.UtcNow));

@@ -150,6 +150,8 @@ public static class TabEndpoints
             .Produces<TabAccessResult>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Missing device id or clientCommandId.")
             .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden, ReservationEndpoints.PhoneNotVerifiedDescription)
+            .ProducesProblemDetails(
                 StatusCodes.Status404NotFound,
                 "`booking-not-found`: none of the caller's bookings has that code. Somebody else's "
                 + "booking answers exactly the same.")
