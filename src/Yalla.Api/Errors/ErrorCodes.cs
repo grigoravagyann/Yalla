@@ -262,6 +262,14 @@ public static class ErrorCodes
     public const string PhoneInUse = "phone-in-use";
 
     /// <summary>
+    /// The diner's phone number has never been proved by a one-time code, and the request would
+    /// land on it: creating a booking, extending its hold, opening a tab from it. HTTP 403. The
+    /// app's answer is the verify link into the code flow. Minted by
+    /// <c>PhoneNotVerifiedException</c>, from the stored account row rather than the token.
+    /// </summary>
+    public const string PhoneNotVerified = "phone-not-verified";
+
+    /// <summary>
     /// An upload is not a JPEG, PNG or WebP, or is too large to store. HTTP 409, with
     /// <c>context.detectedFormat</c> when the bytes were an image of some other kind. Decided by
     /// sniffing the bytes - the declared type and the file name are both the caller's to lie about.
@@ -321,6 +329,7 @@ public static class ErrorCodes
         UsernameTaken => "Username taken",
         EmailTaken => "Email address taken",
         PhoneInUse => "Phone number already has an account",
+        PhoneNotVerified => "Phone number not verified",
         UnsupportedImage => "Unsupported image",
         InternalError => "Internal error",
 

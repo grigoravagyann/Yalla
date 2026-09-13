@@ -143,6 +143,15 @@ public static class ReservationEndpoints
             .RequireRateLimiting(RateLimitingExtensions.AvailabilityPolicy);
     }
 
+    /// <summary>
+    /// The 403 on every diner route that lands on the account's phone number. Public so the tab
+    /// route that opens from a booking says it in the same words.
+    /// </summary>
+    internal const string PhoneNotVerifiedDescription =
+        "`phone-not-verified`: the account registered with a number it has never proved. Send the "
+        + "diner through the code flow (`request-code`, `verify-code`) first; reading and cancelling "
+        + "bookings stay open meanwhile.";
+
     private static void MapDinerBookings(IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/reservations")
@@ -163,6 +172,7 @@ public static class ReservationEndpoints
                 + "branch's threshold, or the diner is over the rolling no-show threshold.")
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
@@ -194,7 +204,9 @@ public static class ReservationEndpoints
                 + "days early used to spend the one extension and ping the floor about a table nobody "
                 + "was holding.")
             .Produces<ExtendHoldResult>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not the diner who made the booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not the diner who made the booking (`forbidden`), or " + PhoneNotVerifiedDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblem<HoldExtensionRefusedProblem>(
                 StatusCodes.Status409Conflict,

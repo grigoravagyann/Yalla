@@ -164,6 +164,57 @@ public sealed class DinerUser : Entity
     public void MarkPhoneVerified(DateTime atUtc) =>
         PhoneVerifiedAtUtc ??= Guard.NotLocalTime(atUtc, nameof(atUtc));
 
+    /// <summary>
+    /// A one-time code to this number came back: whoever is holding the phone owns this account.
+    /// Marks the number verified and, when that proof is the first, the account has a password and
+    /// the verifier is not already signed in as this account, clears the password. Returns whether it
+    /// did, so the caller revokes every session too.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Registration takes the number as typed, and anybody can type anybody's number. Until a code
+    /// comes back the password on the row belongs to whoever filled in the form - not necessarily
+    /// the person the number belongs to. The first code to come back settles it: the verifier proves
+    /// the number, and if the verifier is somebody else the registrant's way in goes. Leaving the
+    /// password would hand the number's real owner an account a stranger can still sign in to,
+    /// reading their bookings and changing their profile.
+    /// </para>
+    /// <para>
+    /// <paramref name="verifierIsAccountHolder"/> is the honest registrant's case, and the normal
+    /// sign-up: register, then verify from the same app while holding the token register issued. The
+    /// person with the password and the person with the phone are then shown to be one person - the
+    /// token proves the first, the code the second - so nothing is cleared and no session is revoked.
+    /// It is safe because each half is out of the other party's reach: a squatter holding the token
+    /// never receives the code, and the number's owner, who receives it, never holds the squatter's
+    /// token. Anonymous or under a different account, it is false, and the password goes.
+    /// </para>
+    /// <para>
+    /// An account whose number was already proved keeps its password either way - the code proves
+    /// the same person again, and a password set after that proof is theirs. The username and email
+    /// stay too: they are not a way in without the password, and the verifier can change both.
+    /// </para>
+    /// </remarks>
+    /// <param name="atUtc">When the code came back.</param>
+    /// <param name="verifierIsAccountHolder">
+    /// True only when the verify request carried a valid diner token for this very account. Defaults
+    /// to false, the displacing answer, so a caller that does not know cannot keep a squatter in.
+    /// </param>
+    /// <returns>True when a password was cleared and the account's sessions must be revoked.</returns>
+    public bool ProveNumberByCode(DateTime atUtc, bool verifierIsAccountHolder = false)
+    {
+        var verifiedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        var displacesRegistrant = PhoneVerifiedAtUtc is null && PasswordHash is not null && !verifierIsAccountHolder;
+
+        if (displacesRegistrant)
+        {
+            PasswordHash = null;
+        }
+
+        MarkPhoneVerified(verifiedAtUtc);
+
+        return displacesRegistrant;
+    }
+
     /// <summary>Points the profile at a photo, or clears it. The old photo is left for the sweep.</summary>
     public void SetPhoto(Guid? photoId) =>
         PhotoId = photoId is { } id ? Guard.NotEmpty(id, nameof(photoId)) : null;

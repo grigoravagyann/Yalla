@@ -220,6 +220,23 @@ public class ApiExceptionMapperTests
     }
 
     /// <summary>
+    /// An unproved number trying to book is a 403 with its own code, not the generic forbidden: the
+    /// app offers the verify link on it.
+    /// </summary>
+    [Fact]
+    public void An_unverified_phone_becomes_a_403_phone_not_verified()
+    {
+        var mapped = ApiExceptionMapper.Map(
+            new Yalla.Domain.Identity.PhoneNotVerifiedException(Guid.CreateVersion7(), "Booking a table"));
+
+        Assert.Equal(StatusCodes.Status403Forbidden, mapped.Status);
+        Assert.Equal(ErrorCodes.PhoneNotVerified, mapped.Code);
+        Assert.Equal("phone-not-verified", mapped.Code);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Phone number not verified", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
     /// Not a picture, or too big a one: its own code rather than the generic conflict, because the
     /// upload screen has two different things to say and neither is "try again".
     /// </summary>

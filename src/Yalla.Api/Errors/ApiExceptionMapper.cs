@@ -580,6 +580,13 @@ internal static class ApiExceptionMapper
                 ["requirement"] = e.Requirement,
             }),
 
+        // A diner whose number was typed at sign-up and never proved, trying to book or open a tab
+        // on it. Its own code, not the generic 403, because the app has something to offer - the
+        // verify link - and no context, because the id is the caller's own and the operation is
+        // in the message.
+        PhoneNotVerifiedException e => new MappedError(
+            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
+
         UnauthorizedAccessException => new MappedError(
             StatusCodes.Status403Forbidden,
             ErrorCodes.Forbidden,

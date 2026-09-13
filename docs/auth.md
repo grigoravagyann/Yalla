@@ -146,6 +146,33 @@ which one a diner came in by.
   the app's answer is *log in with a code instead*, which the number's owner can do and a stranger
   typing it cannot. Every row that existed before this door was created by a code coming back from
   its number, so the migration backfilled their stamp from the last sign-in.
+- **The first code to a registered number displaces the registrant.** Anybody can type anybody's
+  number into the sign-up form, so until a code comes back the password on that row is only the
+  form-filler's. When `verify-code` succeeds for an account whose `PhoneVerifiedAtUtc` was null and
+  which has a password, the person holding the phone has proved the number and the registrant never
+  did: the **password hash is cleared**, **every refresh token for the account is revoked**
+  (`RefreshTokenStore.RevokeAllForSubjectAsync`, reason `phone-proved-by-another`), and only then is
+  the number marked verified and the verifier signed in. The squatter's password now answers 401
+  `invalid-credentials` and their refresh token is refused. **The honest registrant keeps
+  everything** by verifying with the token `register` gave them: `verify-code` stays anonymous but
+  reads a valid diner bearer token when one is sent, and when it names the very account whose number
+  is being proved, the token shows the verifier holds the password and the code shows they hold the
+  phone - one person - so the number is marked verified and the password and sessions stay. That
+  cannot shelter a squatter: the squatter holds the token but never receives the code, and the
+  owner receives the code but never holds the squatter's token. Anonymous, or under a different
+  diner's token, the displacement above applies; an invalid token is ignored rather than refused,
+  and a displaced verifier sets a password through `PUT /api/diner/me/password` with no current
+  one. An account whose number was already proved
+  keeps its password and its sessions when it verifies again. The rule lives in
+  `DinerUser.ProveNumberByCode`, and a live access token the registrant still holds expires on its
+  own short clock; it can read the profile until then, and cannot book (below).
+- **An unproved number cannot book.** Creating a booking (`POST /api/reservations`), extending its
+  hold (`POST /api/reservations/{id}/extend-hold`) and opening a tab from one
+  (`POST /api/tabs/open-by-booking`) answer **403 `phone-not-verified`** while
+  `PhoneVerifiedAtUtc` is null, because each of them puts reminders and a no-show record on that
+  number. The check reads the row, not the token, and lives in `ReservationService` and
+  `TabService` through `DinerPhoneGate`, so no caller of those services skips it. Reading your own
+  bookings and cancelling one stay open.
 - `POST /api/auth/diner/login` — `{ identifier, password, localeCode? }`, where `identifier` is a
   username or an email, case-insensitively. Unknown identifier, wrong password, an account with
   no password yet and a deactivated account all answer **401 `invalid-credentials`** - and all
@@ -175,7 +202,7 @@ which one a diner came in by.
 The `VerifiedDiner` policy keeps its name and admits any diner token, including one issued by
 `register` before the number is proved. The policy says "has an account, and is not a tab
 participant"; `DinerUser.PhoneVerifiedAtUtc` says whether the number is real, and anything that
-needs a real number reads that.
+needs a real number reads that - today, the three booking routes above.
 
 ## 3. Staff — device-bound branch token plus a per-person PIN
 

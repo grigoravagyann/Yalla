@@ -85,6 +85,14 @@ public static class AuthEndpoints
                 "Checks the newest live code for the number. On success the account is created if "
                 + "this is the first time - there is no separate registration step, because a "
                 + "separate registration step is a step people abandon.\n\n"
+                + "**A registered number.** The account that registered with the number is signed "
+                + "in and its number marked verified; no second account is made. The first time, "
+                + "send the `Authorization: Bearer` token `register` returned: a request carrying "
+                + "that same account's token keeps its password and sessions. Without it - anonymous, "
+                + "or under a different diner - the code's holder is treated as the number's owner "
+                + "and the registrant as a stranger: the password is cleared (`hasPassword` false) "
+                + "and every refresh token for the account is revoked. The route stays anonymous; "
+                + "an invalid token is ignored, not refused.\n\n"
                 + "A wrong code spends one of five attempts and says how many are left. The sixth "
                 + "attempt is refused outright with 429: the code is dead and a new one is needed.")
             .Produces<DinerSignInResult>()
@@ -349,13 +357,19 @@ public static class AuthEndpoints
     private static async Task<IResult> VerifyDinerCodeAsync(
         VerifyDinerCodeRequest request,
         IDinerAuthService service,
+        Application.Abstractions.ICurrentActor actor,
         HttpContext http,
         CancellationToken cancellationToken)
     {
+        // The route stays anonymous, but a valid diner token on it is read: it is how an honest
+        // registrant verifying from the app keeps the password they just chose. DinerUserId is null
+        // for anything but a Diner principal - a participant, staff, a missing or invalid token -
+        // so only a genuine account token can name the account.
         var result = await service.VerifyCodeAsync(
             request.PhoneE164,
             request.Code,
             request.LocaleCode ?? http.Request.Headers.AcceptLanguage.ToString(),
+            http.User.Identity?.IsAuthenticated == true ? actor.DinerUserId : null,
             cancellationToken);
 
         return Results.Ok(result);

@@ -396,8 +396,11 @@ public sealed class SqlServerFixture : IAsyncLifetime
         IClock clock,
         ICurrentActor actor,
         NoShowPolicy? noShowPolicy = null,
-        BookingLockOptions? lockOptions = null) =>
-        new(
+        BookingLockOptions? lockOptions = null)
+    {
+        EnsureVerifiedDinerRow(clock, actor);
+
+        return new(
             db,
             clock,
             actor,
@@ -412,6 +415,46 @@ public sealed class SqlServerFixture : IAsyncLifetime
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.
             Options.Create(new PublicWebOptions()),
             NullLogger<ReservationService>.Instance);
+    }
+
+    /// <summary>
+    /// Gives a diner actor with no account row a verified one, so the booking service's phone gate
+    /// has something real to read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>TestActor.Diner()</c> mints an id and nothing else, which was enough while booking only
+    /// looked at the actor. Booking now reads <c>DinerUsers.PhoneVerifiedAtUtc</c>, because a number
+    /// typed at sign-up and never proved must not collect reminders and no-shows - so a service test
+    /// about table rules needs the account a real diner would have: one the code flow created.
+    /// </para>
+    /// <para>
+    /// Insert-only and on its own context. A row that already exists is left exactly as the test
+    /// made it, so a test that wants an unverified diner makes one and is refused as production
+    /// would refuse it; and nothing is added to the context the service runs on, so no test's
+    /// change tracking or transaction sees the seed. Raw SQL because <c>DinerUser.Id</c> is assigned
+    /// by its constructor and the actor's id is already fixed.
+    /// </para>
+    /// </remarks>
+    private void EnsureVerifiedDinerRow(IClock clock, ICurrentActor actor)
+    {
+        if (actor.Type != ActorType.Diner || actor.DinerUserId is not { } dinerUserId || dinerUserId == Guid.Empty)
+        {
+            return;
+        }
+
+        var nowUtc = clock.UtcNow;
+        var phone = $"+3740{Random.Shared.Next(10_000_000, 99_999_999)}";
+
+        using var seed = CreateContext(clock);
+
+        seed.Database.ExecuteSql(
+            $"""
+            IF NOT EXISTS (SELECT 1 FROM dbo.DinerUsers WHERE Id = {dinerUserId})
+                INSERT INTO dbo.DinerUsers (Id, CreatedAtUtc, IsActive, LocaleCode, PhoneE164, PhoneVerifiedAtUtc, LastSignInAtUtc)
+                VALUES ({dinerUserId}, {nowUtc}, 1, 'en', {phone}, {nowUtc}, {nowUtc});
+            """);
+    }
 
     /// <summary>The outbox over one context. Writes only - dispatching is its own thing.</summary>
     internal Outbox CreateOutbox(YallaDbContext db, IClock clock) =>

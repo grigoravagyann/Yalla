@@ -497,7 +497,191 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
 
         Assert.True(profile.GetProperty("phoneVerified").GetBoolean());
         Assert.Equal(account.Username, profile.GetProperty("username").GetString());
+
+        // Anonymous, the first proof displaces the registered password - the verifier sets their own.
+        Assert.False(profile.GetProperty("hasPassword").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task Verifying_with_the_registered_accounts_own_token_keeps_its_password_and_sessions()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        // The normal sign-up: register, then verify from the same app holding register's token.
+        var account = await RegisteredAsync(anonymous);
+        using var holder = factory.CreateClientWithToken(account.AccessToken);
+
+        var (signedInAs, token) = await SignInByCodeAsync(holder, account.Phone, expectNewAccount: false);
+        Assert.Equal(account.DinerUserId, signedInAs);
+
+        using var me = factory.CreateClientWithToken(token);
+        var profile = await me.GetFromJsonAsync<JsonElement>("/api/diner/me");
+        Assert.True(profile.GetProperty("phoneVerified").GetBoolean());
         Assert.True(profile.GetProperty("hasPassword").GetBoolean());
+
+        var login = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/login", new { identifier = account.Username, password = Password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        // Register's session survives: its refresh token still works.
+        var refreshed = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/refresh", new { refreshToken = account.RefreshToken });
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Verifying_under_a_different_diners_token_still_clears_the_registered_password()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        // A registrant squats a number; the number's owner already has an account of their own and
+        // verifies the squatted number while signed in to it.
+        var squatter = await RegisteredAsync(anonymous);
+        var (_, otherToken) = await SignInByCodeAsync(anonymous, NewPhone());
+        using var other = factory.CreateClientWithToken(otherToken);
+
+        await SignInByCodeAsync(other, squatter.Phone, expectNewAccount: false);
+
+        await AssertProblemAsync(
+            await anonymous.PostAsJsonAsync(
+                "/api/auth/diner/login", new { identifier = squatter.Username, password = Password }),
+            HttpStatusCode.Unauthorized,
+            "invalid-credentials");
+
+        var refreshed = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/refresh", new { refreshToken = squatter.RefreshToken });
+        Assert.False(refreshed.IsSuccessStatusCode);
+    }
+
+    [SkippableFact]
+    public async Task A_squatter_loses_the_password_and_every_session_once_the_numbers_owner_verifies()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        // Somebody registers with a number that is not theirs, and keeps the refresh token.
+        var squatter = await RegisteredAsync(anonymous);
+
+        // The number's owner signs in with a code.
+        var (ownerId, ownerToken) = await SignInByCodeAsync(anonymous, squatter.Phone, expectNewAccount: false);
+        Assert.Equal(squatter.DinerUserId, ownerId);
+
+        // The squatter's password no longer opens anything - the same 401 as a wrong one.
+        await AssertProblemAsync(
+            await anonymous.PostAsJsonAsync(
+                "/api/auth/diner/login", new { identifier = squatter.Username, password = Password }),
+            HttpStatusCode.Unauthorized,
+            "invalid-credentials");
+
+        // And the session they already held is gone: the refresh token is refused and revoked.
+        var refreshed = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/refresh", new { refreshToken = squatter.RefreshToken });
+        Assert.False(refreshed.IsSuccessStatusCode);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            // One live token for the account: the owner's, issued by the code after the revocation.
+            Assert.Equal(
+                1,
+                await db.RefreshTokens.CountAsync(t => t.SubjectId == squatter.DinerUserId && t.RevokedAtUtc == null));
+        }
+
+        // The owner has no password yet, so sets one without a current one, and it works.
+        using var owner = factory.CreateClientWithToken(ownerToken);
+        Assert.False((await owner.GetFromJsonAsync<JsonElement>("/api/diner/me")).GetProperty("hasPassword").GetBoolean());
+
+        var set = await owner.PutAsJsonAsync("/api/diner/me/password", new { newPassword = "the-owners-own-2026" });
+        Assert.Equal(HttpStatusCode.NoContent, set.StatusCode);
+
+        var login = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/login", new { identifier = squatter.Username, password = "the-owners-own-2026" });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task An_account_whose_number_is_already_verified_keeps_its_password_when_it_verifies_again()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        var account = await RegisteredAsync(anonymous);
+        var (_, token) = await SignInByCodeAsync(anonymous, account.Phone, expectNewAccount: false);
+
+        // A password set after the number was proved is the owner's own.
+        using var me = factory.CreateClientWithToken(token);
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await me.PutAsJsonAsync("/api/diner/me/password", new { newPassword = Password })).StatusCode);
+
+        await SignInByCodeAsync(anonymous, account.Phone, expectNewAccount: false);
+
+        var login = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/login", new { identifier = account.Email, password = Password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        Assert.True(
+            await db.RefreshTokens.CountAsync(t => t.SubjectId == account.DinerUserId && t.RevokedAtUtc == null) >= 3,
+            "Verifying an already-proved number must not revoke the sessions it already has.");
+    }
+
+    // ------------------------------------------------------------ an unproved number cannot book
+
+    [SkippableFact]
+    public async Task An_unverified_diner_is_refused_booking_and_opening_a_tab_until_a_code_comes_back()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var anonymous = factory.CreateClient();
+        var account = await RegisteredAsync(anonymous);
+        using var unverified = factory.CreateClientWithToken(account.AccessToken);
+
+        await AssertProblemAsync(
+            await BookAsync(unverified, factory, branch), HttpStatusCode.Forbidden, "phone-not-verified");
+
+        await AssertProblemAsync(
+            await OpenByBookingAsync(unverified, "ABCD-EFGH"), HttpStatusCode.Forbidden, "phone-not-verified");
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.Reservations.AnyAsync(r => r.DinerUserId == account.DinerUserId));
+        }
+
+        // Reading one's own bookings stays open.
+        Assert.Equal(HttpStatusCode.OK, (await unverified.GetAsync("/api/reservations/mine")).StatusCode);
+
+        // The same diner proves the number, and the same routes let them through.
+        var (_, verifiedToken) = await SignInByCodeAsync(anonymous, account.Phone, expectNewAccount: false);
+        using var verified = factory.CreateClientWithToken(verifiedToken);
+
+        var booked = await BookAsync(verified, factory, branch);
+        Assert.Equal(HttpStatusCode.Created, booked.StatusCode);
+
+        var code = (await booked.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString()!;
+
+        // Past the gate: the booking is two days out, so what answers is the booking's own timing
+        // rule rather than the phone.
+        var opened = await OpenByBookingAsync(verified, code);
+        Assert.NotEqual(HttpStatusCode.Forbidden, opened.StatusCode);
+        await AssertProblemAsync(opened, HttpStatusCode.Conflict, "booking-too-early");
     }
 
     // ------------------------------------------------------------ who gets in
@@ -525,7 +709,41 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
 
     // ------------------------------------------------------------ helpers
 
-    private sealed record Account(Guid DinerUserId, string Username, string Email, string Phone, string AccessToken);
+    private sealed record Account(
+        Guid DinerUserId, string Username, string Email, string Phone, string AccessToken, string RefreshToken);
+
+    /// <summary>Books the branch's first table two days out, through the real endpoint.</summary>
+    private static Task<HttpResponseMessage> BookAsync(HttpClient diner, YallaApiFactory factory, AuthBranch branch)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
+        var localNow = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone);
+
+        return diner.PostAsJsonAsync(
+            "/api/reservations",
+            new
+            {
+                branchId = branch.BranchId,
+                tableId = branch.TableIds[0],
+                date = DateOnly.FromDateTime(localNow).AddDays(2).ToString("yyyy-MM-dd"),
+                time = "18:00",
+                partySize = 2,
+                guestName = "Ani Test",
+                guestPhone = "+37411223344",
+                clientCommandId = Guid.CreateVersion7(),
+            });
+    }
+
+    private static Task<HttpResponseMessage> OpenByBookingAsync(HttpClient client, string bookingCode) =>
+        client.PostAsJsonAsync(
+            "/api/tabs/open-by-booking",
+            new
+            {
+                bookingCode,
+                deviceId = "phone-" + Suffix(),
+                clientCommandId = Guid.CreateVersion7(),
+                displayName = "Ani",
+            });
 
     private YallaApiFactory NewFactory() =>
         new YallaApiFactory()
@@ -575,7 +793,8 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
             username,
             email,
             phone,
-            body.GetProperty("accessToken").GetString()!);
+            body.GetProperty("accessToken").GetString()!,
+            body.GetProperty("refreshToken").GetString()!);
     }
 
     /// <summary>The code flow, end to end, reading the code out of the Development response.</summary>

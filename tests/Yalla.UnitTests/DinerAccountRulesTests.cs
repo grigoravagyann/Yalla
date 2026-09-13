@@ -179,6 +179,51 @@ public class DinerAccountRulesTests
     }
 
     [Fact]
+    public void The_first_code_to_a_registered_number_clears_the_registrants_password()
+    {
+        var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
+
+        Assert.True(diner.ProveNumberByCode(Now));
+
+        Assert.False(diner.HasPassword);
+        Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
+        Assert.Equal("ani", diner.Username);
+    }
+
+    [Fact]
+    public void The_account_holder_proving_their_own_number_keeps_the_password()
+    {
+        var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
+
+        Assert.False(diner.ProveNumberByCode(Now, verifierIsAccountHolder: true));
+
+        Assert.True(diner.HasPassword);
+        Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
+    }
+
+    [Fact]
+    public void A_code_to_an_already_proved_number_keeps_the_password()
+    {
+        var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
+        diner.ProveNumberByCode(Now);
+        diner.SetPassword("hash-set-after-proof");
+
+        Assert.False(diner.ProveNumberByCode(Now.AddDays(1)));
+
+        Assert.True(diner.HasPassword);
+        Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
+    }
+
+    [Fact]
+    public void A_code_flow_account_with_no_password_displaces_nothing()
+    {
+        var diner = new DinerUser("+37411223344", "hy");
+
+        Assert.False(diner.ProveNumberByCode(Now));
+        Assert.True(diner.IsPhoneVerified);
+    }
+
+    [Fact]
     public void Renaming_refuses_a_blank_where_the_optional_setter_would_clear()
     {
         var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");

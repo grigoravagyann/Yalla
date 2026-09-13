@@ -98,6 +98,7 @@ internal sealed class DinerAuthService(
         string phoneE164,
         string code,
         string localeCode,
+        Guid? callerDinerUserId = null,
         CancellationToken cancellationToken = default)
     {
         var phone = PhoneNumber.Normalise(phoneE164, "phoneE164");
@@ -166,8 +167,24 @@ internal sealed class DinerAuthService(
         }
 
         // The one thing only this flow can say: a code sent to the number came back. A registered
-        // account's number is unverified until this line runs for it once.
-        diner.MarkPhoneVerified(nowUtc);
+        // account's number is unverified until this line runs for it once. The first time, on an
+        // account that registered with a password, the password was the registrant's and not
+        // necessarily the number's owner's: it is cleared, and every session the registrant holds
+        // goes with it - unless the request came in holding this account's own token, which makes
+        // the registrant and the phone's holder the same person. Revoked before this sign-in's token
+        // is issued, so the new one survives.
+        var verifierIsAccountHolder = callerDinerUserId is { } caller && caller == diner.Id;
+
+        if (diner.ProveNumberByCode(nowUtc, verifierIsAccountHolder))
+        {
+            await refreshTokens.RevokeAllForSubjectAsync(
+                RefreshTokenSubject.Diner, diner.Id, "phone-proved-by-another", cancellationToken);
+
+            logger.LogWarning(
+                "Diner {DinerUserId}'s unverified number was proved by code; the registered password was cleared and its sessions revoked.",
+                diner.Id);
+        }
+
         diner.RecordSignIn(nowUtc);
 
         var (accessToken, _) = tokens.IssueDinerToken(diner.Id);

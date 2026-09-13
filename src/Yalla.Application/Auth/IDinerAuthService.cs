@@ -73,11 +73,25 @@ public interface IDinerAuthService
     /// Checks a code and, on success, signs the diner in - creating the account if this is their
     /// first time, and marking the number verified on an account that registered with it typed.
     /// </summary>
+    /// <remarks>
+    /// On the first proof of a registered number, the registered password and every session are
+    /// cleared unless <paramref name="callerDinerUserId"/> names that same account - see
+    /// <c>DinerUser.ProveNumberByCode</c>.
+    /// </remarks>
+    /// <param name="phoneE164">The number, in E.164.</param>
+    /// <param name="code">The six digits.</param>
+    /// <param name="localeCode">Language to store against the account.</param>
+    /// <param name="callerDinerUserId">
+    /// The account a valid diner bearer token on the request names, or null for an anonymous
+    /// caller. Read from the authenticated principal, never from the body.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="Domain.Identity.AuthenticationFailedException">The code was wrong or has expired.</exception>
     /// <exception cref="Domain.Identity.TooManyAttemptsException">The code's attempt limit is spent.</exception>
     Task<DinerSignInResult> VerifyCodeAsync(
         string phoneE164,
         string code,
         string localeCode,
+        Guid? callerDinerUserId = null,
         CancellationToken cancellationToken = default);
 }
