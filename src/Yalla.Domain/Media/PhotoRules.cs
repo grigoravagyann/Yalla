@@ -66,6 +66,26 @@ public static class PhotoRules
     public const string FullName = "full.webp";
 
     /// <summary>
+    /// The first segment of every storage key for a branch's photos: the branch id, as it always was.
+    /// </summary>
+    /// <remarks>
+    /// The owner prefix is what lets one venue's images be enumerated, counted or deleted without a
+    /// database round trip, and what makes an object store a drop-in later. The storage layer takes
+    /// the prefix as a string rather than a branch id so a diner's pictures can live beside a
+    /// venue's under a key that cannot be mistaken for one - see <see cref="OwnerKeyForDiner"/>.
+    /// </remarks>
+    public static string OwnerKeyForBranch(Guid branchId) => branchId.ToString();
+
+    /// <summary>
+    /// The first segment of every storage key for a diner's profile pictures: <c>diner-{id}</c>.
+    /// </summary>
+    /// <remarks>
+    /// Prefixed, not a bare id, so a listing of the storage root tells branches and people apart at
+    /// a glance - and so no tooling that walks branch folders by id ever mistakes a person for one.
+    /// </remarks>
+    public static string OwnerKeyForDiner(Guid dinerUserId) => $"diner-{dinerUserId}";
+
+    /// <summary>
     /// What these bytes actually are, read from their magic numbers.
     /// </summary>
     /// <remarks>

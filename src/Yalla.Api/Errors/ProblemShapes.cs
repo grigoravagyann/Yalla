@@ -278,6 +278,23 @@ public sealed record HoldExtensionRefusedProblem : ProblemShape
     public required HoldExtensionRefusedContext Context { get; init; }
 }
 
+/// <summary>A diner's username, email or phone number is already somebody else's.</summary>
+/// <param name="Field">
+/// The request field to highlight: <c>username</c>, <c>email</c> or <c>phoneE164</c>. The same
+/// information the code carries, in the form a form keys on.
+/// </param>
+public sealed record IdentifierTakenContext(string Field);
+
+/// <summary>
+/// <c>username-taken</c>, <c>email-taken</c> or <c>phone-in-use</c>, 409. Branch on the code: the
+/// third is the one that offers "log in with a code instead", because the number's owner can
+/// prove it and a stranger typing it cannot.
+/// </summary>
+public sealed record IdentifierTakenProblem : ProblemShape
+{
+    public required IdentifierTakenContext Context { get; init; }
+}
+
 /// <summary>A one-time code that was not accepted, and what is left on it.</summary>
 /// <param name="AttemptsRemaining">
 /// Tries left on the number's live code. <b>Zero</b> when there is no live code, or the last try was

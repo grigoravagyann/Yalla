@@ -1,4 +1,5 @@
 using Yalla.Domain.Common;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Venues;
 
 namespace Yalla.Domain.Media;
@@ -25,20 +26,31 @@ namespace Yalla.Domain.Media;
 /// an image never needs a cache bust, because the new one lives at a different path; and uploading
 /// the same bytes twice writes no second copy.
 /// </para>
+/// <para>
+/// <b>Exactly one owner.</b> A photo belongs to a branch - a dish, a venue card - or to a diner -
+/// their profile picture - and never to both or neither. The database holds that as a check
+/// constraint, and the owner is also the first segment of every storage key, so one venue's images
+/// or one person's can be enumerated or deleted without a round trip.
+/// </para>
 /// </remarks>
 public sealed class Photo : Entity
 {
     /// <summary>
-    /// The branch that owns it. Also the first path segment.
+    /// The branch that owns it, for a menu or venue-card photo. Null for a diner's picture.
     /// </summary>
     /// <remarks>
     /// A prefix rather than a flat namespace, so an object store maps onto the same keys later with
     /// nothing to rethink - and so one venue's images can be enumerated, counted or deleted without
     /// a database round trip.
     /// </remarks>
-    public Guid BranchId { get; private set; }
+    public Guid? BranchId { get; private set; }
 
-    public Branch Branch { get; private set; } = null!;
+    public Branch? Branch { get; private set; }
+
+    /// <summary>The diner who owns it, for a profile picture. Null for a branch's photo.</summary>
+    public Guid? DinerUserId { get; private set; }
+
+    public DinerUser? DinerUser { get; private set; }
 
     /// <summary>SHA-256 of the <i>processed</i> bytes, lowercase hex. Part of every variant's path.</summary>
     public string ContentHash { get; private set; } = null!;
@@ -76,7 +88,7 @@ public sealed class Photo : Entity
     /// </remarks>
     public bool IsExternallyHosted { get; private set; }
 
-    /// <summary>Who uploaded it. Null for one migrated from the old string column.</summary>
+    /// <summary>Who uploaded it, when a staff member did. Null for a diner's picture and for a migrated row.</summary>
     public Guid? UploadedByStaffId { get; private set; }
 
     public DateTime UploadedAtUtc { get; private set; }
@@ -85,6 +97,7 @@ public sealed class Photo : Entity
     {
     }
 
+    /// <summary>A branch's photo: a dish, or the venue card.</summary>
     public Photo(
         Guid branchId,
         string contentHash,
@@ -96,9 +109,71 @@ public sealed class Photo : Entity
         long bytesStored,
         DateTime uploadedAtUtc,
         Guid? uploadedByStaffId = null)
+        : this(
+            Guard.NotEmpty(branchId, nameof(branchId)),
+            dinerUserId: null,
+            contentHash,
+            thumbnailPath,
+            cardPath,
+            fullPath,
+            width,
+            height,
+            bytesStored,
+            uploadedAtUtc)
+    {
+        UploadedByStaffId = uploadedByStaffId;
+    }
+
+    /// <summary>
+    /// A diner's profile picture. Owned by the account, and by no branch.
+    /// </summary>
+    /// <remarks>
+    /// A factory rather than a second public constructor with the same shape, so the two owners
+    /// cannot be confused at a call site where both are <c>Guid</c>.
+    /// </remarks>
+    public static Photo ForDiner(
+        Guid dinerUserId,
+        string contentHash,
+        string thumbnailPath,
+        string cardPath,
+        string fullPath,
+        int width,
+        int height,
+        long bytesStored,
+        DateTime uploadedAtUtc) =>
+        new(
+            branchId: null,
+            Guard.NotEmpty(dinerUserId, nameof(dinerUserId)),
+            contentHash,
+            thumbnailPath,
+            cardPath,
+            fullPath,
+            width,
+            height,
+            bytesStored,
+            uploadedAtUtc);
+
+    /// <summary>The one constructor that assigns an owner, so the one-owner rule is stated once.</summary>
+    private Photo(
+        Guid? branchId,
+        Guid? dinerUserId,
+        string contentHash,
+        string thumbnailPath,
+        string cardPath,
+        string fullPath,
+        int width,
+        int height,
+        long bytesStored,
+        DateTime uploadedAtUtc)
         : base(Guid.CreateVersion7())
     {
-        BranchId = Guard.NotEmpty(branchId, nameof(branchId));
+        if ((branchId is null) == (dinerUserId is null))
+        {
+            throw new ArgumentException("A photo belongs to exactly one owner: a branch or a diner.", nameof(branchId));
+        }
+
+        BranchId = branchId;
+        DinerUserId = dinerUserId;
         ContentHash = Guard.NotBlank(contentHash, nameof(contentHash), FieldLengths.ContentHash);
         ThumbnailPath = Guard.NotBlank(thumbnailPath, nameof(thumbnailPath), FieldLengths.Url);
         CardPath = Guard.NotBlank(cardPath, nameof(cardPath), FieldLengths.Url);
@@ -107,7 +182,6 @@ public sealed class Photo : Entity
         Height = Guard.Positive(height, nameof(height));
         IsExternallyHosted = false;
         BytesStored = Guard.NotNegativeAmd(bytesStored, nameof(bytesStored));
-        UploadedByStaffId = uploadedByStaffId;
         UploadedAtUtc = Guard.NotLocalTime(uploadedAtUtc, nameof(uploadedAtUtc));
         StampCreatedAt(uploadedAtUtc);
     }

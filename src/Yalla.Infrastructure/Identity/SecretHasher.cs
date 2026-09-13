@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Identity;
 
 namespace Yalla.Infrastructure.Identity;
@@ -29,6 +30,31 @@ internal sealed class SecretHasher
     private static readonly object Unused = new();
 
     private readonly PasswordHasher<object> _hasher = new();
+
+    private readonly Lazy<string> _decoy;
+
+    public SecretHasher() =>
+        _decoy = new Lazy<string>(() => Hash(Convert.ToHexString(RandomNumberGenerator.GetBytes(32))));
+
+    /// <summary>
+    /// A hash nothing will ever match, to verify against when there is no usable account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A sign-in form that answers every failure with one message is not yet an answer that costs
+    /// the same every time. Only a real account with a password reaches the slow hash, so an unknown
+    /// address answers in the time of one indexed read and a real one in the tens of milliseconds
+    /// PBKDF2 costs - a difference comfortably measurable over the internet, which turns the form
+    /// into an oracle for "does this address have an account here", the exact question the shared
+    /// message exists to refuse. Verifying against this when there is nothing else makes every
+    /// rejection cost the same. Both password sign-ins - the admin panel's and the diner's - use it.
+    /// </para>
+    /// <para>
+    /// Random per process rather than a constant, so the hash is never a recognisable value, and
+    /// lazy so the PBKDF2 cost of building it is paid on first sign-in rather than at startup.
+    /// </para>
+    /// </remarks>
+    public string DecoyHash => _decoy.Value;
 
     /// <summary>Hashes a password, PIN or code.</summary>
     public string Hash(string secret) => _hasher.HashPassword(Unused, secret);

@@ -11,11 +11,14 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Identity;
 
 /// <summary>
-/// Phone number plus a one-time code. No password anywhere in this flow.
+/// The diner's two ways in: a phone number plus a one-time code, or a username or email plus a
+/// password.
 /// </summary>
 /// <remarks>
-/// See <c>docs/auth.md</c> for why this identity type exists at all, and why it is not the same
-/// as the account-free tab participant.
+/// See <c>docs/auth.md</c> for why this identity type exists at all, why the code flow needs no
+/// password, and why it is not the same as the account-free tab participant. The password flow
+/// is the newer half and reuses everything the code flow mints - the same token, the same refresh
+/// chain - so nothing downstream can tell which door somebody came in by.
 /// </remarks>
 internal sealed class DinerAuthService(
     YallaDbContext db,
@@ -24,11 +27,20 @@ internal sealed class DinerAuthService(
     RefreshTokenStore refreshTokens,
     IVerificationCodeSender sender,
     PhoneCodeRateLimiter phoneLimiter,
+    PasswordAttemptLimiter passwordLimiter,
     SecretHasher hasher,
     IOptions<AuthOptions> authOptions,
     ILogger<DinerAuthService> logger) : IDinerAuthService
 {
     private readonly AuthOptions _options = authOptions.Value;
+
+    /// <summary>
+    /// The single answer to every failed password sign-in. Unknown identifier, wrong password, an
+    /// account with no password and a deactivated one are indistinguishable on purpose - otherwise
+    /// the form tells a stranger which usernames and addresses have accounts.
+    /// </summary>
+    private static AuthenticationFailedException SignInRejected() =>
+        new("invalid-credentials", "That username or email and password do not match an account.");
 
     public async Task<VerificationCodeRequestResult> RequestCodeAsync(
         string phoneE164,
@@ -148,9 +160,14 @@ internal sealed class DinerAuthService(
         }
         else
         {
+            // An account that registered with this number typed - or one this flow created - is
+            // signed in, not duplicated. The number is the account either way.
             diner.SetLocale(locale);
         }
 
+        // The one thing only this flow can say: a code sent to the number came back. A registered
+        // account's number is unverified until this line runs for it once.
+        diner.MarkPhoneVerified(nowUtc);
         diner.RecordSignIn(nowUtc);
 
         var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
@@ -164,5 +181,164 @@ internal sealed class DinerAuthService(
 
         return new DinerSignInResult(
             accessToken, refreshToken, tokens.AccessTokenSeconds, diner.Id, isNewAccount);
+    }
+
+    public async Task<DinerSignInResult> RegisterAsync(
+        RegisterDinerCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        // Every field normalised and refused by name before anything is read from the database,
+        // so a malformed form never costs a query and never learns anything from one.
+        var phone = PhoneNumber.Normalise(command.PhoneE164, "phoneE164");
+        var username = DinerAccountRules.NormaliseUsername(command.Username, "username");
+        var email = DinerAccountRules.NormaliseEmail(command.Email, "email");
+        var password = DinerAccountRules.CheckPassword(command.Password, username, email, "password");
+        var locale = AuthMessages.Normalise(command.LocaleCode, _options.DefaultLocale);
+        var nowUtc = clock.UtcNow;
+
+        // One read for all three clashes, answered in the order the form shows the fields. The
+        // unique indexes are the backstop for the race this read cannot close - see the save.
+        var clashes = await db.DinerUsers
+            .Where(d => d.Username == username || d.Email == email || d.PhoneE164 == phone)
+            .Select(d => new { d.Username, d.Email, d.PhoneE164 })
+            .ToListAsync(cancellationToken);
+
+        if (clashes.Any(c => c.Username == username))
+        {
+            throw DinerIdentifierTakenException.Username();
+        }
+
+        if (clashes.Any(c => c.Email == email))
+        {
+            throw DinerIdentifierTakenException.Email();
+        }
+
+        if (clashes.Any(c => c.PhoneE164 == phone))
+        {
+            // Not merged into the existing account, even though the number is the same: a
+            // stranger typing somebody's number must not be handed their booking history. The
+            // account's owner proves the number with a code, which is what the app offers next.
+            throw DinerIdentifierTakenException.Phone();
+        }
+
+        var diner = DinerUser.Register(phone, locale, command.DisplayName, username, email, hasher.Hash(password));
+
+        diner.RecordSignIn(nowUtc);
+        db.DinerUsers.Add(diner);
+
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
+        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+
+        await SaveGuardingIdentifiersAsync(cancellationToken);
+
+        // The id and nothing else. The username, the email and the number are personal data and
+        // the password is a secret; none of them belongs in a log line.
+        logger.LogInformation("Diner {DinerUserId} registered with a password.", diner.Id);
+
+        return new DinerSignInResult(
+            accessToken, refreshToken, tokens.AccessTokenSeconds, diner.Id, IsNewAccount: true);
+    }
+
+    public async Task<DinerSignInResult> LoginAsync(
+        string identifier,
+        string password,
+        string? localeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var key = (identifier ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (key.Length == 0)
+        {
+            // Nothing to look up and nothing to guess at, so no budget is spent and no hash is
+            // paid: the empty identifier is the one input that cannot be an oracle.
+            throw SignInRejected();
+        }
+
+        // Per identifier, counted before the answer is known. Ten a quarter-hour is generous for a
+        // person and hopeless for a guesser, and a spent budget is a 429 rather than a 401 so the
+        // app says "wait" instead of "wrong password" to somebody typing the right one.
+        if (!await passwordLimiter.TryAcquireAsync(key, cancellationToken))
+        {
+            throw new TooManyAttemptsException(
+                "Too many sign-in attempts for that account. Wait a few minutes and try again.");
+        }
+
+        var diner = await db.DinerUsers
+            .FirstOrDefaultAsync(d => d.Username == key || d.Email == key, cancellationToken);
+
+        var usable = diner is { IsActive: true, PasswordHash: not null };
+
+        // Always pay the hash, even when there is nothing to check it against. Returning early for
+        // an unknown, password-less or deactivated account would turn the shared rejection into a
+        // timing oracle - see SecretHasher.DecoyHash.
+        var (matches, needsRehash) = hasher.Verify(
+            usable ? diner!.PasswordHash! : hasher.DecoyHash, password);
+
+        if (!usable)
+        {
+            throw SignInRejected();
+        }
+
+        if (!matches)
+        {
+            logger.LogWarning("Failed password sign-in for diner {DinerUserId}.", diner!.Id);
+            throw SignInRejected();
+        }
+
+        if (needsRehash)
+        {
+            diner!.SetPassword(hasher.Hash(password));
+        }
+
+        // Only a recognised locale moves the stored one. The code flow falls back to the default
+        // because it may be creating the row; here the row exists and already knows its language,
+        // and a phone that sent nothing should not reset it.
+        if (!string.IsNullOrWhiteSpace(localeCode))
+        {
+            diner!.SetLocale(AuthMessages.Normalise(localeCode, diner.LocaleCode));
+        }
+
+        diner!.RecordSignIn(clock.UtcNow);
+
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
+        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Diner {DinerUserId} signed in with a password.", diner.Id);
+
+        return new DinerSignInResult(
+            accessToken, refreshToken, tokens.AccessTokenSeconds, diner.Id, IsNewAccount: false);
+    }
+
+    /// <summary>
+    /// Saves a registration, turning a lost race for a username, an email or a number into the
+    /// same 409 the read above gives - rather than the 500 a bare unique violation would be.
+    /// </summary>
+    /// <remarks>
+    /// Two sign-ups for the same username can pass the read together and both reach the insert;
+    /// the index decides, and the loser is told the same thing it would have been told a second
+    /// later. Matching on the index name is unlovely and is the only thing SQL Server says.
+    /// </remarks>
+    private async Task SaveGuardingIdentifiersAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.DinerUserUsername))
+        {
+            throw DinerIdentifierTakenException.Username();
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.DinerUserEmail))
+        {
+            throw DinerIdentifierTakenException.Email();
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.DinerUserPhone))
+        {
+            throw DinerIdentifierTakenException.Phone();
+        }
     }
 }

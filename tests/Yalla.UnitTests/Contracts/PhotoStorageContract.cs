@@ -29,6 +29,10 @@ namespace Yalla.UnitTests.Contracts;
 /// indistinguishable from one that failed.</item>
 /// <item><b>Deleting something that is not there is not an error.</b> The end state is the same,
 /// and the orphan sweep would otherwise have to race its own reads.</item>
+/// <item><b>The owner key is the first segment of every path it returns</b>, whichever kind of owner
+/// it names. A branch's menu photo and a diner's profile picture go through the same
+/// <c>SaveAsync</c> under different prefixes, and a backend that flattened them would let one
+/// person's upload deduplicate against a venue's.</item>
 /// </list>
 /// </remarks>
 public abstract class PhotoStorageContract
@@ -42,7 +46,7 @@ public abstract class PhotoStorageContract
         var branchId = Guid.CreateVersion7();
 
         using var content = new MemoryStream(PngOf(400, 300));
-        var stored = await storage.SaveAsync(branchId, content, "image/png");
+        var stored = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),content, "image/png");
 
         Assert.False(string.IsNullOrWhiteSpace(stored.ThumbnailPath));
         Assert.False(string.IsNullOrWhiteSpace(stored.CardPath));
@@ -70,7 +74,7 @@ public abstract class PhotoStorageContract
         var storage = Storage();
 
         using var content = new MemoryStream(PngOf(400, 300));
-        var stored = await storage.SaveAsync(Guid.CreateVersion7(), content, "image/png");
+        var stored = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(Guid.CreateVersion7()), content, "image/png");
 
         foreach (var path in new[] { stored.ThumbnailPath, stored.CardPath, stored.FullPath })
         {
@@ -92,10 +96,10 @@ public abstract class PhotoStorageContract
         var bytes = PngOf(400, 300);
 
         using var first = new MemoryStream(bytes);
-        var one = await storage.SaveAsync(branchId, first, "image/png");
+        var one = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),first, "image/png");
 
         using var second = new MemoryStream(bytes);
-        var two = await storage.SaveAsync(branchId, second, "image/png");
+        var two = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),second, "image/png");
 
         Assert.Equal(one.ContentHash, two.ContentHash);
         Assert.Equal(one.FullPath, two.FullPath);
@@ -115,7 +119,46 @@ public abstract class PhotoStorageContract
         using var content = new MemoryStream("this is not a picture, whatever the header says"u8.ToArray());
 
         await Assert.ThrowsAsync<UnsupportedImageException>(
-            () => Storage().SaveAsync(Guid.CreateVersion7(), content, "image/png"));
+            () => Storage().SaveAsync(PhotoRules.OwnerKeyForBranch(Guid.CreateVersion7()), content, "image/png"));
+    }
+
+    /// <summary>
+    /// The same bytes under two owners are two photos. A diner's picture must never reuse a
+    /// venue's files, or deleting either owner's copy breaks the other's.
+    /// </summary>
+    [Fact]
+    public async Task The_owner_key_is_the_first_segment_and_keeps_two_owners_apart()
+    {
+        var storage = Storage();
+        var branchId = Guid.CreateVersion7();
+        var dinerId = Guid.CreateVersion7();
+        var bytes = PngOf(400, 300);
+
+        using var first = new MemoryStream(bytes);
+        var ofBranch = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId), first, "image/png");
+
+        using var second = new MemoryStream(bytes);
+        var ofDiner = await storage.SaveAsync(PhotoRules.OwnerKeyForDiner(dinerId), second, "image/png");
+
+        Assert.StartsWith($"{branchId}/", ofBranch.FullPath, StringComparison.Ordinal);
+        Assert.StartsWith($"diner-{dinerId}/", ofDiner.FullPath, StringComparison.Ordinal);
+
+        // Same content, same hash, different files - so the second is a real write, not a dedup.
+        Assert.Equal(ofBranch.ContentHash, ofDiner.ContentHash);
+        Assert.NotEqual(ofBranch.FullPath, ofDiner.FullPath);
+        Assert.False(ofDiner.WasDeduplicated);
+    }
+
+    /// <summary>An owner key that could carry a separator would put a photo outside its owner's folder.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("../other")]
+    [InlineData("a/b")]
+    public async Task An_owner_key_that_is_not_one_segment_is_refused(string ownerKey)
+    {
+        using var content = new MemoryStream(PngOf(40, 30));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => Storage().SaveAsync(ownerKey, content, "image/png"));
     }
 
     [Fact]

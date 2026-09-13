@@ -50,7 +50,7 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
             Encoding.UTF8.GetBytes("<?php system($_GET['c']); ?> this is definitely a picture"));
 
         var refused = await Assert.ThrowsAsync<UnsupportedImageException>(
-            () => storage.SaveAsync(branchId, content, "image/png"));
+            () => storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),content, "image/png"));
 
         Assert.Contains("not a JPEG, PNG or WebP", refused.Message);
 
@@ -82,7 +82,7 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
         Assert.True(HasExif(source), "The fixture image has no EXIF, so this test proves nothing.");
 
         await using var content = new MemoryStream(source);
-        var stored = await storage.SaveAsync(branchId, content, "image/jpeg");
+        var stored = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),content, "image/jpeg");
 
         // Three variants, all present, all under the hash.
         Assert.Equal(64, stored.ContentHash.Length);
@@ -125,12 +125,12 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
         var source = JpegWithExif();
 
         await using var first = new MemoryStream(source);
-        var one = await storage.SaveAsync(branchId, first, "image/jpeg");
+        var one = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),first, "image/jpeg");
 
         Assert.False(one.WasDeduplicated);
 
         await using var second = new MemoryStream(source);
-        var two = await storage.SaveAsync(branchId, second, "image/jpeg");
+        var two = await storage.SaveAsync(PhotoRules.OwnerKeyForBranch(branchId),second, "image/jpeg");
 
         Assert.True(two.WasDeduplicated);
         Assert.Equal(one.ContentHash, two.ContentHash);
@@ -232,7 +232,7 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
         await using var content = new MemoryStream(oversized);
 
         var refused = await Assert.ThrowsAsync<UnsupportedImageException>(
-            () => storage.SaveAsync(Guid.CreateVersion7(), content, "image/jpeg"));
+            () => storage.SaveAsync(PhotoRules.OwnerKeyForBranch(Guid.CreateVersion7()), content, "image/jpeg"));
 
         Assert.Contains("larger than", refused.Message);
     }

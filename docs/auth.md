@@ -122,6 +122,61 @@ The Development-only affordance is gated by the host from `IHostEnvironment`, no
 configuration, so `Auth__ReturnVerificationCodeInResponse=true` in a production environment does
 nothing.
 
+### The password door
+
+The same `DinerUser` row, with four optional things on it: a username, an email, a password hash
+and a profile photo. Two routes under `/api/auth` open it and five under `/api/diner/me` live
+behind it. Both doors mint the same token and the same refresh chain, so nothing downstream knows
+which one a diner came in by.
+
+- `POST /api/auth/diner/register` — `{ username, email, password, phoneE164, displayName,
+  localeCode? }`, answers **201** with exactly what `verify-code` returns (`isNewAccount` true).
+  Username 3-30 characters, letters, digits, `.` and `_`, starting with a letter or digit;
+  email a real address; both **stored trimmed and lowercased** and unique among the rows that
+  have one; password 8-128 characters and not the username or the email - length is the only rule,
+  for the reason §4 gives. A malformed field is **400 `invalid-request`** with `context.field`
+  naming it. A taken one is **409** - `username-taken`, `email-taken`, or `phone-in-use` - with
+  `context.field` as well. The rules are three pure functions in `DinerAccountRules`, called by
+  registration and by the profile edit, so the two cannot disagree.
+- **Registering does not verify the number.** The phone is stored as typed and
+  `PhoneVerifiedAtUtc` stays null until the diner passes a code once; the profile says
+  `phoneVerified: false` and the app shows a *verify* link into the code flow. The code flow, when
+  it meets a registered number, **signs that account in and marks it verified** rather than creating
+  a second row - the number is the account either way. `phone-in-use` is therefore not a dead end:
+  the app's answer is *log in with a code instead*, which the number's owner can do and a stranger
+  typing it cannot. Every row that existed before this door was created by a code coming back from
+  its number, so the migration backfilled their stamp from the last sign-in.
+- `POST /api/auth/diner/login` — `{ identifier, password, localeCode? }`, where `identifier` is a
+  username or an email, case-insensitively. Unknown identifier, wrong password, an account with
+  no password yet and a deactivated account all answer **401 `invalid-credentials`** - and all
+  cost the same time, because the hash is always paid, against a decoy when there is nothing else
+  (`SecretHasher.DecoyHash`, shared with the admin panel's sign-in). Rate limited on two axes like
+  `request-code`: per address by the pipeline, and per identifier by `PasswordAttemptLimiter` -
+  ten attempts in fifteen minutes, right or wrong, after which **429 `too-many-attempts`**. A
+  window and not a lockout, because a diner has no manager to clear one and a lockout anybody could
+  trigger by typing a username is a way to stop any diner signing in.
+- `GET /api/diner/me` and `PUT /api/diner/me` — the account behind the token and nothing else:
+  there is no id in the route, so there is no parameter through which one diner reaches another's
+  row. The edit changes only the fields sent, under registration's rules and 409s, and nothing can
+  be cleared - the name is read out at the door and the other two are how the person signs in.
+- `PUT /api/diner/me/password` — `{ currentPassword?, newPassword }`. An account the code flow
+  created sets its first password with no current one: the bearer token is the proof, and there is
+  nothing to compare against anyway. One that has a password must send it, and a wrong one is 401
+  `invalid-credentials`. Changing it does not revoke other sessions - stated, so the app is not
+  surprised when its refresh token keeps working.
+- `POST /api/diner/me/photo` and `DELETE /api/diner/me/photo` — the profile picture, through the
+  same pipeline as a branch photo: sniffed, stripped of EXIF, three WebP variants, same size cap,
+  same **409 `unsupported-image`** (which branch uploads now answer too, in place of the generic
+  conflict). A `Photo` now belongs to exactly one owner - a branch or a diner, enforced by a check
+  constraint - and is stored under `diner-{id}/` rather than a branch id. Replacing or removing a
+  picture leaves the old one for the orphan sweep, which excludes anything a `DinerUsers.PhotoId`
+  still points at.
+
+The `VerifiedDiner` policy keeps its name and admits any diner token, including one issued by
+`register` before the number is proved. The policy says "has an account, and is not a tab
+participant"; `DinerUser.PhoneVerifiedAtUtc` says whether the number is real, and anything that
+needs a real number reads that.
+
 ## 3. Staff — device-bound branch token plus a per-person PIN
 
 The constraint that sets the shape of this one: **a waiter must never type an email address during
@@ -390,7 +445,7 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `ManagerOrAbove` | Role is Manager or Owner |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner or manager acting inside their own venue |
-| `VerifiedDiner` | The token's principal type is `Diner` - a phone number was verified, so there is an account to hold bookings against. A tab participant is deliberately not one |
+| `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number |
 
 Two of these are the real security of this system, and both have tests:
 

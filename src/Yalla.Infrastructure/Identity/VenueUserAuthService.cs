@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -38,25 +37,6 @@ internal sealed class VenueUserAuthService(
     private static AuthenticationFailedException SignInRejected() =>
         new("credentials-invalid", "That email address and password do not match an account.");
 
-    /// <summary>
-    /// A hash nothing will ever match, verified against when there is no usable account.
-    /// </summary>
-    /// <remarks>
-    /// The single rejection message above makes the three failures indistinguishable in the
-    /// response. It did not make them indistinguishable in <i>time</i>: only a real account with a
-    /// password reached <c>PasswordHasher</c>, so an unknown address answered in the time of one
-    /// indexed read and a real one in the tens of milliseconds PBKDF2 costs. That difference is
-    /// comfortably measurable over the internet, which made the sign-in form an oracle for "does
-    /// this address have an admin account here" - the exact question the shared message exists to
-    /// refuse. Verifying against this decoy makes every rejection cost the same.
-    /// <para>
-    /// Random per process rather than a constant, so the hash is never a recognisable value, and
-    /// lazy so the PBKDF2 cost of building it is paid on first sign-in rather than at startup.
-    /// </para>
-    /// </remarks>
-    private static readonly Lazy<string> DecoyPasswordHash = new(() =>
-        new SecretHasher().Hash(Convert.ToHexString(RandomNumberGenerator.GetBytes(32))));
-
     public async Task<VenueUserSignInResult> SignInAsync(
         string email,
         string password,
@@ -71,9 +51,9 @@ internal sealed class VenueUserAuthService(
 
         // Always pay the hash, even when there is nothing to check it against. Returning early for
         // an unknown, password-less or deactivated account is what turned the shared rejection
-        // message into a timing oracle - see DecoyPasswordHash.
+        // message into a timing oracle - see SecretHasher.DecoyHash.
         var (matches, needsRehash) = hasher.Verify(
-            usable ? staff!.PasswordHash! : DecoyPasswordHash.Value, password);
+            usable ? staff!.PasswordHash! : hasher.DecoyHash, password);
 
         if (!usable)
         {

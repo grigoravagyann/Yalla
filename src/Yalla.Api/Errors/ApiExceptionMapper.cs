@@ -2,6 +2,7 @@
 using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
+using Yalla.Domain.Media;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
@@ -540,6 +541,28 @@ internal static class ApiExceptionMapper
                 ["endUtc"] = e.EndUtc,
                 ["earliestUtc"] = e.EarliestUtc,
             }),
+
+        // A diner's username, email or number is somebody else's. Three codes, one shape: the
+        // field to highlight rides in the context so the sign-up form does not map a code back to
+        // an input by hand. Must stay ABOVE DomainStateException, which it derives from.
+        DinerIdentifierTakenException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            e.Code,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["field"] = e.Field }),
+
+        // Not a photo, or too big a one. Its own code rather than the generic conflict, because
+        // "that is not a picture" and "that picture is too large" are the two things an upload
+        // screen has to say and neither is "try again". Must stay ABOVE DomainStateException.
+        UnsupportedImageException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.UnsupportedImage,
+            e.Message,
+            LogAsError: false,
+            Context: e.DetectedFormat is { } format
+                ? new Dictionary<string, object?> { ["detectedFormat"] = format }
+                : null),
 
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),

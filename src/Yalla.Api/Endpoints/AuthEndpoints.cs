@@ -52,7 +52,8 @@ public static class AuthEndpoints
     }
 
     // ---------------------------------------------------------------------------------------
-    // Identity type 2 - diner with a reservation: phone number, one-time code, no password.
+    // Identity type 2 - the diner: phone number and one-time code, or - once they have chosen
+    // one - username or email and password. Both doors issue the same tokens.
     // ---------------------------------------------------------------------------------------
     private static void MapDinerFlow(RouteGroupBuilder group)
     {
@@ -96,6 +97,59 @@ public static class AuthEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status429TooManyRequests,
                 "The code is out of attempts. Request a new one.")
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
+
+        group.MapPost("/diner/register", RegisterDinerAsync)
+            .WithName("registerDiner")
+            .WithTags(EndpointConventions.AuthTag, EndpointConventions.DinerTag)
+            .WithSummary("Create a diner account with a username, email and password")
+            .WithDescription(
+                "The sign-up form, for the people who want an account they can recognise - and for "
+                + "the moment there is no signal for an SMS. The code flow is still the front door "
+                + "and still needs no registration.\n\n"
+                + "**The phone number is stored as typed and is not verified by registering.** The "
+                + "account's `phoneVerified` stays false until a one-time code to it is passed once; "
+                + "the profile screen shows a *verify* link until then.\n\n"
+                + "Username: 3-30 characters, letters, digits, dots and underscores, lowercased on "
+                + "the way in. Password: 8-128 characters and not the username or the email - no "
+                + "composition rules. A malformed field answers 400 with `context.field` naming it.\n\n"
+                + "Rate limited per address like `request-code`. Signs the new account in: the "
+                + "response is exactly what `verify-code` returns, with `isNewAccount` true.")
+            .Produces<DinerSignInResult>(StatusCodes.Status201Created)
+            .ProducesProblemDetails(
+                StatusCodes.Status400BadRequest,
+                "A field is malformed. `context.field` names it: `username`, `email`, `password`, "
+                + "`phoneE164` or `displayName`.")
+            .ProducesProblem<IdentifierTakenProblem>(
+                StatusCodes.Status409Conflict,
+                "`username-taken`, `email-taken`, or `phone-in-use` - the number already has an "
+                + "account, and the app should offer *log in with a code instead*. `context.field` "
+                + "names the input either way.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests, "Too many sign-ups from this address. Wait, then retry.")
+            .RequireRateLimiting(RateLimitingExtensions.CodeRequestPolicy);
+
+        group.MapPost("/diner/login", LoginDinerAsync)
+            .WithName("loginDiner")
+            .WithTags(EndpointConventions.AuthTag, EndpointConventions.DinerTag)
+            .WithSummary("Sign in a diner with a username or email and a password")
+            .WithDescription(
+                "`identifier` is a username or an email address, case-insensitively.\n\n"
+                + "Unknown identifier, wrong password, an account that has no password yet and a "
+                + "deactivated account all answer the same `401 invalid-credentials`, and all cost "
+                + "the same time, so this form cannot be used to discover which accounts exist.\n\n"
+                + "Rate limited on two axes: per address by the pipeline, and per identifier by the "
+                + "service - ten attempts in fifteen minutes, right or wrong, after which the answer "
+                + "is `429 too-many-attempts` rather than another 401. Wait; the account is not "
+                + "locked and nobody has to unlock it.\n\n"
+                + "The response is exactly what `verify-code` returns, with `isNewAccount` false.")
+            .Produces<DinerSignInResult>()
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized,
+                "`invalid-credentials`: the identifier and password do not match a usable account.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "`too-many-attempts` for this identifier, or too many requests from this address. Wait.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         group.MapPost("/diner/refresh", RefreshDinerAsync)
@@ -306,6 +360,34 @@ public static class AuthEndpoints
 
         return Results.Ok(result);
     }
+
+    private static async Task<IResult> RegisterDinerAsync(
+        RegisterDinerRequest request,
+        IDinerAuthService service,
+        HttpContext http,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.RegisterAsync(
+            new RegisterDinerCommand(
+                request.Username,
+                request.Email,
+                request.Password,
+                request.PhoneE164,
+                request.DisplayName,
+                request.LocaleCode ?? http.Request.Headers.AcceptLanguage.ToString()),
+            cancellationToken);
+
+        // 201 with the profile as the location: the thing created is the account, and that is
+        // where the app reads it from next.
+        return Results.Created("/api/diner/me", result);
+    }
+
+    private static async Task<IResult> LoginDinerAsync(
+        LoginDinerRequest request,
+        IDinerAuthService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.LoginAsync(
+            request.Identifier, request.Password, request.LocaleCode, cancellationToken));
 
     private static async Task<IResult> RefreshDinerAsync(
         RefreshTokenRequest request,

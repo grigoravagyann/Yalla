@@ -75,6 +75,12 @@ internal static class DatabaseIndexNames
     public const string PhotoPerBranchContent = "UX_Photos_BranchId_ContentHash";
 
     /// <summary>
+    /// The same rule for a diner's pictures: one row per person per content hash. A violation
+    /// means this person already has these exact bytes; the upload reuses the row.
+    /// </summary>
+    public const string PhotoPerDinerContent = "UX_Photos_DinerUserId_ContentHash";
+
+    /// <summary>
     /// Unique on one live device per client identifier per branch. A violation means this browser
     /// is already enrolled here; it should offer its PIN screen rather than enrol again.
     /// </summary>
@@ -105,8 +111,20 @@ internal static class DatabaseIndexNames
     /// <summary>Unique on (branch, label). A violation means a floor plan reused a table label.</summary>
     public const string TableLabelPerBranch = "IX_DiningTables_BranchId_Label";
 
-    /// <summary>Unique on the verified phone number: the number <i>is</i> the diner's account.</summary>
+    /// <summary>
+    /// Unique on the phone number: the number <i>is</i> the diner's account. A violation on
+    /// registration means the number already has one, and the answer is to sign in with a code.
+    /// </summary>
     public const string DinerUserPhone = "UX_DinerUsers_PhoneE164";
+
+    /// <summary>
+    /// Unique on a diner's username, filtered to the rows that have one. A violation means two
+    /// sign-ups raced for the same name; the loser is told it is taken.
+    /// </summary>
+    public const string DinerUserUsername = "UX_DinerUsers_Username";
+
+    /// <summary>Unique on a diner's email, filtered to the rows that have one. As the username.</summary>
+    public const string DinerUserEmail = "UX_DinerUsers_Email";
 
     /// <summary>
     /// Unique on the hash of an enrolment code. Named because the redemption path looks a code up

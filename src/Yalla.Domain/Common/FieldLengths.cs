@@ -38,6 +38,9 @@ public static class FieldLengths
     /// <summary>The practical maximum for an email address (RFC 3696 errata 1690).</summary>
     public const int Email = 320;
 
+    /// <summary>A diner's sign-in name. Short enough to type on a phone and fit on a host's screen.</summary>
+    public const int Username = 30;
+
     /// <summary>
     /// Hex SHA-256 of an opaque high-entropy secret - a refresh handle, an enrolment code, a
     /// device secret. 64 characters today; the column is wider so a longer digest does not need a

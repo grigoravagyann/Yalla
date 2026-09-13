@@ -29,6 +29,20 @@ public sealed class AuthOptions
     public int CodeRequestsPerPhonePerHour { get; set; } = 5;
 
     /// <summary>
+    /// Password sign-in attempts one diner identifier - username or email - may make per window,
+    /// whatever address they come from. Right and wrong attempts both count.
+    /// </summary>
+    /// <remarks>
+    /// The per-address limiter alone does nothing about a thousand addresses each trying ten
+    /// passwords against one username. A window rather than a lockout, because a diner has no
+    /// manager to clear one - see <c>PasswordAttemptLimiter</c>.
+    /// </remarks>
+    public int PasswordAttemptsPerIdentifier { get; set; } = 10;
+
+    /// <summary>How long the window above lasts. A spent budget answers 429 until it turns.</summary>
+    public int PasswordAttemptWindowMinutes { get; set; } = 15;
+
+    /// <summary>
     /// Returns the verification code in the response body so the diner flow can be exercised with
     /// no SMS provider wired up.
     /// </summary>

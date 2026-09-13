@@ -43,14 +43,24 @@ public sealed record StoredPhoto(
 public interface IPhotoStorage
 {
     /// <summary>
-    /// Validates, strips metadata, produces the three variants and stores them.
+    /// Validates, strips metadata, produces the three variants and stores them under
+    /// <paramref name="ownerKey"/>.
     /// </summary>
+    /// <param name="ownerKey">
+    /// The first segment of every key written: a branch id for a menu or venue-card photo,
+    /// <c>diner-{id}</c> for a profile picture. Minted by <c>PhotoRules.OwnerKeyForBranch</c> and
+    /// <c>OwnerKeyForDiner</c>, never assembled at a call site, so the two kinds of owner cannot
+    /// collide and a listing of the root tells them apart.
+    /// </param>
+    /// <param name="content">The upload, as it arrived.</param>
+    /// <param name="contentType">What the client declared. Logged when the bytes disagree; never trusted.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="Domain.Media.UnsupportedImageException">
     /// The bytes are not a JPEG, PNG or WebP, or the image is too large. Decided by <b>sniffing the
     /// bytes</b> - the declared content type and the file name are both attacker-controlled.
     /// </exception>
     Task<StoredPhoto> SaveAsync(
-        Guid branchId,
+        string ownerKey,
         Stream content,
         string contentType,
         CancellationToken cancellationToken = default);
