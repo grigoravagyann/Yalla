@@ -55,6 +55,66 @@ public class DevListingSeedTests(SqlServerFixture fixture)
         Assert.Equal(0, first.UnplacedTables);
     }
 
+    /// <summary>
+    /// What a manager did to a branch between two restarts is still there after the second.
+    /// </summary>
+    /// <remarks>
+    /// On a branch of its own rather than the demo branch, which the test above owns. The seeder is
+    /// handed the branch; which one does not change what it does with it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_managers_amenities_and_a_table_they_took_off_the_photo_survive_the_next_seed()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        Guid branchId;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            branchId = (await AuthTestData.CreateBranchAsync(db, tableCount: 3)).BranchId;
+            var photoId = await TestMenuBuilder.AddPhotoAsync(db, branchId);
+
+            var branch = await db.Branches.SingleAsync(b => b.Id == branchId);
+            branch.SetCoverPhoto(photoId);
+
+            // Amenities and nothing else: every field the old skip check looked at is empty.
+            branch.UpdateListing(null, null, null, null, ["wifi", "vegan"]);
+            await db.SaveChangesAsync();
+        }
+
+        await SeedBranchAsync(branchId, clock);
+
+        Guid takenOff;
+        await using (var db = fixture.CreateContext(clock))
+        {
+            var branch = await db.Branches.AsNoTracking().SingleAsync(b => b.Id == branchId);
+            Assert.Equal(["wifi", "vegan"], branch.Amenities);
+            Assert.Null(branch.Cuisine);
+
+            // Nobody had laid the photo out, so the seed placed every table.
+            var tables = await db.DiningTables
+                .Where(t => t.BranchId == branchId && t.IsActive)
+                .OrderBy(t => t.Label)
+                .ToListAsync();
+            Assert.All(tables, t => Assert.NotNull(t.PhotoX));
+
+            // The manager takes one off the picture.
+            tables[0].PlaceOnPhoto(null, null);
+            takenOff = tables[0].Id;
+            await db.SaveChangesAsync();
+        }
+
+        await SeedBranchAsync(branchId, clock);
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            Assert.Null((await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == takenOff)).PhotoX);
+            Assert.Equal(2, await db.DiningTables.CountAsync(t => t.BranchId == branchId && t.IsActive && t.PhotoX != null));
+            Assert.Equal(["wifi", "vegan"], (await db.Branches.AsNoTracking().SingleAsync(b => b.Id == branchId)).Amenities);
+        }
+    }
+
     [Fact]
     public async Task Nothing_is_seeded_outside_Development_even_with_the_dev_actor_switched_on()
     {
@@ -79,6 +139,16 @@ public class DevListingSeedTests(SqlServerFixture fixture)
         await seeder.SeedAsync();
     }
 
+    /// <summary>The listing seed on one branch, as a restart would run it, in a fresh context.</summary>
+    private async Task SeedBranchAsync(Guid branchId, TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var branch = await db.Branches.SingleAsync(b => b.Id == branchId);
+
+        await new DevListingSeeder(db, clock, NullLogger<DevListingSeeder>.Instance).SeedAsync(branch);
+    }
+
     private async Task<(string? Cuisine, int Reviews, int Reviewers, int UnplacedTables)> SnapshotAsync(TestClock clock)
     {
         await using var db = fixture.CreateContext(clock);
@@ -90,6 +160,6 @@ public class DevListingSeedTests(SqlServerFixture fixture)
             branch.Cuisine,
             await db.BranchReviews.CountAsync(r => r.BranchId == branch.Id),
             await db.DinerUsers.CountAsync(d => DevListingSeeder.ReviewerPhones.Contains(d.PhoneE164) && d.PhoneVerifiedAtUtc != null),
-            await db.DiningTables.CountAsync(t => t.BranchId == branch.Id && t.PhotoX == null));
+            await db.DiningTables.CountAsync(t => t.BranchId == branch.Id && t.IsActive && t.PhotoX == null));
     }
 }

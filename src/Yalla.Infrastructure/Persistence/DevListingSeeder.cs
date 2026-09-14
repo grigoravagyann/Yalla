@@ -17,9 +17,11 @@ namespace Yalla.Infrastructure.Persistence;
 /// </para>
 /// <para>
 /// Idempotent and conservative: it only ever touches the branch the seeder owns (passed in, found by
-/// slug), fills listing fields only when all of them are still empty, places only tables that have
-/// no photo position, and adds a review only for a dev reviewer who has none. A person's edits to
-/// the demo branch survive every restart.
+/// slug), fills listing fields only when all of them - amenities included - are still empty, places
+/// active tables on the cover only while no table has a photo position yet, and adds a review only
+/// for a dev reviewer who has none. A person's edits to the demo branch survive every restart; the
+/// one thing it cannot tell from "never set" is a person emptying every listing field, or taking
+/// every table off the photo, and those it fills again.
 /// </para>
 /// </remarks>
 internal sealed class DevListingSeeder(
@@ -59,8 +61,11 @@ internal sealed class DevListingSeeder(
 
     private void FillListing(Branch branch)
     {
+        // Every listing field, amenities included: the seed writes all of them at once, so a person
+        // who set only amenities would otherwise lose them to the demo text on the next restart.
         if (branch.Cuisine is not null || branch.About is not null
-            || branch.PriceLevel is not null || branch.WebsiteUrl is not null)
+            || branch.PriceLevel is not null || branch.WebsiteUrl is not null
+            || branch.AmenityKeys is not null)
         {
             return;
         }
@@ -87,8 +92,18 @@ internal sealed class DevListingSeeder(
             return;
         }
 
+        // Once per branch, not once per table. A table without a position is also what a manager
+        // leaves behind by taking it off the photo, so "place every unplaced table" would put it
+        // back on every restart. Any pin at all means somebody - this seed or a person - has
+        // already laid the photo out.
+        if (await db.DiningTables.AnyAsync(
+                t => t.BranchId == branch.Id && t.IsActive && t.PhotoX != null, cancellationToken))
+        {
+            return;
+        }
+
         var tables = await db.DiningTables
-            .Where(t => t.BranchId == branch.Id && t.PhotoX == null)
+            .Where(t => t.BranchId == branch.Id && t.IsActive && t.PhotoX == null)
             .ToListAsync(cancellationToken);
 
         foreach (var table in tables)

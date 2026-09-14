@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Tabs;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -132,10 +134,22 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         var route = $"/api/diner/branches/{mine.BranchId}/review";
         using var ani = factory.CreateClientWithToken((await SignInDinerAsync(factory)).AccessToken);
         using var narek = factory.CreateClientWithToken((await SignInDinerAsync(factory)).AccessToken);
+        using var anyone = factory.CreateClient();
+
+        // The diner opens the place first, which fills the fifteen-second listing cache with no reviews.
+        var before = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}");
+        Assert.Equal(0, before.GetProperty("listing").GetProperty("reviewCount").GetInt32());
 
         var created = await ani.PostAsJsonAsync(route, new { rating = 5, text = " Warm lavash. " });
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         Assert.Equal("Warm lavash.", (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("text").GetString());
+
+        // Back on the details screen at once: the card agrees with the review drawn beneath it,
+        // rather than reading "no reviews yet" from the cache above that very review.
+        var after = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}");
+        Assert.Equal(1, after.GetProperty("recentReviews").GetArrayLength());
+        Assert.Equal(1, after.GetProperty("listing").GetProperty("reviewCount").GetInt32());
+        Assert.Equal(5.0, after.GetProperty("listing").GetProperty("rating").GetDouble());
 
         // One per diner per branch.
         Assert.Equal(HttpStatusCode.Conflict, (await ani.PostAsJsonAsync(route, new { rating = 1 })).StatusCode);
@@ -154,7 +168,6 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         var mineBack = await ani.GetFromJsonAsync<JsonElement>(route);
         Assert.Equal(4, mineBack.GetProperty("rating").GetInt32());
 
-        using var anyone = factory.CreateClient();
         var page = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}/reviews?page=1");
         Assert.Equal(2, page.GetProperty("reviewCount").GetInt32());
         Assert.Equal(3.0, page.GetProperty("rating").GetDouble());
@@ -168,6 +181,19 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         Assert.Equal(
             HttpStatusCode.BadRequest,
             (await anyone.GetAsync($"/api/public/branches/{mine.BranchId}/reviews?page=0")).StatusCode);
+
+        // A page whose offset would overflow int is refused, not sent to SQL Server as a negative
+        // OFFSET and answered with a 500. The last page that fits is just empty.
+        var last = await anyone.GetAsync($"/api/public/branches/{mine.BranchId}/reviews?page={PublicListingQuery.MaxReviewPage}");
+        Assert.Equal(HttpStatusCode.OK, last.StatusCode);
+        Assert.Equal(0, (await last.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("reviews").GetArrayLength());
+
+        foreach (var overflowing in new[] { PublicListingQuery.MaxReviewPage + 1, int.MaxValue })
+        {
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                (await anyone.GetAsync($"/api/public/branches/{mine.BranchId}/reviews?page={overflowing}")).StatusCode);
+        }
     }
 
     [SkippableFact]
@@ -218,8 +244,54 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         }
 
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        // The positions are fractions of the cover photo, so there has to be one - and a second, to
+        // change it to later.
+        Guid cover;
+        Guid newCover;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            cover = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
+            newCover = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
+        }
+
+        var profile = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/public-profile");
+
+        // The public-profile form as the console sends it: phone and switch as they are, and the cover.
+        Task<HttpResponseMessage> SaveCoverAsync(Guid? photoId) =>
+            manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/public-profile", new
+            {
+                phoneE164 = profile.TryGetProperty("phoneE164", out var phone) ? phone.GetString() : null,
+                acceptsWebBookings = profile.GetProperty("acceptsWebBookings").GetBoolean(),
+                coverPhotoId = photoId,
+            });
+
+        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(cover)).StatusCode);
+
         var plan = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/floor-plan");
         var firstId = plan.GetProperty("tables")[0].GetProperty("id").GetGuid();
+
+        // The floor plan as loaded, with only the first table placed on the photo.
+        object PlanPlacingFirst(double photoX, double photoY) => new
+        {
+            floorWidth = plan.GetProperty("floorWidth").GetInt32(),
+            floorHeight = plan.GetProperty("floorHeight").GetInt32(),
+            areas = Array.Empty<object>(),
+            tables = plan.GetProperty("tables").EnumerateArray().Select(t => new
+            {
+                id = t.GetProperty("id").GetGuid(),
+                label = t.GetProperty("label").GetString(),
+                seats = t.GetProperty("seats").GetInt32(),
+                x = t.GetProperty("x").GetInt32(),
+                y = t.GetProperty("y").GetInt32(),
+                width = t.GetProperty("width").GetInt32(),
+                height = t.GetProperty("height").GetInt32(),
+                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
+                shape = t.GetProperty("shape").GetInt32(),
+                isBookable = t.GetProperty("isBookable").GetBoolean(),
+                photoX = t.GetProperty("id").GetGuid() == firstId ? photoX : (double?)null,
+                photoY = t.GetProperty("id").GetGuid() == firstId ? photoY : (double?)null,
+            }).ToArray(),
+        };
 
         var saved = await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/floor-plan", new
         {
@@ -280,6 +352,35 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
             }).ToArray(),
         });
         Assert.Equal(HttpStatusCode.UnprocessableEntity, half.StatusCode);
+
+        var markersUrl = $"/api/public/branches/{mine.BranchId}/table-markers";
+
+        // Saving the profile with the same cover - the form re-sends it on every save - keeps the pin.
+        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(cover)).StatusCode);
+        Assert.Single((await anyone.GetFromJsonAsync<JsonElement>(markersUrl)).GetProperty("tables").EnumerateArray());
+
+        // A different picture: the pin described the old one, so it comes off, in the database too.
+        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(newCover)).StatusCode);
+        var moved = await anyone.GetFromJsonAsync<JsonElement>(markersUrl);
+        Assert.Equal(newCover, moved.GetProperty("photo").GetProperty("photoId").GetGuid());
+        Assert.Empty(moved.GetProperty("tables").EnumerateArray());
+        Assert.Empty((await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}"))
+            .GetProperty("tableMarkers").EnumerateArray());
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.DiningTables.AnyAsync(t => t.BranchId == mine.BranchId && t.PhotoX != null));
+        }
+
+        // No cover at all: no markers, even for a table the floor plan places anyway.
+        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/floor-plan", PlanPlacingFirst(0.3, 0.6))).StatusCode);
+
+        var uncovered = await anyone.GetFromJsonAsync<JsonElement>(markersUrl);
+        Assert.False(uncovered.TryGetProperty("photo", out var photo) && photo.ValueKind != JsonValueKind.Null);
+        Assert.Empty(uncovered.GetProperty("tables").EnumerateArray());
     }
 
     // ------------------------------------------------------------ orders
@@ -292,6 +393,9 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         await using var factory = NewFactory();
         var ani = await SignInDinerAsync(factory);
         var stranger = await SignInDinerAsync(factory);
+        var hiddenFrom = await SignInDinerAsync(factory);
+        var removed = await SignInDinerAsync(factory);
+        var pending = await SignInDinerAsync(factory);
 
         AuthBranch mine;
         Guid ownOrderId;
@@ -306,6 +410,20 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
             var participant = TabParticipant.Guest(tab.TabId, "Ani", $"device-{Guid.NewGuid():N}", now, false, ani.DinerUserId);
             participant.Approve(now);
             db.TabParticipants.Add(participant);
+
+            // On the same tab, and none of them may see the table's bill: the host hid the total
+            // from this guest, this one was approved and then taken off, and this one was never let on.
+            var hidden = TabParticipant.Guest(tab.TabId, "Hidden", $"device-{Guid.NewGuid():N}", now, true, hiddenFrom.DinerUserId);
+            hidden.Approve(now);
+            db.TabParticipants.Add(hidden);
+
+            var takenOff = TabParticipant.Guest(tab.TabId, "Wrong table", $"device-{Guid.NewGuid():N}", now, false, removed.DinerUserId);
+            takenOff.Approve(now);
+            takenOff.Remove(now);
+            db.TabParticipants.Add(takenOff);
+
+            db.TabParticipants.Add(
+                TabParticipant.Guest(tab.TabId, "Waiting", $"device-{Guid.NewGuid():N}", now, false, pending.DinerUserId));
 
             var ownOrder = TabOrder.PlacedByDiner(tab.TabId, participant.Id, now);
             ownOrder.AddLine(menu.Coffee, "Flat white", TestMenu.CoffeeAmd, 2, note: "oat milk");
@@ -349,6 +467,22 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         using var other = factory.CreateClientWithToken(stranger.AccessToken);
         Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/diner/orders/{ownOrderId}")).StatusCode);
         Assert.Equal(0, (await other.GetFromJsonAsync<JsonElement>("/api/diner/orders")).GetArrayLength());
+
+        // The whole-table order is the table's bill, and the tab view shows it only to somebody who
+        // may see the table total. Neither route here may show more than that.
+        foreach (var (who, token) in new[]
+                 {
+                     ("hidden from", hiddenFrom.AccessToken),
+                     ("removed", removed.AccessToken),
+                     ("pending", pending.AccessToken),
+                 })
+        {
+            using var client = factory.CreateClientWithToken(token);
+            Assert.True(
+                (await client.GetFromJsonAsync<JsonElement>("/api/diner/orders")).GetArrayLength() == 0,
+                $"a {who} guest must not get the table's orders");
+            Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/diner/orders/{tableOrderId}")).StatusCode);
+        }
 
         using var anyone = factory.CreateClient();
         Assert.Equal(HttpStatusCode.Unauthorized, (await anyone.GetAsync("/api/diner/orders")).StatusCode);

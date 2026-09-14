@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Diners;
 using Yalla.Application.Media;
+using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
@@ -30,16 +31,27 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
 
     public async Task<IReadOnlyList<DinerOrderView>> ListAsync(string? status, CancellationToken cancellationToken = default)
     {
-        var orders = Mine(RequireDiner());
+        var filter = status?.Trim().ToLowerInvariant();
 
-        orders = status?.Trim().ToLowerInvariant() switch
+        if (filter is not (null or "" or DinerOrderStatuses.ActiveFilter or DinerOrderStatuses.HistoryFilter))
         {
-            null or "" => orders,
+            throw new ArgumentException("status is 'active' or 'history'.", nameof(status));
+        }
+
+        var orders = await MineAsync(RequireDiner(), cancellationToken);
+
+        if (orders is null)
+        {
+            return [];
+        }
+
+        orders = filter switch
+        {
             DinerOrderStatuses.ActiveFilter => orders.Where(o =>
                 o.Status == TabOrderStatus.New || o.Status == TabOrderStatus.InKitchen || o.Status == TabOrderStatus.Ready),
             DinerOrderStatuses.HistoryFilter => orders.Where(o =>
                 o.Status == TabOrderStatus.Served || o.Status == TabOrderStatus.Voided),
-            _ => throw new ArgumentException("status is 'active' or 'history'.", nameof(status)),
+            _ => orders,
         };
 
         return await LoadAsync(orders.OrderByDescending(o => o.PlacedAtUtc).Take(MaxOrders), cancellationToken);
@@ -47,7 +59,11 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
 
     public async Task<DinerOrderView> GetAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
-        var found = await LoadAsync(Mine(RequireDiner()).Where(o => o.Id == orderId), cancellationToken);
+        var orders = await MineAsync(RequireDiner(), cancellationToken);
+
+        var found = orders is null
+            ? []
+            : await LoadAsync(orders.Where(o => o.Id == orderId), cancellationToken);
 
         // Somebody else's order and no order at all answer the same.
         return found.Count == 1 ? found[0] : throw new KeyNotFoundException($"Order {orderId} was not found.");
@@ -56,17 +72,57 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     private Guid RequireDiner() =>
         actor.DinerUserId ?? throw new UnauthorizedAccessException("Only a signed-in diner has orders.");
 
-    private IQueryable<TabOrder> Mine(Guid dinerUserId) =>
-        db.TabOrders
+    /// <summary>The diner's orders as a query, or null when the account has never been on a tab.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Starts from the diner, not from the order history.</b> Their participant rows come first, by
+    /// the <c>TabParticipants(UserId)</c> index, and the orders are then three seeks - placed by, on
+    /// behalf of, and whole-table on a tab - rather than a scan of every order on the platform.
+    /// </para>
+    /// <para>
+    /// <b>A whole-table order follows the tab view's rule.</b> In the tab those lines are the table's
+    /// bill, shown only to a participant <see cref="TabPermissions.MaySeeTableTotal"/> allows: approved,
+    /// and not hidden from by the host. A guest the host hid the total from, one still pending, and
+    /// one removed from the tab do not get it here either.
+    /// </para>
+    /// </remarks>
+    private async Task<IQueryable<TabOrder>?> MineAsync(Guid dinerUserId, CancellationToken cancellationToken)
+    {
+        var seats = await db.TabParticipants
             .AsNoTracking()
-            .Where(o =>
-                db.TabParticipants.Any(p => p.UserId == dinerUserId
-                                            && (p.Id == o.PlacedByParticipantId || p.Id == o.OnBehalfOfParticipantId))
-                || (o.PlacedByParticipantId == null
-                    && o.OnBehalfOfParticipantId == null
-                    && db.TabParticipants.Any(p => p.UserId == dinerUserId
-                                                   && p.TabId == o.TabId
-                                                   && p.ApprovedAtUtc != null)));
+            .Where(p => p.UserId == dinerUserId)
+            .Select(p => new { p.Id, p.TabId, p.Status, p.CanSeeTableTotal })
+            .ToListAsync(cancellationToken);
+
+        if (seats.Count == 0)
+        {
+            return null;
+        }
+
+        var participantIds = seats.Select(s => s.Id).ToList();
+
+        var wholeTableTabIds = seats
+            .Where(s => TabPermissions.MaySeeTableTotal(s.Status, s.CanSeeTableTotal))
+            .Select(s => s.TabId)
+            .Distinct()
+            .ToList();
+
+        var candidates = db.TabOrders
+            .Where(o => o.PlacedByParticipantId != null && participantIds.Contains(o.PlacedByParticipantId.Value))
+            .Select(o => o.Id)
+            .Union(db.TabOrders
+                .Where(o => o.OnBehalfOfParticipantId != null && participantIds.Contains(o.OnBehalfOfParticipantId.Value))
+                .Select(o => o.Id))
+            .Union(db.TabOrders
+                .Where(o => wholeTableTabIds.Contains(o.TabId)
+                            && o.PlacedByParticipantId == null
+                            && o.OnBehalfOfParticipantId == null)
+                .Select(o => o.Id));
+
+        return db.TabOrders
+            .AsNoTracking()
+            .Where(o => candidates.Contains(o.Id));
+    }
 
     private async Task<List<DinerOrderView>> LoadAsync(IQueryable<TabOrder> orders, CancellationToken cancellationToken)
     {

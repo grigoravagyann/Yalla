@@ -35,6 +35,9 @@ internal sealed class PublicListingQuery(
 {
     public const int ReviewPageSize = 20;
 
+    /// <summary>The last page whose offset still fits an int. Anything later is refused, not overflowed.</summary>
+    public const int MaxReviewPage = int.MaxValue / ReviewPageSize;
+
     public const int RecentReviewCount = 3;
 
     public const int MaxQueryLength = 100;
@@ -108,11 +111,15 @@ internal sealed class PublicListingQuery(
             .CountAsync(t => t.BranchId == branchId && t.IsActive, cancellationToken);
 
         var recent = await ReviewsAsync(branchId, skip: 0, take: RecentReviewCount, cancellationToken);
-        var markers = await MarkersAsync(branchId, cancellationToken);
+        var markers = await MarkersAsync(branchId, row.CoverPhotoId, cancellationToken);
         var stats = await StatsAsync(cancellationToken);
 
+        // The aggregate live, not from the cached stats: recentReviews above is live, and the two
+        // side by side must agree - this is the screen a diner comes back to right after reviewing.
+        var aggregate = await ReviewAggregateAsync(branchId, cancellationToken);
+
         return new PublicBranchDetail(
-            ToListing(row, stats, latitude, longitude),
+            ToListing(row, stats, latitude, longitude, aggregate),
             extra.About,
             extra.WebsiteUrl,
             extra.PhoneE164,
@@ -133,21 +140,21 @@ internal sealed class PublicListingQuery(
             throw new ArgumentOutOfRangeException(nameof(page), page, "Pages start at 1.");
         }
 
+        // Past this, (page - 1) * ReviewPageSize overflows int into a negative OFFSET, which SQL
+        // Server refuses with an error the caller would see as a 500.
+        if (page > MaxReviewPage)
+        {
+            throw new ArgumentOutOfRangeException(nameof(page), page, $"Pages run to at most {MaxReviewPage}.");
+        }
+
         await RequirePublishedAsync(branchId, cancellationToken);
 
         // Live, not the cached aggregate: this is the screen somebody opens right after reviewing.
-        var aggregate = await db.BranchReviews
-            .AsNoTracking()
-            .Where(r => r.BranchId == branchId)
-            .GroupBy(r => r.BranchId)
-            .Select(g => new { Count = g.Count(), Sum = g.Sum(r => (long)r.Rating) })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        var count = aggregate?.Count ?? 0;
+        var (count, sum) = await ReviewAggregateAsync(branchId, cancellationToken);
 
         return new PublicReviewPage(
             branchId,
-            BranchBadgeRules.AverageRating(count, aggregate?.Sum ?? 0L),
+            BranchBadgeRules.AverageRating(count, sum),
             count,
             page,
             ReviewPageSize,
@@ -163,7 +170,7 @@ internal sealed class PublicListingQuery(
             branchId,
             Cover(row),
             clock.UtcNow,
-            await MarkersAsync(branchId, cancellationToken));
+            await MarkersAsync(branchId, row.CoverPhotoId, cancellationToken));
     }
 
     // ------------------------------------------------------------ the pieces
@@ -260,9 +267,35 @@ internal sealed class PublicListingQuery(
             })
         ?? throw new InvalidOperationException("The listing statistics could not be read.");
 
-    private static PublicBranchListing ToListing(EstateRow row, LiveStats stats, double? latitude, double? longitude)
+    /// <summary>One branch's review count and rating sum, read live.</summary>
+    private async Task<(int Count, long Sum)> ReviewAggregateAsync(Guid branchId, CancellationToken cancellationToken)
     {
-        var (count, sum) = stats.Reviews.GetValueOrDefault(row.BranchId);
+        var aggregate = await db.BranchReviews
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId)
+            .GroupBy(r => r.BranchId)
+            .Select(g => new { Count = g.Count(), Sum = g.Sum(r => (long)r.Rating) })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return (aggregate?.Count ?? 0, aggregate?.Sum ?? 0L);
+    }
+
+    /// <param name="row">The branch.</param>
+    /// <param name="stats">The cached live numbers.</param>
+    /// <param name="latitude">The caller's position, for distance.</param>
+    /// <param name="longitude">The caller's position, for distance.</param>
+    /// <param name="liveReviews">
+    /// This branch's review aggregate read live, used instead of the cached one - the details route,
+    /// where the card sits beside reviews that are read live. Null on the list routes.
+    /// </param>
+    private static PublicBranchListing ToListing(
+        EstateRow row,
+        LiveStats stats,
+        double? latitude,
+        double? longitude,
+        (int Count, long Sum)? liveReviews = null)
+    {
+        var (count, sum) = liveReviews ?? stats.Reviews.GetValueOrDefault(row.BranchId);
         var rating = BranchBadgeRules.AverageRating(count, sum);
 
         return new PublicBranchListing(
@@ -345,10 +378,17 @@ internal sealed class PublicListingQuery(
     /// <remarks>
     /// Physical status plus the next live booking, through <see cref="TableStateProjection.Derive"/> -
     /// the same rule the staff floor and availability use, so a marker cannot read free while the
-    /// floor reads reserved.
+    /// floor reads reserved. None at all without a cover: the positions are fractions of that picture,
+    /// and with no picture there is nothing for them to be on.
     /// </remarks>
-    private async Task<IReadOnlyList<PublicTableMarker>> MarkersAsync(Guid branchId, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<PublicTableMarker>> MarkersAsync(
+        Guid branchId, Guid? coverPhotoId, CancellationToken cancellationToken)
     {
+        if (coverPhotoId is null)
+        {
+            return [];
+        }
+
         var nowUtc = clock.UtcNow;
 
         var bufferMinutes = await db.Branches

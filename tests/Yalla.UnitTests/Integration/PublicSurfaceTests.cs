@@ -645,6 +645,110 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
     }
 
+    /// <summary>
+    /// The diner app's list and search are browse lists: refused neither at the shared unaddressed
+    /// branch ceiling nor at the page budget.
+    /// </summary>
+    /// <remarks>
+    /// They carry no branch in their route, so they fell into the one <c>public:unaddressed</c>
+    /// partition under the per-branch ceiling - three hundred a minute for every phone in the city,
+    /// on Explore, the map and every search keystroke.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_apps_list_and_search_are_not_refused_at_a_branch_ceiling_or_the_page_budget()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int ceiling = 3;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicPermitLimit", ceiling.ToString())
+            .With("RateLimiting:PublicBranchPermitLimit", ceiling.ToString())
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        using var anonymous = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < ceiling * 2; i++)
+        {
+            statuses.Add((await anonymous.GetAsync("/api/public/branches")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search?q=cafe")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search/")).StatusCode);
+        }
+
+        Assert.All(statuses, status => Assert.Equal(HttpStatusCode.OK, status));
+    }
+
+    /// <summary>The browse list's city-wide ceiling is what bounds the app's list and search.</summary>
+    [SkippableFact]
+    public async Task The_apps_list_and_search_share_the_browse_ceiling()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int limit = 4;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicBrowseCeilingPermitLimit", limit.ToString())
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        using var anonymous = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < limit; i++)
+        {
+            statuses.Add((await anonymous.GetAsync("/api/public/branches")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search")).StatusCode);
+        }
+
+        Assert.Equal(limit, statuses.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
+    /// <summary>
+    /// A place's details, reviews and table markers are on the app's per-tap budget, not the page
+    /// budget - and that budget fires at its own threshold.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_places_details_reviews_and_markers_have_a_budget_of_their_own()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int pageBudget = 2;
+        const int placeBudget = 7;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicPermitLimit", pageBudget.ToString())
+            .With("RateLimiting:PublicPlacePermitLimit", placeBudget.ToString())
+            .With("RateLimiting:PublicBranchPermitLimit", "1000")
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        var world = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        string[] routes =
+        [
+            $"/api/public/branches/{world.BranchId}",
+            $"/api/public/branches/{world.BranchId}/reviews",
+            $"/api/public/branches/{world.BranchId}/table-markers",
+        ];
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < 3; i++)
+        {
+            statuses.AddRange(await Task.WhenAll(routes.Select(async r => (await anonymous.GetAsync(r)).StatusCode)));
+        }
+
+        // Nine calls: well past the page budget of two, and past the place budget of seven.
+        Assert.Equal(placeBudget, statuses.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private sealed record World(

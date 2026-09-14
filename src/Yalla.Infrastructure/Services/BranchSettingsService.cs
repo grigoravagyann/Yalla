@@ -72,6 +72,22 @@ internal sealed class BranchSettingsService(
         // switched on for bookings with its old phone still published.
         branch.SetPhoneE164(command.PhoneE164);
         branch.SetAcceptsWebBookings(command.AcceptsWebBookings);
+
+        // A table's photoX/photoY are fractions of the picture it was placed on. On a new picture,
+        // or on none, they point at the wrong spot - so a different cover takes every table off the
+        // photo, in the same save. The form re-sends the same cover on every save, which keeps them.
+        if (branch.CoverPhotoId != command.CoverPhotoId)
+        {
+            var placed = await db.DiningTables
+                .Where(t => t.BranchId == branchId && (t.PhotoX != null || t.PhotoY != null))
+                .ToListAsync(cancellationToken);
+
+            foreach (var table in placed)
+            {
+                table.PlaceOnPhoto(null, null);
+            }
+        }
+
         branch.SetCoverPhoto(command.CoverPhotoId);
 
         await db.SaveChangesAsync(cancellationToken);

@@ -211,9 +211,15 @@ public static class PublicEndpoints
                 + "`closesAt` as `HH:mm:ss`, `closesNextDay`), `gallery` (pictures beyond the cover, in "
                 + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three) and "
                 + "`tableMarkers` - the tables placed on the cover photo with their live state.\n\n"
-                + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live.")
+                + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
+                + "`listing.rating` and `listing.reviewCount` are read live too; the other live numbers "
+                + "share the list's fifteen seconds.")
             .Produces<PublicBranchDetail>()
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+
+            // The app's per-tap routes: their own per-caller budget, not the page budget. See
+            // RateLimitingExtensions.PublicPlacePolicy.
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
 
         group.MapGet("/branches/{branchId:guid}/reviews", GetReviewsAsync)
             .WithName("getPublicBranchReviews")
@@ -222,19 +228,23 @@ public static class PublicEndpoints
                 "Twenty a page from `page=1`. `rating` and `reviewCount` are read live. Each review "
                 + "carries `authorName` as a first name and last initial, never the account or its id.")
             .Produces<PublicReviewPage>()
-            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`page` below 1.")
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`page` below 1, or past the last page that can exist.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
 
         group.MapGet("/branches/{branchId:guid}/table-markers", GetTableMarkersAsync)
             .WithName("getPublicTableMarkers")
             .WithSummary("Tables drawn on the cover photo, with their live state")
             .WithDescription(
-                "Only tables a manager placed on the photo (`photoX`/`photoY` on the floor plan) appear. "
+                "Only tables a manager placed on the photo (`photoX`/`photoY` on the floor plan) appear, "
+                + "and none while the branch has no cover. Changing or clearing the cover takes every table "
+                + "off the photo, because the positions described the old picture. "
                 + "`photoX` and `photoY` are 0-1 across and down `photo`, the branch's cover. `state` is "
                 + "what the floor plan derives now: 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, "
                 + "5 OutOfService. Refetch this more often than the details.")
             .Produces<PublicTableMarkers>()
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
     }
 
     private static async Task<IResult> SearchBranchesAsync(

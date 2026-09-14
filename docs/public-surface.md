@@ -60,10 +60,14 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
 - **Distance** is computed server-side only when the caller sends `lat` and `lng` together, and then
   orders the list nearest first. Without a position the list is best rated first.
 - **Table markers** are tables a manager placed on the cover photo (`photoX`/`photoY` on the floor
-  plan), each with the derived `state` the staff floor shows. Tables not placed are simply absent.
+  plan), each with the derived `state` the staff floor shows. Tables not placed are simply absent, and
+  a branch with no cover has none. The positions are fractions of that one picture, so saving the
+  public profile with a **different** cover (or none) takes every table off the photo in the same save;
+  re-saving the same cover keeps them.
 - **Caching**: the list and search hold the estate and every live number for fifteen seconds; the id
-  routes check their branch live, so a suspended venue is a 404 at once. The reviews route reads its
-  aggregate live, since it is the screen somebody opens right after writing one.
+  routes check their branch live, so a suspended venue is a 404 at once. The reviews route and the
+  details route read the review aggregate live, since they are the screens somebody opens right after
+  writing one and the details card sits beside `recentReviews`, which is live too.
 
 Writing a review is `POST`/`PUT /api/diner/branches/{branchId}/review` under the diner policy - one
 review per diner per branch, a phone-verified account only. Reviews are published under a first
@@ -376,8 +380,9 @@ Chained, so a request passes every one that applies to it:
 | Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
 | Public | Client address — these routes are anonymous | 30 / min |
 | Public branch ceiling | One branch, whoever is asking | 300 / min |
-| Browse list, per caller | The caller, on `GET /api/public/venues` only - replaces the page budget there | 120 / min |
-| Browse list ceiling | The whole city: one partition for the list, sized for it rather than for one branch | 6,000 / min |
+| Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
+| Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
+| Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/table-markers` - replaces the page budget there; the branch ceiling still applies | 120 / min |
 | Public booking | Manage token (digest) | 20 / min |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
