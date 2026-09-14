@@ -17,7 +17,7 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// <b>Who may write a first review (K8).</b> A phone-verified account, read from the stored row, that
 /// visited the branch in the last <see cref="BranchReview.VisitWindowDays"/> days: a booking of theirs
-/// there that was Seated or Completed, or a place on one of its tabs. Anyone else gets
+/// there that was Seated or Completed, or an approved place on one of its tabs. Anyone else gets
 /// <see cref="ReviewNeedsVisitException"/>. <b>Revising</b> a review the diner already has is never
 /// refused for the visit - it was allowed once, and a diner who went a year ago may still correct it.
 /// </para>
@@ -168,6 +168,11 @@ internal sealed class BranchReviewService(
             throw new DomainStateException("You cannot report your own review. Change it or ask for it to be removed instead.");
         }
 
+        // Under the account's lock, and only for a live account: a report written while the account is
+        // being deleted would outlive it - its note kept, and counted against the venue, for ever.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
         // One report per diner per review. A repeat is the success it would have been, and writes nothing.
         if (await db.BranchReviewReports.AnyAsync(r => r.ReviewId == reviewId && r.DinerUserId == dinerUserId, cancellationToken))
         {
@@ -179,6 +184,7 @@ internal sealed class BranchReviewService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.BranchReviewReportPerDiner))
         {
@@ -218,8 +224,11 @@ internal sealed class BranchReviewService(
     /// <remarks>
     /// Two facts count, both stored and neither self-reported: a booking of this account's at the
     /// branch that the venue <b>seated</b> (Seated, or Completed after it), by its start; and a place
-    /// on one of the branch's tabs, by when it was taken. Both reads are by the account's own indexed
-    /// column.
+    /// on one of the branch's tabs that was <b>approved</b> - the host's own, or a joiner the host let
+    /// on - by when it was approved. A place still waiting for approval, or turned away without ever
+    /// being approved, is not a visit: joining needs only the invitation link, which can be passed
+    /// round a group chat by people who were never there. A place approved and later taken off still
+    /// counts - that person was at the table. Both reads are by the account's own indexed column.
     /// </remarks>
     private async Task RequireVisitAsync(Guid branchId, Guid dinerUserId, CancellationToken cancellationToken)
     {
@@ -244,7 +253,8 @@ internal sealed class BranchReviewService(
             .AnyAsync(
                 p => p.UserId == dinerUserId
                      && p.Tab.BranchId == branchId
-                     && p.JoinedAtUtc >= sinceUtc,
+                     && p.ApprovedAtUtc != null
+                     && p.ApprovedAtUtc >= sinceUtc,
                 cancellationToken);
 
         if (!atATable)

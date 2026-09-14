@@ -439,6 +439,75 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
                 "/api/auth/diner/login", new { identifier = username, password = replacement })).StatusCode);
     }
 
+    /// <summary>
+    /// A password change is how somebody locks out whoever else has the account. The other sign-in's
+    /// refresh token must stop working - otherwise its next refresh mints an access token under the new
+    /// generation and the change locked out nobody - while the device that made the change carries on.
+    /// </summary>
+    [SkippableFact]
+    public async Task Changing_the_password_ends_every_other_sign_ins_refresh_token_and_keeps_the_callers()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        // The owner's phone registered; somebody else signed in with the same password.
+        var account = await RegisteredAsync(anonymous);
+
+        var intruderSignIn = await anonymous.PostAsJsonAsync(
+            "/api/auth/diner/login", new { identifier = account.Username, password = Password });
+        Assert.Equal(HttpStatusCode.OK, intruderSignIn.StatusCode);
+
+        var intruderRefresh = (await intruderSignIn.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("refreshToken").GetString()!;
+
+        const string replacement = "dolma-and-lavash-9";
+
+        using var owner = factory.CreateClientWithToken(account.AccessToken);
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await owner.PutAsJsonAsync(
+                "/api/diner/me/password", new { currentPassword = Password, newPassword = replacement })).StatusCode);
+
+        // The other sign-in cannot refresh past the change.
+        await AssertProblemAsync(
+            await anonymous.PostAsJsonAsync("/api/auth/diner/refresh", new { refreshToken = intruderRefresh }),
+            HttpStatusCode.Unauthorized,
+            "refresh-token-invalid");
+
+        // The owner's own access token ended with the change; its refresh token did not.
+        await AssertSessionRevokedAsync(await owner.GetAsync("/api/diner/me"));
+
+        var refreshed = await anonymous.PostAsJsonAsync("/api/auth/diner/refresh", new { refreshToken = account.RefreshToken });
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+
+        var refreshedBody = await refreshed.Content.ReadFromJsonAsync<JsonElement>();
+        using var ownerAgain = factory.CreateClientWithToken(refreshedBody.GetProperty("accessToken").GetString()!);
+        Assert.Equal(HttpStatusCode.OK, (await ownerAgain.GetAsync("/api/diner/me")).StatusCode);
+
+        // A token from a refresh names the same sign-in, so a second change from it keeps it too.
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await ownerAgain.PutAsJsonAsync(
+                "/api/diner/me/password", new { currentPassword = replacement, newPassword = "khorovats-and-tan-7" })).StatusCode);
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await anonymous.PostAsJsonAsync(
+                "/api/auth/diner/refresh",
+                new { refreshToken = refreshedBody.GetProperty("refreshToken").GetString() })).StatusCode);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        var reasons = await db.RefreshTokens
+            .AsNoTracking()
+            .Where(t => t.SubjectId == account.DinerUserId && t.RevokedAtUtc != null)
+            .Select(t => t.RevokedReason)
+            .ToListAsync();
+
+        Assert.Contains("password-changed", reasons);
+    }
+
     // ------------------------------------------------------------ the picture
 
     [SkippableFact]

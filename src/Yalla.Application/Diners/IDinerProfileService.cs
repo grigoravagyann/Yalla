@@ -23,8 +23,8 @@ public interface IDinerProfileService
     Task<DinerProfileView> UpdateAsync(UpdateDinerProfileCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sets a first password, or replaces the current one, and ends every access token the account
-    /// holds - the caller's included.
+    /// Sets a first password, or replaces the current one, ends every access token the account holds -
+    /// the caller's included - and revokes the refresh tokens of every sign-in but the caller's.
     /// </summary>
     /// <remarks>
     /// An account the code flow created has no password and sets one without proving anything
@@ -35,6 +35,10 @@ public interface IDinerProfileService
     /// <param name="currentPassword">Required when the account has a password.</param>
     /// <param name="newPassword">The new one, under registration's rule.</param>
     /// <param name="tokenSessionGeneration">The <c>sgen</c> claim of the token the request carried.</param>
+    /// <param name="tokenRefreshChainId">
+    /// The <c>rch</c> claim of the token the request carried: the one sign-in whose refresh tokens are
+    /// kept. Null (a token minted before the claim) keeps none, so that device signs in again too.
+    /// </param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <exception cref="Domain.Identity.AuthenticationFailedException">
     /// <c>invalid-credentials</c>: the current password was wrong, or was needed and not sent.
@@ -44,6 +48,7 @@ public interface IDinerProfileService
         string? currentPassword,
         string newPassword,
         int tokenSessionGeneration,
+        Guid? tokenRefreshChainId,
         CancellationToken cancellationToken = default);
 
     /// <summary>

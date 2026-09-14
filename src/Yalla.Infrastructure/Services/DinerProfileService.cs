@@ -5,6 +5,7 @@ using Yalla.Application.Auth;
 using Yalla.Application.Diners;
 using Yalla.Application.Media;
 using Yalla.Domain;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Media;
 using Yalla.Infrastructure.Identity;
@@ -101,6 +102,7 @@ internal sealed class DinerProfileService(
         string? currentPassword,
         string newPassword,
         int tokenSessionGeneration,
+        Guid? tokenRefreshChainId,
         CancellationToken cancellationToken = default)
     {
         var diner = await RequireDinerAsync(cancellationToken);
@@ -134,9 +136,14 @@ internal sealed class DinerProfileService(
 
         var checkedPassword = DinerAccountRules.CheckPassword(newPassword, diner.Username, diner.Email, "newPassword");
 
-        // Bumps the session generation: every access token ends, this one included. Refresh
-        // tokens are left alone, so the app that made the change refreshes and carries on.
+        // Bumps the session generation: every access token ends, this one included. The refresh
+        // tokens of every other sign-in are revoked with it - the reason to change a password is
+        // usually that somebody else has the account, and a refresh token they hold would otherwise
+        // mint a token under the new generation. The chain this request's token names is kept, so the
+        // app that made the change refreshes and carries on.
         diner.SetPassword(hasher.Hash(checkedPassword));
+        await refreshTokens.RevokeAllForSubjectExceptChainAsync(
+            RefreshTokenSubject.Diner, diner.Id, tokenRefreshChainId, "password-changed", cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
 
         authority.InvalidateDiner(diner.Id);
@@ -177,6 +184,12 @@ internal sealed class DinerProfileService(
                 clock.UtcNow);
 
             db.Photos.Add(photo);
+        }
+        else
+        {
+            // The same picture again: its grace period starts over, so a row left unattached for days
+            // is not swept out from under the save below.
+            photo.MarkUploaded(clock.UtcNow);
         }
 
         // The previous picture is not deleted here. Nothing references it once this saves, so the

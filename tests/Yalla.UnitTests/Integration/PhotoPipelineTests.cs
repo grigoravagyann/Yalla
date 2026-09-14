@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using SkiaSharp;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Media;
 using Yalla.Domain.Media;
 using Yalla.Infrastructure.Media;
 using Yalla.Infrastructure.Services;
@@ -218,6 +219,126 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
             $"{branch.BranchId}/{attached.ContentHash}/{PhotoRules.FullName}");
 
         Assert.True(still.Length > 0);
+    }
+
+    /// <summary>
+    /// The same bytes uploaded again reuse the row - and start its grace period over. A picture
+    /// abandoned on Monday and re-uploaded on Wednesday is about to be saved; judged by Monday's upload,
+    /// the sweep would take it, files included, before the editor presses Save.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_photo_uploaded_again_after_the_grace_period_starts_it_over_and_is_not_swept()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var storage = Storage();
+
+        var photos = new PhotoService(
+            db, storage, clock, fixture.CreateBranchGuard(db, TestActor.Manager(branch.ManagerId)),
+            NullLogger<PhotoService>.Instance);
+
+        var bytes = PngOf(72, 40);
+
+        await using (var first = new MemoryStream(bytes))
+        {
+            await photos.UploadAsync(branch.BranchId, first, "image/png");
+        }
+
+        clock.Advance(TimeSpan.FromHours(49));
+
+        PhotoUploadResult again;
+        await using (var second = new MemoryStream(bytes))
+        {
+            again = await photos.UploadAsync(branch.BranchId, second, "image/png");
+        }
+
+        Assert.True(again.WasDeduplicated);
+
+        await photos.SweepOrphansAsync();
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.True(
+                await verify.Photos.AnyAsync(p => p.Id == again.Photo.PhotoId),
+                "A photo re-uploaded a moment ago was swept by the age of its first upload.");
+        }
+
+        await using (var still = await storage.OpenAsync($"{branch.BranchId}/{again.ContentHash}/{PhotoRules.FullName}"))
+        {
+            Assert.True(still.Length > 0);
+        }
+
+        // Left unused for a day after the second upload, it goes like any other.
+        clock.Advance(TimeSpan.FromHours(25));
+        await photos.SweepOrphansAsync();
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.False(await verify.Photos.AnyAsync(p => p.Id == again.Photo.PhotoId));
+        }
+    }
+
+    /// <summary>
+    /// An editor attaches an old unattached photo while the sweep is between reading its list and
+    /// deleting. The photo is in use now: its row and its files must both survive, and the sweep must
+    /// not fail - failing its one save used to keep every row while their files were already deleted.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_photo_attached_while_the_sweep_runs_keeps_its_row_and_its_files()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var storage = Storage();
+
+        var uploader = new PhotoService(
+            db, storage, clock, fixture.CreateBranchGuard(db, TestActor.Manager(branch.ManagerId)),
+            NullLogger<PhotoService>.Instance);
+
+        PhotoUploadResult uploaded;
+        await using (var content = new MemoryStream(PngOf(96, 56)))
+        {
+            uploaded = await uploader.UploadAsync(branch.BranchId, content, "image/png");
+        }
+
+        clock.Advance(TimeSpan.FromHours(25));
+
+        // Just before the sweep deletes anything, the menu editor saves a dish with this photo.
+        var race = new BeforeFirstCommandMatching(
+            sql => sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase)
+                   && sql.Contains("[Photos]", StringComparison.OrdinalIgnoreCase),
+            async () =>
+            {
+                await using var editor = fixture.CreateContext(clock);
+                var category = new Yalla.Domain.Menus.MenuCategory(branch.BranchId, "Soups", 0);
+
+                editor.MenuCategories.Add(category);
+                editor.MenuItems.Add(new Yalla.Domain.Menus.MenuItem(
+                    category.Id, "Khash", "Beef broth", 2_800L, uploaded.Photo.PhotoId,
+                    "beef, garlic", "none", "400 ml", 15));
+
+                await editor.SaveChangesAsync();
+            });
+
+        await using var sweepDb = fixture.CreateContext(clock, race);
+        var sweeper = new PhotoService(
+            sweepDb, storage, clock, fixture.CreateBranchGuard(sweepDb, TestActor.Manager(branch.ManagerId)),
+            NullLogger<PhotoService>.Instance);
+
+        await sweeper.SweepOrphansAsync();
+
+        Assert.True(race.Fired, "The sweep deleted nothing, so the race never happened and this proves nothing.");
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.True(await verify.Photos.AnyAsync(p => p.Id == uploaded.Photo.PhotoId));
+
+        await using var files = await storage.OpenAsync($"{branch.BranchId}/{uploaded.ContentHash}/{PhotoRules.FullName}");
+        Assert.True(files.Length > 0);
     }
 
     [SkippableFact]

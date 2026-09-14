@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Tabs;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -69,6 +70,70 @@ public sealed class ReviewIntegrityTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             Assert.Equal(1, await db.BranchReviews.CountAsync(r => r.DinerUserId == dinerUserId));
+        }
+    }
+
+    /// <summary>
+    /// Joining a tab needs only the host's invitation link, which gets posted to group chats. A place
+    /// the host never let on is not a visit, or one shared link would let a crowd review a venue none of
+    /// them sat in; a place approved and later taken off was at the table, and is.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_tab_place_that_was_never_approved_is_not_a_visit_and_one_approved_then_removed_is()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        var (waitingToken, waitingId) = await SignInDinerAsync(factory);
+        var (turnedAwayToken, turnedAwayId) = await SignInDinerAsync(factory);
+        var (takenOffToken, takenOffId) = await SignInDinerAsync(factory);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var at = factory.Clock.UtcNow.AddDays(-1);
+            var tab = await AuthTestData.CreateOpenTabAsync(db, branch, branch.TableIds[0], at);
+
+            // Tapped the shared link; the host never approved.
+            db.TabParticipants.Add(TabParticipant.Guest(tab.TabId, "Link", $"device-{Guid.NewGuid():N}", at, false, waitingId));
+
+            var turnedAway = TabParticipant.Guest(tab.TabId, "Stranger", $"device-{Guid.NewGuid():N}", at, false, turnedAwayId);
+            turnedAway.Reject(at);
+            db.TabParticipants.Add(turnedAway);
+
+            var takenOff = TabParticipant.Guest(tab.TabId, "Ani", $"device-{Guid.NewGuid():N}", at, false, takenOffId);
+            takenOff.Approve(at);
+            takenOff.Remove(at.AddHours(1));
+            db.TabParticipants.Add(takenOff);
+
+            await db.SaveChangesAsync();
+        }
+
+        var route = $"/api/diner/branches/{branch.BranchId}/review";
+
+        foreach (var token in new[] { waitingToken, turnedAwayToken })
+        {
+            using var stranger = factory.CreateClientWithToken(token);
+
+            await AssertProblemAsync(
+                await stranger.PostAsJsonAsync(route, new { rating = 1, text = "Never sat there." }),
+                HttpStatusCode.Forbidden,
+                "review-needs-visit");
+        }
+
+        using var guest = factory.CreateClientWithToken(takenOffToken);
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await guest.PostAsJsonAsync(route, new { rating = 4, text = "Good khinkali." })).StatusCode);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.BranchReviews.AnyAsync(r => r.DinerUserId == waitingId || r.DinerUserId == turnedAwayId));
         }
     }
 

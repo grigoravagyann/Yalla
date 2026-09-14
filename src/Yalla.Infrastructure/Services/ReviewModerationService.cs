@@ -79,13 +79,18 @@ internal sealed class ReviewModerationService(
         var staffId = await branchGuard.RequireAtBranchAsync(branchId, OperationFor(command), cancellationToken);
         var reason = CheckReason(command);
 
-        var review = await db.BranchReviews
-            .FirstOrDefaultAsync(r => r.Id == reviewId && r.BranchId == branchId, cancellationToken)
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var review = await LockedReview(reviewId)
+            .FirstOrDefaultAsync(r => r.BranchId == branchId, cancellationToken)
             ?? throw ReviewNotFound(reviewId);
 
         var asPlatform = await IsActivePlatformAdminAsync(staffId, cancellationToken);
 
-        return await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform, cancellationToken);
+        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return view;
     }
 
     public async Task<ModeratedReviewView> SetVisibilityForPlatformAsync(
@@ -98,11 +103,30 @@ internal sealed class ReviewModerationService(
         var staffId = await RequirePlatformAdminAsync(OperationFor(command), cancellationToken);
         var reason = CheckReason(command);
 
-        var review = await db.BranchReviews.FirstOrDefaultAsync(r => r.Id == reviewId, cancellationToken)
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var review = await LockedReview(reviewId).FirstOrDefaultAsync(cancellationToken)
                      ?? throw ReviewNotFound(reviewId);
 
-        return await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform: true, cancellationToken);
+        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform: true, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return view;
     }
+
+    /// <summary>
+    /// The review, read under an update lock held to the end of the caller's transaction.
+    /// </summary>
+    /// <remarks>
+    /// Every decision in <see cref="ApplyAsync"/> is made on what this read says - above all "did the
+    /// platform hide it", which is what stops a venue putting back a platform takedown. Without the lock
+    /// a venue un-hide could read the review a moment before a platform hide committed, pass that check,
+    /// and then write only the columns it changed: the review public again with <c>HiddenByPlatform</c>
+    /// still set. With it the second moderator waits, and reads what the first one committed.
+    /// </remarks>
+    private IQueryable<BranchReview> LockedReview(Guid reviewId) =>
+        db.BranchReviews.FromSql(
+            $"SELECT * FROM [BranchReviews] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {reviewId}");
 
     // ------------------------------------------------------------ the change
 

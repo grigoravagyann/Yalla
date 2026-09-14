@@ -18,7 +18,7 @@ internal sealed class TokenRefreshService(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
-        var (_, successor, dinerUserId) =
+        var (successorEntity, successor, dinerUserId) =
             await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, cancellationToken);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.Id == dinerUserId, cancellationToken);
@@ -31,7 +31,8 @@ internal sealed class TokenRefreshService(
                 "account-inactive", "This account is no longer active.");
         }
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration);
+        // Named for the chain it continues, so a password change made with it keeps this sign-in.
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

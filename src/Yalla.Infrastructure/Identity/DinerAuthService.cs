@@ -207,8 +207,8 @@ internal sealed class DinerAuthService(
         diner.RecordSignIn(nowUtc);
 
         // Minted under the generation this save commits, so the owner's token is the one that works.
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -273,8 +273,8 @@ internal sealed class DinerAuthService(
         diner.RecordSignIn(nowUtc);
         db.DinerUsers.Add(diner);
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await SaveGuardingIdentifiersAsync(cancellationToken);
 
@@ -349,8 +349,8 @@ internal sealed class DinerAuthService(
 
         diner!.RecordSignIn(clock.UtcNow);
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

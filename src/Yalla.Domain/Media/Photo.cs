@@ -222,6 +222,24 @@ public sealed class Photo : Entity
         StampCreatedAt(atUtc);
     }
 
+    /// <summary>
+    /// Records that the same bytes were uploaded again, which starts the sweep's grace period over.
+    /// </summary>
+    /// <remarks>
+    /// An upload of identical bytes reuses this row. Somebody re-uploading a picture they abandoned two
+    /// days ago is about to attach it, and without this the sweep would judge it by the first upload
+    /// and take it - files included - before they press Save. Only ever moves forward.
+    /// </remarks>
+    public void MarkUploaded(DateTime atUtc)
+    {
+        var at = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        if (at > UploadedAtUtc)
+        {
+            UploadedAtUtc = at;
+        }
+    }
+
     /// <summary>Whether this has been sitting unattached long enough for the sweep to take it.</summary>
     /// <remarks>
     /// Age alone is never enough - the sweep also checks that nothing references it. A photo attached

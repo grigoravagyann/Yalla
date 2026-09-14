@@ -192,8 +192,9 @@ which one a diner came in by.
   nothing to compare against anyway - which is why that token's session generation is compared with
   the row once more here, past the token check's cache. One that has a password must send it, and a
   wrong one is 401 `invalid-credentials`. **Setting or changing it ends every access token the
-  account holds, the caller's included**; refresh tokens are not revoked, so the app refreshes and
-  carries on.
+  account holds, the caller's included, and revokes the refresh tokens of every other sign-in**
+  (reason `password-changed`). The sign-in the caller's token names in its `rch` claim keeps its
+  refresh token, so the app that made the change refreshes and carries on.
 - `POST /api/diner/me/photo` and `DELETE /api/diner/me/photo` — the profile picture, through the
   same pipeline as a branch photo: sniffed, stripped of EXIF, three WebP variants, same size cap,
   same **409 `unsupported-image`** (which branch uploads now answer too, in place of the generic
@@ -228,7 +229,7 @@ The generation moves on - and every access token of the account ends - on exactl
 | Event | Where | Refresh tokens |
 |---|---|---|
 | The number's owner proves it and displaces a registrant | `DinerUser.ProveNumberByCode` | All revoked (`phone-proved-by-another`) |
-| A password is set or changed | `DinerUser.SetPassword` | Kept |
+| A password is set or changed | `DinerUser.SetPassword` | Every other sign-in's revoked (`password-changed`); the caller's chain, named by the token's `rch` claim, kept |
 | The account is deactivated | `DinerUser.SetActive(false)` | Kept; refresh refuses an inactive account, and `verify-code` and `login` both answer 401 `invalid-credentials` |
 | The account is deleted | `DinerUser.MarkDeleted` | All revoked (`account-deleted`) |
 
@@ -236,13 +237,14 @@ Storing a stronger hash of the same password at sign-in (`RehashPassword`) is no
 nothing.
 
 **The client's rule** is one line: on `session-revoked`, try the refresh token once; if that is
-refused too, sign out. After a password change the refresh succeeds and the app carries on; after a
-displacement or a deletion it cannot.
+refused too, sign out. After a password change the refresh succeeds on the device that made it and
+the app carries on; on every other device, and after a displacement or a deletion, it cannot.
 
-Not revoking refresh tokens on a password change is a known gap, kept deliberately small: another
-device holding a refresh token for the account refreshes past the bump too. Closing it needs the
-access token to name its refresh chain, so every chain but the caller's can be revoked, and that is
-not done yet.
+**Which sign-in made the change.** A diner access token carries **`rch`**, the refresh-token chain it
+was issued with - at sign-in, registration, code verification and every refresh. A password change
+revokes every refresh token of the account except that chain's, so a refresh token somebody else holds
+(a lost phone, a copied backup) cannot mint a token under the new generation. A token minted before the
+claim existed names no chain, and then nothing is kept: that device signs in again as well.
 
 **The cache.** The account read goes through the same five-second cache as a device's, with two
 differences. The window is measured on `IClock`, so a test and a deployment agree about when it
@@ -277,6 +279,7 @@ person cut.**
 | `DinerUsers` | A tombstone: `DeletedAtUtc` set, `IsActive` false, `PhoneE164`, `Username`, `Email`, `DisplayName`, `PasswordHash`, `PhoneVerifiedAtUtc` and `PhotoId` cleared, `SessionGeneration` bumped. The number, username and email can make a new account; the id is never reused |
 | `RefreshTokens` | Every one revoked, reason `account-deleted` |
 | `DinerDevices` | Deleted |
+| `PhoneVerificationCodes` for the account's number | Deleted, the code that proved the deletion included (counted as `phoneCodes`). Keyed by the number, so clearing `DinerUsers.PhoneE164` would not reach them |
 | `DinerFavorites` | Deleted (K11) |
 | `DinerNotifications` | Deleted, including a reminder that has not appeared yet (K12) |
 | `Photos` the account owns | Deleted, files first - the current picture and any replaced one still waiting for the sweep |
@@ -285,6 +288,13 @@ person cut.**
 | `Reservations` | `DinerUserId` cleared. `GuestName` and `GuestPhone` stay - they are what the venue was given for that booking |
 | `TabOrders` and their lines | Untouched |
 | `PlatformAuditLogs` | One row: `Action` `diner.delete`, `TargetType` `DinerUser`, `TargetId` the account. `ActorStaffMemberId` holds the diner's id because no staff member acted; `ChangesJson` says `actorType: diner` and counts what was removed and detached, and carries nothing that identifies the person |
+
+**Writes racing the deletion.** Another phone's request can be past the token check - cached for five
+seconds, and per process - when the account is deleted. The deletion takes an update lock on the
+`DinerUsers` row first (`DinerAccountLock`), and the writers that keep a row keyed to the person
+outside the booking gate - adding or merging favourites, reporting a review - take the same lock and
+read the row under it: one that got there first commits before the deletion reads what to remove, and
+one that comes second is refused with 401 `session-revoked`.
 
 **A new table with a `DinerUserId` needs one line** in `DinerAccountDeletion`:
 `RemoveRowsOwnedByAsync` if its rows are the person's, `DetachVenueRecordsAsync` if they are the

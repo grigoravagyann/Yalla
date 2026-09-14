@@ -58,6 +58,9 @@ internal static class DinerAccountDeletion
     {
         var dinerUserId = diner.Id;
 
+        // Read before the tombstone clears it: the one-time codes sent to the number are keyed by it.
+        var phoneE164 = diner.PhoneE164;
+
         // Every picture the person owns, not only the current one: a replaced picture waiting for
         // the sweep is still a picture of them.
         var photoIds = await db.Photos
@@ -67,6 +70,12 @@ internal static class DinerAccountDeletion
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
+        // The account row's lock, first and held to the commit. A favourite or a report being written
+        // for this person takes the same lock (DinerAccountLock): one that got it first commits before
+        // anything below reads what to remove, and one that comes after finds the tombstone and is
+        // refused - so no row of theirs can be inserted behind the deletes and outlive the account.
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
         // The tombstone first: it clears DinerUsers.PhotoId, which the photo deletes below need,
         // and bumps the session generation that ends every access token.
         diner.MarkDeleted(nowUtc);
@@ -74,7 +83,7 @@ internal static class DinerAccountDeletion
             RefreshTokenSubject.Diner, dinerUserId, "account-deleted", cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
 
-        var removed = await RemoveRowsOwnedByAsync(db, dinerUserId, cancellationToken);
+        var removed = await RemoveRowsOwnedByAsync(db, dinerUserId, phoneE164, cancellationToken);
         var detached = await DetachVenueRecordsAsync(db, dinerUserId, cancellationToken);
 
         foreach (var photoId in photoIds)
@@ -112,12 +121,22 @@ internal static class DinerAccountDeletion
     private static async Task<Dictionary<string, int>> RemoveRowsOwnedByAsync(
         YallaDbContext db,
         Guid dinerUserId,
+        string? phoneE164,
         CancellationToken cancellationToken) =>
         new()
         {
             ["devices"] = await db.DinerDevices
                 .Where(d => d.DinerUserId == dinerUserId)
                 .ExecuteDeleteAsync(cancellationToken),
+
+            // The one-time codes sent to the account's number - the one that proved this deletion
+            // included. Keyed by the number, not the account, so the tombstone clearing PhoneE164 does
+            // not reach them, and nothing else ever deletes them.
+            ["phoneCodes"] = phoneE164 is null
+                ? 0
+                : await db.PhoneVerificationCodes
+                    .Where(c => c.PhoneE164 == phoneE164)
+                    .ExecuteDeleteAsync(cancellationToken),
 
             // K11: the places the person hearted.
             ["favorites"] = await db.DinerFavorites

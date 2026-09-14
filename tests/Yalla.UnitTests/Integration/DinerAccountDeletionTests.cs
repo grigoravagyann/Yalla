@@ -216,6 +216,13 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
 
         Assert.Equal(HttpStatusCode.NoContent, (await DeleteAccountAsync(diner, new { code })).StatusCode);
 
+        // The codes sent to the number went with the account - the one that proved the deletion
+        // included. Keyed by the number, they are not reached by clearing the account's column.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.PhoneVerificationCodes.AnyAsync(c => c.PhoneE164 == phone));
+        }
+
         // The number signs in again as somebody new.
         var (newDinerUserId, _) = await SignInByCodeAsync(anonymous, phone, expectNewAccount: true);
         Assert.NotEqual(dinerUserId, newDinerUserId);

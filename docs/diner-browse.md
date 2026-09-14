@@ -189,7 +189,8 @@ Every route here also refuses a token whose session has ended with **401 `sessio
 One review per diner per branch (unique index `UX_BranchReviews_BranchId_DinerUserId`). Phone-verified
 accounts only, checked on the stored row. A **first** review - POST, or PUT with none yet - also needs
 a visit in the last 180 days: a booking of this diner's at the branch that was Seated or Completed, or
-a `TabParticipant` row on one of its tabs; otherwise **403 `review-needs-visit`** with
+an **approved** `TabParticipant` row on one of its tabs (a joiner still pending, or turned away, is not a
+visit); otherwise **403 `review-needs-visit`** with
 `context: { branchId, windowDays: 180 }`. Revising an existing review is always allowed. **A PUT with
 the same rating and (trimmed) text is a 200 that writes nothing** - `updatedAtUtc` does not move. The
 list routes' `rating`/`reviewCount` catch up within 15 s; `/reviews` and the details route read the
@@ -473,11 +474,14 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
 - `PUT /api/diner/me/password` without a current password also compares the token's `sgen` with the
   stored row, past the cache. `DinerPhoneGate` (bookings, holds, tabs from a booking, reviews) also
   requires an active, undeleted account.
-- **Refresh behaviour.** Refresh tokens are revoked on displacement and on deletion, as before. They are
-  **not** revoked by a password change, and refresh refuses an inactive or deleted account.
+- **Refresh behaviour.** Refresh tokens are revoked on displacement and on deletion, as before. A
+  password change revokes the refresh tokens of **every other sign-in** (reason `password-changed`)
+  and keeps the chain the caller's access token names in its **`rch`** claim (the refresh-token chain
+  it was issued with; a token without it keeps nothing). Refresh refuses an inactive or deleted account.
 - **Client rule:** on `session-revoked`, try the refresh token once; if refresh is refused too, sign
   out. After a password change - which ends the caller's own access token as well - the refresh
-  succeeds and the app carries on.
+  succeeds on the device that made the change and the app carries on; other devices' refresh is
+  refused (401 `refresh-token-invalid`) and they sign out. No request or response shape changed.
 
 ### K2. `DELETE /api/diner/me` - **implemented (B1)**
 
@@ -497,6 +501,10 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
   - `Username`, `Email`, `PhoneE164`, `DisplayName`, `PasswordHash`, `PhoneVerifiedAtUtc` and `PhotoId`
     are nulled, so the phone, username and email can register again.
   - `SessionGeneration++`; every refresh token revoked (`account-deleted`); push devices deleted.
+  - Every `PhoneVerificationCodes` row for the account's number is deleted, the code that proved the
+    deletion included; the audit row counts them as `phoneCodes`.
+  - A favourite or review report written for the account while it is being deleted (another phone,
+    past the token cache) is refused with 401 `session-revoked` instead of outliving it.
   - Every `Photo` the account owns and its files are deleted - the current picture and any replaced
     one still waiting for the sweep.
   - Every `BranchReview` by the diner is deleted; the aggregates recompute on the next read.
@@ -600,7 +608,10 @@ No shape change. It now deletes the Photo row and its files immediately
 **Eligibility.** A **first** review - `POST /api/diner/branches/{branchId}/review`, or `PUT` when the
 diner has none yet - needs, within the last 180 days (`BranchReview.VisitWindowDays`), a reservation of
 this diner's at the branch whose status is Seated or Completed (measured by its `StartUtc`), or a
-`TabParticipant` with `UserId` = the diner on one of the branch's tabs (measured by `JoinedAtUtc`).
+`TabParticipant` with `UserId` = the diner on one of the branch's tabs that was **approved** - the host,
+or a joiner the host let on - measured by `ApprovedAtUtc`. A place still `PendingApproval`, or rejected
+without ever being approved, does not count: joining needs only the host's shareable invitation link.
+A place approved and later removed still counts.
 Otherwise 403 `review-needs-visit` with `context: { branchId, windowDays: 180 }`. It is checked after
 the phone gate (`phone-not-verified` first) and, on POST, after "already reviewed" (409). Revising the
 diner's own existing review is always allowed.

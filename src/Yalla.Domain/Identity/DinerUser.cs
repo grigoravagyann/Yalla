@@ -189,8 +189,9 @@ public sealed class DinerUser : Entity
     /// only keeps the result.
     /// </summary>
     /// <remarks>
-    /// The token the change was made with ends too. Refresh tokens are not revoked here, so the app
-    /// that made the change refreshes and carries on; see <c>docs/auth.md</c>.
+    /// The token the change was made with ends too. The service revokes every other sign-in's refresh
+    /// tokens alongside and keeps the caller's, so the app that made the change refreshes and carries
+    /// on; see <c>docs/auth.md</c>.
     /// </remarks>
     public void SetPassword(string passwordHash)
     {

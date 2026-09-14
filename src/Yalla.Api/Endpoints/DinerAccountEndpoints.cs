@@ -120,8 +120,9 @@ public static class DinerAccountEndpoints
                 + "The new password is under the same rule as registration: 8-128 characters, and "
                 + "not the username or the email.\n\n"
                 + "**Every access token the account holds ends, this one included**: the next call with "
-                + "it answers `401 session-revoked`. Refresh tokens are not revoked, so the app refreshes "
-                + "and carries on.")
+                + "it answers `401 session-revoked`. **Every other sign-in's refresh token is revoked**, so "
+                + "other devices are signed out; the sign-in this token came from keeps its refresh token, "
+                + "so the app refreshes and carries on.")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblemDetails(
                 StatusCodes.Status400BadRequest,
@@ -227,7 +228,12 @@ public static class DinerAccountEndpoints
         // An unreadable claim cannot have come from this system; -1 never matches a generation.
         var generation = YallaClaims.TryReadSessionGeneration(http.User, out var read) ? read : -1;
 
-        await profile.SetPasswordAsync(request.CurrentPassword, request.NewPassword, generation, cancellationToken);
+        await profile.SetPasswordAsync(
+            request.CurrentPassword,
+            request.NewPassword,
+            generation,
+            YallaClaims.ReadRefreshChainId(http.User),
+            cancellationToken);
 
         return Results.NoContent();
     }

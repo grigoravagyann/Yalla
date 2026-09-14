@@ -54,8 +54,15 @@ internal sealed class DinerFavoriteService(
             throw new KeyNotFoundException($"Branch {branchId} is not published.");
         }
 
+        // Everything from here under the account's lock (DinerAccountLock). Two phones hearting at 499
+        // queue on it, so the count below is still true at the insert and the limit holds; a deletion in
+        // progress is waited for and then refused, rather than leaving a heart on the tombstone.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
         // Already hearted: the success it would have been, before the limit is looked at, so a full
-        // account can still re-send a heart it has.
+        // account can still re-send a heart it has. A double tap reads the first tap's committed row
+        // here, because the lock made it wait for that commit.
         if (await db.DinerFavorites.AnyAsync(f => f.DinerUserId == dinerUserId && f.BranchId == branchId, cancellationToken))
         {
             return;
@@ -68,15 +75,8 @@ internal sealed class DinerFavoriteService(
 
         db.DinerFavorites.Add(new DinerFavorite(dinerUserId, branchId, clock.UtcNow));
 
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.DinerFavoritePerDiner))
-        {
-            // Two taps raced. The first one hearted it; so does this answer.
-            db.ChangeTracker.Clear();
-        }
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task RemoveAsync(Guid branchId, CancellationToken cancellationToken = default)
@@ -125,58 +125,62 @@ internal sealed class DinerFavoriteService(
 
         var wanted = command.BranchIds.Where(id => id != Guid.Empty).Distinct().ToList();
 
-        for (var attempt = 1; wanted.Count > 0; attempt++)
+        if (wanted.Count > 0)
         {
-            var published = (await Published()
-                    .Where(b => wanted.Contains(b.Id))
-                    .Select(b => b.Id)
-                    .ToListAsync(cancellationToken))
-                .ToHashSet();
-
-            var kept = (await db.DinerFavorites
-                    .AsNoTracking()
-                    .Where(f => f.DinerUserId == dinerUserId)
-                    .Select(f => f.BranchId)
-                    .ToListAsync(cancellationToken))
-                .ToHashSet();
-
-            // Skipped, not refused: a heart made signed out weeks ago may be for a place that closed.
-            var adding = wanted.Where(id => published.Contains(id) && !kept.Contains(id)).ToList();
-
-            if (adding.Count == 0)
-            {
-                break;
-            }
-
-            if (kept.Count + adding.Count > DinerFavorite.MaxPerDiner)
-            {
-                throw TooMany();
-            }
-
-            var nowUtc = clock.UtcNow;
-
-            foreach (var branchId in adding)
-            {
-                db.DinerFavorites.Add(new DinerFavorite(dinerUserId, branchId, nowUtc));
-            }
-
-            try
-            {
-                await db.SaveChangesAsync(cancellationToken);
-
-                logger.LogInformation(
-                    "Diner {DinerUserId} merged {Added} favourite(s) into their account.", dinerUserId, adding.Count);
-
-                break;
-            }
-            catch (DbUpdateException ex) when (attempt == 1 && UniqueViolation.IsOn(ex, DatabaseIndexNames.DinerFavoritePerDiner))
-            {
-                // A heart from another phone landed between the read and the insert. Read again.
-                db.ChangeTracker.Clear();
-            }
+            await MergeUnderLockAsync(dinerUserId, wanted, cancellationToken);
         }
 
         return await ListForAsync(dinerUserId, latitude, longitude, cancellationToken);
+    }
+
+    /// <summary>
+    /// Adds what is missing, under the account's lock: no heart from another phone can land between the
+    /// read of what is kept and the insert, so neither the limit nor the unique index can be crossed by a
+    /// race, and a deletion in progress is refused rather than outlived.
+    /// </summary>
+    private async Task MergeUnderLockAsync(Guid dinerUserId, List<Guid> wanted, CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
+        var published = (await Published()
+                .Where(b => wanted.Contains(b.Id))
+                .Select(b => b.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        var kept = (await db.DinerFavorites
+                .AsNoTracking()
+                .Where(f => f.DinerUserId == dinerUserId)
+                .Select(f => f.BranchId)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        // Skipped, not refused: a heart made signed out weeks ago may be for a place that closed.
+        var adding = wanted.Where(id => published.Contains(id) && !kept.Contains(id)).ToList();
+
+        if (adding.Count == 0)
+        {
+            return;
+        }
+
+        if (kept.Count + adding.Count > DinerFavorite.MaxPerDiner)
+        {
+            throw TooMany();
+        }
+
+        var nowUtc = clock.UtcNow;
+
+        foreach (var branchId in adding)
+        {
+            db.DinerFavorites.Add(new DinerFavorite(dinerUserId, branchId, nowUtc));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Diner {DinerUserId} merged {Added} favourite(s) into their account.", dinerUserId, adding.Count);
     }
 
     private async Task<DinerFavoriteList> ListForAsync(

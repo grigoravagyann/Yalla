@@ -54,7 +54,14 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     /// and a default of zero is exactly the value that looks right in a test and is wrong for every
     /// account that has ever changed its password.
     /// </param>
-    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(Guid dinerUserId, int sessionGeneration)
+    /// <param name="refreshChainId">
+    /// The refresh-token chain issued alongside, carried as <see cref="YallaClaims.RefreshChainId"/> so
+    /// a password change can keep this sign-in and end every other.
+    /// </param>
+    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(
+        Guid dinerUserId,
+        int sessionGeneration,
+        Guid? refreshChainId = null)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -65,6 +72,11 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
             new(JwtRegisteredClaimNames.Sub, dinerUserId.ToString()),
             new(YallaClaims.SessionGeneration, sessionGeneration.ToString(CultureInfo.InvariantCulture)),
         };
+
+        if (refreshChainId is { } chainId)
+        {
+            claims.Add(new Claim(YallaClaims.RefreshChainId, chainId.ToString()));
+        }
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);
     }
