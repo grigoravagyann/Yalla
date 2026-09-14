@@ -58,23 +58,29 @@ internal static class DinerAccountDeletion
     {
         var dinerUserId = diner.Id;
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The account row's lock, first and held to the commit. Every write that keeps something of this
+        // person's takes the same lock (DinerAccountLock) - a favourite, a review, a report, a profile
+        // edit, a picture, a booking and its reminder, an order-ready entry: one that got it first
+        // commits before anything below reads what to remove, and one that comes after finds the
+        // tombstone - so no row of theirs can be written behind the deletes and outlive the account.
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
+        // The row as it is now, not as the caller loaded it before the lock. A profile edit that
+        // committed in between is on the row, and the tombstone's save sends only the columns it sees
+        // change: a username written after this entity was read would otherwise stay on it.
+        await db.Entry(diner).ReloadAsync(cancellationToken);
+
         // Read before the tombstone clears it: the one-time codes sent to the number are keyed by it.
         var phoneE164 = diner.PhoneE164;
 
         // Every picture the person owns, not only the current one: a replaced picture waiting for
-        // the sweep is still a picture of them.
+        // the sweep is still a picture of them. Under the lock, so one uploaded a moment ago counts.
         var photoIds = await db.Photos
             .Where(p => p.DinerUserId == dinerUserId)
             .Select(p => p.Id)
             .ToListAsync(cancellationToken);
-
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
-        // The account row's lock, first and held to the commit. A favourite or a report being written
-        // for this person takes the same lock (DinerAccountLock): one that got it first commits before
-        // anything below reads what to remove, and one that comes after finds the tombstone and is
-        // refused - so no row of theirs can be inserted behind the deletes and outlive the account.
-        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
 
         // The tombstone first: it clears DinerUsers.PhotoId, which the photo deletes below need,
         // and bumps the session generation that ends every access token.

@@ -50,7 +50,8 @@ internal sealed class DinerProfileService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
-        var diner = await RequireDinerAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var diner = await RequireLiveDinerAsync(cancellationToken);
 
         // Normalised first and checked for a clash before anything is written, so a refusal
         // leaves the row exactly as it was - and so the two 409s below come from a query with a
@@ -92,6 +93,7 @@ internal sealed class DinerProfileService(
         }
 
         await SaveGuardingIdentifiersAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation("Diner {DinerUserId} updated their profile.", diner.Id);
 
@@ -105,7 +107,8 @@ internal sealed class DinerProfileService(
         Guid? tokenRefreshChainId,
         CancellationToken cancellationToken = default)
     {
-        var diner = await RequireDinerAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var diner = await RequireLiveDinerAsync(cancellationToken);
 
         if (diner.HasPassword)
         {
@@ -145,6 +148,7 @@ internal sealed class DinerProfileService(
         await refreshTokens.RevokeAllForSubjectExceptChainAsync(
             RefreshTokenSubject.Diner, diner.Id, tokenRefreshChainId, "password-changed", cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         authority.InvalidateDiner(diner.Id);
 
@@ -156,6 +160,7 @@ internal sealed class DinerProfileService(
         string contentType,
         CancellationToken cancellationToken = default)
     {
+        // Refused before the image work for a session that has already ended.
         var diner = await RequireDinerAsync(cancellationToken);
 
         // The same pipeline as a branch photo, under the diner's own prefix. Validation, EXIF
@@ -163,6 +168,23 @@ internal sealed class DinerProfileService(
         // arrived.
         var stored = await storage.SaveAsync(
             PhotoRules.OwnerKeyForDiner(diner.Id), content, contentType, cancellationToken);
+
+        // From here to the commit under the account's lock (DinerAccountLock), and only for a live
+        // account: a picture saved behind the account's deletion would stay on the tombstone and be
+        // served for ever. The image work above is kept outside it.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await DinerAccountLock.RequireLiveAsync(db, diner.Id, cancellationToken);
+        }
+        catch (AuthenticationFailedException) when (!stored.WasDeduplicated)
+        {
+            // Files written a moment ago that no row will ever point at: a picture of somebody whose
+            // account is gone.
+            await DeleteStoredFilesAsync(stored, cancellationToken);
+            throw;
+        }
 
         // Identical bytes for this person reuse the row, for the same reason a branch's do: the
         // files already sit under this hash, and two ids over one set of files means deleting
@@ -197,6 +219,7 @@ internal sealed class DinerProfileService(
         // upload follows, and one that cannot leave a row pointing at missing files.
         diner.SetPhoto(photo.Id);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation(
             "Diner {DinerUserId} set profile photo {PhotoId} ({Width}x{Height}, {Bytes} bytes).",
@@ -341,6 +364,41 @@ internal sealed class DinerProfileService(
         }
 
         return diner;
+    }
+
+    /// <summary>
+    /// The caller's row, read under the account's lock (<see cref="DinerAccountLock"/>) in the open
+    /// transaction, for a write that saves onto it.
+    /// </summary>
+    /// <remarks>
+    /// Without the lock, an edit that read the row before the account was deleted saves after it, and
+    /// its columns - a name, a username, an email, a password - land on the tombstone. The username
+    /// and email stay unique-indexed there, so nobody could register them again.
+    /// </remarks>
+    private async Task<DinerUser> RequireLiveDinerAsync(CancellationToken cancellationToken)
+    {
+        var dinerUserId = actor.DinerUserId
+                          ?? throw new UnauthorizedAccessException("This needs a signed-in diner.");
+
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
+        return await RequireDinerAsync(cancellationToken);
+    }
+
+    /// <summary>Best effort: removes the three variants of an upload no row was written for.</summary>
+    private async Task DeleteStoredFilesAsync(StoredPhoto stored, CancellationToken cancellationToken)
+    {
+        foreach (var path in new[] { stored.ThumbnailPath, stored.CardPath, stored.FullPath })
+        {
+            try
+            {
+                await storage.DeleteAsync(path, cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(ex, "Could not delete {Path} after a refused profile photo.", path);
+            }
+        }
     }
 
     private static AuthenticationFailedException SessionRevoked() =>

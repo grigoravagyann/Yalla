@@ -64,6 +64,11 @@ internal sealed class BranchReviewService(
 
         BranchReview.Check(command.Rating, command.Text);
 
+        // Under the account's lock, and only for a live account: a review inserted while the account is
+        // being deleted would outlive it - public, and counted in the rating, for ever.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
         if (await db.BranchReviews.AnyAsync(r => r.BranchId == branchId && r.DinerUserId == dinerUserId, cancellationToken))
         {
             throw AlreadyReviewed();
@@ -77,6 +82,7 @@ internal sealed class BranchReviewService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.BranchReviewPerDiner))
         {
@@ -107,6 +113,11 @@ internal sealed class BranchReviewService(
 
         for (var attempt = 1; ; attempt++)
         {
+            // Under the account's lock, as a POST is: a first review or a revision saved behind the
+            // deletion's deletes would keep a review on the tombstone, or fail on a row that went.
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
             var review = await db.BranchReviews
                 .FirstOrDefaultAsync(r => r.BranchId == branchId && r.DinerUserId == dinerUserId, cancellationToken);
 
@@ -129,6 +140,7 @@ internal sealed class BranchReviewService(
             try
             {
                 await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
 
                 return (ToView(review, displayName), created);
             }

@@ -10,18 +10,26 @@ using Yalla.Infrastructure.Services;
 namespace Yalla.UnitTests.Integration;
 
 /// <summary>
-/// Two writes of one diner's review of one branch that race past the service's read together.
+/// Two writes of one diner's review of one branch, the second sent while the first is inserting.
 /// </summary>
 /// <remarks>
-/// A double-tap on Submit. The service reads first for a readable answer, but only the unique index
-/// <c>UX_BranchReviews_BranchId_DinerUserId</c> actually stops a second row, and the catch that turns
-/// its violation into a 409 (POST) or a revision (PUT) is the only thing between that and a 500. A
-/// sequential second request never reaches the catch, so the interceptor makes the competing write
-/// commit between the read and the insert, every run.
+/// <para>
+/// A double-tap on Submit. Both writes take the account's lock (<c>DinerAccountLock</c>) before they
+/// read, so the second waits for the first's commit and then finds its row: a PUT revises it and a POST
+/// is the 409. The unique index <c>UX_BranchReviews_BranchId_DinerUserId</c> and its catch stay behind
+/// that as the backstop.
+/// </para>
+/// <para>
+/// The interceptor starts the second tap just before the first inserts. It cannot be committed in full
+/// there - it is waiting on the lock the first holds - so it is given <see cref="LockWait"/>, the first
+/// goes on and commits, and the second is awaited after.
+/// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
 public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
 {
+    private static readonly TimeSpan LockWait = TimeSpan.FromSeconds(3);
+
     [SkippableFact]
     public async Task Two_racing_puts_leave_one_review_and_the_late_one_revises_it()
     {
@@ -30,25 +38,32 @@ public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
         var clock = new TestClock(DateTime.UtcNow);
         var (branchId, dinerUserId) = await ArrangeAsync(clock);
 
-        DinerReviewView? overtaker = null;
+        Task<(DinerReviewView Review, bool Created)>? secondTap = null;
 
         var race = new BeforeFirstInsertInto("BranchReviews", async () =>
         {
-            await using var otherDb = fixture.CreateContext(clock);
+            secondTap = Task.Run(async () =>
+            {
+                await using var otherDb = fixture.CreateContext(clock);
 
-            (overtaker, _) = await Reviews(otherDb, clock, dinerUserId)
-                .UpsertAsync(branchId, new SubmitBranchReviewCommand(5, "First tap."));
+                return await Reviews(otherDb, clock, dinerUserId)
+                    .UpsertAsync(branchId, new SubmitBranchReviewCommand(3, "Second tap."));
+            });
+
+            await Task.WhenAny(secondTap, Task.Delay(LockWait));
         });
 
         await using var racingDb = fixture.CreateContext(clock, race);
 
-        var (late, created) = await Reviews(racingDb, clock, dinerUserId)
-            .UpsertAsync(branchId, new SubmitBranchReviewCommand(3, "Second tap."));
+        var (first, firstCreated) = await Reviews(racingDb, clock, dinerUserId)
+            .UpsertAsync(branchId, new SubmitBranchReviewCommand(5, "First tap."));
 
         Assert.True(race.Fired, "The race never happened, so this proves nothing.");
-        Assert.NotNull(overtaker);
-        Assert.False(created, "the late write found the overtaker's row and revised it");
-        Assert.Equal(overtaker.ReviewId, late.ReviewId);
+        var (late, lateCreated) = await secondTap!;
+
+        Assert.True(firstCreated);
+        Assert.False(lateCreated, "the late write found the first one's row and revised it");
+        Assert.Equal(first.ReviewId, late.ReviewId);
         Assert.Equal(3, late.Rating);
 
         await using var verify = fixture.CreateContext(clock);
@@ -67,21 +82,30 @@ public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
         var clock = new TestClock(DateTime.UtcNow);
         var (branchId, dinerUserId) = await ArrangeAsync(clock);
 
+        Task? secondTap = null;
+
         var race = new BeforeFirstInsertInto("BranchReviews", async () =>
         {
-            await using var otherDb = fixture.CreateContext(clock);
+            secondTap = Task.Run(async () =>
+            {
+                await using var otherDb = fixture.CreateContext(clock);
 
-            await Reviews(otherDb, clock, dinerUserId)
-                .CreateAsync(branchId, new SubmitBranchReviewCommand(5, "First tap."));
+                await Reviews(otherDb, clock, dinerUserId)
+                    .CreateAsync(branchId, new SubmitBranchReviewCommand(3, "Second tap."));
+            });
+
+            await Task.WhenAny(secondTap, Task.Delay(LockWait));
         });
 
         await using var racingDb = fixture.CreateContext(clock, race);
 
-        // DomainStateException is the API's 409; a DbUpdateException escaping here would be a 500.
-        await Assert.ThrowsAsync<DomainStateException>(() => Reviews(racingDb, clock, dinerUserId)
-            .CreateAsync(branchId, new SubmitBranchReviewCommand(3, "Second tap.")));
+        await Reviews(racingDb, clock, dinerUserId)
+            .CreateAsync(branchId, new SubmitBranchReviewCommand(5, "First tap."));
 
         Assert.True(race.Fired, "The race never happened, so this proves nothing.");
+
+        // DomainStateException is the API's 409; a DbUpdateException escaping here would be a 500.
+        await Assert.ThrowsAsync<DomainStateException>(() => secondTap!);
 
         await using var verify = fixture.CreateContext(clock);
         var stored = Assert.Single(await verify.BranchReviews.AsNoTracking()

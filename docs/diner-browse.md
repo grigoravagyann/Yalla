@@ -503,8 +503,10 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
   - `SessionGeneration++`; every refresh token revoked (`account-deleted`); push devices deleted.
   - Every `PhoneVerificationCodes` row for the account's number is deleted, the code that proved the
     deletion included; the audit row counts them as `phoneCodes`.
-  - A favourite or review report written for the account while it is being deleted (another phone,
-    past the token cache) is refused with 401 `session-revoked` instead of outliving it.
+  - A favourite, review, review report, profile edit, password, picture or booking written for the
+    account while it is being deleted (another phone, past the token cache) is refused with 401
+    `session-revoked` instead of outliving it; one that committed first is removed or detached with
+    the rest. A booking reminder or order-ready feed entry written in that window is left out.
   - Every `Photo` the account owns and its files are deleted - the current picture and any replaced
     one still waiting for the sweep.
   - Every `BranchReview` by the diner is deleted; the aggregates recompute on the next read.

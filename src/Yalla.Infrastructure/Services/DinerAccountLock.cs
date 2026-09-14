@@ -34,6 +34,22 @@ internal static class DinerAccountLock
     /// <exception cref="AuthenticationFailedException"><c>session-revoked</c>: the account is not live.</exception>
     public static async Task RequireLiveAsync(YallaDbContext db, Guid dinerUserId, CancellationToken cancellationToken)
     {
+        if (!await IsLiveAsync(db, dinerUserId, cancellationToken))
+        {
+            throw new AuthenticationFailedException(
+                TokenRevoked.SessionRevoked, "This session has ended. Sign in again.");
+        }
+    }
+
+    /// <summary>
+    /// Takes the same lock, held to the end of the open transaction, and answers whether the account is
+    /// live - for a write that is not the account's own request and so has nobody to refuse: a booking's
+    /// reminder written after the booking committed, or a kitchen marking an order ready. It leaves the
+    /// person's row out instead.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No transaction is open, so there is nothing to hold the lock.</exception>
+    public static async Task<bool> IsLiveAsync(YallaDbContext db, Guid dinerUserId, CancellationToken cancellationToken)
+    {
         if (db.Database.CurrentTransaction is null)
         {
             throw new InvalidOperationException(
@@ -49,10 +65,6 @@ internal static class DinerAccountLock
                  """)
             .ToListAsync(cancellationToken);
 
-        if (live is not [true])
-        {
-            throw new AuthenticationFailedException(
-                TokenRevoked.SessionRevoked, "This session has ended. Sign in again.");
-        }
+        return live is [true];
     }
 }

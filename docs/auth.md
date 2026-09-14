@@ -291,10 +291,14 @@ person cut.**
 
 **Writes racing the deletion.** Another phone's request can be past the token check - cached for five
 seconds, and per process - when the account is deleted. The deletion takes an update lock on the
-`DinerUsers` row first (`DinerAccountLock`), and the writers that keep a row keyed to the person
-outside the booking gate - adding or merging favourites, reporting a review - take the same lock and
-read the row under it: one that got there first commits before the deletion reads what to remove, and
-one that comes second is refused with 401 `session-revoked`.
+`DinerUsers` row first (`DinerAccountLock`) and re-reads the row and the account's photos under it.
+Every writer that keeps something of the person's takes the same lock and reads the row under it -
+adding or merging favourites, writing or revising a review, reporting one, editing the profile,
+setting a password, uploading a picture, booking a table: one that got there first commits before the
+deletion reads what to remove, and one that comes second is refused with 401 `session-revoked`. The
+two feed entries that are not written by the diner's own request - a booking's reminder, saved just
+after the booking commits, and a kitchen marking an order ready - take the lock as well, and leave the
+entry (and the order-ready push) out when the account is no longer live.
 
 **A new table with a `DinerUserId` needs one line** in `DinerAccountDeletion`:
 `RemoveRowsOwnedByAsync` if its rows are the person's, `DetachVenueRecordsAsync` if they are the

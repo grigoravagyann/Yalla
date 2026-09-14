@@ -83,6 +83,60 @@ public sealed class WriteRateLimitTests(SqlServerFixture fixture) : IDisposable
             await UploadAsync(diner, Png(250)), HttpStatusCode.TooManyRequests, "rate-limited");
     }
 
+    [SkippableFact]
+    public async Task Reviews_uploads_and_reports_spend_one_budget_and_the_next_diner_still_has_theirs()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+        Guid reviewId;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+            var authorId = await ReviewTestData.SeedDinerAsync(db, "Narek Petrosyan", factory.Clock.UtcNow);
+            reviewId = await ReviewTestData.SeedReviewAsync(db, branch.BranchId, authorId, 2, "Slow.", factory.Clock.UtcNow);
+        }
+
+        var (busyToken, busyId) = await ReviewIntegrityTests.SignInDinerAsync(factory);
+        var (quietToken, _) = await ReviewIntegrityTests.SignInDinerAsync(factory);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            await ReviewTestData.SeedTabVisitAsync(db, branch, factory.Clock.UtcNow, busyId);
+        }
+
+        using var busy = factory.CreateClientWithToken(busyToken);
+        using var quiet = factory.CreateClientWithToken(quietToken);
+        var reviewRoute = $"/api/diner/branches/{branch.BranchId}/review";
+        var reportRoute = $"/api/diner/reviews/{reviewId}/report";
+
+        // Half the budget on a review...
+        for (var write = 0; write < Limit / 2; write++)
+        {
+            var response = await busy.PutAsJsonAsync(reviewRoute, new { rating = write % 5 + 1 });
+
+            Assert.True(
+                response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created,
+                $"Review write {write + 1} answered {(int)response.StatusCode}.");
+        }
+
+        // ...and the rest on pictures.
+        for (var upload = 0; upload < Limit - Limit / 2; upload++)
+        {
+            var response = await UploadAsync(busy, Png((byte)(upload * 20)));
+
+            Assert.True(response.StatusCode == HttpStatusCode.Created, $"Upload {upload + 1} answered {(int)response.StatusCode}.");
+        }
+
+        // A report is a write too, from the same budget, and there is nothing left of it.
+        await ReviewIntegrityTests.AssertProblemAsync(
+            await busy.PostAsJsonAsync(reportRoute, new { reason = "spam" }), HttpStatusCode.TooManyRequests, "rate-limited");
+
+        // Per caller: the next diner reports the same review.
+        Assert.Equal(HttpStatusCode.NoContent, (await quiet.PostAsJsonAsync(reportRoute, new { reason = "spam" })).StatusCode);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private YallaApiFactory NewFactory() =>

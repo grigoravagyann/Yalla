@@ -846,6 +846,12 @@ internal sealed class ReservationService(
 
         var remindAt = reservation.StartUtc.AddHours(-policy.ReminderHoursBefore);
 
+        // The booking committed a moment ago, and the account can have been deleted since - from another
+        // phone, past the token cache - which cut the booking loose and emptied the feed. The feed entry
+        // below is the person's, so it is written under the account's lock and only for a live account:
+        // a deletion that comes after waits for this commit and removes it.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         if (remindAt > nowUtc)
         {
             outbox.Enqueue(
@@ -856,7 +862,11 @@ internal sealed class ReservationService(
 
             // Its feed entry, written now beside the push and appearing when the push is due (K12).
             // Cancelling the booking before then deletes both.
-            DinerNotices.BookingReminder(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, remindAt);
+            if (reservation.DinerUserId is { } dinerUserId
+                && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
+            {
+                DinerNotices.BookingReminder(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, remindAt);
+            }
         }
 
         // The nudge is always in the future when the booking is made, because a booking cannot start
@@ -868,6 +878,7 @@ internal sealed class ReservationService(
             OutboxMessageTypes.KeyFor("reservation", reservation.Id, "late-nudge"));
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     // ---------------------------------------------------------------- the diner extends their hold
