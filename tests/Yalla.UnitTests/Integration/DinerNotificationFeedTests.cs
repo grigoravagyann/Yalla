@@ -151,6 +151,77 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_booking_seated_before_its_reminder_is_due_never_shows_it_and_completing_one_drops_it_too()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (token, dinerUserId) = await DinerFeedTestData.SignInDinerAsync(factory);
+        using var diner = factory.CreateClientWithToken(token);
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        var seatedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
+        var finishedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2);
+
+        DateTime dueAtUtc;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            dueAtUtc = (await db.DinerNotifications.AsNoTracking()
+                .SingleAsync(n => n.ReservationId == seatedId && n.Kind == DinerNotificationKinds.BookingReminder)).CreatedAtUtc;
+        }
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        // Seated two days early, long before the reminder is due.
+        Assert.Equal(HttpStatusCode.OK, (await SeatAsync(waiter, branch, branch.TableIds[0], seatedId)).StatusCode);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.DinerNotifications.AnyAsync(n => n.ReservationId == seatedId));
+
+            // The other booking's reminder is its own.
+            Assert.True(await db.DinerNotifications.AnyAsync(
+                n => n.ReservationId == finishedId && n.Kind == DinerNotificationKinds.BookingReminder));
+        }
+
+        // A booking seated before seating dropped reminders still has one waiting: finishing the meal drops it.
+        Assert.Equal(HttpStatusCode.OK, (await SeatAsync(waiter, branch, branch.TableIds[1], finishedId)).StatusCode);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            db.DinerNotifications.Add(new DinerNotification(
+                dinerUserId, DinerNotificationKinds.BookingReminder, "{\"time\":\"18:00\"}", dueAtUtc, branch.BranchId, finishedId));
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await waiter.PostAsJsonAsync(
+                $"/api/branches/{branch.BranchId}/tables/{branch.TableIds[1]}/free",
+                new { clientCommandId = Guid.CreateVersion7() })).StatusCode);
+
+        await using var context = fixture.CreateContext(factory.Clock);
+
+        Assert.Equal(
+            ReservationStatus.Completed,
+            (await context.Reservations.AsNoTracking().SingleAsync(r => r.Id == finishedId)).Status);
+        Assert.False(await context.DinerNotifications.AnyAsync(n => n.ReservationId == finishedId));
+
+        // Once both reminders would have been due, the feed has nothing to show.
+        var feed = new DinerNotificationFeed(
+            context,
+            new TestClock(dueAtUtc.AddMinutes(1)),
+            new TestActor(ActorType.Diner, staffMemberId: null, role: null, dinerUserId: dinerUserId));
+
+        Assert.Empty((await feed.ListAsync(before: null, limit: 20)).Items);
+    }
+
+    [SkippableFact]
     public async Task The_venue_letting_an_accepted_booking_go_writes_an_entry_and_drops_its_reminder()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
@@ -435,6 +506,11 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
     // ------------------------------------------------------------ helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+
+    private static Task<HttpResponseMessage> SeatAsync(HttpClient waiter, AuthBranch branch, Guid tableId, Guid reservationId) =>
+        waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{tableId}/seat-reservation",
+            new { reservationId, clientCommandId = Guid.CreateVersion7() });
 
     private static DinerNotification Entry(Guid dinerUserId, DateTime atUtc) =>
         new(dinerUserId, DinerNotificationKinds.OrderReady, "{\"tableLabel\":\"3\"}", atUtc);

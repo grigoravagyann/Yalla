@@ -29,7 +29,7 @@ namespace Yalla.Domain.Identity;
 /// </remarks>
 public sealed class DinerNotification : Entity
 {
-    /// <summary>How long an entry is kept. Older rows are deleted by the background sweep.</summary>
+    /// <summary>How long an entry is kept. Older rows are deleted by the outbox loop's hourly feed sweep.</summary>
     public const int RetentionDays = 90;
 
     /// <summary>The widest the parameter JSON may be. The largest kind uses a fraction of it.</summary>

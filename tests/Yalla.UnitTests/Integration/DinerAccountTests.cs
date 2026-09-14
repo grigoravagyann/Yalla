@@ -227,6 +227,53 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
     }
 
     /// <summary>
+    /// A deactivated account proving its number by code is refused at the door with the password
+    /// sign-in's answer, rather than handed a token the authority check refuses on first use.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_deactivated_account_verifying_a_code_is_refused_like_a_password_sign_in()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        var phone = NewPhone();
+        var (dinerUserId, _) = await SignInByCodeAsync(anonymous, phone);
+
+        int refreshTokensBefore;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            (await db.DinerUsers.SingleAsync(d => d.Id == dinerUserId)).SetActive(false);
+            await db.SaveChangesAsync();
+
+            refreshTokensBefore = await db.RefreshTokens.CountAsync(t => t.SubjectId == dinerUserId);
+        }
+
+        var requested = await anonymous.PostAsJsonAsync("/api/auth/diner/request-code", new { phoneE164 = phone });
+        requested.EnsureSuccessStatusCode();
+        var code = (await requested.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("developmentCode").GetString();
+
+        await AssertProblemAsync(
+            await anonymous.PostAsJsonAsync("/api/auth/diner/verify-code", new { phoneE164 = phone, code }),
+            HttpStatusCode.Unauthorized,
+            "invalid-credentials");
+
+        // The right code was spent by the refusal, so presenting it again gets no further.
+        Assert.NotEqual(
+            HttpStatusCode.OK,
+            (await anonymous.PostAsJsonAsync("/api/auth/diner/verify-code", new { phoneE164 = phone, code })).StatusCode);
+
+        await using var context = fixture.CreateContext(factory.Clock);
+
+        // Nothing issued, nothing created: the one account, still switched off.
+        Assert.Equal(refreshTokensBefore, await context.RefreshTokens.CountAsync(t => t.SubjectId == dinerUserId));
+        var account = await context.DinerUsers.AsNoTracking().SingleAsync(d => d.PhoneE164 == phone);
+        Assert.Equal(dinerUserId, account.Id);
+        Assert.False(account.IsActive);
+    }
+
+    /// <summary>
     /// Ten attempts a quarter-hour per identifier, right or wrong. The eleventh is a 429 even with
     /// the right password - "wait", not "wrong", to somebody who may have been typing it correctly.
     /// </summary>

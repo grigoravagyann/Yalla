@@ -345,7 +345,9 @@ reported first) or `hidden`. `page` from 1, `pageSize` 1-100, default 20. Out of
 
 The visibility body is `{ "hidden": true, "reason": "…" }` or `{ "hidden": false }`. `hidden` is
 required; `reason` is required when hiding, trimmed, at most 500 characters (422 naming `reason`,
-bound `required` or `max`). Answers the review as the list shows it. A request that changes nothing -
+bound `required` or `max`). A `reason` sent with `hidden: false` (a string or `null`) is accepted and
+ignored: putting a review back stores no reason, and its `review.unhide` audit row records
+`reason: null`. Answers the review as the list shows it. A request that changes nothing -
 hiding what is already hidden for the same reason, putting back what is published - writes nothing.
 
 - **The platform outranks the venue.** A venue putting back a review the platform hid is 403
@@ -626,8 +628,8 @@ stored row; audited):
   the shape under the venue console's review routes above - for any branch, published or not.
 - `PUT /api/platform/reviews/{reviewId}/visibility`, body `{ "hidden": boolean, "reason": string | null }`:
   `hidden` required; `reason` required when hiding, trimmed, at most 500 characters, else 422 naming
-  `reason`; 200 with the item; 404 `not-found`; audit `review.hide` or `review.unhide` with
-  `actorType: "platform"`.
+  `reason`; with `hidden: false` a `reason` is accepted and ignored; 200 with the item; 404
+  `not-found`; audit `review.hide` or `review.unhide` with `actorType: "platform"`.
 - As built, items carry `hiddenByPlatform`, `reportCount` and `lastReportedAtUtc` beyond the fields first
   specified, and the list accepts `filter`: one shape and one set of parameters for both tiers.
 

@@ -229,7 +229,7 @@ The generation moves on - and every access token of the account ends - on exactl
 |---|---|---|
 | The number's owner proves it and displaces a registrant | `DinerUser.ProveNumberByCode` | All revoked (`phone-proved-by-another`) |
 | A password is set or changed | `DinerUser.SetPassword` | Kept |
-| The account is deactivated | `DinerUser.SetActive(false)` | Kept; refresh refuses an inactive account |
+| The account is deactivated | `DinerUser.SetActive(false)` | Kept; refresh refuses an inactive account, and `verify-code` and `login` both answer 401 `invalid-credentials` |
 | The account is deleted | `DinerUser.MarkDeleted` | All revoked (`account-deleted`) |
 
 Storing a stronger hash of the same password at sign-in (`RehashPassword`) is not a change and moves
@@ -498,7 +498,7 @@ with the claim since. It cannot say whether that is still true, and for three of
 here it stops being true well inside the token's own lifetime:
 
 - A tab closes. The token stays valid for the two-hour receipt grace, and the participant should be
-  able to *read* the bill for those two hours {M} and add nothing to it.
+  able to *read* the bill for those two hours - and add nothing to it.
 - A manager revokes a stolen tablet. Its device token still has months to run.
 - A participant is removed from a tab, or has their ordering taken away. The claim minted at join
   time says nothing about it.
@@ -518,20 +518,20 @@ so the check caches for **five seconds**. What it caches matters:
 
 > The **read** is cached. The **decision** is not.
 
-`TabParticipantAccess` {M} the tab's status, the participant's status, their `CanOrder` flag {M} is a
+`TabParticipantAccess` - the tab's status, the participant's status, their `CanOrder` flag - is a
 database fact that changes when somebody changes it. The decision that follows depends on the clock:
 whether a closed tab is still inside its receipt grace is a different answer at 20:00 and at 22:01.
 Caching the decision froze that grace for five seconds at a time, which the token-authority tests
 caught: a tab whose grace had just expired went on accepting reads.
 
 Five seconds is chosen against the thing being protected. A revoked tablet is not usable for five
-seconds by anyone who is not already holding it, and the alternative {M} a database read per request
-per participant {M} costs a busy venue far more than that window is worth. Where the delay is *not*
+seconds by anyone who is not already holding it, and the alternative - a database read per request
+per participant - costs a busy venue far more than that window is worth. Where the delay is *not*
 acceptable, the cache is invalidated directly instead of waited out:
 
 | Event | Invalidation |
 |---|---|
-| A device is revoked | `InvalidateDevice` on the revoking path {M} immediate, not five seconds later |
+| A device is revoked | `InvalidateDevice` on the revoking path - immediate, not five seconds later |
 | A participant is approved, removed, or loses `CanOrder` | `InvalidateParticipant` |
 | A tab is closed or moved to closing | `InvalidateTab`, which drops **every** participant's entry through a per-tab `CancellationChangeToken` |
 | A diner's session generation moves on: the number proved by its owner, a password set, the account deleted | `InvalidateDiner`, after the commit. A token newer than the cached read bypasses the cache regardless |
@@ -556,7 +556,7 @@ inside a handler is a check the next handler can forget, and the failure is sile
 |---|---|
 | `TabParticipant` | The token's `tabId` claim matches the route's tab id, the participant is still approved, and the tab has not closed beyond the grace period |
 | `TabParticipantCanOrder` | The above, plus the participant's `CanOrder` flag |
-| `TabParticipantMutating` | The above, and the tab is genuinely open {M} the receipt grace allows reading a closed tab, never adding to it |
+| `TabParticipantMutating` | The above, and the tab is genuinely open - the receipt grace allows reading a closed tab, never adding to it |
 | `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
 | `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager or Owner |
 | `KitchenOrAbove` | As `WaiterOrAbove`, and the Kitchen role too. Only the kitchen queue and the order rail carry it; on the rail the service then limits Kitchen to `InKitchen -> Ready`. The floor, tabs and service requests stay `WaiterOrAbove` |

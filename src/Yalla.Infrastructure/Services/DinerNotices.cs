@@ -107,7 +107,9 @@ internal static class DinerNotices
     /// </summary>
     /// <remarks>
     /// Called beside <c>IOutbox.CancelAsync</c> for the same reason: a reminder for a booking cancelled an
-    /// hour ago is worse than none. Entries already shown are history and stay.
+    /// hour ago is worse than none. Also called when a booking is seated or completed, where the push is
+    /// left to its handler's status check but the feed has no such check. Entries already shown are
+    /// history and stay.
     /// </remarks>
     public static async Task CancelUnshownAsync(
         YallaDbContext db, Guid reservationId, DateTime nowUtc, CancellationToken cancellationToken)

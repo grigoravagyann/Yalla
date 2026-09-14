@@ -185,6 +185,10 @@ internal sealed class TableStateService(
         // flag, no nudge, nothing for a waiter to mark a no-show. Throws unless Confirmed.
         reservation.MarkSeated();
 
+        // Nor a reminder: the feed entry that has not appeared yet goes with the seating (K12). The
+        // push itself is skipped by its handler, which reads the booking's status when it is due.
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
         var session = TableSession.SeatReservation(
             table.BranchId,
             table.Id,
@@ -250,6 +254,9 @@ internal sealed class TableStateService(
         // Throws if the booking is not Confirmed - a cancelled or already-seated booking is a
         // conflict, not a bad request.
         reservation.MarkSeated();
+
+        // A party seated before its reminder is due is not reminded in its feed (K12).
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
 
         var session = TableSession.SeatReservation(
             table.BranchId,
@@ -371,6 +378,9 @@ internal sealed class TableStateService(
         {
             reservation = await LoadReservationAsync(reservationId, table, cancellationToken);
             reservation.MarkSeated();
+
+            // A party seated before its reminder is due is not reminded in its feed (K12).
+            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
         }
 
         var next = await FindNextReservationAsync(table.Id, nowUtc, reservation?.Id, cancellationToken);
@@ -452,6 +462,10 @@ internal sealed class TableStateService(
                 if (reservation?.Status == ReservationStatus.Seated)
                 {
                     reservation.MarkCompleted();
+
+                    // Seating already dropped its reminder; a booking seated before that did not, and
+                    // a finished meal is no more a reason to be reminded of it (K12).
+                    await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
                 }
             }
 

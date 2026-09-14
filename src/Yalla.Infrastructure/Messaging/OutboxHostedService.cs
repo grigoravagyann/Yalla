@@ -98,9 +98,11 @@ internal sealed class OutboxHostedService(
     /// Deletes feed entries older than their 90 days (K12), on the wake-up pass and then about hourly.
     /// </summary>
     /// <remarks>
-    /// Here rather than in a loop of its own: this is the process's one background sweep, and the feed
-    /// is written beside the messages it dispatches. Its own try, so a failed dispatch pass does not
-    /// stop the sweep and a failed sweep does not stop the next pass.
+    /// Here rather than in a loop of its own: the feed is written beside the messages this loop
+    /// dispatches, so its retention rides on the same timer. It is not the process's only background
+    /// work - <see cref="Yalla.Infrastructure.Services.PhotoSweepHostedService"/> runs the orphan photo
+    /// sweep on its own interval. Its own try, so a failed dispatch pass does not stop the sweep and a
+    /// failed sweep does not stop the next pass.
     /// </remarks>
     private async Task SweepFeedAsync(CancellationToken cancellationToken)
     {

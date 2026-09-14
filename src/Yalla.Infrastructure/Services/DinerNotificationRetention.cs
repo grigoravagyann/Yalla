@@ -9,8 +9,10 @@ namespace Yalla.Infrastructure.Services;
 /// Deletes feed entries older than <see cref="DinerNotification.RetentionDays"/> days (K12).
 /// </summary>
 /// <remarks>
-/// Run by the outbox's background loop, about once an hour - the process's one existing sweep. One
-/// statement over the <c>CreatedAtUtc</c> index. An entry that has not appeared yet is never old enough.
+/// Run by the outbox's background loop (<c>OutboxHostedService</c>), about once an hour, beside the
+/// messages that loop dispatches. The orphan photo sweep is a separate hosted service with its own
+/// interval. One statement over the <c>CreatedAtUtc</c> index. An entry that has not appeared yet is
+/// never old enough.
 /// </remarks>
 internal sealed class DinerNotificationRetention(YallaDbContext db, IClock clock)
 {

@@ -151,6 +151,20 @@ internal sealed class DinerAuthService(
         entity.Consume(nowUtc);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.PhoneE164 == phone, cancellationToken);
+
+        if (diner is { IsActive: false })
+        {
+            // Refused here with the password sign-in's answer for a deactivated account, rather than
+            // issued a token the authority check turns away on first use and a refresh token refresh
+            // would refuse. The code was right, so it is spent: saved before refusing, it cannot be
+            // presented again. (A deleted account has no number and is never found by one.)
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogWarning("Code sign-in refused for inactive diner {DinerUserId}.", diner.Id);
+
+            throw SignInRejected();
+        }
+
         var isNewAccount = diner is null;
 
         if (diner is null)
