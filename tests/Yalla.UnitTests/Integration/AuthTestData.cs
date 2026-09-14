@@ -191,6 +191,53 @@ internal static class AuthTestData
 
     private static string Phone() => $"+374{Random.Shared.Next(10_000_000, 99_999_999)}";
 
+    /// <summary>The PIN every cook seeded by <see cref="SeedKitchenAsync"/> taps.</summary>
+    public const string KitchenPin = "5306";
+
+    /// <summary>A cook at the branch with a real hashed PIN, and nothing else.</summary>
+    public static async Task<Guid> SeedKitchenAsync(
+        YallaDbContext db,
+        AuthBranch branch,
+        CancellationToken cancellationToken = default)
+    {
+        var cook = new StaffMember(branch.VenueId, "Test Cook", Phone(), StaffRole.Kitchen, "hash", branch.BranchId);
+        cook.SetPinHash(new SecretHasher().Hash(KitchenPin));
+
+        db.StaffMembers.Add(cook);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return cook.Id;
+    }
+
+    /// <summary>
+    /// Signs a cook seeded by <see cref="SeedKitchenAsync"/> in on a freshly enrolled tablet - the kitchen
+    /// display is the staff app in another mode - and returns the session's access token.
+    /// </summary>
+    public static async Task<string> SignInKitchenAsync(YallaApiFactory factory, AuthBranch branch, Guid cookId)
+    {
+        using var tablet = factory.CreateClientWithToken(await StaffAuthTests.EnrolDeviceAsync(factory, branch));
+
+        var response = await tablet.PostAsJsonAsync("/api/auth/staff/pin", new { staffMemberId = cookId, pin = KitchenPin });
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!;
+    }
+
+    /// <summary>Joins a tab with its invitation, as a phone with no account does, and returns the participant token.</summary>
+    public static async Task<string> JoinTabAsync(YallaApiFactory factory, string joinToken)
+    {
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/tabs/join",
+            new { joinToken, deviceId = $"device-{Guid.NewGuid():N}", displayName = "Guest" });
+
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("token").GetProperty("accessToken").GetString()!;
+    }
+
     /// <summary>
     /// The first platform admin, created the way startup creates them: through the seeder, from
     /// configuration. Returns the id and the credentials that sign them in at /api/auth/venue/sign-in.
