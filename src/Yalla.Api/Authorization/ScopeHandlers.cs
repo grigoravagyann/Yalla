@@ -29,11 +29,14 @@ public sealed record StaffRoleRequirement(IReadOnlySet<StaffRole> AllowedRoles) 
 /// obtain one for a branch their tablet is not at. There is nothing they can send that changes it.
 /// </para>
 /// <para>
-/// An owner or manager signed in to the admin panel is venue-scoped rather than branch-scoped -
-/// managing every branch is the point of that account - so when their token carries no matching
-/// branch claim, the handler asks whether the branch belongs to their venue. That is a widening
-/// for venue users only; a staff session with a branch claim is still confined to it, and a
-/// venue user is still confined to their own venue.
+/// An owner signed in to the admin panel is venue-scoped rather than branch-scoped - managing every
+/// branch is the point of that account - so when their token carries no matching branch claim, the
+/// handler asks whether the branch belongs to their venue. So is a manager whose account names no
+/// home branch. <b>A manager whose token names a home branch is confined to it (K4)</b>: the
+/// widening is for the accounts whose job is every branch, and theirs is one. A staff session with
+/// a branch claim is still confined to it, and a venue user is still confined to their own venue.
+/// The services check the same rule again from the stored row through <c>IStaffBranchGuard</c>, so
+/// a manager moved to another branch is refused before their token expires.
 /// </para>
 /// <para>
 /// The branch is usually a <c>branchId</c> route value. The staff tab routes are addressed by tab
@@ -119,6 +122,18 @@ internal sealed class BranchScopedHandler(
             logger.LogWarning(
                 "Staff token scoped to branch {ClaimedBranchId} refused on branch {RouteBranchId}.",
                 context.User.Guid(YallaClaims.BranchId), routeBranchId);
+
+            return;
+        }
+
+        // K4. A manager with a home branch manages that branch, not the venue. Their claim did not
+        // match above, so this is somewhere else - refused even inside their own venue.
+        if (context.User.StaffRole() == StaffRole.Manager
+            && context.User.Guid(YallaClaims.BranchId) is { } homeBranchId)
+        {
+            logger.LogWarning(
+                "Manager scoped to home branch {HomeBranchId} refused on branch {RouteBranchId}.",
+                homeBranchId, routeBranchId);
 
             return;
         }

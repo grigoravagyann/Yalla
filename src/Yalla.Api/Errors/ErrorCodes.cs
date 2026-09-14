@@ -285,6 +285,24 @@ public static class ErrorCodes
     /// </summary>
     public const string UnsupportedImage = "unsupported-image";
 
+    /// <summary>
+    /// The listing form moves the branch - its address or map pin - and only an owner or platform
+    /// admin signed in to the admin panel may. HTTP 403. Nothing on the form was saved.
+    /// </summary>
+    public const string RelocationNotAllowed = "relocation-not-allowed";
+
+    /// <summary>
+    /// The floor plan was saved by somebody else since the editor loaded it. HTTP 409, with
+    /// <c>context.currentVersion</c>. Reload, reapply, save against the new version.
+    /// </summary>
+    public const string FloorPlanChanged = "floor-plan-changed";
+
+    /// <summary>
+    /// Table pins were placed on a cover photo the branch no longer has. HTTP 409, with
+    /// <c>context.currentCoverPhotoId</c> (null when there is no cover). Nothing was written.
+    /// </summary>
+    public const string CoverChanged = "cover-changed";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -341,6 +359,9 @@ public static class ErrorCodes
         PhoneInUse => "Phone number already has an account",
         PhoneNotVerified => "Phone number not verified",
         UnsupportedImage => "Unsupported image",
+        RelocationNotAllowed => "Relocation not allowed",
+        FloorPlanChanged => "Floor plan changed",
+        CoverChanged => "Cover photo changed",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

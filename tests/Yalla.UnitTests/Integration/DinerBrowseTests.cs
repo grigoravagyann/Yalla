@@ -48,14 +48,35 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
             websiteUrl = "https://thegreentable.example",
             amenities = new[] { "WIFI", "vegan" },
             galleryPhotoIds = new[] { second, first },
-            latitude = 40.1843,
-            longitude = 44.5129,
         });
 
         Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
         var listing = await saved.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(["wifi", "vegan"], listing.GetProperty("amenities").EnumerateArray().Select(a => a.GetString()));
         Assert.Equal(second, listing.GetProperty("gallery")[0].GetProperty("photoId").GetGuid());
+
+        // Moving the pin is the owner's call (K5), so the owner saves the same form with the location.
+        PanelAccount owner;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
+        }
+
+        using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
+
+        var moved = await ownerClient.PutAsJsonAsync($"/api/branches/{mine.BranchId}/listing", new
+        {
+            cuisine,
+            about = "A bright all-day cafe.",
+            priceLevel = 2,
+            websiteUrl = "https://thegreentable.example",
+            amenities = new[] { "wifi", "vegan" },
+            address = "3 Test Street, Yerevan",
+            latitude = 40.1843,
+            longitude = 44.5129,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
 
         using var anyone = factory.CreateClient();
 
@@ -270,50 +291,15 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         var plan = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/floor-plan");
         var firstId = plan.GetProperty("tables")[0].GetProperty("id").GetGuid();
 
-        // The floor plan as loaded, with only the first table placed on the photo.
-        object PlanPlacingFirst(double photoX, double photoY) => new
-        {
-            floorWidth = plan.GetProperty("floorWidth").GetInt32(),
-            floorHeight = plan.GetProperty("floorHeight").GetInt32(),
-            areas = Array.Empty<object>(),
-            tables = plan.GetProperty("tables").EnumerateArray().Select(t => new
+        // Pins have their own route (K7), saved against the cover they were placed on.
+        Task<HttpResponseMessage> PlaceFirstAsync(Guid coverPhotoId, double? photoX, double? photoY) =>
+            manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/table-photo-positions", new
             {
-                id = t.GetProperty("id").GetGuid(),
-                label = t.GetProperty("label").GetString(),
-                seats = t.GetProperty("seats").GetInt32(),
-                x = t.GetProperty("x").GetInt32(),
-                y = t.GetProperty("y").GetInt32(),
-                width = t.GetProperty("width").GetInt32(),
-                height = t.GetProperty("height").GetInt32(),
-                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
-                shape = t.GetProperty("shape").GetInt32(),
-                isBookable = t.GetProperty("isBookable").GetBoolean(),
-                photoX = t.GetProperty("id").GetGuid() == firstId ? photoX : (double?)null,
-                photoY = t.GetProperty("id").GetGuid() == firstId ? photoY : (double?)null,
-            }).ToArray(),
-        };
+                coverPhotoId,
+                positions = new[] { new { tableId = firstId, photoX, photoY } },
+            });
 
-        var saved = await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/floor-plan", new
-        {
-            floorWidth = plan.GetProperty("floorWidth").GetInt32(),
-            floorHeight = plan.GetProperty("floorHeight").GetInt32(),
-            areas = Array.Empty<object>(),
-            tables = plan.GetProperty("tables").EnumerateArray().Select(t => new
-            {
-                id = t.GetProperty("id").GetGuid(),
-                label = t.GetProperty("label").GetString(),
-                seats = t.GetProperty("seats").GetInt32(),
-                x = t.GetProperty("x").GetInt32(),
-                y = t.GetProperty("y").GetInt32(),
-                width = t.GetProperty("width").GetInt32(),
-                height = t.GetProperty("height").GetInt32(),
-                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
-                shape = t.GetProperty("shape").GetInt32(),
-                isBookable = t.GetProperty("isBookable").GetBoolean(),
-                photoX = t.GetProperty("id").GetGuid() == firstId ? 0.25 : (double?)null,
-                photoY = t.GetProperty("id").GetGuid() == firstId ? 0.5 : (double?)null,
-            }).ToArray(),
-        });
+        var saved = await PlaceFirstAsync(cover, 0.25, 0.5);
         Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
 
         using var anyone = factory.CreateClient();
@@ -331,26 +317,7 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         Assert.Equal(0.25, placed.GetProperty("photoX").GetDouble());
 
         // One coordinate without the other is refused, naming the field.
-        var half = await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/floor-plan", new
-        {
-            floorWidth = plan.GetProperty("floorWidth").GetInt32(),
-            floorHeight = plan.GetProperty("floorHeight").GetInt32(),
-            areas = Array.Empty<object>(),
-            tables = plan.GetProperty("tables").EnumerateArray().Select(t => new
-            {
-                id = t.GetProperty("id").GetGuid(),
-                label = t.GetProperty("label").GetString(),
-                seats = t.GetProperty("seats").GetInt32(),
-                x = t.GetProperty("x").GetInt32(),
-                y = t.GetProperty("y").GetInt32(),
-                width = t.GetProperty("width").GetInt32(),
-                height = t.GetProperty("height").GetInt32(),
-                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
-                shape = t.GetProperty("shape").GetInt32(),
-                isBookable = t.GetProperty("isBookable").GetBoolean(),
-                photoX = 0.4,
-            }).ToArray(),
-        });
+        var half = await PlaceFirstAsync(cover, 0.4, null);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, half.StatusCode);
 
         var markersUrl = $"/api/public/branches/{mine.BranchId}/table-markers";
@@ -372,11 +339,9 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
             Assert.False(await db.DiningTables.AnyAsync(t => t.BranchId == mine.BranchId && t.PhotoX != null));
         }
 
-        // No cover at all: no markers, even for a table the floor plan places anyway.
+        // No cover at all: no markers, and no pin can be placed on a picture that is gone.
         Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(null)).StatusCode);
-        Assert.Equal(
-            HttpStatusCode.OK,
-            (await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/floor-plan", PlanPlacingFirst(0.3, 0.6))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await PlaceFirstAsync(newCover, 0.3, 0.6)).StatusCode);
 
         var uncovered = await anyone.GetFromJsonAsync<JsonElement>(markersUrl);
         Assert.False(uncovered.TryGetProperty("photo", out var photo) && photo.ValueKind != JsonValueKind.Null);

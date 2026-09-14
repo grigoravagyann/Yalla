@@ -23,10 +23,10 @@ as **in progress**: the route or field is not served yet.
 | K1 | Revoking diner sessions (`sgen`, `session-revoked`) | B1 | **Implemented** |
 | K2 | `DELETE /api/diner/me` | B1 | **Implemented** |
 | K3 | `DELETE /api/diner/me/photo` deletes at once | B1 | **Implemented** |
-| K4 | Managers limited to their home branch | B2 | In progress |
-| K5 | Listing PUT: relocation is owner or platform admin only | B2 | In progress |
-| K6 | Floor plan `version` / `expectedVersion` | B2 | In progress |
-| K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | In progress |
+| K4 | Managers limited to their home branch | B2 | **Implemented** |
+| K5 | Listing PUT: relocation is owner or platform admin only | B2 | **Implemented** |
+| K6 | Floor plan `version` / `expectedVersion` | B2 | **Implemented** |
+| K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | **Implemented** |
 | K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | In progress |
 | K9 | App booking gate and booking note | B3 | In progress |
 | K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | In progress |
@@ -241,7 +241,8 @@ and `DELETE /api/diner/me/photo` are described in [auth.md](auth.md#the-password
 
 ## Venue console (manager, branch-scoped) - additions
 
-Both routes carry `ManagerOrAbove` and `BranchScoped`.
+Every route here carries `ManagerOrAbove` and `BranchScoped`, and the service checks the caller again
+from the stored staff row (K4): a manager whose account names a home branch reaches that branch only.
 
 ### `GET /api/branches/{branchId}/listing` → `BranchListingView`
 ### `PUT /api/branches/{branchId}/listing` → `BranchListingView`
@@ -274,19 +275,21 @@ bad field at once in `context.fields`.
 | `websiteUrl` | Trimmed; at most 2048 characters; an absolute `http` or `https` address | 422, bound `max` for length; no bound for a non-http(s) or relative address |
 | `amenities` | `outdoorSeating`, `wifi`, `parking`, `cardPayment`, `vegan`; case-insensitive; repeats collapse | 422 per unknown key, `value` is the key |
 | `galleryPhotoIds` | null leaves the gallery; `[]` clears it; at most 12; no repeats; each uploaded for this branch (`POST /api/branches/{branchId}/photos`) | 422 bound `max` or `conflict`; **404** for a photo not uploaded at this branch - nothing written |
-| `latitude` / `longitude` | Together or neither | 422 naming the missing one, bound `required`; 400 `invalid-request` for a value out of range |
-| `address` | Applied only together with `latitude` and `longitude` | - |
+| `latitude` / `longitude` | Together or neither; sent together with `address` | 422 naming the missing one, bound `required`; 400 `invalid-request` for a value out of range |
+| `address` | Trimmed; blank is absent; at most 400 characters; sent together with `latitude` and `longitude` | 422 naming `address` (bound `required` or `max`), or `latitude`/`longitude` when the address comes alone |
+| Moving the branch | `address`, `latitude` or `longitude` present and different from the stored value | 403 `relocation-not-allowed` unless an owner or platform admin signed in to the panel - nothing on the form written (K5) |
 
-The cover stays on `PUT /api/branches/{id}/public-profile`. K5 changes who may send `address`,
-`latitude` and `longitude`.
+The cover stays on `PUT /api/branches/{id}/public-profile`.
 
-### `PUT /api/branches/{branchId}/floor-plan` - per table, optional `photoX`, `photoY`
+### `GET`/`PUT /api/branches/{branchId}/floor-plan` - `version`, and no pins
 
-Each `tables[]` entry accepts `"photoX": 0.25, "photoY": 0.5` - fractions 0-1 of the cover photo, both
-or neither; omitted or null takes the table off the photo. One without the other is 422 bound
-`required`; out of range is 422 bound `range`. `GET /api/branches/{id}/floor-plan` returns them on each
-table. Saving the public profile with a different cover, or none, takes every table off the photo.
-(K6 and K7 move pin writes off this route.)
+The read carries `version` and, on each table, the read-only `photoX`/`photoY`. The replace needs
+`expectedVersion` and ignores any `photoX`/`photoY` on a table (K6).
+
+### `PUT /api/branches/{branchId}/table-photo-positions` - the pins
+
+Where tables sit on the cover photo, fractions 0-1. Saving the public profile with a different cover, or
+none, takes every table off the photo in the same save. See K7.
 
 ---
 
@@ -335,9 +338,10 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `20260913224239_BranchListingReviewsGalleryAndPhotoMarkers` | `DiningTables.PhotoX`, `PhotoY` (nullable); `Branches.Cuisine`, `About`, `PriceLevel`, `WebsiteUrl`, `AmenityKeys`; table `BranchGalleryPhotos` (`BranchId`, `PhotoId`, `Position`; unique per branch and photo, and per branch and position); table `BranchReviews` (`BranchId`, `DinerUserId`, `Rating` 1-5 by check constraint, `Text` ≤ 1000, `UpdatedAtUtc`; `UX_BranchReviews_BranchId_DinerUserId`, and indexes on `(BranchId, UpdatedAtUtc)` and `DinerUserId`) |
 | `20260913235419_TabParticipantsByDinerAccount` | `IX_TabParticipants_UserId`, including `TabId`, `Status` and `CanSeeTableTotal`, for the Orders tab's first read - see [SCHEMA.md](../SCHEMA.md#tabparticipant-and-tabjointoken) |
 | `20260914102955_DinerSessionGenerationAndDeletion` (K1, K2) | `DinerUsers.SessionGeneration int NOT NULL DEFAULT 0`; `DinerUsers.DeletedAtUtc datetime2 NULL`; `DinerUsers.PhoneE164` nullable, with `UX_DinerUsers_PhoneE164` filtered to `PhoneE164 IS NOT NULL` so a deleted account gives its number back |
+| `20260914110522_BranchFloorPlanVersion` (K6) | `Branches.FloorPlanVersion int NOT NULL DEFAULT 0`, an EF concurrency token |
 
-Planned: B2's floor-plan version column (K6); `ReviewModerationReportsAndReservationNote` (K8
-extension, K9); B6's `DinerFavorites` and `DinerNotifications` (K11, K12).
+Planned: `ReviewModerationReportsAndReservationNote` (K8 extension, K9); B6's `DinerFavorites` and
+`DinerNotifications` (K11, K12).
 
 ---
 
@@ -432,54 +436,82 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
 No shape change. It now deletes the Photo row and its files immediately
 (`IPhotoService.DeleteAsync`). Afterwards `GET /api/photos/{id}/{variant}` returns 404.
 
-### K4. Managers limited to their home branch - in progress (B2)
+### K4. Managers limited to their home branch - **implemented (B2)**
 
-- **Refused:** on every route with the `BranchScoped` policy, a VenueUser **Manager** whose stored
+- **Refused:** on every route with the `BranchScoped` policy, a VenueUser **Manager** whose
   `StaffMember.BranchId` is set and differs from the route's branch gets 403 `forbidden`.
-- **Enforced** in `BranchScopedHandler` from the token claim, and again in services through
-  `IStaffBranchGuard`, which reads the stored row - so a reassignment takes effect before the token
-  expires. The same rule applies to a StaffSession token acting as manager.
-- **Unchanged:** owners, managers with no branch, and platform admins.
+- **Enforced twice.**
+  - `BranchScopedHandler`, from the token's `branchId` claim.
+  - Again in the services through `IStaffBranchGuard.RequireAtBranchAsync`, which reads the stored staff
+    row, so a reassignment, demotion or deactivation takes effect before the token expires. That covers:
+    - the listing (read and save)
+    - the settings: public profile, reservation policy, opening hours, floor plan, floor areas, table
+      delete, QR regeneration, pins
+    - photo upload, and the branch booking list, approve and reject
+- The same rule holds in `StaffBranchGuard.RequireAsync`, the check under the tab, order, payment and
+  service-request routes that are addressed by a bare id.
+- A StaffSession (PIN) token is confined to its tablet's branch whatever the role.
+- **Unchanged:** owners (whether or not their row names a branch), managers with no branch, and platform
+  admins.
+- `GET /api/venues/{venueId}/manage` lists the same set of branches a manager is allowed.
 
-### K5. `PUT /api/branches/{branchId}/listing`: relocation - in progress (B2)
+### K5. `PUT /api/branches/{branchId}/listing`: relocation - **implemented (B2)**
 
 - **Body:** the existing fields, with `address: string | null`. `GET /listing` returns `address`.
 - **A relocation** is `latitude`, `longitude` or `address` present **and** different from the stored
-  value. Repeating the stored values is not one.
-- **Who may relocate:** an Owner (admin-panel VenueUser token, stored row active, same venue) or a
-  platform admin. Anyone else gets 403 `relocation-not-allowed` and **nothing** is written - the save
-  is atomic, other fields included.
+  value. Repeating the stored values is not one. A blank address counts as absent.
+- **Who may relocate:** an active Owner of this venue or an active platform admin, **signed in to the
+  admin panel** (a VenueUser token, read from the principal type; roles read from the stored row).
+  - Anyone else gets 403 `relocation-not-allowed` (with `context.branchId`) and **nothing** is written:
+    the save is atomic, other fields included.
+  - That includes any PIN session, an owner's too.
+  - The refusal is decided before the field rules, so a manager is not asked to complete a move they
+    would then be refused.
 - **Validation:** coordinates without an address, or an address without coordinates, is 422
-  `validation-failed` naming `address` (or `latitude`/`longitude`), bound `required`. The address is
-  non-blank and at most 400 characters.
-- **Audit:** `PlatformAuditLogs` `Action="branch.relocate"`, `EntityType="Branch"`, `EntityId=branchId`,
-  details `{ "old": {address, latitude, longitude}, "new": {…} }`.
+  `validation-failed` naming `address` (or `latitude` and `longitude`), bound `required`. The address is
+  at most 400 characters (bound `max`). Out-of-range coordinates stay 400 `invalid-request`.
+- **Audit:** `PlatformAuditLogs` `Action="branch.relocate"`, `TargetType="Branch"`,
+  `TargetId=branchId`, `ActorStaffMemberId` the owner or admin, `ChangesJson`
+  `{ "old": {address, latitude, longitude}, "new": {…} }`, in the same transaction as the move. The log
+  line carries the actor id only.
 
-### K6. Floor plan version - in progress (B2)
+### K6. Floor plan version - **implemented (B2)**
 
-- `GET /api/branches/{branchId}/floor-plan` adds `version: string`, opaque, from
-  `Branches.FloorPlanVersion` (an int concurrency token).
+- `GET /api/branches/{branchId}/floor-plan` adds `version: string`, opaque (today the decimal
+  `Branches.FloorPlanVersion`, an int concurrency token; do not parse it).
 - **PUT body** adds a required `expectedVersion: string`. `tables[].photoX`/`photoY` are **removed**
   from `FloorTableInput`: ignored if sent, never written; GET still returns them. New tables have no
   pin; kept tables keep theirs.
-- **Errors:** missing `expectedVersion` → 422 naming it, bound `required`; stale → 409
-  `floor-plan-changed` with `context.currentVersion`.
-- **Success:** 200 with the existing body plus `version`. Only a successful floor-plan PUT bumps the
-  version; pin saves and cover changes do not.
+- **Errors:**
+  - missing or blank `expectedVersion` → 422 naming it, bound `required`
+  - stale or unreadable → 409 `floor-plan-changed` with `context.currentVersion`, nothing written
+- **Success:** 200 with the existing body; `plan.version` is the new revision. Only a successful
+  floor-plan PUT bumps the version; pin saves and cover changes do not.
+- The replace takes an update lock on the branch row (shared with K7 and the cover change) and compares
+  the version inside it. Another save holding that lock past 5 s answers 409 `concurrent-update` - reload
+  and retry.
 
-### K7. `PUT /api/branches/{branchId}/table-photo-positions` - in progress (B2, new route)
+### K7. `PUT /api/branches/{branchId}/table-photo-positions` - **implemented (B2, new route)**
 
 - **Policy:** `ManagerOrAbove` + `BranchScoped` + the K4 guard.
 - **Body:** `{ "coverPhotoId": "uuid", "positions": [ { "tableId": "uuid", "photoX": 0.42, "photoY": 0.61 } ] }`.
   Only the listed tables change; `photoX: null, photoY: null` takes a table off the photo. One
   transaction holding an update lock on the Branch row.
-- **200:** `{ "coverPhotoId": "uuid", "tables": [ { "tableId", "label", "photoX", "photoY" } ] }` for all
-  active tables.
-- **Errors (nothing written for any):** 409 `cover-changed` with `context.currentCoverPhotoId` (uuid or
-  null) when `coverPhotoId` is not the branch's cover, including when it has none; 404 `not-found` for a
-  `tableId` that is not an active table here; 422 `validation-failed` naming `positions[i].photoX` or
-  `photoY` (bound `required` for one half, `range` outside 0..1) or `positions` (duplicate table ids);
-  403 `forbidden`. Never changes label, seats, x/y, area or active state.
+- **200:** `{ "coverPhotoId": "uuid", "tables": [ { "tableId", "label", "photoX"?, "photoY"? } ] }` for
+  all active tables, by label. A table not on the photo has no `photoX`/`photoY` (null fields are omitted).
+- **Errors (nothing written for any):**
+  - 409 `cover-changed` with `context.currentCoverPhotoId` - a uuid, or `null` (the key is always present)
+    - when `coverPhotoId` is not the branch's cover, including when it has none.
+  - 404 `not-found` for a `tableId` that is not an active table here.
+  - 422 `validation-failed` naming:
+    - `positions[i].photoX` or `positions[i].photoY` - bound `required` for one half, `range` outside 0..1
+    - `positions` - a table listed twice, bound `conflict`
+    - `coverPhotoId` or `positions` when missing, bound `required`
+    - `positions[i].tableId` when empty, bound `required`
+  - 403 `forbidden`.
+  - 409 `concurrent-update` when another save on the branch held the lock past 5 s.
+- Never changes label, seats, x/y, area or active state, and never moves the floor plan's `version`.
+- A cover change through `PUT /public-profile` takes the same lock and clears every pin in the same save.
 
 ### K8. Reviews - in progress (B3)
 

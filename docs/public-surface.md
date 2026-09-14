@@ -57,10 +57,15 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
   page uses (`BranchOpenNow`); `cuisine`, `priceLevel`, `about`, `amenities`, `websiteUrl` and the
   gallery are what the venue wrote through `PUT /api/branches/{id}/listing`. A field the venue never
   set is **absent**, and an unreviewed branch has no `rating` at all rather than a zero.
+- **Where a branch is** - its `address`, `latitude` and `longitude` - is the one part of that form a
+  manager cannot change. Moving it is for an owner of the venue or a platform admin signed in to the
+  admin panel, and is audited as `branch.relocate`. Anyone else sending a different location gets
+  `403 relocation-not-allowed`, and nothing on the form is saved. Sending the stored location back
+  unchanged is not a move.
 - **Distance** is computed server-side only when the caller sends `lat` and `lng` together, and then
   orders the list nearest first. Without a position the list is best rated first.
-- **Table markers** are tables a manager placed on the cover photo (`photoX`/`photoY` on the floor
-  plan), each with the derived `state` the staff floor shows. Tables not placed are simply absent, and
+- **Table markers** are tables a manager placed on the cover photo (through
+  `PUT /api/branches/{id}/table-photo-positions`), each with the derived `state` the staff floor shows. Tables not placed are simply absent, and
   a branch with no cover has none. The positions are fractions of that one picture, so saving the
   public profile with a **different** cover (or none) takes every table off the photo in the same save;
   re-saving the same cover keeps them.

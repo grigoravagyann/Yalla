@@ -138,6 +138,7 @@ public static class DependencyInjection
         // One copy of the branch boundary for every staff write that needs it. It was three
         // identical private helpers, and two services were written without one - see the class.
         services.AddScoped<StaffBranchGuard>();
+        services.AddScoped<IStaffBranchGuard>(provider => provider.GetRequiredService<StaffBranchGuard>());
         services.AddScoped<IMenuQuery, MenuQuery>();
         services.AddScoped<ITabOrderService, TabOrderService>();
         services.AddScoped<ITabBillingQuery, TabBillingQuery>();

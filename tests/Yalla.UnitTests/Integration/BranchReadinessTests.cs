@@ -229,7 +229,10 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
         Assert.False(withMenu.OpeningHoursSet);
 
         // ---- opening hours
-        var settings = fixture.CreateBranchSettingsService(db, clock, TestActor.PlatformAdmin(Guid.CreateVersion7()));
+        // A real platform admin row: the settings service checks the caller again from the stored
+        // staff record (K4), and an id that names nobody is refused.
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var settings = fixture.CreateBranchSettingsService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
 
         await settings.ReplaceOpeningHoursAsync(
             branch.Id,

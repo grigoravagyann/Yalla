@@ -260,6 +260,26 @@ public sealed record FloorPlanRejectedProblem : ProblemShape
     public required FloorPlanRejectedContext Context { get; init; }
 }
 
+/// <summary>The floor plan was saved by somebody else since the editor loaded it.</summary>
+/// <param name="CurrentVersion">The revision now stored. Reload the plan; it carries this as <c>version</c>.</param>
+public sealed record FloorPlanChangedContext(string CurrentVersion);
+
+/// <summary><c>floor-plan-changed</c>, 409. Nothing was written.</summary>
+public sealed record FloorPlanChangedProblem : ProblemShape
+{
+    public required FloorPlanChangedContext Context { get; init; }
+}
+
+/// <summary>Table pins were placed on a cover photo the branch no longer has.</summary>
+/// <param name="CurrentCoverPhotoId">The branch's cover now, or null when it has none.</param>
+public sealed record CoverChangedContext(Guid? CurrentCoverPhotoId);
+
+/// <summary><c>cover-changed</c>, 409. Nothing was written.</summary>
+public sealed record CoverChangedProblem : ProblemShape
+{
+    public required CoverChangedContext Context { get; init; }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reservations and sign-in
 // ---------------------------------------------------------------------------------------------

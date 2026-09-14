@@ -34,14 +34,77 @@ namespace Yalla.Infrastructure.Services;
 /// here. Where the policy does apply, this runs underneath it as the second line.
 /// </para>
 /// <para>
-/// The widening for owners and managers is deliberate and is the point of those accounts: they are
-/// venue-scoped rather than branch-scoped, so they pass for any branch of their own venue. A
-/// waiter is confined to the one branch their tablet is enrolled at, and a platform admin belongs
-/// to no venue and passes for all of them.
+/// The widening is for the accounts whose job is every branch: an owner passes for any branch of
+/// their own venue, and so does a manager whose stored row names <b>no</b> branch. A manager whose
+/// row names a home branch is confined to it (K4) - the same rule <c>BranchScopedHandler</c> applies
+/// from the token, applied again here from the stored row, so a reassignment takes effect before
+/// the token expires. A waiter is confined to the one branch their tablet is enrolled at, and a
+/// platform admin belongs to no venue and passes for all of them.
 /// </para>
 /// </remarks>
-internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor)
+internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor) : IStaffBranchGuard
 {
+    /// <inheritdoc />
+    public async Task<Guid> RequireAtBranchAsync(
+        Guid branchId,
+        string operation,
+        CancellationToken cancellationToken = default)
+    {
+        // The token first, failing closed: this is the manager-or-above check, and a caller the
+        // route policy should already have refused is refused again rather than trusted.
+        if (actor.Type != ActorType.Staff
+            || actor.StaffMemberId is not { } staffId
+            || actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+        {
+            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+        }
+
+        var staff = await db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.Id == staffId)
+            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Deactivated, or a token naming somebody who is no longer a row.
+        if (staff is not { IsActive: true })
+        {
+            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+        }
+
+        if (staff.Role == StaffRole.PlatformAdmin)
+        {
+            return staffId;
+        }
+
+        // The stored role, not the token's: a manager demoted to waiter keeps a manager token until
+        // it expires, and must not keep a manager's reach with it.
+        if (staff.Role is not (StaffRole.Owner or StaffRole.Manager))
+        {
+            throw new StaffPermissionException(operation, staff.Role, StaffRole.Manager);
+        }
+
+        var venueOwnsBranch = await db.Branches
+            .AsNoTracking()
+            .AnyAsync(b => b.Id == branchId && b.VenueId == staff.VenueId, cancellationToken);
+
+        // StaffPermissionException, as the booking decisions have always answered: the subject of this
+        // refusal is the caller's reach, not a thing they addressed that lives elsewhere. Both are 403.
+        if (!venueOwnsBranch || !Covers(staff.Role, staff.BranchId, branchId))
+        {
+            throw new StaffPermissionException(operation, staff.Role, StaffRole.Manager);
+        }
+
+        return staffId;
+    }
+
+    /// <summary>
+    /// Whether an owner or manager of the branch's own venue covers it: an owner always, a manager
+    /// only with no home branch or at it.
+    /// </summary>
+    private static bool Covers(StaffRole role, Guid? homeBranchId, Guid branchId) =>
+        role == StaffRole.Owner
+        || (role == StaffRole.Manager && (homeBranchId is null || homeBranchId == branchId));
+
     /// <summary>
     /// Refuses the caller unless <paramref name="branchId"/> is a branch they may act on.
     /// </summary>
@@ -97,11 +160,43 @@ internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor)
             .AsNoTracking()
             .AnyAsync(b => b.Id == branchId && b.VenueId == staff.VenueId, cancellationToken);
 
-        if (venueOwnsBranch && staff.Role is StaffRole.Owner or StaffRole.Manager)
+        if (venueOwnsBranch && Covers(staff.Role, staff.BranchId, branchId))
         {
             return;
         }
 
         throw new StaffBranchScopeException(subject);
     }
+}
+
+/// <summary>
+/// The branch boundary for the owner-and-manager services: settings, listing, photos, bookings.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>BranchScopedHandler</c> decides the same thing from the token, before the handler runs. This
+/// decides it again from the <b>stored</b> staff row, so a manager moved to another branch, demoted
+/// or deactivated is refused at once rather than when their token expires.
+/// </para>
+/// <para>
+/// <b>The rule (K4).</b> A platform admin passes for every branch. An owner passes for every branch
+/// of their own venue. A manager passes for every branch of their own venue when their row names no
+/// branch, and only for that branch when it names one. Everyone else is refused.
+/// </para>
+/// </remarks>
+internal interface IStaffBranchGuard
+{
+    /// <summary>
+    /// Refuses the caller unless they are an active owner, manager or platform admin who covers
+    /// <paramref name="branchId"/>.
+    /// </summary>
+    /// <param name="branchId">The branch being read or changed.</param>
+    /// <param name="operation">What is being attempted, for the refusal message.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The acting staff member's id.</returns>
+    /// <exception cref="StaffPermissionException">
+    /// Not a staff member, below manager, deactivated, or an owner or manager for whom this branch is
+    /// not one they cover. Answers 403 <c>forbidden</c>.
+    /// </exception>
+    Task<Guid> RequireAtBranchAsync(Guid branchId, string operation, CancellationToken cancellationToken = default);
 }

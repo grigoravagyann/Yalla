@@ -191,7 +191,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         kept.Add(new FloorTableInput(null, "4", 6, 600, 400, 120, 120, 0d, TableShape.Rectangle));
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, "Windows", 0)], kept));
+            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, "Windows", 0)], kept, plan.Version));
 
         Assert.Equal(["1"], result.DeactivatedTables);
         Assert.Empty(result.RemovedTables);
@@ -222,7 +222,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         edited[index] = edited[index] with { Id = null, X = 800, Y = 500, Width = 150, Height = 120, RotationDegrees = 45d, Label = table.Label };
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], edited));
+            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], edited, before.Version));
 
         var moved = result.Plan.Tables.Single(t => t.Id == table.Id);
         Assert.Equal(800, moved.X);
@@ -259,7 +259,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         tables[0] = tables[0] with { X = 980, Width = 100 };
 
         var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version)));
 
         Assert.Equal([tables[0].Label], refused.TablesOutsideCanvas);
 
@@ -284,7 +284,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var tables = before.Tables.Select(Input).Select((t, i) => t with { X = 100 + (i * 300), Y = 100 }).ToList();
         tables[1] = tables[1] with { X = tables[0].X + 20, Y = tables[0].Y + 20 };
 
-        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables));
+        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version));
 
         var warning = Assert.Single(result.Warnings);
         Assert.Contains("overlap", warning);
@@ -346,7 +346,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var plan = await service.GetFloorPlanAsync(branch.BranchId);
 
         var kept = plan.Tables.Where(t => t.Id != auditedId).Select(Input).ToList();
-        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept));
+        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept, plan.Version));
 
         Assert.Equal([plan.Tables.Single(t => t.Id == auditedId).Label], result.DeactivatedTables);
         Assert.Empty(result.RemovedTables);
@@ -377,7 +377,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var kept = plan.Tables.Where(t => t.Id != occupiedId).Select(Input).ToList();
 
         var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept, plan.Version)));
 
         Assert.Contains(label, refused.Message);
         Assert.Contains("seated", refused.Message, StringComparison.OrdinalIgnoreCase);
@@ -411,7 +411,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         tables[1] = tables[1] with { Label = first.Label };
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables));
+            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version));
 
         Assert.Equal(second.Label, result.Plan.Tables.Single(t => t.Id == first.Id).Label);
         Assert.Equal(first.Label, result.Plan.Tables.Single(t => t.Id == second.Id).Label);
@@ -437,20 +437,22 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
+        var version = (await service.GetFloorPlanAsync(branch.BranchId)).Version;
+
         var unlabelled = new List<FloorTableInput>
         {
             new(null, null!, 4, 10, 10, 90, 90, 0d, TableShape.Round),
         };
 
         var noLabel = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], unlabelled)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], unlabelled, version)));
 
         Assert.Contains("no label", noLabel.Message, StringComparison.OrdinalIgnoreCase);
 
         var noName = await Assert.ThrowsAsync<FloorPlanInvalidException>(
             () => service.ReplaceFloorPlanAsync(
                 branch.BranchId,
-                new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, null!, 0)], [])));
+                new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, null!, 0)], [], version)));
 
         Assert.Contains("no name", noName.Message, StringComparison.OrdinalIgnoreCase);
     }

@@ -58,10 +58,36 @@ public interface IBranchListingService
     /// <exception cref="KeyNotFoundException">No such branch.</exception>
     Task<BranchListingView> GetAsync(Guid branchId, CancellationToken cancellationToken = default);
 
+    /// <param name="branchId">The branch.</param>
+    /// <param name="command">The form.</param>
+    /// <param name="signedInToAdminPanel">
+    /// Whether the caller holds an admin-panel sign-in rather than a PIN session on a tablet. Moving
+    /// the branch needs one: only an owner or a platform admin signed in to the panel may relocate.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation.</param>
     /// <exception cref="KeyNotFoundException">No such branch, or a gallery photo not uploaded for it.</exception>
     /// <exception cref="Yalla.Domain.FieldValidationException">Every field that broke a rule.</exception>
+    /// <exception cref="RelocationNotAllowedException">The form moves the branch and the caller may not.</exception>
     Task<BranchListingView> UpdateAsync(
         Guid branchId,
         BranchListingCommand command,
+        bool signedInToAdminPanel = false,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// The listing form moves the branch - a different address or map pin - and the caller is not an
+/// owner or platform admin signed in to the admin panel. Answers 403 <c>relocation-not-allowed</c>;
+/// nothing on the form is saved.
+/// </summary>
+/// <remarks>
+/// Where a branch is, is what every diner walks to. A manager correcting a typo in the cuisine line
+/// should not be one mis-drag of the pin away from sending the city to the wrong street, so moving
+/// it is the owner's call, and it is audited.
+/// </remarks>
+public sealed class RelocationNotAllowedException(Guid branchId)
+    : Exception("Only the owner can move the branch's address or map pin. Nothing was saved.")
+{
+    /// <summary>The branch the form was for.</summary>
+    public Guid BranchId { get; } = branchId;
 }

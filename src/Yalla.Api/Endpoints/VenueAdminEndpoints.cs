@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
@@ -7,6 +8,7 @@ using Yalla.Application.Menus;
 using Yalla.Application.Staff;
 using Yalla.Application.Venues;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
@@ -136,14 +138,26 @@ public static class VenueAdminEndpoints
                 + "`amenities` are keys from `outdoorSeating`, `wifi`, `parking`, `cardPayment`, `vegan`; "
                 + "`websiteUrl` is an absolute http(s) address. Every broken field is reported at once as "
                 + "`422 validation-failed`.\n\n"
-                + "`latitude` and `longitude` move the map pin together (with `address` if sent); neither "
-                + "leaves it where it is.\n\n"
+                + "**Moving the branch.** `address`, `latitude` and `longitude` travel together: coordinates "
+                + "without an address, or an address without coordinates, is `422` naming the missing field "
+                + "(bound `required`); the address is at most 400 characters. Sending all three as they are "
+                + "stored is not a move. A move - any of them present and different from the stored value - "
+                + "is allowed only to an **owner of this venue or a platform admin signed in to the admin "
+                + "panel**; anyone else (a manager, or any PIN session) gets `403 relocation-not-allowed` and "
+                + "**nothing on the form is saved**. A move is audited as `branch.relocate` with the old and "
+                + "new address and coordinates.\n\n"
                 + "`galleryPhotoIds` are photos uploaded for **this** branch through "
                 + "`POST /api/branches/{branchId}/photos`, in display order, at most 12. **Null leaves the "
                 + "gallery alone**; `[]` clears it. A photo from another branch is 404 and nothing is written.")
             .Produces<BranchListingView>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Coordinates out of range.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "`relocation-not-allowed`: the form moves the branch and the caller is not its owner or a "
+                + "platform admin. Or `forbidden`: not a manager of this branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or a gallery photo not uploaded for it.")
-            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, "Fields out of bounds; `context.fields` names each.");
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "Fields out of bounds; `context.fields` names each.");
 
         group.MapGet("/reservation-policy", GetPolicyAsync)
             .WithName("getReservationPolicy")
@@ -210,6 +224,10 @@ public static class VenueAdminEndpoints
         group.MapGet("/floor-plan", GetFloorPlanAsync)
             .WithName("getFloorPlan")
             .WithSummary("Canvas size, areas, and every table with its geometry")
+            .WithDescription(
+                "`version` is the plan's revision, opaque: send it back as `expectedVersion` when saving. "
+                + "Each table's `photoX`/`photoY` is where it sits on the cover photo - read-only here, and "
+                + "set through `PUT /api/branches/{branchId}/table-photo-positions`.")
             .Produces<FloorPlanView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
@@ -225,11 +243,51 @@ public static class VenueAdminEndpoints
                 + "naming the tables.\n"
                 + "- **Overlapping tables are a warning, not an error.** Real rooms have stools under bars.\n"
                 + "- A table omitted from the plan is deleted only if it has never been used. One with any "
-                + "reservation, session or tab is **deactivated** instead, and `deactivatedTables` says so.")
+                + "reservation, session or tab is **deactivated** instead, and `deactivatedTables` says so.\n"
+                + "- **`expectedVersion` is required**: the `version` the editor loaded. A plan saved by "
+                + "somebody else since then is `409 floor-plan-changed` with `context.currentVersion`, and "
+                + "nothing is written. Missing, it is `422` naming `expectedVersion`. A successful save "
+                + "returns the new `version`; nothing else moves it.\n"
+                + "- **Tables carry no photo position here.** `photoX`/`photoY` sent on a table are ignored: "
+                + "a kept table keeps its pin and a new table has none. Pins are saved through "
+                + "`PUT /api/branches/{branchId}/table-photo-positions`.")
             .Produces<FloorPlanReplaceResult>()
+            .ProducesProblem<FloorPlanChangedProblem>(
+                StatusCodes.Status409Conflict,
+                "`floor-plan-changed`: saved by somebody else since `expectedVersion`. `concurrent-update` "
+                + "(no context) when another save on this branch held on for too long - reload and retry.")
             .ProducesProblemDetails(
                 StatusCodes.Status422UnprocessableEntity,
-                "Tables outside the canvas or repeated labels; `context` names them.");
+                "Tables outside the canvas or repeated labels (`floor-plan-invalid`, `context` names them), "
+                + "or `expectedVersion` missing (`validation-failed`).");
+
+        group.MapPut("/table-photo-positions", PutTablePhotoPositionsAsync)
+            .WithName("putTablePhotoPositions")
+            .WithSummary("Place tables on the cover photo, or take them off")
+            .WithDescription(
+                "Where tables sit on the branch's cover photo, for the diner app's photo table view. "
+                + "`photoX`/`photoY` are fractions of the picture, 0-1 from the left and the top.\n\n"
+                + "- **Only the listed tables change**, and only their photo position - never label, seats, "
+                + "geometry, area or whether the table is active. `photoX: null, photoY: null` takes a table "
+                + "off the photo.\n"
+                + "- `coverPhotoId` is the cover the positions were placed on. When it is not the branch's "
+                + "cover - including when the branch has none - the save is `409 cover-changed` with "
+                + "`context.currentCoverPhotoId`, and nothing is written.\n"
+                + "- One transaction, holding an update lock on the branch row, so it cannot interleave with "
+                + "a floor-plan save or a cover change. It does not move the floor plan's `version`.\n\n"
+                + "The response is every active table with its position, by label.")
+            .Produces<TablePhotoPositionsView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound, "No such branch, or a `tableId` that is not an active table here.")
+            .ProducesProblem<CoverChangedProblem>(
+                StatusCodes.Status409Conflict,
+                "`cover-changed`: the positions were placed on another cover. `concurrent-update` (no context) "
+                + "when another save on this branch held on for too long - retry.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`coverPhotoId` or `positions` missing; one coordinate without the other (`positions[i].photoY`, "
+                + "bound `required`); a value outside 0-1 (bound `range`); or a table listed twice (`positions`).");
 
         group.MapPost("/floor-areas", CreateAreaAsync)
             .WithName("createFloorArea")
@@ -307,12 +365,26 @@ public static class VenueAdminEndpoints
         Results.Ok(await service.GetAsync(branchId, ct));
 
     private static async Task<IResult> PutListingAsync(
-        Guid branchId, BranchListingCommand command, IBranchListingService service, CancellationToken ct) =>
-        Results.Ok(await service.UpdateAsync(branchId, command, ct));
+        Guid branchId,
+        BranchListingCommand command,
+        ClaimsPrincipal user,
+        IBranchListingService service,
+        CancellationToken ct) =>
+        Results.Ok(await service.UpdateAsync(
+            branchId,
+            command,
+            // The panel sign-in, not a PIN session on a tablet: only the first may move a branch. A
+            // platform admin's token is a venue-user token too.
+            signedInToAdminPanel: user.PrincipalType() == PrincipalType.VenueUser,
+            ct));
 
     private static async Task<IResult> PutFloorPlanAsync(
         Guid branchId, ReplaceFloorPlanCommand command, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.ReplaceFloorPlanAsync(branchId, command, ct));
+
+    private static async Task<IResult> PutTablePhotoPositionsAsync(
+        Guid branchId, TablePhotoPositionsCommand command, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.UpdateTablePhotoPositionsAsync(branchId, command, ct));
 
     private static async Task<IResult> CreateAreaAsync(
         Guid branchId, FloorAreaCommand command, IBranchSettingsService service, CancellationToken ct)

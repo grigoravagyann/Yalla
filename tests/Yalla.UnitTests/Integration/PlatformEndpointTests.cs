@@ -195,9 +195,11 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         // The platform admin passes the branch-scoped admin surface for a branch they do not belong to.
         var plan = await platform.GetAsync($"/api/branches/{branchId}/floor-plan");
         Assert.Equal(HttpStatusCode.OK, plan.StatusCode);
+        var loadedVersion = (await plan.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetString();
 
         var put = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
+            expectedVersion = loadedVersion,
             floorWidth = 1000,
             floorHeight = 700,
             areas = new[] { new { id = (Guid?)null, name = "Windows", displayOrder = 0 } },
@@ -215,6 +217,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         // A table off the canvas is a 422 naming it.
         var outside = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
+            expectedVersion = applied.GetProperty("plan").GetProperty("version").GetString(),
             floorWidth = 1000,
             floorHeight = 700,
             areas = Array.Empty<object>(),

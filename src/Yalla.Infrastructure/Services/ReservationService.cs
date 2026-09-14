@@ -82,6 +82,7 @@ internal sealed class ReservationService(
     ICurrentActor actor,
     IAvailabilityQuery availabilityQuery,
     IAuthorizationQueries authorization,
+    IStaffBranchGuard branchGuard,
     NoShowPolicy noShowPolicy,
     ReservationWriter reservations,
     ITableStateService tableState,
@@ -442,7 +443,7 @@ internal sealed class ReservationService(
         // The same check approve and reject make. BranchScoped on the route widens a manager with
         // a home branch to their whole venue; this narrows them back, so the list never shows a
         // booking its reader would be refused permission to decide.
-        await RequireManagerForBranchAsync(branchId, "List a branch's bookings", cancellationToken);
+        await branchGuard.RequireAtBranchAsync(branchId, "List a branch's bookings", cancellationToken);
 
         var policy = await db.Branches
             .AsNoTracking()
@@ -712,7 +713,7 @@ internal sealed class ReservationService(
         var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
         var operation = approve ? "Approve a booking" : "Reject a booking";
 
-        await RequireManagerForBranchAsync(reservation.BranchId, operation, cancellationToken);
+        await branchGuard.RequireAtBranchAsync(reservation.BranchId, operation, cancellationToken);
 
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
         var nowUtc = clock.UtcNow;
@@ -1105,59 +1106,6 @@ internal sealed class ReservationService(
         }
 
         return dinerUserId;
-    }
-
-    /// <summary>
-    /// A manager or owner, scoped to this branch.
-    /// </summary>
-    /// <remarks>
-    /// A staff member with a null <c>BranchId</c> works across every branch of their own venue - an
-    /// owner does - but never across venues. Both halves are checked: a manager of one restaurant
-    /// must not be able to approve bookings at another chain's branch by guessing an id.
-    /// </remarks>
-    private async Task RequireManagerForBranchAsync(
-        Guid branchId,
-        string operation,
-        CancellationToken cancellationToken)
-    {
-        if (actor.Type != ActorType.Staff
-            || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        var staff = await db.StaffMembers
-            .AsNoTracking()
-            .Where(s => s.Id == staffId)
-            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (staff is not { IsActive: true })
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        // A platform admin belongs to no venue and may decide for any branch.
-        if (staff.Role == StaffRole.PlatformAdmin)
-        {
-            return;
-        }
-
-        // The same read the BranchScoped policy does, through the same interface, rather than a
-        // second copy of the query that could drift from it.
-        if (staff.VenueId is not { } venueId
-            || !await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        // A null BranchId means every branch of their own venue - an owner works everywhere. The
-        // venue check above is what stops that meaning every branch in the system.
-        if (staff.BranchId is { } assignedBranchId && assignedBranchId != branchId)
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
     }
 
     // ---------------------------------------------------------------- loading

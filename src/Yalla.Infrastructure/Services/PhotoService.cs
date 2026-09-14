@@ -21,7 +21,7 @@ internal sealed class PhotoService(
     YallaDbContext db,
     IPhotoStorage storage,
     IClock clock,
-    ICurrentActor actor,
+    IStaffBranchGuard branchGuard,
     ILogger<PhotoService> logger) : IPhotoService
 {
     /// <summary>
@@ -218,45 +218,26 @@ internal sealed class PhotoService(
     }
 
     /// <summary>
-    /// The caller must be an active owner or manager of the venue the branch belongs to, or the
-    /// platform admin.
+    /// The caller must be an active owner or manager who covers the branch (a manager with a home
+    /// branch covers that one only), or a platform admin.
     /// </summary>
     /// <remarks>
     /// The route carries <c>BranchScoped</c>, which decides the same thing from the token. This is
-    /// decided again from the stored row, so that the lock holds if a route ever forgets the policy,
-    /// and so that a deactivated account's still-valid token is refused here rather than honoured
-    /// until it expires. Same pattern as the staff service's actor check.
+    /// decided again from the stored row through <see cref="IStaffBranchGuard"/>, so that the lock
+    /// holds if a route ever forgets the policy, and so that a deactivated or reassigned account's
+    /// still-valid token is refused here rather than honoured until it expires.
     /// </remarks>
     private async Task<Guid> RequireActorAtBranchAsync(string operation, Guid branchId, CancellationToken cancellationToken)
     {
-        if (actor.Type != ActorType.Staff || actor.StaffMemberId is not { } staffId)
+        var staffId = await branchGuard.RequireAtBranchAsync(branchId, operation, cancellationToken);
+
+        // Only a platform admin can pass the guard for a branch that does not exist, and the photo
+        // row's foreign key would refuse it with a 500. Say so instead.
+        if (!await db.Branches.AsNoTracking().AnyAsync(b => b.Id == branchId, cancellationToken))
         {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+            throw new KeyNotFoundException($"Branch {branchId} was not found.");
         }
 
-        var acting = await db.StaffMembers.AsNoTracking().FirstOrDefaultAsync(s => s.Id == staffId, cancellationToken)
-                     ?? throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-
-        if (!acting.IsActive)
-        {
-            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
-        }
-
-        var branch = await db.Branches
-            .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
-            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
-
-        if (acting.IsPlatformAdmin)
-        {
-            return acting.Id;
-        }
-
-        if (branch.VenueId != acting.VenueId || acting.Role is not (StaffRole.Owner or StaffRole.Manager))
-        {
-            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
-        }
-
-        return acting.Id;
+        return staffId;
     }
 }

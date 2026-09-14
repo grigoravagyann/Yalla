@@ -161,7 +161,8 @@ public sealed class PhotoPipelineTests(SqlServerFixture fixture) : IDisposable
         var storage = Storage();
 
         var photos = new PhotoService(
-            db, storage, clock, TestActor.Manager(branch.ManagerId), NullLogger<PhotoService>.Instance);
+            db, storage, clock, fixture.CreateBranchGuard(db, TestActor.Manager(branch.ManagerId)),
+            NullLogger<PhotoService>.Instance);
 
         // One attached to a menu item, one nobody ever used.
         await using var attachedContent = new MemoryStream(JpegWithExif());

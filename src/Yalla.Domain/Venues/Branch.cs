@@ -257,6 +257,27 @@ public sealed class Branch : Entity
         FloorHeight = Guard.Positive(floorHeight, nameof(floorHeight));
     }
 
+    /// <summary>
+    /// Which saved revision of the floor plan this is. An optimistic concurrency token.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two managers editing the plan in two tabs both start from the same revision. Replacing the
+    /// plan is replace-whole, so without this the second save silently throws away the first - the
+    /// tables somebody just drew are gone and nobody is told. The editor sends the revision it
+    /// loaded; a save against an older one is refused as <c>floor-plan-changed</c>.
+    /// </para>
+    /// <para>
+    /// <b>Only a floor-plan save moves it.</b> Pinning tables on the cover photo and changing the cover
+    /// do not: neither changes what the editor shows, and bumping it would make an open editor refuse
+    /// a save that conflicts with nothing.
+    /// </para>
+    /// </remarks>
+    public int FloorPlanVersion { get; private set; }
+
+    /// <summary>Marks a new revision of the floor plan. Called by the floor-plan replace, and only there.</summary>
+    public void BumpFloorPlanVersion() => FloorPlanVersion++;
+
     private static string NormaliseTimeZoneId(string? timeZoneId)
     {
         var value = Guard.NotBlank(timeZoneId, nameof(timeZoneId), FieldLengths.TimeZoneId);

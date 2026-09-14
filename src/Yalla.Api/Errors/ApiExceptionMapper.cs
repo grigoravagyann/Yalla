@@ -303,6 +303,34 @@ internal static class ApiExceptionMapper
                 ["subject"] = e.Subject,
             }),
 
+        // The listing form moves the branch and the caller is not the owner (K5). Its own code rather
+        // than the generic 403, because the console has something specific to say: the rest of the
+        // form was fine, and only the owner can move the pin.
+        Yalla.Application.BranchSettings.RelocationNotAllowedException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.RelocationNotAllowed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        // Somebody saved the floor plan since this editor loaded it (K6). The current version rides
+        // along so the editor can reload against it.
+        Yalla.Application.BranchSettings.FloorPlanChangedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.FloorPlanChanged,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
+
+        // Pins placed on a cover the branch no longer has (K7). The key is always present - null
+        // means the branch has no cover now - because "absent" and "none" are different answers here.
+        Yalla.Application.BranchSettings.CoverChangedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.CoverChanged,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["currentCoverPhotoId"] = e.CurrentCoverPhotoId }),
+
         // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are
         // built internally and never arrive over HTTP, so this is a bug in our code, not bad
         // input, and no caller can act on it. Must stay ABOVE ArgumentException, which it derives
