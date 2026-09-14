@@ -17,7 +17,21 @@ public sealed record TokenRevoked(string Code, string Message)
 
     /// <summary>The tablet this token came from was revoked.</summary>
     public const string DeviceRevoked = "device-revoked";
+
+    /// <summary>
+    /// A diner token from a session that has ended: the account was deactivated or deleted, or its
+    /// session generation moved on - a password set or changed, or the number proved by its owner.
+    /// </summary>
+    public const string SessionRevoked = "session-revoked";
 }
+
+/// <summary>
+/// The three facts about a diner account that decide whether its tokens still work.
+/// </summary>
+/// <param name="IsActive">Whether the account is switched on.</param>
+/// <param name="IsDeleted">Whether the diner deleted it.</param>
+/// <param name="SessionGeneration">The generation a live token must carry.</param>
+public sealed record DinerSessionState(bool IsActive, bool IsDeleted, int SessionGeneration);
 
 /// <summary>
 /// What a tab participant's token may still do, decided from the tab as it stands now.
@@ -93,4 +107,26 @@ public interface ITokenAuthorityCheck
     /// participant on it may do, not just one of them.
     /// </summary>
     void InvalidateTab(Guid tabId);
+
+    /// <summary>
+    /// Whether a diner token minted under <paramref name="tokenSessionGeneration"/> is still good.
+    /// Null when it is; the reason, <see cref="TokenRevoked.SessionRevoked"/>, when it is not.
+    /// </summary>
+    /// <remarks>
+    /// Refused when the account is gone, inactive or deleted, or its generation differs from the
+    /// token's. The account read is cached for the same five seconds as the others, measured on the
+    /// application clock, and bypassed for a token <i>newer</i> than the cached generation - a
+    /// generation only goes up, so such a token proves the cache is stale rather than the token.
+    /// </remarks>
+    Task<TokenRevoked?> CheckDinerSessionAsync(
+        Guid dinerUserId,
+        int tokenSessionGeneration,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="InvalidateDevice"/>
+    /// <remarks>
+    /// Called after the write that bumped the generation has <b>committed</b>. Evicting before the
+    /// commit leaves a window in which another request re-reads the old generation and caches it.
+    /// </remarks>
+    void InvalidateDiner(Guid dinerUserId);
 }

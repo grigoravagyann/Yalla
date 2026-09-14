@@ -46,8 +46,15 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         return (Write(claims, expiresAtUtc), expiresAtUtc);
     }
 
-    /// <summary>A token for a diner who verified a phone number.</summary>
-    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(Guid dinerUserId)
+    /// <summary>A token for a diner account.</summary>
+    /// <param name="dinerUserId">The account.</param>
+    /// <param name="sessionGeneration">
+    /// The account's <c>SessionGeneration</c> as it will be <b>after</b> the caller saves. Required
+    /// rather than defaulted: a token minted under the wrong generation is refused on its first use,
+    /// and a default of zero is exactly the value that looks right in a test and is wrong for every
+    /// account that has ever changed its password.
+    /// </param>
+    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(Guid dinerUserId, int sessionGeneration)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -56,6 +63,7 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
             new(YallaClaims.PrincipalType, ((int)PrincipalType.Diner).ToString(CultureInfo.InvariantCulture)),
             new(YallaClaims.DinerUserId, dinerUserId.ToString()),
             new(JwtRegisteredClaimNames.Sub, dinerUserId.ToString()),
+            new(YallaClaims.SessionGeneration, sessionGeneration.ToString(CultureInfo.InvariantCulture)),
         };
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);

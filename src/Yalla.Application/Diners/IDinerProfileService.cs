@@ -23,14 +23,44 @@ public interface IDinerProfileService
     Task<DinerProfileView> UpdateAsync(UpdateDinerProfileCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sets a first password, or replaces the current one.
+    /// Sets a first password, or replaces the current one, and ends every access token the account
+    /// holds - the caller's included.
     /// </summary>
     /// <remarks>
     /// An account the code flow created has no password and sets one without proving anything
-    /// further - the bearer token is the proof. An account that has one must send it.
+    /// further - the bearer token is the proof, so that token's session generation must still be
+    /// the account's, read from the row rather than trusted from a cache. An account that has one
+    /// must send it.
     /// </remarks>
-    /// <exception cref="Domain.Identity.AuthenticationFailedException">The current password was wrong, or was needed and not sent.</exception>
-    Task SetPasswordAsync(string? currentPassword, string newPassword, CancellationToken cancellationToken = default);
+    /// <param name="currentPassword">Required when the account has a password.</param>
+    /// <param name="newPassword">The new one, under registration's rule.</param>
+    /// <param name="tokenSessionGeneration">The <c>sgen</c> claim of the token the request carried.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <exception cref="Domain.Identity.AuthenticationFailedException">
+    /// <c>invalid-credentials</c>: the current password was wrong, or was needed and not sent.
+    /// <c>session-revoked</c>: a first password from a token whose session has ended.
+    /// </exception>
+    Task SetPasswordAsync(
+        string? currentPassword,
+        string newPassword,
+        int tokenSessionGeneration,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes the caller's account, after proving it is really them: the password when the account
+    /// has one, otherwise a one-time code sent to its number.
+    /// </summary>
+    /// <remarks>
+    /// One transaction: the account becomes a tombstone with nothing identifying left on it, every
+    /// session ends, reviews, devices and pictures are deleted, and bookings and tab places are kept
+    /// for the venue with the link to the person removed. See <c>docs/auth.md</c>.
+    /// </remarks>
+    /// <exception cref="Domain.FieldValidationException">The proof the account needs was not sent.</exception>
+    /// <exception cref="Domain.Identity.AuthenticationFailedException">
+    /// <c>invalid-credentials</c> for a wrong password or code; <c>too-many-attempts</c> once the
+    /// attempts on the account, or on the code, are spent.
+    /// </exception>
+    Task DeleteAccountAsync(string? password, string? code, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stores an image as the caller's profile picture, replacing whatever was there.
@@ -43,6 +73,9 @@ public interface IDinerProfileService
     /// <exception cref="Domain.Media.UnsupportedImageException">Not a JPEG, PNG or WebP, or too large.</exception>
     Task<PhotoView> SetPhotoAsync(Stream content, string contentType, CancellationToken cancellationToken = default);
 
-    /// <summary>Clears the profile picture. Succeeds when there was none.</summary>
+    /// <summary>
+    /// Clears the profile picture and deletes it - row and files - at once, so its links stop
+    /// answering. Succeeds when there was none.
+    /// </summary>
     Task RemovePhotoAsync(CancellationToken cancellationToken = default);
 }

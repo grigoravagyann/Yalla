@@ -144,6 +144,16 @@ permissions travel with them: `CanOrder`, `CanSeeTableTotal`, `CanPay`. **`CanPa
 enforced as a domain invariant in the entity, not as a UI rule, because three separate clients
 consume this API and a rule living in one of them is a rule the other two will forget.
 
+`UserId` is the diner account a participant belongs to, recorded when the scanning phone happened to
+carry a diner token - usually it did not, and the column is null. It is indexed by
+**`IX_TabParticipants_UserId`** (migration `20260913235419_TabParticipantsByDinerAccount`), which
+**includes `TabId`, `Status` and `CanSeeTableTotal`**. The index exists for the diner app's Orders
+tab, `GET /api/diner/orders`, which starts from the account rather than from the order history: every
+tab this diner was on, and whether each lets them see the table's bill (the rule that decides whether
+a whole-table order is theirs), comes out of one seek with no key lookups. Without it every open of
+the Orders tab scanned every participant on the platform. Deleting a diner account clears `UserId`
+and renames the participant `Guest`; the row stays, because order lines and shares point at it.
+
 `TabJoinToken` is a short-lived invitation to join an *open* tab (the table's QR code is stable
 and opens a *new* one). Tokens expire 30 minutes after issue so a screenshot from last Tuesday
 cannot get a stranger onto a live tab. `Token` is unique system-wide, because it is looked up on
@@ -226,6 +236,16 @@ picture of a person). `PhoneVerifiedAtUtc` is when a code to the number first ca
 an account that registered with the number typed and has never proved it, and the column every
 reminder should read rather than assuming the row implies a real number. Existing rows were
 backfilled from their last sign-in, because a code was the only way a row could come to exist.
+
+`SessionGeneration` (`int`, database default 0) is the generation every diner access token's `sgen`
+claim must match. It is bumped when the number's owner displaces a registrant, when a password is set
+or changed, and when the account is deactivated or deleted, and each bump ends every access token the
+account holds. `DeletedAtUtc` marks a deleted account, which is a **tombstone**: the row stays for the
+ids that point at it, with the number, username, email, name, password and verification stamp
+cleared. That is why, since migration `20260914102955_DinerSessionGenerationAndDeletion`, `PhoneE164`
+is nullable and its unique index `UX_DinerUsers_PhoneE164` is filtered to `PhoneE164 IS NOT NULL`:
+every live account still has exactly one number, and a deleted one gives its number back. See
+[docs/auth.md](docs/auth.md#deleting-an-account).
 
 `PhoneVerificationCode` — six digits, five minutes, five attempts, single use, hashed at rest.
 Indexed on `(PhoneE164, ExpiresAtUtc)` filtered to unconsumed rows, which is the read the

@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Security.Claims;
+
 namespace Yalla.Infrastructure.Identity;
 
 /// <summary>
@@ -54,4 +57,33 @@ public static class YallaClaims
     /// the framework's own role checks work against it.
     /// </summary>
     public const string Role = "role";
+
+    /// <summary>
+    /// The diner account's <c>DinerUser.SessionGeneration</c> when the token was minted, as a
+    /// string. Present only on a diner token; a token whose value no longer matches the row is
+    /// refused with <c>session-revoked</c>.
+    /// </summary>
+    public const string SessionGeneration = "sgen";
+
+    /// <summary>
+    /// Reads <see cref="SessionGeneration"/> off a diner token.
+    /// </summary>
+    /// <remarks>
+    /// A token with no claim at all was minted before the claim existed, and every account started
+    /// at generation zero - so it reads as zero and keeps working until something bumps the
+    /// account. A claim that is present and not a non-negative integer is not something this system
+    /// wrote, and answers false.
+    /// </remarks>
+    public static bool TryReadSessionGeneration(ClaimsPrincipal? principal, out int generation)
+    {
+        var raw = principal?.FindFirst(SessionGeneration)?.Value;
+
+        if (raw is null)
+        {
+            generation = 0;
+            return true;
+        }
+
+        return int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out generation);
+    }
 }

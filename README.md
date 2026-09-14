@@ -6,11 +6,24 @@ Table reservation and in-app ordering for restaurants and cafes, launching in Ye
 Core 9, EF Core, SQL Server, minimal APIs. Three clients consume this API: the diner app, the staff
 tablet, and the owner's admin panel.
 
-- `SCHEMA.md` — the database schema and the decisions behind it.
-- `docs/` — one document per subsystem: `auth.md`, `reservations.md`, `tabs.md`,
-  `platform-admin.md`, `openapi.md`, `billing.md`, `notifications.md`,
-  `menu-completeness.md`, `tab-totals.md`, `error-contract.md`, `contract-tests.md`,
-  `reports.md`.
+- [`SCHEMA.md`](SCHEMA.md) — the database schema and the decisions behind it.
+- `docs/` — one document per subsystem:
+  - [`auth.md`](docs/auth.md) — the four identity types, tokens, diner sessions and account deletion
+  - [`billing.md`](docs/billing.md) — billing arithmetic, and what it is not
+  - [`contract-tests.md`](docs/contract-tests.md) — contract tests, and why a green suite once proved nothing
+  - [`diner-browse.md`](docs/diner-browse.md) — the diner app's real-data contract: browse, reviews,
+    orders, account, rate limits, seed data, and the contract changes in progress
+  - [`error-contract.md`](docs/error-contract.md) — which refusals name their field
+  - [`menu-completeness.md`](docs/menu-completeness.md) — what makes a menu item complete
+  - [`notifications.md`](docs/notifications.md) — the outbox, what is sent, and what nothing sends
+  - [`openapi.md`](docs/openapi.md) — the OpenAPI document
+  - [`platform-admin.md`](docs/platform-admin.md) — the tier above every venue
+  - [`public-surface.md`](docs/public-surface.md) — the anonymous routes: browse lists, branch pages,
+    managing a booking without an account
+  - [`reports.md`](docs/reports.md) — what each report answers
+  - [`reservations.md`](docs/reservations.md) — bookings: the conflict rule, and why it locks
+  - [`tab-totals.md`](docs/tab-totals.md) — which commands write the tab row
+  - [`tabs.md`](docs/tabs.md) — opening a tab by scan, joining, and who may see what
 
 ## Running locally
 

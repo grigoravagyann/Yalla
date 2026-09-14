@@ -119,4 +119,16 @@ public interface IPhotoService
     /// </summary>
     /// <returns>How many were swept.</returns>
     Task<int> SweepOrphansAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes one photo now, files and row, rather than waiting for the sweep. Succeeds when there
+    /// is no such photo.
+    /// </summary>
+    /// <remarks>
+    /// <b>No permission check</b>: this is for a service that has already decided the photo is the
+    /// caller's to delete - a diner removing their own picture, or deleting their account - and has
+    /// already pointed everything that referenced it elsewhere. A photo still used as a branch cover
+    /// or a dish is refused by the database, not here. Joins the caller's transaction when there is one.
+    /// </remarks>
+    Task DeleteAsync(Guid photoId, CancellationToken cancellationToken = default);
 }

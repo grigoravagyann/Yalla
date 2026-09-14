@@ -80,4 +80,11 @@ public interface IAuthorizationQueries
     /// staff session token, which is what makes revocation immediate.
     /// </summary>
     Task<bool> IsStaffDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether a diner account is active, deleted, and which session generation it is on. Null when
+    /// there is no such account. Called for every request carrying a diner token, through the
+    /// five-second cache in <see cref="ITokenAuthorityCheck.CheckDinerSessionAsync"/>.
+    /// </summary>
+    Task<DinerSessionState?> GetDinerSessionStateAsync(Guid dinerUserId, CancellationToken cancellationToken = default);
 }

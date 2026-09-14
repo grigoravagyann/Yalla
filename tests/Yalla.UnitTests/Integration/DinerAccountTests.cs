@@ -346,31 +346,39 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         var first = await me.PutAsJsonAsync("/api/diner/me/password", new { newPassword = Password });
         Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
 
-        var after = await me.GetFromJsonAsync<JsonElement>("/api/diner/me");
-        Assert.True(after.GetProperty("hasPassword").GetBoolean());
+        // Setting a password ends every access token the account holds, the one it was set with
+        // included - that is the session generation moving on, and it is immediate.
+        await AssertSessionRevokedAsync(await me.GetAsync("/api/diner/me"));
 
         var signIn = await anonymous.PostAsJsonAsync(
             "/api/auth/diner/login", new { identifier = username, password = Password });
         Assert.Equal(HttpStatusCode.OK, signIn.StatusCode);
-        Assert.Equal(dinerUserId, (await signIn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("dinerUserId").GetGuid());
+
+        var signedIn = await signIn.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(dinerUserId, signedIn.GetProperty("dinerUserId").GetGuid());
+
+        using var again = factory.CreateClientWithToken(signedIn.GetProperty("accessToken").GetString()!);
+
+        var after = await again.GetFromJsonAsync<JsonElement>("/api/diner/me");
+        Assert.True(after.GetProperty("hasPassword").GetBoolean());
 
         // Now there is one, changing it needs it.
         const string replacement = "dolma-and-lavash-9";
 
         await AssertProblemAsync(
-            await me.PutAsJsonAsync("/api/diner/me/password", new { currentPassword = "wrong", newPassword = replacement }),
+            await again.PutAsJsonAsync("/api/diner/me/password", new { currentPassword = "wrong", newPassword = replacement }),
             HttpStatusCode.Unauthorized, "invalid-credentials");
 
         await AssertProblemAsync(
-            await me.PutAsJsonAsync("/api/diner/me/password", new { newPassword = replacement }),
+            await again.PutAsJsonAsync("/api/diner/me/password", new { newPassword = replacement }),
             HttpStatusCode.Unauthorized, "invalid-credentials");
 
         // The new one is under the same rule as registration.
         await AssertProblemAsync(
-            await me.PutAsJsonAsync("/api/diner/me/password", new { currentPassword = Password, newPassword = username }),
+            await again.PutAsJsonAsync("/api/diner/me/password", new { currentPassword = Password, newPassword = username }),
             HttpStatusCode.BadRequest, "invalid-request", field: "newPassword");
 
-        var changed = await me.PutAsJsonAsync(
+        var changed = await again.PutAsJsonAsync(
             "/api/diner/me/password", new { currentPassword = Password, newPassword = replacement });
         Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
 
@@ -430,7 +438,9 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         // Replace.
         var second = await UploadAsync(me, Png(2));
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
-        var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("photoId").GetGuid();
+        var secondView = await second.Content.ReadFromJsonAsync<JsonElement>();
+        var secondId = secondView.GetProperty("photoId").GetGuid();
+        var secondCardUrl = secondView.GetProperty("cardUrl").GetString()!;
         Assert.NotEqual(firstId, secondId);
 
         var afterSecond = await me.GetFromJsonAsync<JsonElement>("/api/diner/me");
@@ -449,19 +459,21 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
 
         Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync(firstCardUrl)).StatusCode);
 
-        // Remove, and the sweep takes that one too.
+        Assert.Equal(HttpStatusCode.OK, (await anonymous.GetAsync(secondCardUrl)).StatusCode);
+
+        // Remove: deleted there and then, row and files, so the link stops answering on the next
+        // request rather than a day later when the sweep would have got to it.
         Assert.Equal(HttpStatusCode.NoContent, (await me.DeleteAsync("/api/diner/me/photo")).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await me.DeleteAsync("/api/diner/me/photo")).StatusCode);
 
         var afterRemove = await me.GetFromJsonAsync<JsonElement>("/api/diner/me");
         Assert.False(afterRemove.TryGetProperty("photo", out var gone) && gone.ValueKind != JsonValueKind.Null);
 
-        factory.Clock.Advance(TimeSpan.FromHours(25));
-        await SweepAsync(factory);
+        Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync(secondCardUrl)).StatusCode);
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            Assert.False(await db.Photos.AnyAsync(p => p.Id == secondId));
+            Assert.False(await db.Photos.AnyAsync(p => p.Id == secondId), "The removed picture's row survived.");
         }
 
         // And the bytes decide what is a picture, exactly as for a branch.
@@ -565,14 +577,45 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
         using var anonymous = factory.CreateClient();
 
-        // Somebody registers with a number that is not theirs, and keeps the refresh token.
+        // Somebody registers with a number that is not theirs, and keeps both tokens. The access
+        // token works, and using it fills the authority cache with the account as it is now - so
+        // what follows proves the owner's sign-in evicts it rather than waiting it out.
         var squatter = await RegisteredAsync(anonymous);
+        using var squatterClient = factory.CreateClientWithToken(squatter.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, (await squatterClient.GetAsync("/api/diner/me")).StatusCode);
 
         // The number's owner signs in with a code.
         var (ownerId, ownerToken) = await SignInByCodeAsync(anonymous, squatter.Phone, expectNewAccount: false);
         Assert.Equal(squatter.DinerUserId, ownerId);
+
+        // The access token the squatter still holds is refused at once, on every route - including
+        // the one that would have set a new password on the owner's account with no current one.
+        var reviewRoute = $"/api/diner/branches/{branch.BranchId}/review";
+
+        await AssertSessionRevokedAsync(await squatterClient.GetAsync("/api/diner/me"));
+        await AssertSessionRevokedAsync(
+            await squatterClient.PutAsJsonAsync("/api/diner/me/password", new { newPassword = "the-squatter-again-2026" }));
+        await AssertSessionRevokedAsync(
+            await squatterClient.PutAsJsonAsync("/api/diner/me", new { displayName = "Squatter" }));
+        await AssertSessionRevokedAsync(await squatterClient.PostAsJsonAsync(reviewRoute, new { rating = 1 }));
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var row = await db.DinerUsers.AsNoTracking().SingleAsync(d => d.Id == squatter.DinerUserId);
+
+            Assert.Null(row.PasswordHash);
+            Assert.Equal("Ani", row.DisplayName);
+            Assert.False(await db.BranchReviews.AnyAsync(r => r.DinerUserId == squatter.DinerUserId));
+        }
 
         // The squatter's password no longer opens anything - the same 401 as a wrong one.
         await AssertProblemAsync(
@@ -594,16 +637,60 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
                 await db.RefreshTokens.CountAsync(t => t.SubjectId == squatter.DinerUserId && t.RevokedAtUtc == null));
         }
 
-        // The owner has no password yet, so sets one without a current one, and it works.
+        // The owner's token works on every one of those routes. The password goes last, because
+        // setting one ends the token it was set with too.
         using var owner = factory.CreateClientWithToken(ownerToken);
         Assert.False((await owner.GetFromJsonAsync<JsonElement>("/api/diner/me")).GetProperty("hasPassword").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync("/api/diner/me", new { displayName = "Owner" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(reviewRoute, new { rating = 5 })).StatusCode);
 
         var set = await owner.PutAsJsonAsync("/api/diner/me/password", new { newPassword = "the-owners-own-2026" });
         Assert.Equal(HttpStatusCode.NoContent, set.StatusCode);
+        await AssertSessionRevokedAsync(await owner.GetAsync("/api/diner/me"));
 
         var login = await anonymous.PostAsJsonAsync(
             "/api/auth/diner/login", new { identifier = squatter.Username, password = "the-owners-own-2026" });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+    }
+
+    /// <summary>
+    /// A deactivated account's token stops working without anybody evicting anything - at most the
+    /// authority check's five-second window later, measured on the application clock.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_deactivated_accounts_token_is_refused_everywhere_once_the_cache_window_has_passed()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var anonymous = factory.CreateClient();
+        var (dinerUserId, token) = await SignInByCodeAsync(anonymous, NewPhone());
+        using var diner = factory.CreateClientWithToken(token);
+
+        // Works, and the account's state is now cached.
+        Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync("/api/diner/me")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync("/api/diner/orders")).StatusCode);
+
+        // Switched off straight in the database, the way an operator would - nothing tells the cache.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            (await db.DinerUsers.SingleAsync(d => d.Id == dinerUserId)).SetActive(false);
+            await db.SaveChangesAsync();
+        }
+
+        factory.Clock.Advance(TimeSpan.FromSeconds(6));
+
+        await AssertSessionRevokedAsync(await diner.GetAsync("/api/diner/me"));
+        await AssertSessionRevokedAsync(await diner.GetAsync("/api/diner/orders"));
+        await AssertSessionRevokedAsync(
+            await diner.PostAsJsonAsync($"/api/diner/branches/{branch.BranchId}/review", new { rating = 4 }));
     }
 
     [SkippableFact]
@@ -852,6 +939,21 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         {
             Assert.Equal(field, problem.GetProperty("context").GetProperty("field").GetString());
         }
+    }
+
+    /// <summary>
+    /// A 401 for an ended diner session: the code the app branches on, and the header that says the
+    /// token itself is what is wrong.
+    /// </summary>
+    internal static async Task AssertSessionRevokedAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Contains(
+            response.Headers.WwwAuthenticate,
+            h => h.Scheme == "Bearer" && h.Parameter == "error=\"invalid_token\"");
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("session-revoked", problem.GetProperty("code").GetString());
     }
 
     /// <summary>A small PNG, different per seed so no two uploads deduplicate into one row.</summary>

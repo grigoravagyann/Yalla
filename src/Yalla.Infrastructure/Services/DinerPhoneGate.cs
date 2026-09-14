@@ -27,7 +27,8 @@ namespace Yalla.Infrastructure.Services;
 internal static class DinerPhoneGate
 {
     /// <exception cref="PhoneNotVerifiedException">
-    /// The account's number has never been proved, or the account row does not exist.
+    /// The account's number has never been proved, the account is inactive or deleted, or the
+    /// account row does not exist.
     /// </exception>
     public static async Task RequireVerifiedPhoneAsync(
         YallaDbContext db,
@@ -36,11 +37,13 @@ internal static class DinerPhoneGate
         CancellationToken cancellationToken)
     {
         // A missing row is refused as unverified rather than let through: a token for an account
-        // that is not there proves nothing about any number.
+        // that is not there proves nothing about any number. An inactive or deleted one is refused
+        // the same way - the token check in front of every diner route already turns those away,
+        // but it reads through a five-second cache, and this read does not.
         var verified = await db.DinerUsers
             .AsNoTracking()
             .Where(d => d.Id == dinerUserId)
-            .Select(d => d.PhoneVerifiedAtUtc != null)
+            .Select(d => d.PhoneVerifiedAtUtc != null && d.IsActive && d.DeletedAtUtc == null)
             .FirstOrDefaultAsync(cancellationToken);
 
         if (!verified)

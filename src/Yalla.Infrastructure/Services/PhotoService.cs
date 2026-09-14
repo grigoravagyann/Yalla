@@ -184,6 +184,39 @@ internal sealed class PhotoService(
         return orphans.Count;
     }
 
+    public async Task DeleteAsync(Guid photoId, CancellationToken cancellationToken = default)
+    {
+        var photo = await db.Photos.FirstOrDefaultAsync(p => p.Id == photoId, cancellationToken);
+
+        if (photo is null)
+        {
+            return;
+        }
+
+        // Files first, for the sweep's reason: if the row delete then fails, what is left is a row
+        // whose variants answer 404 - "no such picture", which is true - rather than files nothing
+        // will ever find again.
+        if (!photo.IsExternallyHosted)
+        {
+            foreach (var path in new[] { photo.ThumbnailPath, photo.CardPath, photo.FullPath })
+            {
+                try
+                {
+                    await storage.DeleteAsync(path, cancellationToken);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    logger.LogWarning(ex, "Could not delete {Path} while deleting photo {PhotoId}.", path, photo.Id);
+                }
+            }
+        }
+
+        db.Photos.Remove(photo);
+        await db.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Deleted photo {PhotoId} and its files.", photo.Id);
+    }
+
     /// <summary>
     /// The caller must be an active owner or manager of the venue the branch belongs to, or the
     /// platform admin.

@@ -78,7 +78,11 @@ internal sealed class UnifiedExceptionHandler(
         if (mapped.Status == StatusCodes.Status401Unauthorized
             && !httpContext.Response.Headers.ContainsKey("WWW-Authenticate"))
         {
-            httpContext.Response.Headers.WWWAuthenticate = "Bearer";
+            // A revoked session says the token itself is the problem (RFC 6750), so a client knows
+            // to refresh or sign in again rather than resend the same one.
+            httpContext.Response.Headers.WWWAuthenticate = mapped.Code == ErrorCodes.SessionRevoked
+                ? "Bearer error=\"invalid_token\""
+                : "Bearer";
         }
 
         await httpContext.Response.WriteAsJsonAsync(

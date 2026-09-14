@@ -73,6 +73,10 @@ Writing a review is `POST`/`PUT /api/diner/branches/{branchId}/review` under the
 review per diner per branch, a phone-verified account only. Reviews are published under a first
 name and last initial.
 
+The full contract for these routes - every shape, the app's field maps, the rate limits, the Orders
+tab, the Development seed and the contract changes in progress - is
+[diner-browse.md](diner-browse.md).
+
 ---
 
 ## The branch page

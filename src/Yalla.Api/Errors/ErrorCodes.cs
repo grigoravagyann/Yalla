@@ -120,6 +120,15 @@ public static class ErrorCodes
     public const string Unauthenticated = "unauthenticated";
 
     /// <summary>
+    /// A diner token from a session that has ended. HTTP 401, with
+    /// <c>WWW-Authenticate: Bearer error="invalid_token"</c>. The account was deactivated or deleted,
+    /// or its session generation moved on: the password was set or changed, or the number's owner
+    /// proved it and displaced a registrant. The client tries its refresh token once; when that is
+    /// refused too, it signs out.
+    /// </summary>
+    public const string SessionRevoked = "session-revoked";
+
+    /// <summary>
     /// A one-time credential is out of attempts, or a per-identity limit is spent. HTTP 429.
     /// Asking again immediately will not help; ask for a new code.
     /// </summary>
@@ -310,6 +319,7 @@ public static class ErrorCodes
         ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",
+        SessionRevoked => "Session revoked",
         TooManyAttempts => "Too many attempts",
         AccountLocked => "Account locked",
         FeatureNotEnabled => "Feature not enabled for this branch",
