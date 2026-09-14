@@ -455,7 +455,7 @@ internal sealed class TabOrderService(
             .Include(o => o.Lines)
             .ThenInclude(l => l.Shares)
             .Include(o => o.Tab).ThenInclude(t => t.DiningTable)
-            .Include(o => o.Tab).ThenInclude(t => t.Branch)
+            .Include(o => o.Tab).ThenInclude(t => t.Branch).ThenInclude(b => b.Venue)
             .Include(o => o.Tab).ThenInclude(t => t.Participants)
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
             ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
@@ -489,6 +489,18 @@ internal sealed class TabOrderService(
                     },
                     clock.UtcNow,
                     OutboxMessageTypes.KeyFor("order", order.Id, "ready"));
+
+                // Into the diner's feed beside the push, saved with it by the ledger below (K12).
+                DinerNotices.OrderReady(
+                    db,
+                    dinerUserId,
+                    order.Tab.BranchId,
+                    order.Tab.Branch.Venue?.Name ?? order.Tab.Branch.Name,
+                    order.Tab.Branch.Name,
+                    order.TabId,
+                    order.Id,
+                    order.Tab.DiningTable.Label,
+                    clock.UtcNow);
             }
         }
 

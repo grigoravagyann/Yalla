@@ -186,6 +186,8 @@ api.MapDinerAccountEndpoints();
 api.MapDinerBrowseEndpoints();
 api.MapReviewModerationEndpoints();
 api.MapNotificationEndpoints();
+api.MapDinerFavoriteEndpoints();
+api.MapDinerNotificationFeedEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();
 

@@ -392,6 +392,9 @@ internal sealed class ReservationService(
         await outbox.CancelAsync(
             OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
 
+        // And its feed entry that has not appeared yet - the reminder - with it (K12).
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         if (late)
@@ -760,11 +763,16 @@ internal sealed class ReservationService(
             clock.UtcNow,
             OutboxMessageTypes.KeyFor("reservation", reservation.Id, approve ? "approved" : "rejected"));
 
+        // The same fact into the diner's feed, beside its push and in the same save (K12).
+        DinerNotices.BookingDecided(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, approve, nowUtc);
+
         if (!approve)
         {
             // A rejected booking is not going to happen, so its reminder and nudge must not fire.
             await outbox.CancelAsync(
                 OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+
+            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -845,6 +853,10 @@ internal sealed class ReservationService(
                 notice,
                 remindAt,
                 OutboxMessageTypes.KeyFor("reservation", reservation.Id, "reminder"));
+
+            // Its feed entry, written now beside the push and appearing when the push is due (K12).
+            // Cancelling the booking before then deletes both.
+            DinerNotices.BookingReminder(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, remindAt);
         }
 
         // The nudge is always in the future when the booking is made, because a booking cannot start
@@ -961,6 +973,18 @@ internal sealed class ReservationService(
         // after a waiter has already given the table away is the worst of both.
         await outbox.CancelAsync(
             OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+        // The venue let an accepted booking go, and the diner's feed hears about it (K12). No push has
+        // ever been sent for this; the entry is saved with the release. A no-show tells nobody.
+        if (command.Outcome != ReleaseOutcome.NoShow && reservation.DinerUserId is not null)
+        {
+            var releasedAt = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+            DinerNotices.BookingCancelledByVenue(
+                db, reservation, releasedAt.Venue?.Name ?? releasedAt.Name, releasedAt.Name, nowUtc);
+        }
 
         await db.SaveChangesAsync(cancellationToken);
 

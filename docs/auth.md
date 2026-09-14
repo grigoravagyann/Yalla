@@ -277,6 +277,8 @@ person cut.**
 | `DinerUsers` | A tombstone: `DeletedAtUtc` set, `IsActive` false, `PhoneE164`, `Username`, `Email`, `DisplayName`, `PasswordHash`, `PhoneVerifiedAtUtc` and `PhotoId` cleared, `SessionGeneration` bumped. The number, username and email can make a new account; the id is never reused |
 | `RefreshTokens` | Every one revoked, reason `account-deleted` |
 | `DinerDevices` | Deleted |
+| `DinerFavorites` | Deleted (K11) |
+| `DinerNotifications` | Deleted, including a reminder that has not appeared yet (K12) |
 | `Photos` the account owns | Deleted, files first - the current picture and any replaced one still waiting for the sweep |
 | `BranchReviews` by the account | Deleted; rating and count are computed on read |
 | `TabParticipants` | `UserId` cleared and `DisplayName` set to `Guest`, which is what an account-less scan looks like. The row stays: order lines and shares point at it |
@@ -287,9 +289,9 @@ person cut.**
 **A new table with a `DinerUserId` needs one line** in `DinerAccountDeletion`:
 `RemoveRowsOwnedByAsync` if its rows are the person's, `DetachVenueRecordsAsync` if they are the
 venue's record. A foreign key will not catch the omission, because the account row is a tombstone
-rather than gone. Favourites, the notifications feed and review reports go in the first of the two
-when those tables arrive - review reports above the reviews line, and including the reports filed
-against the diner's own reviews.
+rather than gone. Favourites (`DinerFavorites`), the notifications feed (`DinerNotifications`) and
+review reports are in the first of the two - review reports above the reviews line, and including the
+reports filed against the diner's own reviews.
 
 ## 3. Staff — device-bound branch token plus a per-person PIN
 

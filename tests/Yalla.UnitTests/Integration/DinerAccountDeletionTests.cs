@@ -110,6 +110,18 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
         var before = await anonymous.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branch.BranchId}/reviews?page=1");
         Assert.Equal(1, before.GetProperty("reviewCount").GetInt32());
 
+        // A favourite (K11) and an entry in the feed (K12) - the booking above also wrote its reminder.
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await diner.PutAsync($"/api/diner/favorites/{branch.BranchId}", content: null)).StatusCode);
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            db.DinerNotifications.Add(new DinerNotification(
+                dinerUserId, DinerNotificationKinds.OrderReady, "{\"tableLabel\":\"2\"}", factory.Clock.UtcNow, branch.BranchId));
+            await db.SaveChangesAsync();
+        }
+
         // Delete.
         Assert.Equal(HttpStatusCode.NoContent, (await DeleteAccountAsync(diner, new { password = Password })).StatusCode);
 
@@ -144,6 +156,8 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
             Assert.Null(tombstone.PhotoId);
 
             Assert.False(await db.BranchReviews.AnyAsync(r => r.DinerUserId == dinerUserId));
+            Assert.False(await db.DinerFavorites.AnyAsync(f => f.DinerUserId == dinerUserId));
+            Assert.False(await db.DinerNotifications.AnyAsync(n => n.DinerUserId == dinerUserId));
             Assert.False(await db.Photos.AnyAsync(p => p.DinerUserId == dinerUserId));
             Assert.False(await db.DinerDevices.AnyAsync(d => d.DinerUserId == dinerUserId));
             Assert.Equal(

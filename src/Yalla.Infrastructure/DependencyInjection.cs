@@ -83,6 +83,12 @@ public static class DependencyInjection
         services.AddScoped<IBranchReviewService, BranchReviewService>();
         services.AddScoped<Yalla.Application.Reviews.IReviewModerationService, ReviewModerationService>();
         services.AddScoped<IDinerOrderQuery, DinerOrderQuery>();
+
+        // The diner's favourites and notifications feed (K11, K12). The feed is written by the services
+        // that enqueue its pushes, through DinerNotices; these are the diner's reads and the sweep.
+        services.AddScoped<IDinerFavoriteService, DinerFavoriteService>();
+        services.AddScoped<IDinerNotificationFeed, DinerNotificationFeed>();
+        services.AddScoped<DinerNotificationRetention>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 

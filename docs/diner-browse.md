@@ -30,8 +30,8 @@ as **in progress**: the route or field is not served yet.
 | K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | **Implemented** |
 | K9 | App booking gate and booking note | B3 | **Implemented** |
 | K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | In progress |
-| K11 | Favourites synced to the account | B6 | In progress |
-| K12 | Diner notifications feed | B6 | In progress |
+| K11 | Favourites synced to the account | B6 | **Implemented** |
+| K12 | Diner notifications feed | B6 | **Implemented** |
 
 Backend migrations run one after another in that order (B1, B2, B3, B6), because the test fixture
 builds the schema with `MigrateAsync`.
@@ -374,8 +374,8 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `GET /api/public/branches`, `/api/public/branches/search`, `/api/public/venues` | `public-browse`: 120 per 60 s | One city-wide ceiling for the three: 6000 per 60 s |
 | `GET /api/public/branches/{branchId}`, `…/reviews`, `…/table-markers` | `public-place`: 120 per 60 s | Per-branch ceiling: 300 per 60 s, whoever asks |
 | Other `/api/public` routes (branch page, menu, meta, availability, bookings) | see [public-surface.md](public-surface.md#rate-limits) | |
-| `GET /api/diner/branches/{id}/review`, `/api/diner/orders`, `/api/diner/me` reads and edits | none - the global limiter only | |
-| `POST`/`PUT /api/diner/branches/{id}/review`, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo`, `POST /api/branches/{id}/photos` | `diner-write`: 10 per 60 s per caller, one budget shared by all four (`RateLimiting:DinerWritePermitLimit`, `DinerWriteWindowSeconds`) | |
+| `GET /api/diner/branches/{id}/review`, `/api/diner/orders`, `/api/diner/me` reads and edits, `GET /api/diner/favorites`, `GET /api/diner/notifications`, `POST /api/diner/notifications/read` | none - the global limiter only | |
+| `POST`/`PUT /api/diner/branches/{id}/review`, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo`, `POST /api/branches/{id}/photos`, `PUT /api/diner/favorites`, `PUT`/`DELETE /api/diner/favorites/{branchId}` | `diner-write`: 10 per 60 s per caller, one budget shared by all of them (`RateLimiting:DinerWritePermitLimit`, `DinerWriteWindowSeconds`) | |
 | `DELETE /api/diner/me` | `auth`: 10 per 60 s | Per account, in the service: 10 attempts per 15 min, right or wrong → 429 `too-many-attempts` |
 | `POST /api/auth/diner/request-code`, `/register` | `auth-code-request`: 5 per 300 s | `request-code` is also limited per phone number in the service |
 | `POST /api/auth/diner/verify-code`, `/login`, `/refresh` | `auth`: 10 per 60 s | `login` is also limited per identifier: 10 per 15 min |
@@ -407,8 +407,7 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `20260914102955_DinerSessionGenerationAndDeletion` (K1, K2) | `DinerUsers.SessionGeneration int NOT NULL DEFAULT 0`; `DinerUsers.DeletedAtUtc datetime2 NULL`; `DinerUsers.PhoneE164` nullable, with `UX_DinerUsers_PhoneE164` filtered to `PhoneE164 IS NOT NULL` so a deleted account gives its number back |
 | `20260914110522_BranchFloorPlanVersion` (K6) | `Branches.FloorPlanVersion int NOT NULL DEFAULT 0`, an EF concurrency token |
 | `20260914145450_ReviewModerationReportsAndReservationNote` (K8, its extension, K9) | `BranchReviews.HiddenAtUtc datetime2 NULL`, `HiddenReason nvarchar(500) NULL`, `HiddenByStaffMemberId uniqueidentifier NULL`, `HiddenByPlatform bit NOT NULL DEFAULT 0`; the `(BranchId, UpdatedAtUtc)` index replaced by `(BranchId, CreatedAtUtc)`; table `BranchReviewReports` (`ReviewId` cascading from its review, `DinerUserId` Restrict, `Reason nvarchar(32)` held to the five slugs by `CK_BranchReviewReports_Reason`, `Note nvarchar(500)`; `UX_BranchReviewReports_ReviewId_DinerUserId`, `IX_BranchReviewReports_DinerUserId`); `Reservations.Note nvarchar(500) NULL` |
-
-Planned: B6's `DinerFavorites` and `DinerNotifications` (K11, K12).
+| `20260914154849_FavoritesAndNotifications` (K11, K12) | table `DinerFavorites` (`DinerUserId` cascading from the account, `BranchId` with no foreign key; `UX_DinerFavorites_DinerUserId_BranchId`); table `DinerNotifications` (`DinerUserId` cascading from the account, `Kind nvarchar(40)` held to the six kinds by `CK_DinerNotifications_Kind`, `ParamsJson nvarchar(2000)`, nullable `BranchId`, `ReservationId`, `TabId`, `OrderId` with no foreign keys, `ReadAtUtc`, `Sequence bigint IDENTITY`; indexes `(DinerUserId, CreatedAtUtc)`, the same filtered to `ReadAtUtc IS NULL`, `CreatedAtUtc`, and `ReservationId` filtered to non-null) |
 
 ---
 
@@ -497,8 +496,8 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
     `actorType: "diner"` and the counts removed and detached, and nothing identifying.
 - Review reports (K8 extension) are removed by the same transaction: the ones the diner filed, and every
   report about one of the diner's reviews. The audit row counts them as `reviewReports`. Favourites
-  (K11) and notifications (K12) are removed the same way once those tables exist - one line each in
-  `DinerAccountDeletion.RemoveRowsOwnedByAsync`.
+  (K11) and the notifications feed (K12) are removed the same way, one line each in
+  `DinerAccountDeletion.RemoveRowsOwnedByAsync`, counted as `favorites` and `notifications`.
 
 ### K3. `DELETE /api/diner/me/photo` - **implemented (B1)**
 
@@ -672,25 +671,80 @@ The user's decision: moderation and reporting are built now.
 - `appsettings.Staging.json`: `RateLimiting:Enabled = true`.
 - `GET /api/branches/{id}/readiness` is unchanged; only the frontend starts using it.
 
-### K11. Favourites - in progress (B6)
+### K11. Favourites - **implemented (B6)**
 
 The user's decision: favourites are synced to the account, not kept on the phone.
 
-- Entity `DinerFavorite { DinerUserId, BranchId, CreatedAtUtc }`, unique `(DinerUserId, BranchId)`,
-  foreign key cascading on diner delete (K2 also removes them explicitly), index on `DinerUserId`.
-- `GET /api/diner/favorites?lat=&lng=` - any diner token, verified number not required →
-  `{ items: [ { branchId, createdAtUtc, listing: PublicBranchListing } ] }`, newest first; inactive
-  branches omitted; `lat`/`lng` as the public list, for distance.
-- `PUT /api/diner/favorites/{branchId}` → 204, idempotent; 404 `not-found` for an unknown or inactive
-  branch; more than 500 favourites → 409 `conflicting-state`.
-- `DELETE /api/diner/favorites/{branchId}` → 204, idempotent.
-- `PUT /api/diner/favorites`, body `{ branchIds: uuid[] }` (≤ 500) → merges - adds what is missing,
-  never removes - and returns the GET shape. Used once at sign-in to upload hearts made signed out.
-- Rate limit: `diner-write`.
+- **Entity** `DinerFavorite { DinerUserId, BranchId, CreatedAtUtc }`, unique `(DinerUserId, BranchId)`
+  (`UX_DinerFavorites_DinerUserId_BranchId`, which leads with `DinerUserId` and is the index on it),
+  foreign key cascading from the account. K2 deletion also removes them explicitly (`favorites` in the
+  audit row's counts). As built there is **no foreign key to the branch**: a heart is checked against a
+  published branch when added and read back through the same rule.
+- **Policy:** any diner token (`VerifiedDiner`, which admits an account whose number is not proved). No
+  diner id in any route.
+- `GET /api/diner/favorites?lat=&lng=` → `DinerFavoriteList`
+  `{ items: [ { branchId, createdAtUtc, listing: PublicBranchListing } ] }`, newest first. A branch that
+  is not published (inactive, or its venue suspended or deleted) is left out and its row kept, so it comes
+  back if the branch reopens. `lat`/`lng` as the public list - together or neither, else 400 - adding
+  `distanceKm`. The branch rows are read live; rating, count, badges, open-now and free tables are the
+  list's 15 s cached numbers.
+- `PUT /api/diner/favorites/{branchId}` → 204, idempotent (re-sending a kept place is 204, even at the
+  limit); 404 `not-found` for an unknown or unpublished branch; a new heart past 500 → 409
+  `conflicting-state`.
+- `DELETE /api/diner/favorites/{branchId}` → 204, idempotent, including for an unknown or closed place.
+- `PUT /api/diner/favorites`, body `{ branchIds: uuid[] }` → 200 with the GET shape (and the same
+  `lat`/`lng`). Adds every published place not already kept and **removes nothing**; unknown, unpublished
+  and duplicate ids are skipped, not refused. `branchIds` missing → 422 `validation-failed` naming
+  `branchIds`, bound `required`; more than 500 → the same, bound `max`. A merge that would take the account
+  past 500 → 409 `conflicting-state`, and nothing is written. A bad position is refused before anything
+  is written. Used once at sign-in to upload hearts made signed out.
+- **Rate limit:** `diner-write` on the three writes; the GET is on the global limiter only.
+- Tests: `DinerFavoriteTests`, and `DinerAccountDeletionTests` for the deletion.
 
-### K12. Notifications feed - in progress (B6)
+### K12. Notifications feed - **implemented (B6)**
 
-The user's decision: the feed is built now.
+The user's decision: the feed is built now. As built:
+
+- **Entity** `DinerNotification { Id, DinerUserId, Kind, ParamsJson, BranchId?, ReservationId?, TabId?, OrderId?, CreatedAtUtc, ReadAtUtc?, Sequence }`.
+  No `Title` column: the server writes no prose, and the app builds the title and body from `kind` and
+  `params`. `Sequence` is a database identity that breaks ties for the cursor and is never sent.
+  `CreatedAtUtc` is when the entry **appears**.
+- **Where each kind is written**, always in the unit of work that saves the change, whether or not the
+  diner has a device:
+
+  | `kind` | Written when | Beside the push |
+  | --- | --- | --- |
+  | `booking-reminder` | A booking with an account is created and its reminder enqueued. `createdAtUtc` is the reminder's due time; the feed shows it from then | `reservation.reminder` |
+  | `booking-confirmed`, `booking-declined` | A manager approves or rejects a pending booking | `reservation.decided` |
+  | `booking-cancelled-by-venue` | Staff release a booking with outcome 2 (`CancelledByVenue`) | none exists - written with the release |
+  | `order-ready` | An order moves to Ready at a branch with `NotifyOnOrderReady` on, for the ordering participant's account | `tab.order-ready` |
+  | `review-hidden` | The platform or the venue takes down a review that was shown (not again when a hidden review is re-hidden) | none exists - written with the takedown |
+
+  The late nudge and "participant approved" pushes write no entry. Cancelling a booking - by the diner,
+  through the manage link, by rejection or by release - deletes its entries that have not appeared yet
+  (the reminder), alongside its unsent outbox messages.
+- **`params`** (all string values, as they were when written): booking kinds `venueName`, `branchName`,
+  `date` (`yyyy-MM-dd`, local), `time` (`HH:mm`, local), `partySize`, `reservationCode`; `order-ready`
+  `venueName`, `branchName`, `tableLabel`; `review-hidden` `venueName`, `branchName`, `reviewId`.
+- `GET /api/diner/notifications?before=<cursor>&limit=20` → `DinerNotificationPage`
+  `{ items: [ { notificationId, kind, params, branchId, branchName, reservationId, tabId, orderId, createdAtUtc, read } ], nextCursor, unreadCount }`,
+  newest first by `(createdAtUtc, sequence)`. Only entries that have appeared. `branchName` is the
+  branch's name now, or as written if the branch is gone. `nextCursor` is opaque and absent on the last
+  page. `limit` 1-50, else 400; a `before` this feed did not issue → 400 `invalid-request`. `unreadCount`
+  covers the whole feed, not the page.
+- `POST /api/diner/notifications/read`, body `{ upTo: notificationId | null, ids: uuid[] | null }` → 204.
+  `upTo` marks that entry and every older one; `ids` (at most 200, else 422 naming `ids`, bound `max`)
+  marks those; both may be sent. **Both absent marks every entry read** ("mark all read"). An unknown id,
+  or one that is not the caller's, is skipped rather than refused. An entry that has not appeared is
+  never marked.
+- **Policy:** any diner token; no rate limit beyond the global one.
+- **Retention:** `DinerNotificationRetention` deletes entries older than 90 days, run by the outbox's
+  background loop (`OutboxHostedService`) on its wake-up pass and then about hourly. It rides on that
+  loop, so it does not run while `Outbox:Enabled` is false.
+- **Account deletion (K2)** removes them (`notifications` in the audit row's counts).
+- Tests: `DinerNotificationFeedTests`, and `DinerAccountDeletionTests` for the deletion.
+
+The specification as first written:
 
 - Source: the existing outbox and push pipeline. Entity
   `DinerNotification { Id, DinerUserId, Kind, Title?, BodyKey/params JSON, BranchId?, ReservationId?, TabId?, OrderId?, CreatedAtUtc, ReadAtUtc? }`,

@@ -158,4 +158,10 @@ internal static class DatabaseIndexNames
     /// loser is answered as the success it would have been.
     /// </summary>
     public const string BranchReviewReportPerDiner = "UX_BranchReviewReports_ReviewId_DinerUserId";
+
+    /// <summary>
+    /// Unique on (diner, branch): one heart per place (K11). A violation means two taps raced; the loser
+    /// is answered as the success it would have been.
+    /// </summary>
+    public const string DinerFavoritePerDiner = "UX_DinerFavorites_DinerUserId_BranchId";
 }

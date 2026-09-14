@@ -82,6 +82,31 @@ internal sealed class PublicListingQuery(
                 .ThenBy(l => l.BranchName, StringComparer.OrdinalIgnoreCase)];
     }
 
+    public async Task<IReadOnlyList<PublicBranchListing>> GetListingsAsync(
+        IReadOnlyCollection<Guid> branchIds,
+        double? latitude,
+        double? longitude,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(branchIds);
+
+        CheckPosition(latitude, longitude);
+
+        if (branchIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = branchIds.Distinct().ToList();
+
+        // The rows live, not from the cached estate: a place hearted a moment after it was published is
+        // on the list at once. The numbers are the cached ones, the same as the browse list shows.
+        var rows = await Project(Published().Where(b => ids.Contains(b.Id))).ToListAsync(cancellationToken);
+        var stats = await StatsAsync(cancellationToken);
+
+        return [.. rows.Select(row => ToListing(row, stats, latitude, longitude))];
+    }
+
     public async Task<PublicBranchDetail> GetDetailAsync(
         Guid branchId,
         double? latitude,

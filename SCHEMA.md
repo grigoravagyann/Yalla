@@ -290,6 +290,24 @@ thief.
 `PasswordResetToken` — single use, one hour, hashed. Consuming one revokes every refresh token the
 account holds.
 
+`DinerFavorite` — a place a diner hearted, kept on the account (K11): `DinerUserId`, `BranchId`,
+`CreatedAtUtc`. **`(DinerUserId, BranchId)` is unique** (`UX_DinerFavorites_DinerUserId_BranchId`), and
+leading with the diner it is also the index the list and the 500-per-account limit read. Cascades from
+the account; **no foreign key to the branch** - a heart is checked against a published branch when it
+is added and read back through the same rule, so a place that closes drops out of the list and one that
+reopens comes back with its hearts. Deleting an account deletes them.
+
+`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of six slugs, held by
+`CK_DinerNotifications_Kind`), `ParamsJson` (2000, the string values the app builds its own text from -
+the server writes no prose), optional `BranchId`, `ReservationId`, `TabId`, `OrderId` (pointers the app
+follows, deliberately without foreign keys), `ReadAtUtc`, and `Sequence`, an identity column that breaks
+ties so the feed's cursor has a total order. Written beside the push in the same unit of work.
+`CreatedAtUtc` is **when the entry appears**: a booking reminder is written with the booking and carries
+the moment its push is due, and cancelling the booking before then deletes it. Indexed on
+`(DinerUserId, CreatedAtUtc)`, again filtered to `ReadAtUtc IS NULL` for the unread count, on
+`CreatedAtUtc` for the 90-day sweep, and on `ReservationId` for cancellation. Cascades from the account;
+deleting an account deletes them.
+
 Note what is **not** here: there is no table for a tab participant's identity, because a walk-in
 who scans a QR code has no account. They get a `TabParticipant` row and a token scoped to that one
 tab, and that is the whole of it.

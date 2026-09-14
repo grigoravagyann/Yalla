@@ -134,6 +134,21 @@ internal sealed class ReviewModerationService(
 
             if (!alreadyTheSame && !platformsAlready)
             {
+                // The author's feed hears about a takedown once, when the review goes from shown to
+                // hidden (K12) - not again when the platform takes over one a venue already hid. No
+                // push has ever been sent for this; the entry is written with the change instead.
+                if (!before.hidden)
+                {
+                    var names = await db.Branches
+                        .AsNoTracking()
+                        .Where(b => b.Id == review.BranchId)
+                        .Select(b => new { b.Name, VenueName = b.Venue.Name })
+                        .FirstAsync(cancellationToken);
+
+                    DinerNotices.ReviewHidden(
+                        db, review.DinerUserId, review.BranchId, review.Id, names.VenueName, names.Name, clock.UtcNow);
+                }
+
                 review.Hide(staffId, asPlatform, reason, clock.UtcNow);
                 changed = true;
             }

@@ -108,11 +108,6 @@ internal static class DinerAccountDeletion
     /// <summary>The person's own rows, deleted. One line per table, counted by name.</summary>
     /// <remarks>
     /// <para>Rows that point at another row in this list go above it.</para>
-    /// <para>
-    /// The tables later packages add each take one line here, above <c>reviews</c>: favourites
-    /// (<c>DinerFavorites</c>, by <c>DinerUserId</c>) and the notifications feed
-    /// (<c>DinerNotifications</c>, by <c>DinerUserId</c>).
-    /// </para>
     /// </remarks>
     private static async Task<Dictionary<string, int>> RemoveRowsOwnedByAsync(
         YallaDbContext db,
@@ -122,6 +117,17 @@ internal static class DinerAccountDeletion
         {
             ["devices"] = await db.DinerDevices
                 .Where(d => d.DinerUserId == dinerUserId)
+                .ExecuteDeleteAsync(cancellationToken),
+
+            // K11: the places the person hearted.
+            ["favorites"] = await db.DinerFavorites
+                .Where(f => f.DinerUserId == dinerUserId)
+                .ExecuteDeleteAsync(cancellationToken),
+
+            // K12: the feed - what happened to their bookings, orders and reviews, including a reminder
+            // that has not appeared yet.
+            ["notifications"] = await db.DinerNotifications
+                .Where(n => n.DinerUserId == dinerUserId)
                 .ExecuteDeleteAsync(cancellationToken),
 
             // Above the reviews (K8): the reports this diner filed, and every report about one of this

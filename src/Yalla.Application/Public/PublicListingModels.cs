@@ -168,6 +168,17 @@ public interface IPublicListingQuery
         BranchSearchRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The cards for these branches, as the list serves them - published ones only, in no particular
+    /// order. The diner's favourites (K11) read this.
+    /// </summary>
+    /// <exception cref="ArgumentException">A position half sent, or out of range.</exception>
+    Task<IReadOnlyList<PublicBranchListing>> GetListingsAsync(
+        IReadOnlyCollection<Guid> branchIds,
+        double? latitude,
+        double? longitude,
+        CancellationToken cancellationToken = default);
+
     /// <exception cref="KeyNotFoundException">No such published branch.</exception>
     Task<PublicBranchDetail> GetDetailAsync(
         Guid branchId,

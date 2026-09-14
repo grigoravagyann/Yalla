@@ -87,6 +87,10 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<DinerDevice> DinerDevices => Set<DinerDevice>();
 
+    public DbSet<DinerFavorite> DinerFavorites => Set<DinerFavorite>();
+
+    public DbSet<DinerNotification> DinerNotifications => Set<DinerNotification>();
+
     public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
 
     public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();
