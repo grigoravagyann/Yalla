@@ -34,6 +34,12 @@ dotnet run --project src/Yalla.Api
 On first start the database is migrated, the demo branch is seeded, and the platform admin above
 is created. Swagger UI is at `/swagger`.
 
+The demo data - the `yalla-demo` venue with its tables, opening hours, listing, reviews and table
+pins - is switched by `DevSeed:Enabled`, which is on in `appsettings.Development.json` and runs on
+every Development start (idempotently). It is independent of `DevActor:Enabled`, so it is there when
+you sign in for real with the actor stub off. Set `DevSeed:Enabled` to `false` for an empty
+database; it has no effect outside Development.
+
 ```
 dotnet test
 ```

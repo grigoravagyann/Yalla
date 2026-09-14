@@ -115,14 +115,40 @@ public class DevListingSeedTests(SqlServerFixture fixture)
         }
     }
 
-    [Fact]
-    public async Task Nothing_is_seeded_outside_Development_even_with_the_dev_actor_switched_on()
+    /// <summary>
+    /// The mode the apps are really tested in: real sign-in, so no stub - and the demo data anyway.
+    /// </summary>
+    [SkippableFact]
+    public async Task Development_seeds_the_demo_branch_with_the_dev_actor_switched_off()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        // DevActor:Enabled stays false, as the factory sets it.
+        await using var factory = new YallaApiFactory()
+            .WithDatabase(fixture.ConnectionString)
+            .With("DevSeed:Enabled", "true");
+
+        // Published by the seeder this host ran at startup, so it cannot be a demo branch left
+        // behind in the shared database by another test.
+        Assert.True(factory.Services.GetRequiredService<DevSeedRegistry>().IsSeeded);
+
+        using var scope = factory.Services.CreateScope();
+        Assert.Null(scope.ServiceProvider.GetService<DevCurrentActor>());
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("true")]
+    public async Task Nothing_is_seeded_outside_Development_even_with_seeding_switched_on(string devActorEnabled)
     {
         await using var factory = new YallaApiFactory()
             .WithEnvironment(Environments.Staging)
-            .With("DevActor:Enabled", "true");
+            .With("DevSeed:Enabled", "true")
+            .With("DevActor:Enabled", devActorEnabled);
 
+        Assert.Null(factory.Services.GetService<DevDataSeeder>());
         Assert.Null(factory.Services.GetService<DevListingSeeder>());
+        Assert.Null(factory.Services.GetService<DevSeedRegistry>());
         Assert.False(await factory.Services.InitialiseDevelopmentDataAsync());
     }
 

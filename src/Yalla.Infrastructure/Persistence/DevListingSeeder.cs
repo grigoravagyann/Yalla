@@ -13,7 +13,8 @@ namespace Yalla.Infrastructure.Persistence;
 /// <remarks>
 /// <para>
 /// Development only. It is called by <see cref="DevDataSeeder"/>, which is registered only when the
-/// host is Development and <c>DevActor:Enabled</c> is true - so it inherits exactly that gate.
+/// host is Development and <c>DevSeed:Enabled</c> is true - so it inherits exactly that gate.
+/// <c>DevActor:Enabled</c> plays no part: the demo listing is there with the actor stub off.
 /// </para>
 /// <para>
 /// Idempotent and conservative: it only ever touches the branch the seeder owns (passed in, found by

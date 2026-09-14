@@ -19,6 +19,10 @@ namespace Yalla.Infrastructure.Persistence;
 /// tasks that build them.
 /// </para>
 /// <para>
+/// It is also what the diner app and the console show when they are tested with real sign-in, so
+/// it is registered on its own switch, <c>DevSeed:Enabled</c>, rather than on the stub's.
+/// </para>
+/// <para>
 /// Idempotent, and keyed on the venue slug rather than on hardcoded primary keys, so it can run
 /// on every startup and survives the database being dropped and recreated.
 /// </para>

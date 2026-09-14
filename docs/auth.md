@@ -540,6 +540,12 @@ in Development when `DevActor:Enabled` is true, where its later registration rep
 it is what the Prompt 2 integration tests use, and it is still the quickest way to exercise a
 manager-only path locally without minting a token. It is not registered in any other environment.
 
+The demo data the stub takes its staff member from is a separate switch, `DevSeed:Enabled` - on by
+default in Development, never registered anywhere else. Seeding used to ride on
+`DevActor:Enabled`, so turning the stub off for real sign-in also left the database without the demo
+venue, tables, listing and reviews. Now the two are independent: the stub off still seeds, and the
+stub on with seeding off reports no seeded staff member unless `DevActor:StaffMemberId` pins one.
+
 ## Out of scope
 
 No SMS or email provider, no Telegram, no shared staff PINs, no biometric unlock, no social login,

@@ -337,12 +337,14 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Registers the development actor stub and the seeder that gives it a real staff member.
+    /// Registers the development actor stub.
     /// </summary>
     /// <remarks>
     /// Call this from Development only. It is a no-op unless <c>DevActor:Enabled</c> is true, so
     /// switching it on is always deliberate. The stub answers only for requests that carry no
-    /// token; see <c>DevelopmentActorOrToken</c> in the API layer.
+    /// token; see <c>DevelopmentActorOrToken</c> in the API layer. With no pinned id it reports the
+    /// staff member the development seed created, so it is only useful alongside
+    /// <see cref="AddDevelopmentSeeding"/> - which Development switches on by default.
     /// </remarks>
     public static IServiceCollection AddDevelopmentActor(
         this IServiceCollection services,
@@ -357,9 +359,9 @@ public static class DependencyInjection
             return services;
         }
 
-        services.AddSingleton<DevSeedRegistry>();
-        services.AddScoped<DevListingSeeder>();
-        services.AddScoped<DevDataSeeder>();
+        // Shared with the seeder, which writes the ids the stub reads. TryAdd in both places, so
+        // it is one singleton whichever of the two is switched on, or both.
+        services.TryAddSingleton<DevSeedRegistry>();
 
         // Registered as itself, not as ICurrentActor. The host composes it with the real
         // claims-based actor so that a request carrying a token is never overridden by the stub.
@@ -369,8 +371,44 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Applies pending migrations and seeds development data. Returns false when the dev actor is
-    /// switched off, in which case nothing was touched.
+    /// Registers the seeder that writes the Development demo data: the demo venue and branch, its
+    /// floor, opening hours and two staff, and the listing, reviews and table pins the diner app
+    /// shows.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Call this from Development only; the host does, and it calls
+    /// <see cref="InitialiseDevelopmentDataAsync"/> only there too. It is a no-op unless
+    /// <c>DevSeed:Enabled</c> is true.
+    /// </para>
+    /// <para>
+    /// Deliberately independent of <c>DevActor:Enabled</c>. Real diner and staff sign-in is how the
+    /// apps are tested, and that is done with the stub off - which used to take the demo data with
+    /// it, leaving an empty database in exactly the mode people test in.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddDevelopmentSeeding(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        if (!configuration.GetValue<bool>("DevSeed:Enabled"))
+        {
+            return services;
+        }
+
+        // The seeder publishes what it created here. The stub reads it when that is on; nothing
+        // else does, but the seeder cannot be constructed without it.
+        services.TryAddSingleton<DevSeedRegistry>();
+        services.AddScoped<DevListingSeeder>();
+        services.AddScoped<DevDataSeeder>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Applies pending migrations and seeds development data. Returns false when development
+    /// seeding is not registered - <c>DevSeed:Enabled</c> off, or not Development - in which case
+    /// nothing was touched.
     /// </summary>
     public static async Task<bool> InitialiseDevelopmentDataAsync(
         this IServiceProvider services,
