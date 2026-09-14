@@ -40,6 +40,8 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<BranchReview> BranchReviews => Set<BranchReview>();
 
+    public DbSet<BranchReviewReport> BranchReviewReports => Set<BranchReviewReport>();
+
     public DbSet<BranchGalleryPhoto> BranchGalleryPhotos => Set<BranchGalleryPhoto>();
 
     public DbSet<Reservation> Reservations => Set<Reservation>();

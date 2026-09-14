@@ -52,6 +52,10 @@ namespace Yalla.Application.Public;
 /// <param name="CancelledAfterDeadline">
 /// Whether this booking's cancellation, if it has one, arrived past the deadline.
 /// </param>
+/// <param name="Note">
+/// The note the diner typed for the venue when booking, or absent (K9). Theirs to see again; it
+/// says nothing the link holder did not write.
+/// </param>
 public sealed record PublicBookingView(
     string VenueName,
     string BranchName,
@@ -65,7 +69,8 @@ public sealed record PublicBookingView(
     string Code,
     DateTime CancellationDeadlineUtc,
     bool CanCancel,
-    bool CancelledAfterDeadline);
+    bool CancelledAfterDeadline,
+    string? Note = null);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.

@@ -81,6 +81,7 @@ public static class DependencyInjection
         services.AddScoped<IPublicListingQuery, PublicListingQuery>();
         services.AddScoped<IBranchListingService, BranchListingService>();
         services.AddScoped<IBranchReviewService, BranchReviewService>();
+        services.AddScoped<Yalla.Application.Reviews.IReviewModerationService, ReviewModerationService>();
         services.AddScoped<IDinerOrderQuery, DinerOrderQuery>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();

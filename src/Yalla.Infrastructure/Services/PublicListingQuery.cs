@@ -23,6 +23,10 @@ namespace Yalla.Infrastructure.Services;
 /// Distance is geometry over the branch's coordinates and the position the caller sent.
 /// </para>
 /// <para>
+/// <b>A hidden review is not there (K8).</b> Moderation leaves the row in place; every read here - the
+/// list, the recent three, the rating, the count and so the badges - filters it out.
+/// </para>
+/// <para>
 /// <b>Cached for <see cref="PublicVenueQuery.LiveFor"/> as a whole</b> - the estate and the live
 /// numbers together - because the list is what every Explore open and pull-to-refresh loads. The id
 /// routes read their one branch live, so a suspended venue is a 404 there at once.
@@ -93,7 +97,18 @@ internal sealed class PublicListingQuery(
         var extra = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.About, b.WebsiteUrl, b.PhoneE164, b.AmenityKeys, b.AcceptsWebBookings })
+            .Select(b => new
+            {
+                b.About,
+                b.WebsiteUrl,
+                b.PhoneE164,
+                b.AmenityKeys,
+                b.AcceptsWebBookings,
+
+                // K9: the app books only where bookings are switched on AND somebody at the venue has
+                // saved the reservation policy, rather than the defaults a new branch ships with.
+                AcceptsAppBookings = b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
+            })
             .FirstAsync(cancellationToken);
 
         var hours = await db.OpeningHours
@@ -128,6 +143,7 @@ internal sealed class PublicListingQuery(
             gallery,
             tableCount,
             extra.AcceptsWebBookings,
+            extra.AcceptsAppBookings,
             recent,
             markers,
             clock.UtcNow);
@@ -182,6 +198,12 @@ internal sealed class PublicListingQuery(
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
                         && b.Venue.DeletedAtUtc == null);
+
+    /// <summary>The reviews the public may see: every one that moderation has not taken down.</summary>
+    private IQueryable<BranchReview> PublishedReviews() =>
+        db.BranchReviews
+            .AsNoTracking()
+            .Where(r => r.HiddenAtUtc == null);
 
     private async Task RequirePublishedAsync(Guid branchId, CancellationToken cancellationToken)
     {
@@ -247,8 +269,7 @@ internal sealed class PublicListingQuery(
                     .Select(g => new { g.Key, Count = g.Count() })
                     .ToDictionaryAsync(g => g.Key, g => g.Count, cancellationToken);
 
-                var reviews = await db.BranchReviews
-                    .AsNoTracking()
+                var reviews = await PublishedReviews()
                     .GroupBy(r => r.BranchId)
                     .Select(g => new { g.Key, Count = g.Count(), Sum = g.Sum(r => (long)r.Rating) })
                     .ToDictionaryAsync(g => g.Key, g => (g.Count, g.Sum), cancellationToken);
@@ -267,11 +288,10 @@ internal sealed class PublicListingQuery(
             })
         ?? throw new InvalidOperationException("The listing statistics could not be read.");
 
-    /// <summary>One branch's review count and rating sum, read live.</summary>
+    /// <summary>One branch's published review count and rating sum, read live.</summary>
     private async Task<(int Count, long Sum)> ReviewAggregateAsync(Guid branchId, CancellationToken cancellationToken)
     {
-        var aggregate = await db.BranchReviews
-            .AsNoTracking()
+        var aggregate = await PublishedReviews()
             .Where(r => r.BranchId == branchId)
             .GroupBy(r => r.BranchId)
             .Select(g => new { Count = g.Count(), Sum = g.Sum(r => (long)r.Rating) })
@@ -352,13 +372,19 @@ internal sealed class PublicListingQuery(
         return [.. photos.Select(PhotoView.From)];
     }
 
+    /// <summary>
+    /// A page of published reviews, newest <b>written</b> first (K8).
+    /// </summary>
+    /// <remarks>
+    /// By <c>CreatedAtUtc</c>, not the last revision: ordering by revision let anybody lift an old
+    /// review back to the top by re-saving it. A revision shows as <c>edited</c> instead.
+    /// </remarks>
     private async Task<IReadOnlyList<PublicReviewView>> ReviewsAsync(
         Guid branchId, int skip, int take, CancellationToken cancellationToken)
     {
-        var rows = await db.BranchReviews
-            .AsNoTracking()
+        var rows = await PublishedReviews()
             .Where(r => r.BranchId == branchId)
-            .OrderByDescending(r => r.UpdatedAtUtc)
+            .OrderByDescending(r => r.CreatedAtUtc)
             .ThenByDescending(r => r.Id)
             .Skip(skip)
             .Take(take)
@@ -368,7 +394,13 @@ internal sealed class PublicListingQuery(
         return
         [
             .. rows.Select(r => new PublicReviewView(
-                r.Id, BranchReview.PublicAuthorName(r.DisplayName), r.Rating, r.Text, r.CreatedAtUtc, r.UpdatedAtUtc)),
+                r.Id,
+                BranchReview.PublicAuthorName(r.DisplayName),
+                r.Rating,
+                r.Text,
+                r.CreatedAtUtc,
+                r.UpdatedAtUtc,
+                Edited: r.UpdatedAtUtc != r.CreatedAtUtc)),
         ];
     }
 

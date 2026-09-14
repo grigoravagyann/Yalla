@@ -63,6 +63,13 @@ public static class PhotoEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
                 "The upload is not a JPEG, PNG or WebP, or it is larger than this system accepts.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "`rate-limited`: more than the `diner-write` budget - ten uploads a minute per signed-in caller by default.")
+
+            // Per caller (K8): every upload is a decode and three encodes, so this bounds the work one
+            // account can put the server to.
+            .RequireRateLimiting(RateLimitingExtensions.DinerWritePolicy)
             .WithMetadata(new RequestSizeLimitAttribute(MaxUploadBytes));
 
         app.MapGet("/api/photos/{photoId:guid}/{variant}", ServeAsync)

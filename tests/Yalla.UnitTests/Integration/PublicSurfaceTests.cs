@@ -186,11 +186,29 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
 
         opened.EnsureSuccessStatusCode();
 
+        // Two reviewers who typed contact details where their name goes, which is how a display name
+        // most often leaks one (K8). Written straight to the table: this is about what the reads publish.
+        const string emailName = "ani.sargsyan@mail.example";
+        const string phoneName = "+374 99 000 123";
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            foreach (var (name, rating) in new[] { (emailName, 5), (phoneName, 2) })
+            {
+                var reviewer = await ReviewTestData.SeedDinerAsync(db, name, factory.Clock.UtcNow);
+                await ReviewTestData.SeedReviewAsync(db, world.BranchId, reviewer, rating, "Fine.", factory.Clock.UtcNow);
+            }
+        }
+
         var forbidden = new[]
         {
             qrToken,
             waiterName,
             "Anahit Secret",
+            emailName,
+            phoneName,
+            "mail.example",
+            "99 000 123",
 
             // Field names, not only values: a field that is present and empty is still a field a
             // scraper learns the shape of.
@@ -201,17 +219,77 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
             "subtotalAmd",
             "pinHash",
             "deviceId",
+            "dinerUserId",
         };
 
-        foreach (var route in Routes(world))
+        var routes = Routes(world).Concat(
+        [
+            $"/api/public/branches/{world.BranchId}",
+            $"/api/public/branches/{world.BranchId}/reviews?page=1",
+        ]);
+
+        foreach (var route in routes)
         {
-            var body = await (await anonymous.GetAsync(route)).Content.ReadAsStringAsync();
+            var response = await anonymous.GetAsync(route);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            // And unescaped: the serialiser writes "+" as +, so a leaked number would slip past a
+            // search of the raw body.
+            var decoded = Decoded(body);
 
             foreach (var secret in forbidden)
             {
                 Assert.DoesNotContain(secret, body, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain(secret, decoded, StringComparison.OrdinalIgnoreCase);
             }
         }
+
+        // The reviews were served, so their absence above is a fact about the names.
+        var page = await ReadAsync(anonymous, $"/api/public/branches/{world.BranchId}/reviews?page=1");
+        Assert.Equal(2, page.GetProperty("reviewCount").GetInt32());
+        Assert.All(
+            page.GetProperty("reviews").EnumerateArray(),
+            r => Assert.Equal("Yalla diner", r.GetProperty("authorName").GetString()));
+    }
+
+    /// <summary>Every property name and string value in a JSON body, unescaped, one per line.</summary>
+    private static string Decoded(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        var parts = new List<string>();
+
+        void Walk(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        parts.Add(property.Name);
+                        Walk(property.Value);
+                    }
+
+                    break;
+
+                case JsonValueKind.Array:
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Walk(item);
+                    }
+
+                    break;
+
+                case JsonValueKind.String:
+                    parts.Add(element.GetString()!);
+                    break;
+            }
+        }
+
+        Walk(document.RootElement);
+
+        return string.Join('\n', parts);
     }
 
     // ------------------------------------------------------------ 5. the slug pair

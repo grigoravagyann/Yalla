@@ -62,13 +62,91 @@ public class BranchListingRulesTests
 
     [Theory]
     [InlineData("Anahit Sargsyan", "Anahit S.")]
-    [InlineData("  marco   de  tomasi ", "marco T.")]
+    [InlineData("Անահիտ Սարգսյան", "Անահիտ Ս.")]
+    [InlineData("Анаит Саргсян", "Анаит С.")]
+    [InlineData("  marco   de  tomasi ", "marco D.")]
     [InlineData("Narek", "Narek")]
+    [InlineData("Jean-Luc Picard", "Jean-Luc P.")]
+    [InlineData("O'Brien Smith", "OBrien S.")]
+    [InlineData("Anahit 5-stars", "Anahit")]
+    [InlineData("Abcdefghijklmnopqrstuvwxyzabc Zed", "Abcdefghijklmnopqrstuvwx Z.")]
+    [InlineData("ani@mail.am", "Yalla diner")]
+    [InlineData("+374 91 123456", "Yalla diner")]
+    [InlineData("www.example.am", "Yalla diner")]
+    [InlineData("instagram.com/ani", "Yalla diner")]
+    [InlineData("Ani2 Sargsyan", "Yalla diner")]
+    [InlineData("!!! ???", "Yalla diner")]
     [InlineData("", "Yalla diner")]
     [InlineData(null, "Yalla diner")]
-    public void A_review_is_published_under_a_first_name_and_last_initial(string? displayName, string expected)
+    public void A_review_is_published_under_a_first_name_and_an_initial_and_never_contact_details(
+        string? displayName, string expected)
     {
         Assert.Equal(expected, BranchReview.PublicAuthorName(displayName));
+    }
+
+    [Fact]
+    public void Revising_to_the_same_rating_and_text_changes_nothing()
+    {
+        var review = new BranchReview(Guid.NewGuid(), Guid.NewGuid(), 4, "Good coffee.", Now);
+
+        Assert.False(review.Revise(4, "  Good coffee. ", Now.AddDays(1)));
+        Assert.Equal(Now, review.UpdatedAtUtc);
+        Assert.False(review.IsEdited);
+
+        Assert.True(review.Revise(3, "Good coffee.", Now.AddDays(2)));
+        Assert.Equal(Now.AddDays(2), review.UpdatedAtUtc);
+        Assert.True(review.IsEdited);
+    }
+
+    [Fact]
+    public void A_takedown_needs_a_reason_and_putting_it_back_clears_who_and_why()
+    {
+        var review = new BranchReview(Guid.NewGuid(), Guid.NewGuid(), 1, "Awful.", Now);
+        var moderator = Guid.NewGuid();
+
+        Assert.Equal(
+            "reason",
+            Assert.Throws<FieldValidationException>(() => review.Hide(moderator, byPlatform: false, "  ", Now)).Field);
+        Assert.Equal(
+            FieldBounds.Max,
+            Assert.Throws<FieldValidationException>(() => review.Hide(moderator, false, new string('r', 501), Now)).Violations[0].Bound);
+        Assert.False(review.IsHidden);
+
+        review.Hide(moderator, byPlatform: true, " Personal attack. ", Now);
+        Assert.True(review.IsHidden);
+        Assert.True(review.HiddenByPlatform);
+        Assert.Equal("Personal attack.", review.HiddenReason);
+        Assert.Equal(moderator, review.HiddenByStaffMemberId);
+
+        review.Unhide();
+        Assert.False(review.IsHidden);
+        Assert.False(review.HiddenByPlatform);
+        Assert.Null(review.HiddenReason);
+        Assert.Null(review.HiddenByStaffMemberId);
+    }
+
+    [Theory]
+    [InlineData("spam", null, null)]
+    [InlineData(" Personal-Info ", "Their phone number.", null)]
+    [InlineData("rude", null, "reason")]
+    [InlineData(null, "No reason.", "reason")]
+    public void A_report_reason_is_one_of_five_and_its_note_is_short(string? reason, string? note, string? refusedField)
+    {
+        if (refusedField is null)
+        {
+            var (checkedReason, checkedNote) = BranchReviewReport.Check(reason, note);
+
+            Assert.Contains(checkedReason, ReviewReportReasons.All);
+            Assert.Equal(note, checkedNote);
+        }
+        else
+        {
+            Assert.Equal(refusedField, Assert.Throws<FieldValidationException>(() => BranchReviewReport.Check(reason, note)).Field);
+        }
+
+        Assert.Equal(
+            "note",
+            Assert.Throws<FieldValidationException>(() => BranchReviewReport.Check("other", new string('n', 501))).Field);
     }
 
     // ------------------------------------------------------------ listing

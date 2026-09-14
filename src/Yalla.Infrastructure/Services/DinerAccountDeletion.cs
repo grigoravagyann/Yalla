@@ -109,11 +109,9 @@ internal static class DinerAccountDeletion
     /// <remarks>
     /// <para>Rows that point at another row in this list go above it.</para>
     /// <para>
-    /// The tables later packages add each take one line here, above <c>reviews</c>:
-    /// favourites (<c>DinerFavorites</c>, by <c>DinerUserId</c>), the notifications feed
-    /// (<c>DinerNotifications</c>, by <c>DinerUserId</c>) and review reports
-    /// (<c>BranchReviewReports</c>: the ones this diner filed, <b>and</b> the ones filed against this
-    /// diner's reviews, since those reviews are deleted on the next line).
+    /// The tables later packages add each take one line here, above <c>reviews</c>: favourites
+    /// (<c>DinerFavorites</c>, by <c>DinerUserId</c>) and the notifications feed
+    /// (<c>DinerNotifications</c>, by <c>DinerUserId</c>).
     /// </para>
     /// </remarks>
     private static async Task<Dictionary<string, int>> RemoveRowsOwnedByAsync(
@@ -124,6 +122,13 @@ internal static class DinerAccountDeletion
         {
             ["devices"] = await db.DinerDevices
                 .Where(d => d.DinerUserId == dinerUserId)
+                .ExecuteDeleteAsync(cancellationToken),
+
+            // Above the reviews (K8): the reports this diner filed, and every report about one of this
+            // diner's reviews - those reviews go on the next line, and a report is about its review.
+            ["reviewReports"] = await db.BranchReviewReports
+                .Where(r => r.DinerUserId == dinerUserId
+                            || db.BranchReviews.Any(v => v.Id == r.ReviewId && v.DinerUserId == dinerUserId))
                 .ExecuteDeleteAsync(cancellationToken),
 
             // The aggregates are computed from this table on read, so rating and count move with it.

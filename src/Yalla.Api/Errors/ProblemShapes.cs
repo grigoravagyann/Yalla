@@ -360,3 +360,21 @@ public sealed record BookingTabRefusedProblem : ProblemShape
 {
     public BookingTabRefusedContext? Context { get; init; }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reviews
+// ---------------------------------------------------------------------------------------------
+
+/// <summary>A first review of a branch the diner has not visited in the window.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="WindowDays">How far back a visit counts, in days. The app says "after a visit" with it.</param>
+public sealed record ReviewNeedsVisitContext(Guid BranchId, int WindowDays);
+
+/// <summary>
+/// <c>review-needs-visit</c>, 403, with the window. <c>phone-not-verified</c> arrives on the same status
+/// with no <c>context</c>: branch on the code.
+/// </summary>
+public sealed record ReviewNeedsVisitProblem : ProblemShape
+{
+    public ReviewNeedsVisitContext? Context { get; init; }
+}

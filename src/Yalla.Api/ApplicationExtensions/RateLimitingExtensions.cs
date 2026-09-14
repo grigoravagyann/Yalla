@@ -98,6 +98,18 @@ public static class RateLimitingExtensions
     public const string PublicPlacePolicy = "public-place";
 
     /// <summary>
+    /// Writes a signed-in caller makes that store something other people read: a review, a report of
+    /// one, a profile picture, a branch photo (K8).
+    /// </summary>
+    /// <remarks>
+    /// Per principal, ten a minute by default - more than anybody editing a review or choosing a
+    /// picture needs, and few enough that one stolen token cannot fill a branch's page with reviews or
+    /// the photo store with uploads in an afternoon. Every upload also costs a decode and three
+    /// encodes, so this is the ceiling on the work one account can make the server do.
+    /// </remarks>
+    public const string DinerWritePolicy = "diner-write";
+
+    /// <summary>
     /// The browse list's path, which carries no branch.
     /// </summary>
     /// <remarks>
@@ -192,6 +204,10 @@ public static class RateLimitingExtensions
         // The app's per-tap place routes: their own budget per caller.
         var publicPlacePermitLimit = section.GetValue<int?>("PublicPlacePermitLimit") ?? 120;
         var publicPlaceWindowSeconds = section.GetValue<int?>("PublicPlaceWindowSeconds") ?? 60;
+
+        // Reviews, reports and photo uploads: per signed-in caller (K8).
+        var dinerWritePermitLimit = section.GetValue<int?>("DinerWritePermitLimit") ?? 10;
+        var dinerWriteWindowSeconds = section.GetValue<int?>("DinerWriteWindowSeconds") ?? 60;
 
         // And a ceiling per manage token, for the link that went round a group chat.
         var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
@@ -327,6 +343,18 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = publicPlacePermitLimit,
                         Window = TimeSpan.FromSeconds(publicPlaceWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            // Reviews, reports and photo uploads (K8): one budget per signed-in caller, shared across
+            // all of them, so a token cannot spend ten on reviews and ten more on uploads.
+            options.AddPolicy(DinerWritePolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = dinerWritePermitLimit,
+                        Window = TimeSpan.FromSeconds(dinerWriteWindowSeconds),
                         QueueLimit = 0,
                     }));
 

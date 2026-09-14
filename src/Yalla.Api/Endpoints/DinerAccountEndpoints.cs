@@ -182,6 +182,10 @@ public static class DinerAccountEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
                 "`unsupported-image`: not a JPEG, PNG or WebP, or larger than this system accepts.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "`rate-limited`: more than the `diner-write` budget - ten writes a minute per account by default.")
+            .RequireRateLimiting(RateLimitingExtensions.DinerWritePolicy)
             .WithMetadata(new RequestSizeLimitAttribute(MaxUploadBytes));
 
         app.MapDelete("/api/diner/me/photo", RemovePhotoAsync)

@@ -642,6 +642,12 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         using var owner = factory.CreateClientWithToken(ownerToken);
         Assert.False((await owner.GetFromJsonAsync<JsonElement>("/api/diner/me")).GetProperty("hasPassword").GetBoolean());
         Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync("/api/diner/me", new { displayName = "Owner" })).StatusCode);
+        // A first review needs a visit (K8): the owner sat at one of the branch's tables.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            await ReviewTestData.SeedTabVisitAsync(db, branch, factory.Clock.UtcNow, ownerId);
+        }
+
         Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(reviewRoute, new { rating = 5 })).StatusCode);
 
         var set = await owner.PutAsJsonAsync("/api/diner/me/password", new { newPassword = "the-owners-own-2026" });

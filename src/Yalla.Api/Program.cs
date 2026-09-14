@@ -184,6 +184,7 @@ api.MapOrderingEndpoints();
 api.MapPhotoEndpoints();
 api.MapDinerAccountEndpoints();
 api.MapDinerBrowseEndpoints();
+api.MapReviewModerationEndpoints();
 api.MapNotificationEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();

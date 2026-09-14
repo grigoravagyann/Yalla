@@ -331,6 +331,20 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["currentCoverPhotoId"] = e.CurrentCoverPhotoId }),
 
+        // A first review from a diner with no visit in the window (K8). Its own code rather than the
+        // generic 403, because the app has something to say - "you can review a place after you have
+        // been" - and the window rides along so it can say how long for.
+        ReviewNeedsVisitException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.ReviewNeedsVisit,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["windowDays"] = e.WindowDays,
+            }),
+
         // A null where the domain requires an object - a Venue, a ReservationPolicy. Those are
         // built internally and never arrive over HTTP, so this is a bug in our code, not bad
         // input, and no caller can act on it. Must stay ABOVE ArgumentException, which it derives
@@ -533,6 +547,16 @@ internal static class ApiExceptionMapper
         WebBookingsNotAcceptedException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.WebBookingsNotAccepted,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        // The app channel's own gate (K9): bookings switched off, or the policy never saved. Its own
+        // code so the app can say "book with the venue directly" rather than show a generic conflict.
+        // Must stay ABOVE DomainStateException, which it derives from.
+        AppBookingsNotAcceptedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.BookingsNotAccepted,
             e.Message,
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),

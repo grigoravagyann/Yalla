@@ -101,6 +101,9 @@ public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
         db.DinerUsers.Add(diner);
         await db.SaveChangesAsync();
 
+        // A first review needs a visit (K8): a place at one of the branch's tables.
+        await ReviewTestData.SeedTabVisitAsync(db, branch, clock.UtcNow, diner.Id);
+
         return (branch.BranchId, diner.Id);
     }
 

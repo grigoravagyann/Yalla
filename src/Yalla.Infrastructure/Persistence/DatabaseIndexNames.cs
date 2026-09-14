@@ -152,4 +152,10 @@ internal static class DatabaseIndexNames
     /// answers "already reviewed" and a replace revises the review that won.
     /// </summary>
     public const string BranchReviewPerDiner = "UX_BranchReviews_BranchId_DinerUserId";
+
+    /// <summary>
+    /// Unique on (review, diner): one report each. A violation means two taps on Report raced; the
+    /// loser is answered as the success it would have been.
+    /// </summary>
+    public const string BranchReviewReportPerDiner = "UX_BranchReviewReports_ReviewId_DinerUserId";
 }

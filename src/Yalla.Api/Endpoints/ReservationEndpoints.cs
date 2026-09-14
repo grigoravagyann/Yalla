@@ -380,7 +380,8 @@ public static class ReservationEndpoints
                 request.GuestPhone,
                 request.ClientCommandId,
                 request.StayHint,
-                request.Channel),
+                request.Channel,
+                request.Note),
             cancellationToken);
 
         // A replay is answered 200, not 201: the second request created nothing, and telling a

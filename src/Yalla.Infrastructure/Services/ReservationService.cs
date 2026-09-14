@@ -98,6 +98,10 @@ internal sealed class ReservationService(
 
         var dinerUserId = RequireDiner("Book a table");
 
+        // The note is part of the body, so it is refused before anything is looked up: a 422 naming
+        // `note` is the answer whatever else would have gone on to be refused (K9).
+        var note = Reservation.NormaliseNote(command.Note);
+
         // Before the replay, too: an account that cannot book has no original to be handed back,
         // and a booking's reminders and no-show record land on the number, so it must be a real one.
         await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, "Booking a table", cancellationToken);
@@ -130,6 +134,16 @@ internal sealed class ReservationService(
         // lives in the service holds for any caller, not only the one that remembered.
         RequireWebBookingsAccepted(command.Channel, branch);
 
+        // The app channel's gate (K9): bookings switched on AND a reservation policy somebody at the
+        // venue has saved. A branch ships with default rules nobody chose, and an app that lists
+        // every branch in the city would otherwise book against those guesses from the day it is
+        // created. Web keeps its own rule above, unchanged; Unknown and Staff are not gated.
+        if (command.Channel == ReservationChannel.App
+            && !(branch.AcceptsWebBookings && branch.ReservationPolicyReviewedAtUtc is not null))
+        {
+            throw new AppBookingsNotAcceptedException(branch.Id, branch.Name);
+        }
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
         var zone = BranchZone.For(branch.TimeZoneId);
@@ -160,7 +174,8 @@ internal sealed class ReservationService(
             dinerUserId: dinerUserId,
             stayHint: command.StayHint,
             clientCommandId: command.ClientCommandId,
-            channel: command.Channel);
+            channel: command.Channel,
+            note: note);
 
         // Minted here and returned exactly once, below. Only the hash is stored, so this plaintext
         // exists in this method and in the response and nowhere else - which is what makes it safe
@@ -1227,6 +1242,10 @@ internal sealed class ReservationService(
             Status = reservation.Status,
             GuestName = reservation.GuestName,
             GuestPhone = reservation.GuestPhone,
+
+            // What the diner asked for, on every view of the booking - the approval queue included,
+            // which is where the venue reads it (K9).
+            Note = reservation.Note,
             ConfirmedAtUtc = reservation.ConfirmedAtUtc,
             CancelledAtUtc = reservation.CancelledAtUtc,
             CancellationReason = reservation.CancellationReason,

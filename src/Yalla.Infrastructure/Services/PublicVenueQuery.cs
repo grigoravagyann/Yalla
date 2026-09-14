@@ -178,6 +178,7 @@ internal sealed class PublicVenueQuery(
             // have its page go on offering the button - see LiveBranchAsync.
             PhoneE164 = live.PhoneE164,
             AcceptsWebBookings = live.AcceptsWebBookings,
+            AcceptsAppBookings = live.AcceptsAppBookings,
             FloorPlan = plan.Page.FloorPlan with
             {
                 Tables =
@@ -295,14 +296,20 @@ internal sealed class PublicVenueQuery(
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
                         && b.Venue.DeletedAtUtc == null)
-            .Select(b => new LiveBranch(b.PhoneE164, b.AcceptsWebBookings))
+            .Select(b => new LiveBranch(
+                b.PhoneE164,
+                b.AcceptsWebBookings,
+
+                // K9: switched on, and a policy somebody at the venue has saved. Live for the same
+                // reason as the switch itself - the reservation service refuses on it live.
+                b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null))
             .FirstOrDefaultAsync(cancellationToken);
 
         return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
-    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings);
+    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.

@@ -75,8 +75,30 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
   writing one and the details card sits beside `recentReviews`, which is live too.
 
 Writing a review is `POST`/`PUT /api/diner/branches/{branchId}/review` under the diner policy - one
-review per diner per branch, a phone-verified account only. Reviews are published under a first
-name and last initial.
+review per diner per branch, a phone-verified account only, and a **first** review only after a
+visit: a booking of the diner's at the branch that was Seated or Completed, or a place on one of its
+tabs, in the last 180 days (`403 review-needs-visit` otherwise). Revising a review the diner already
+has is never refused for the visit, and re-sending it unchanged writes nothing.
+
+**What is published.** The list and `recentReviews` are newest first by when each review was
+*written* - a revision does not lift an old review back to the top - and each carries `edited`. The
+name a review is published under is derived from the display name, never stored and never the full
+name:
+
+1. Take the first word of the display name.
+2. If it contains `@`, a digit, `/` or `www.`, the name is `Yalla diner` - that first word is where
+   people type an email address, a phone number or a link.
+3. Otherwise keep only letters (any script) and hyphens, at most 24 of them; if nothing is left, the
+   name is `Yalla diner` too.
+4. Add the second word's initial and a full stop only when that word starts with a letter:
+   `Anahit S.`, `Անահիտ Ս.`, `Narek`.
+
+**Takedown.** A platform admin (`PUT /api/platform/reviews/{reviewId}/visibility`) or an owner or
+manager who covers the branch (`PUT /api/branches/{branchId}/reviews/{reviewId}/visibility`) hides a
+review with a reason. A hidden review stays on its row and leaves every public read at once - the
+list, `recentReviews`, `rating`, `reviewCount`, and so the badges. A venue cannot put back what the
+platform hid. Every change is audited as `review.hide` or `review.unhide`. Diners flag reviews with
+`POST /api/diner/reviews/{reviewId}/report`; a report takes nothing down on its own.
 
 The full contract for these routes - every shape, the app's field maps, the rate limits, the Orders
 tab, the Development seed and the contract changes in progress - is
@@ -90,8 +112,12 @@ tab, the Development seed and the contract changes in progress - is
 
 Two halves, and the split matters. The **stable** half — address, coordinates, hours, the room,
 the policy, `bookingWindowDays` — is cached for minutes. The **live** half — `freeTableCount`,
-`isOpenNow`, each table's `isFree`, `acceptsWebBookings` and `phoneE164` — is read per
-request and stamped with `asOfUtc`.
+`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings` and `phoneE164` — is
+read per request and stamped with `asOfUtc`.
+
+`acceptsAppBookings` (K9) is `acceptsWebBookings` **and** a reservation policy somebody at the venue has
+saved: the diner app books only where both hold, and `POST /api/reservations` from the app channel is
+`409 bookings-not-accepted` otherwise. The web channel's rule is unchanged.
 
 `acceptsWebBookings` and `phoneE164` are live despite looking stable. They gate and populate the
 booking UI, and the rule behind `acceptsWebBookings` is enforced live in the reservation service —

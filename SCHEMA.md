@@ -63,13 +63,32 @@ One diner's rating of one branch: `Rating` 1–5 (check constraint `CK_BranchRev
 optional `Text` (1000), `UpdatedAtUtc`. **`(BranchId, DinerUserId)` is unique**
 (`UX_BranchReviews_BranchId_DinerUserId`) — one review per diner per branch, revised rather than
 repeated; the service turns a violation into "already reviewed" on create and a revision on replace.
-Only a phone-verified account may write one, checked from the stored row. Both foreign keys Restrict.
-The public name is derived (`Anahit S.`), never stored and never the full name.
+Only a phone-verified account may write one, checked from the stored row, and a first one only
+after a visit to the branch in the last 180 days - a Seated or Completed booking, or a
+`TabParticipants` row on one of its tabs. Both foreign keys Restrict. The public name is derived
+(`Anahit S.`, or `Yalla diner` when the first word looks like contact details), never stored and never
+the full name. `UpdatedAtUtc` moves only when the rating or text actually changes, so
+`UpdatedAtUtc <> CreatedAtUtc` is what "edited" means. `(BranchId, CreatedAtUtc)` is the index the
+reviews page and the moderation list read, newest written first.
+
+**Moderation** hides rather than deletes: `HiddenAtUtc`, `HiddenReason` (500), `HiddenByStaffMemberId`
+(no foreign key - the audit log is the record of who acted) and `HiddenByPlatform`, which says which
+tier took it down, because a venue may not put back what the platform hid. A hidden review is left
+out of every public read and every derived number below.
 
 Rating, review count and the `popular`/`new` badges on the browse routes are **derived at read
-time, never stored**: average of `Rating`; `new` when the branch row is under 30 days old;
-`popular` when the branch seated 20+ parties (`TableSessions.SeatedAtUtc`) in the last 30 days or
-has 5+ reviews averaging 4.5+. See `BranchBadgeRules`.
+time, never stored**, from published reviews only: average of `Rating`; `new` when the branch row is
+under 30 days old; `popular` when the branch seated 20+ parties (`TableSessions.SeatedAtUtc`) in the
+last 30 days or has 5+ reviews averaging 4.5+. See `BranchBadgeRules`.
+
+### BranchReviewReport
+
+One diner flagging somebody else's review: `ReviewId`, `DinerUserId`, `Reason` (one of `spam`,
+`offensive`, `not-a-visit`, `personal-info`, `other`, held by `CK_BranchReviewReports_Reason`), optional
+`Note` (500). **`(ReviewId, DinerUserId)` is unique** (`UX_BranchReviewReports_ReviewId_DinerUserId`) —
+one report per diner per review, so a count is a count of people. Cascades from its review (a report is
+about that review), Restrict from the reporter. A report takes nothing down; the moderation list counts
+them. Deleting an account deletes the reports it filed and the reports about its reviews.
 
 ### OpeningHours
 

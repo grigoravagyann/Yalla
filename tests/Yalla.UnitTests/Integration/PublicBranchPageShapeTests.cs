@@ -69,6 +69,8 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
         Assert.Equal(
             new[]
             {
+                // K9: bookings switched on AND the reservation policy saved - what the app gates on.
+                "acceptsAppBookings",
                 "acceptsWebBookings",
                 "address",
                 "asOfUtc",

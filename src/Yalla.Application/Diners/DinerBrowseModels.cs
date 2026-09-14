@@ -11,16 +11,32 @@ namespace Yalla.Application.Diners;
 public sealed record SubmitBranchReviewCommand(int Rating, string? Text = null);
 
 /// <summary>The signed-in diner's own review of one branch.</summary>
+/// <param name="ReviewId">The review.</param>
+/// <param name="BranchId">The branch it is about.</param>
+/// <param name="Rating">1-5.</param>
+/// <param name="Text">Absent when stars only.</param>
+/// <param name="CreatedAtUtc">First written.</param>
+/// <param name="UpdatedAtUtc">When the rating or text last changed. Re-sending the same review does not move it.</param>
+/// <param name="PublicAuthorName">The name the public list shows it under - see <c>BranchReview.PublicAuthorName</c>.</param>
+/// <param name="Hidden">Taken down by moderation: the diner still sees it here, nobody else sees it anywhere.</param>
 public sealed record DinerReviewView(
     Guid ReviewId,
     Guid BranchId,
     int Rating,
     string? Text,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    string PublicAuthorName,
+    bool Hidden);
+
+/// <summary>Body of <c>POST /api/diner/reviews/{reviewId}/report</c>.</summary>
+/// <param name="Reason"><c>spam</c>, <c>offensive</c>, <c>not-a-visit</c>, <c>personal-info</c> or <c>other</c>.</param>
+/// <param name="Note">Optional detail, at most 500 characters.</param>
+public sealed record ReportReviewCommand(string? Reason, string? Note = null);
 
 /// <summary>
-/// A diner rating a branch. One review per diner per branch; phone-verified accounts only.
+/// A diner rating a branch. One review per diner per branch; phone-verified accounts that have
+/// visited only (K8).
 /// </summary>
 public interface IBranchReviewService
 {
@@ -31,17 +47,30 @@ public interface IBranchReviewService
     /// <summary>Writes a first review.</summary>
     /// <exception cref="Yalla.Domain.DomainStateException">This diner has already reviewed the branch - revise it instead.</exception>
     /// <exception cref="Yalla.Domain.Identity.PhoneNotVerifiedException">The account's number was never proved.</exception>
+    /// <exception cref="Yalla.Domain.Venues.ReviewNeedsVisitException">No visit to the branch in the window.</exception>
     Task<DinerReviewView> CreateAsync(
         Guid branchId,
         SubmitBranchReviewCommand command,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Replaces the caller's review, writing it if there was none.</summary>
+    /// <summary>
+    /// Replaces the caller's review, writing it if there was none. An identical revision writes
+    /// nothing and leaves <c>updatedAtUtc</c> where it was.
+    /// </summary>
     /// <exception cref="Yalla.Domain.Identity.PhoneNotVerifiedException">The account's number was never proved.</exception>
+    /// <exception cref="Yalla.Domain.Venues.ReviewNeedsVisitException">A first write, with no visit in the window.</exception>
     Task<(DinerReviewView Review, bool Created)> UpsertAsync(
         Guid branchId,
         SubmitBranchReviewCommand command,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reports somebody else's published review. A repeat by the same diner is a success that writes nothing.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.FieldValidationException">A missing or unknown reason, or a note over the limit.</exception>
+    /// <exception cref="KeyNotFoundException">No such review, a hidden one, or one at a branch that is not published.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">The review is the caller's own.</exception>
+    Task ReportAsync(Guid reviewId, ReportReviewCommand command, CancellationToken cancellationToken = default);
 }
 
 // ------------------------------------------------------------------ orders

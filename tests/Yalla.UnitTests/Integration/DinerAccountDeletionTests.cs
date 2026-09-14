@@ -71,10 +71,6 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
         using var diner = factory.CreateClientWithToken(account.GetProperty("accessToken").GetString()!);
         await VerifyNumberAsync(diner, phone);
 
-        var reviewed = await diner.PostAsJsonAsync(
-            $"/api/diner/branches/{branch.BranchId}/review", new { rating = 4, text = "Warm lavash." });
-        Assert.Equal(HttpStatusCode.Created, reviewed.StatusCode);
-
         var uploaded = await UploadAsync(diner, Png(7));
         Assert.Equal(HttpStatusCode.Created, uploaded.StatusCode);
         var photoCardUrl = (await uploaded.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("cardUrl").GetString()!;
@@ -105,6 +101,11 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
             participantId = participant.Id;
             orderId = order.Id;
         }
+
+        // The place at the table is the visit a first review needs (K8).
+        var reviewed = await diner.PostAsJsonAsync(
+            $"/api/diner/branches/{branch.BranchId}/review", new { rating = 4, text = "Warm lavash." });
+        Assert.Equal(HttpStatusCode.Created, reviewed.StatusCode);
 
         var before = await anonymous.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branch.BranchId}/reviews?page=1");
         Assert.Equal(1, before.GetProperty("reviewCount").GetInt32());

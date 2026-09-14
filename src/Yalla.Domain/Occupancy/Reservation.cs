@@ -132,6 +132,37 @@ public sealed class Reservation : Entity
     public ReservationChannel Channel { get; private set; }
 
     /// <summary>
+    /// What the diner asked the venue for when booking - "window table", "a high chair" - or null.
+    /// </summary>
+    /// <remarks>
+    /// Sent to the venue: it is on the staff booking list and the approval queue, as well as on the
+    /// diner's own bookings and the manage link. Trimmed; blank is stored as null; at most
+    /// <see cref="FieldLengths.Reason"/> characters (K9).
+    /// </remarks>
+    public string? Note { get; private set; }
+
+    /// <summary>A booking note as it is stored: trimmed, blank as null.</summary>
+    /// <exception cref="FieldValidationException">Longer than <see cref="FieldLengths.Reason"/>, naming <c>note</c>.</exception>
+    public static string? NormaliseNote(string? note)
+    {
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return null;
+        }
+
+        var trimmed = note.Trim();
+
+        return trimmed.Length > FieldLengths.Reason
+            ? throw new FieldValidationException(new FieldViolation(
+                "note",
+                $"A note to the venue is at most {FieldLengths.Reason} characters.",
+                FieldBounds.Max,
+                Max: FieldLengths.Reason,
+                Value: trimmed.Length))
+            : trimmed;
+    }
+
+    /// <summary>
     /// How long past the end of the booking a manage link keeps working.
     /// </summary>
     /// <remarks>
@@ -276,7 +307,8 @@ public sealed class Reservation : Entity
         StayHint? stayHint = null,
         DateTime? holdExpiresAtUtc = null,
         Guid? clientCommandId = null,
-        ReservationChannel channel = ReservationChannel.Unknown)
+        ReservationChannel channel = ReservationChannel.Unknown,
+        string? note = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -288,7 +320,9 @@ public sealed class Reservation : Entity
                 "A new reservation must start as Confirmed or PendingApproval.");
         }
 
-        return new Reservation(
+        var checkedNote = NormaliseNote(note);
+
+        var reservation = new Reservation(
             branchId,
             diningTableId,
             startUtc,
@@ -308,6 +342,10 @@ public sealed class Reservation : Entity
             // index honest without forcing every caller to invent an id it will never replay.
             clientCommandId ?? Guid.CreateVersion7(),
             channel);
+
+        reservation.Note = checkedNote;
+
+        return reservation;
     }
 
     /// <summary>

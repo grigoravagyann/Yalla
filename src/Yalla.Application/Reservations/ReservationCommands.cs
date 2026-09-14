@@ -36,6 +36,10 @@ namespace Yalla.Application.Reservations;
 /// identical. See <c>docs/reports.md</c>.
 /// </para>
 /// </param>
+/// <param name="Note">
+/// A note to the venue - "window table", "a high chair". Trimmed, blank means none, at most 500
+/// characters (K9).
+/// </param>
 public sealed record CreateReservationCommand(
     Guid BranchId,
     Guid TableId,
@@ -46,7 +50,8 @@ public sealed record CreateReservationCommand(
     string GuestPhone,
     Guid ClientCommandId,
     StayHint? StayHint = null,
-    ReservationChannel Channel = ReservationChannel.Unknown);
+    ReservationChannel Channel = ReservationChannel.Unknown,
+    string? Note = null);
 
 /// <summary>A diner giving up a booking.</summary>
 /// <param name="ReservationId">The booking to cancel.</param>

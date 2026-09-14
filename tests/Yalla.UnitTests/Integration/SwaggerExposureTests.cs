@@ -328,6 +328,9 @@ public class SwaggerExposureTests
             // A taken username, email or number on the sign-up form: the field to highlight, so
             // the form does not map a code back to an input by hand.
             ["IdentifierTakenProblem"] = ["field"],
+
+            // A first review with no visit: the app says how long after a visit a review is open.
+            ["ReviewNeedsVisitProblem"] = ["branchId", "windowDays"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

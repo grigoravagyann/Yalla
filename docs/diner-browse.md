@@ -27,8 +27,8 @@ as **in progress**: the route or field is not served yet.
 | K5 | Listing PUT: relocation is owner or platform admin only | B2 | **Implemented** |
 | K6 | Floor plan `version` / `expectedVersion` | B2 | **Implemented** |
 | K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | **Implemented** |
-| K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | In progress |
-| K9 | App booking gate and booking note | B3 | In progress |
+| K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | **Implemented** |
+| K9 | App booking gate and booking note | B3 | **Implemented** |
 | K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | In progress |
 | K11 | Favourites synced to the account | B6 | In progress |
 | K12 | Diner notifications feed | B6 | In progress |
@@ -54,9 +54,9 @@ These apply to everything below.
   unless the photo is hosted elsewhere, in which case they are absolute.
 - Errors use the unified envelope `{ type, title, status, code, detail, instance, traceId, context? }`.
   Codes a client branches on here: `invalid-request` (400), `unauthenticated` and `session-revoked`
-  (401), `forbidden` and `phone-not-verified` (403), `not-found` (404), `conflicting-state` (409),
-  `validation-failed` (422, `context.fields[]` with `field`, `message`, `bound`, `min`, `max`,
-  `value`), `rate-limited` and `too-many-attempts` (429).
+  (401), `forbidden`, `phone-not-verified` and `review-needs-visit` (403), `not-found` (404),
+  `conflicting-state` and `bookings-not-accepted` (409), `validation-failed` (422, `context.fields[]`
+  with `field`, `message`, `bound`, `min`, `max`, `value`), `rate-limited` and `too-many-attempts` (429).
 
 ---
 
@@ -108,7 +108,8 @@ live, per request).
   "gallery": [ /* PhotoView, ordered, beyond the cover */ ],
   "tableCount": 12,
   "acceptsWebBookings": false,
-  "recentReviews": [ /* PublicReviewView, newest 3 */ ],
+  "acceptsAppBookings": false,               // K9: acceptsWebBookings AND the reservation policy saved
+  "recentReviews": [ /* PublicReviewView, the newest 3 published, by when written */ ],
   "tableMarkers": [ /* PublicTableMarker */ ],
   "asOfUtc": "2026-09-14T10:00:00Z"
 }
@@ -119,21 +120,31 @@ midnight.
 
 ### `GET /api/public/branches/{branchId}/reviews?page=1` → `PublicReviewPage`
 
-20 per page, newest revision first. 400 for `page < 1` or a page whose offset would overflow; 404 as
-above. The aggregate is read live.
+20 per page, **newest written first** (`createdAtUtc` descending - a revision does not move a review
+up). Hidden reviews are absent, and are left out of `rating` and `reviewCount` too (K8). 400 for
+`page < 1` or a page whose offset would overflow; 404 as above. The aggregate is read live.
 
 ```json
 {
   "branchId": "guid", "rating": 3.0, "reviewCount": 2, "page": 1, "pageSize": 20,
   "reviews": [
     { "reviewId": "guid", "authorName": "Anahit S.", "rating": 5, "text": "…",   // text absent if stars only
-      "createdAtUtc": "…", "updatedAtUtc": "…" }
+      "createdAtUtc": "…", "updatedAtUtc": "…",
+      "edited": false }                     // updatedAtUtc differs from createdAtUtc
   ]
 }
 ```
 
-`authorName` is the first name and last initial, or `"Yalla diner"` when the account has no display
-name. (K8 tightens this rule.)
+`authorName` (K8):
+
+1. Take the first word of the display name.
+2. If it contains `@`, a digit, `/` or `www.`, the name is `"Yalla diner"`.
+3. Otherwise keep only letters (any script) and hyphens, at most 24 characters; nothing left is
+   `"Yalla diner"` too.
+4. Add `" X."` - the second word's initial - only when the second word starts with a letter.
+
+So `"Anahit Sargsyan"` → `"Anahit S."`, `"Անահիտ Սարգսյան"` → `"Անահիտ Ս."`, `"Narek"` → `"Narek"`,
+`"ani@mail.am"` and `"+374 91 123456"` → `"Yalla diner"`, and no display name → `"Yalla diner"`.
 
 ### `GET /api/public/branches/{branchId}/table-markers` → `PublicTableMarkers`
 
@@ -170,15 +181,30 @@ Every route here also refuses a token whose session has ended with **401 `sessio
 | Route | Body | Success | Errors |
 | --- | --- | --- | --- |
 | `GET /api/diner/branches/{branchId}/review` | - | 200 `DinerReviewView` | 401; 404 (no review by this diner, or branch not published) |
-| `POST /api/diner/branches/{branchId}/review` | `{ "rating": 5, "text": "…" }` | 201 `DinerReviewView`, `Location: /api/diner/branches/{id}/review` | 401; 403 `phone-not-verified`; 404; 409 `conflicting-state` (already reviewed); 422 `validation-failed` (`rating`, `text`) |
-| `PUT /api/diner/branches/{branchId}/review` | `{ "rating": 4, "text": null }` | 200 (revised) or 201 (first write) `DinerReviewView` | 401; 403 `phone-not-verified`; 404; 422 |
+| `POST /api/diner/branches/{branchId}/review` | `{ "rating": 5, "text": "…" }` | 201 `DinerReviewView`, `Location: /api/diner/branches/{id}/review` | 401; 403 `phone-not-verified` or `review-needs-visit`; 404; 409 `conflicting-state` (already reviewed); 422 `validation-failed` (`rating`, `text`); 429 `rate-limited` |
+| `PUT /api/diner/branches/{branchId}/review` | `{ "rating": 4, "text": null }` | 200 (revised, or unchanged) or 201 (first write) `DinerReviewView` | 401; 403 `phone-not-verified`, or `review-needs-visit` on a first write; 404; 422; 429 |
+| `POST /api/diner/reviews/{reviewId}/report` | `{ "reason": "spam", "note": "…" }` | 204 | 401; 404 (unknown, hidden, or at a branch not published); 409 `conflicting-state` (own review); 422 (`reason`, `note`); 429 |
 
 `rating` is an integer 1-5; `text` is optional, trimmed, at most 1000 characters, blank clears it.
 One review per diner per branch (unique index `UX_BranchReviews_BranchId_DinerUserId`). Phone-verified
-accounts only, checked on the stored row. The list routes' `rating`/`reviewCount` catch up within
-15 s; `/reviews` and the details route read the aggregate live.
+accounts only, checked on the stored row. A **first** review - POST, or PUT with none yet - also needs
+a visit in the last 180 days: a booking of this diner's at the branch that was Seated or Completed, or
+a `TabParticipant` row on one of its tabs; otherwise **403 `review-needs-visit`** with
+`context: { branchId, windowDays: 180 }`. Revising an existing review is always allowed. **A PUT with
+the same rating and (trimmed) text is a 200 that writes nothing** - `updatedAtUtc` does not move. The
+list routes' `rating`/`reviewCount` catch up within 15 s; `/reviews` and the details route read the
+aggregate live.
 
-`DinerReviewView`: `{ "reviewId", "branchId", "rating", "text"?, "createdAtUtc", "updatedAtUtc" }`
+`DinerReviewView`:
+`{ "reviewId", "branchId", "rating", "text"?, "createdAtUtc", "updatedAtUtc", "publicAuthorName", "hidden" }`
+- `publicAuthorName` is the name the public list shows it under; `hidden` is true when moderation took
+it down (the diner still sees it here, nobody else does).
+
+**Reporting.** `reason` is one of `spam`, `offensive`, `not-a-visit`, `personal-info`, `other` (422
+naming `reason`: bound `required` when missing, `range` when not one of the five); `note` is optional,
+trimmed, at most 500 characters (bound `max`). One report per diner per review - a repeat is a 204 that
+writes nothing. Any diner account may report; a proved number is not needed. A report takes nothing
+down. Review writes and reports, and both photo uploads, share the `diner-write` rate limit.
 
 ### Orders
 
@@ -291,6 +317,46 @@ The read carries `version` and, on each table, the read-only `photoX`/`photoY`. 
 Where tables sit on the cover photo, fractions 0-1. Saving the public profile with a different cover, or
 none, takes every table off the photo in the same save. See K7.
 
+### `GET /api/branches/{branchId}/reviews?page=&pageSize=&filter=` → `ModeratedReviewPage`
+### `PUT /api/branches/{branchId}/reviews/{reviewId}/visibility` → `ModeratedReviewView`
+
+The venue's review moderation (K8 extension). Same policies and K4 guard as every route here. The
+platform's twins are `GET /api/platform/branches/{branchId}/reviews` and
+`PUT /api/platform/reviews/{reviewId}/visibility` (`PlatformAdminOnly`); both call one service.
+
+`filter`: `all` (default; newest written first), `reported` (at least one report; most recently
+reported first) or `hidden`. `page` from 1, `pageSize` 1-100, default 20. Out of range → 400
+`invalid-request` naming `page`, `pageSize` or `filter`. 404 for an unknown branch.
+
+```json
+{
+  "items": [
+    { "reviewId": "guid", "branchId": "guid", "rating": 1, "text": "…",        // text absent if stars only
+      "authorName": "Ani G.",                 // the public name, never the account's
+      "dinerUserId": "guid",
+      "createdAtUtc": "…", "updatedAtUtc": "…",
+      "hidden": true, "hiddenReason": "…", "hiddenAtUtc": "…",   // reason and time absent when published
+      "hiddenByPlatform": false,
+      "reportCount": 2, "lastReportedAtUtc": "…" }              // absent with no reports
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+The visibility body is `{ "hidden": true, "reason": "…" }` or `{ "hidden": false }`. `hidden` is
+required; `reason` is required when hiding, trimmed, at most 500 characters (422 naming `reason`,
+bound `required` or `max`). Answers the review as the list shows it. A request that changes nothing -
+hiding what is already hidden for the same reason, putting back what is published - writes nothing.
+
+- **The platform outranks the venue.** A venue putting back a review the platform hid is 403
+  `forbidden`; a venue hiding it again changes nothing, and it stays the platform's. The platform can
+  put back anything, and takes ownership of what it hides. A platform admin calling the venue route is
+  answered as the platform.
+- **Audited** in the same transaction: `PlatformAuditLogs` `Action` `review.hide` or `review.unhide`,
+  `TargetType` `BranchReview`, `ActorStaffMemberId` the moderator, `ChangesJson`
+  `{ actorType: "platform"|"venue", branchId, reason, before: { hidden, hiddenByPlatform, reason } }`.
+- 404 `not-found` for a review that is not at this branch (or, on the platform route, not at all).
+
 ---
 
 ## Rate limits
@@ -308,7 +374,8 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `GET /api/public/branches`, `/api/public/branches/search`, `/api/public/venues` | `public-browse`: 120 per 60 s | One city-wide ceiling for the three: 6000 per 60 s |
 | `GET /api/public/branches/{branchId}`, `…/reviews`, `…/table-markers` | `public-place`: 120 per 60 s | Per-branch ceiling: 300 per 60 s, whoever asks |
 | Other `/api/public` routes (branch page, menu, meta, availability, bookings) | see [public-surface.md](public-surface.md#rate-limits) | |
-| `GET`/`POST`/`PUT /api/diner/branches/{id}/review`, `/api/diner/orders`, `/api/diner/me` reads and edits | none - the global limiter only | K8 adds `diner-write` (10 per minute) to review writes and photo uploads |
+| `GET /api/diner/branches/{id}/review`, `/api/diner/orders`, `/api/diner/me` reads and edits | none - the global limiter only | |
+| `POST`/`PUT /api/diner/branches/{id}/review`, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo`, `POST /api/branches/{id}/photos` | `diner-write`: 10 per 60 s per caller, one budget shared by all four (`RateLimiting:DinerWritePermitLimit`, `DinerWriteWindowSeconds`) | |
 | `DELETE /api/diner/me` | `auth`: 10 per 60 s | Per account, in the service: 10 attempts per 15 min, right or wrong → 429 `too-many-attempts` |
 | `POST /api/auth/diner/request-code`, `/register` | `auth-code-request`: 5 per 300 s | `request-code` is also limited per phone number in the service |
 | `POST /api/auth/diner/verify-code`, `/login`, `/refresh` | `auth`: 10 per 60 s | `login` is also limited per identifier: 10 per 15 min |
@@ -339,9 +406,9 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `20260913235419_TabParticipantsByDinerAccount` | `IX_TabParticipants_UserId`, including `TabId`, `Status` and `CanSeeTableTotal`, for the Orders tab's first read - see [SCHEMA.md](../SCHEMA.md#tabparticipant-and-tabjointoken) |
 | `20260914102955_DinerSessionGenerationAndDeletion` (K1, K2) | `DinerUsers.SessionGeneration int NOT NULL DEFAULT 0`; `DinerUsers.DeletedAtUtc datetime2 NULL`; `DinerUsers.PhoneE164` nullable, with `UX_DinerUsers_PhoneE164` filtered to `PhoneE164 IS NOT NULL` so a deleted account gives its number back |
 | `20260914110522_BranchFloorPlanVersion` (K6) | `Branches.FloorPlanVersion int NOT NULL DEFAULT 0`, an EF concurrency token |
+| `20260914145450_ReviewModerationReportsAndReservationNote` (K8, its extension, K9) | `BranchReviews.HiddenAtUtc datetime2 NULL`, `HiddenReason nvarchar(500) NULL`, `HiddenByStaffMemberId uniqueidentifier NULL`, `HiddenByPlatform bit NOT NULL DEFAULT 0`; the `(BranchId, UpdatedAtUtc)` index replaced by `(BranchId, CreatedAtUtc)`; table `BranchReviewReports` (`ReviewId` cascading from its review, `DinerUserId` Restrict, `Reason nvarchar(32)` held to the five slugs by `CK_BranchReviewReports_Reason`, `Note nvarchar(500)`; `UX_BranchReviewReports_ReviewId_DinerUserId`, `IX_BranchReviewReports_DinerUserId`); `Reservations.Note nvarchar(500) NULL` |
 
-Planned: `ReviewModerationReportsAndReservationNote` (K8 extension, K9); B6's `DinerFavorites` and
-`DinerNotifications` (K11, K12).
+Planned: B6's `DinerFavorites` and `DinerNotifications` (K11, K12).
 
 ---
 
@@ -428,8 +495,10 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
   - One `PlatformAuditLogs` row, `Action` `diner.delete`, `TargetType` `DinerUser`, `TargetId` the
     account. `ActorStaffMemberId` holds the diner's id (no staff member acted); `ChangesJson` carries
     `actorType: "diner"` and the counts removed and detached, and nothing identifying.
-- Favourites (K11), notifications (K12) and review reports (K8) are removed by the same transaction
-  once those tables exist - one line each in `DinerAccountDeletion.RemoveRowsOwnedByAsync`.
+- Review reports (K8 extension) are removed by the same transaction: the ones the diner filed, and every
+  report about one of the diner's reviews. The audit row counts them as `reviewReports`. Favourites
+  (K11) and notifications (K12) are removed the same way once those tables exist - one line each in
+  `DinerAccountDeletion.RemoveRowsOwnedByAsync`.
 
 ### K3. `DELETE /api/diner/me/photo` - **implemented (B1)**
 
@@ -513,65 +582,86 @@ No shape change. It now deletes the Photo row and its files immediately
 - Never changes label, seats, x/y, area or active state, and never moves the floor plan's `version`.
 - A cover change through `PUT /public-profile` takes the same lock and clears every pin in the same save.
 
-### K8. Reviews - in progress (B3)
+### K8. Reviews - **implemented (B3)**
 
-**Eligibility.** `POST /api/diner/branches/{branchId}/review` needs, within the last 180 days, a
-reservation for this diner at the branch that was Seated or Completed, or a `TabParticipant` with
-`UserId` = the diner on a tab at the branch. Otherwise 403 `review-needs-visit`. `PUT` on the diner's
-own existing review is always allowed.
+**Eligibility.** A **first** review - `POST /api/diner/branches/{branchId}/review`, or `PUT` when the
+diner has none yet - needs, within the last 180 days (`BranchReview.VisitWindowDays`), a reservation of
+this diner's at the branch whose status is Seated or Completed (measured by its `StartUtc`), or a
+`TabParticipant` with `UserId` = the diner on one of the branch's tabs (measured by `JoinedAtUtc`).
+Otherwise 403 `review-needs-visit` with `context: { branchId, windowDays: 180 }`. It is checked after
+the phone gate (`phone-not-verified` first) and, on POST, after "already reviewed" (409). Revising the
+diner's own existing review is always allowed.
 
-**Rate limit.** A new policy `diner-write`, 10 requests per minute per principal, on review POST and
-PUT, `POST /api/diner/me/photo`, `POST /api/branches/{id}/photos`, and the K8-extension and K11 writes.
-Over it: 429 `rate-limited`.
+**Rate limit.** `diner-write`: 10 requests per 60 s per principal, one budget shared by review POST and
+PUT, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo` and `POST /api/branches/{id}/photos`
+(K11's writes join it). Over it: 429 `rate-limited`. `RateLimiting:DinerWritePermitLimit` and
+`DinerWriteWindowSeconds` configure it.
 
-**Identical PUT.** Same rating and text → 200 with `updatedAtUtc` unchanged.
+**Identical PUT.** Same rating and trimmed text → 200, nothing written, `updatedAtUtc` unchanged.
 
-**Public review list.** `/reviews` and `recentReviews` are ordered by `createdAtUtc` descending; each
-item adds `edited: boolean`; hidden reviews are left out of the list, `rating`, `reviewCount` and badges.
+**Public review list.** `/reviews` and `recentReviews` are ordered by `createdAtUtc` descending (index
+`(BranchId, CreatedAtUtc)`); each item adds `edited: boolean` (`updatedAtUtc` differs from
+`createdAtUtc`). Hidden reviews are left out of the list, `rating`, `reviewCount` and so the badges, on
+the list, search and details routes alike.
 
-**`authorName`.** The first word of the display name; if it contains `@`, a digit, `/` or `www.`, the
-name is `"Yalla diner"`; otherwise only letters (any script) and hyphens, at most 24 characters; then
-`" X."` only when the second word starts with a letter.
+**`authorName`.** The rule under the reviews route above (`BranchReview.PublicAuthorName`). The
+moderation lists use the same name.
 
 **The diner's own review.** `DinerReviewView` adds `publicAuthorName: string` and `hidden: boolean`.
 
-**Platform moderation** (`PlatformAdminOnly`, audited):
-- `GET /api/platform/branches/{branchId}/reviews?page=1&pageSize=20` →
-  `{ items: [ { reviewId, branchId, rating, text, authorName, dinerUserId, createdAtUtc, updatedAtUtc, hidden, hiddenReason, hiddenAtUtc } ], page, pageSize, total }`.
+**Platform moderation** (`PlatformAdminOnly`; the service re-checks an active platform admin from the
+stored row; audited):
+- `GET /api/platform/branches/{branchId}/reviews?page=1&pageSize=20&filter=all` → `ModeratedReviewPage`,
+  the shape under the venue console's review routes above - for any branch, published or not.
 - `PUT /api/platform/reviews/{reviewId}/visibility`, body `{ "hidden": boolean, "reason": string | null }`:
-  `reason` required when hiding, at most 500 characters, else 422 naming `reason`; 200 with the item;
-  404 `not-found`; audit `review.hide` or `review.unhide`.
+  `hidden` required; `reason` required when hiding, trimmed, at most 500 characters, else 422 naming
+  `reason`; 200 with the item; 404 `not-found`; audit `review.hide` or `review.unhide` with
+  `actorType: "platform"`.
+- As built, items carry `hiddenByPlatform`, `reportCount` and `lastReportedAtUtc` beyond the fields first
+  specified, and the list accepts `filter`: one shape and one set of parameters for both tiers.
 
-#### K8 extension: venue moderation and diner reports - in progress (B3)
+#### K8 extension: venue moderation and diner reports - **implemented (B3)**
 
 The user's decision: moderation and reporting are built now.
 
 - **Venue moderation.** `GET /api/branches/{branchId}/reviews?page=&pageSize=&filter=all|reported|hidden`
   and `PUT /api/branches/{branchId}/reviews/{reviewId}/visibility` `{ hidden, reason }` - policy
-  `ManagerOrAbove` + `BranchScoped` + the K4 guard; audited `review.hide`/`review.unhide` with actor type
-  venue. Items as the platform list plus `reportCount` and `lastReportedAtUtc`. A review the platform
-  hid cannot be unhidden by a venue (403 `forbidden`); one a venue hid can be unhidden by the platform.
+  `ManagerOrAbove` + `BranchScoped` + the K4 guard; audited `review.hide`/`review.unhide` with
+  `actorType: "venue"`. Shapes and rules are under the venue console's review routes above. A review the
+  platform hid cannot be put back by a venue (403 `forbidden`), and a venue hiding it again changes
+  nothing; one a venue hid can be put back by the platform.
 - **Diner report.** `POST /api/diner/reviews/{reviewId}/report`, body
   `{ reason: "spam"|"offensive"|"not-a-visit"|"personal-info"|"other", note: string|null (≤ 500) }` →
   204. One report per diner per review (a repeat is a 204 no-op); reporting one's own review is 409
-  `conflicting-state`; a hidden or unknown review is 404. Entity
+  `conflicting-state`; a hidden or unknown review, or one at a branch that is not published, is 404. An
+  unknown reason is 422 naming `reason` with bound `range`. Entity
   `BranchReviewReport { ReviewId, DinerUserId, Reason, Note, CreatedAtUtc }`, unique
-  `(ReviewId, DinerUserId)`. Policy: any diner token (verified number not required); `diner-write`.
+  `(ReviewId, DinerUserId)`, `Reason` held to the five slugs by `CK_BranchReviewReports_Reason`. Policy:
+  any diner token (verified number not required); `diner-write`.
 - The public list shape is unchanged: the app shows "Report" on every review not written by the
   signed-in diner.
-- The migration for K8 and K9 is `ReviewModerationReportsAndReservationNote`.
+- **Account deletion (K2)** deletes, in its transaction, the reports the diner filed and every report
+  about the diner's reviews; the audit row counts them as `reviewReports`.
+- Stored as `BranchReviews.HiddenAtUtc`, `HiddenReason`, `HiddenByStaffMemberId` and `HiddenByPlatform`,
+  in migration `20260914145450_ReviewModerationReportsAndReservationNote`.
 
-### K9. Booking gate and booking note - in progress (B3)
+### K9. Booking gate and booking note - **implemented (B3)**
 
-- **New field:** `PublicBranchDetail` and `PublicBranchPage` add
-  `acceptsAppBookings: boolean` = `AcceptsWebBookings && ReservationPolicyReviewedAtUtc != null`.
-- **Gate:** `POST /api/reservations` with channel App when `!acceptsAppBookings` → 409
-  `bookings-not-accepted` with `context.branchId`. The Web channel behaves as today.
-- **Note on create:** `CreateReservationRequest` adds `note: string | null`, trimmed, blank → null, over
-  500 characters → 422 naming `note`, bound `max`. The note is sent to the venue.
-- **Note on reads:** `note: string | null` on the staff `ReservationView` (branch reservation lists and
-  pending approvals), `GET /api/reservations/mine` items and the diner booking detail, and
-  `GET /api/public/bookings/{token}`.
+- **New field:** `PublicBranchDetail` and `PublicBranchPage` carry
+  `acceptsAppBookings: boolean` = `AcceptsWebBookings && ReservationPolicyReviewedAtUtc != null`, read live
+  on both.
+- **Gate:** `POST /api/reservations` with channel App (`1`) when `!acceptsAppBookings` → 409
+  `bookings-not-accepted` with `context.branchId`. Checked after the replay lookup - a retry of a booking
+  that already exists still returns it - and after the Web rule. Web (`2`) behaves as before; Unknown
+  (`0`) and Staff (`3`) are not gated.
+- **Note on create:** `CreateReservationRequest` adds `note: string | null`, trimmed, blank → null (absent
+  on reads), over 500 characters → 422 `validation-failed` naming `note`, bound `max`, checked before
+  anything else about the booking. The note is sent to the venue. The schema declares no `maxLength` for
+  it, because the request validation filter reports every attribute failure with bound `required`.
+- **Note on reads:** `note` (absent when none) on every `ReservationView` - the branch list and approval
+  queue (`GET /api/branches/{id}/reservations`), `GET /api/reservations/mine`, and the create, cancel,
+  approve and reject answers - and on `GET /api/public/bookings/{token}`. There is no separate diner
+  booking-detail route; `/mine` is that read.
 
 ### K10. Configuration - in progress (B4)
 
@@ -696,6 +786,7 @@ window client-side); `getById(id)` → `GET /api/diner/orders/{id}` (404 → `nu
   entity.
 - **Several hero photos per table view.** Not modelled.
 - **A diner deleting a single review.** Not built; deleting the account deletes all of them (K2).
-  Review moderation and reporting are in progress (K8 extension).
+  Moderation hides a review rather than deleting it, and a diner can report somebody else's (K8
+  extension).
 - **Distance without a position.** The server does not know where the diner is; `distanceKm` is present
   only when `lat` and `lng` are sent.

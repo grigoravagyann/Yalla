@@ -65,7 +65,11 @@ public sealed record PublicBranchListing(
 /// <param name="Gallery">Pictures beyond the cover, in the venue's order.</param>
 /// <param name="TableCount">Active tables on the plan.</param>
 /// <param name="AcceptsWebBookings">Whether the public page offers booking.</param>
-/// <param name="RecentReviews">The newest three reviews. The rest are paged on the reviews route.</param>
+/// <param name="AcceptsAppBookings">
+/// Whether the diner app may book here: online bookings switched on <b>and</b> the reservation policy
+/// saved by somebody at the venue (K9). False means hide the booking button.
+/// </param>
+/// <param name="RecentReviews">The newest three published reviews, by when they were first written. The rest are paged on the reviews route.</param>
 /// <param name="TableMarkers">Tables placed on the cover photo, with their live state.</param>
 /// <param name="AsOfUtc">When the live half was read.</param>
 public sealed record PublicBranchDetail(
@@ -78,26 +82,32 @@ public sealed record PublicBranchDetail(
     IReadOnlyList<PhotoView> Gallery,
     int TableCount,
     bool AcceptsWebBookings,
+    bool AcceptsAppBookings,
     IReadOnlyList<PublicReviewView> RecentReviews,
     IReadOnlyList<PublicTableMarker> TableMarkers,
     DateTime AsOfUtc);
 
 /// <summary>One published review.</summary>
 /// <param name="ReviewId">The review's id.</param>
-/// <param name="AuthorName">"Anahit S." - first name and last initial, never the full name or any id.</param>
+/// <param name="AuthorName">
+/// "Anahit S." - a first name and an initial, "Yalla diner" when the name cannot be shown. Never the
+/// full name, a number, an email or any id. See <c>BranchReview.PublicAuthorName</c>.
+/// </param>
 /// <param name="Rating">1-5.</param>
 /// <param name="Text">Absent when the diner left stars only.</param>
-/// <param name="CreatedAtUtc">First written.</param>
-/// <param name="UpdatedAtUtc">Last revised.</param>
+/// <param name="CreatedAtUtc">First written. The list is ordered by this, newest first.</param>
+/// <param name="UpdatedAtUtc">When the rating or text last changed.</param>
+/// <param name="Edited">Whether it was changed after it was first written.</param>
 public sealed record PublicReviewView(
     Guid ReviewId,
     string AuthorName,
     int Rating,
     string? Text,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    bool Edited);
 
-/// <summary>A page of a branch's reviews, newest revision first.</summary>
+/// <summary>A page of a branch's published reviews, newest first by when each was written.</summary>
 public sealed record PublicReviewPage(
     Guid BranchId,
     double? Rating,

@@ -153,9 +153,18 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         }
 
         var route = $"/api/diner/branches/{mine.BranchId}/review";
-        using var ani = factory.CreateClientWithToken((await SignInDinerAsync(factory)).AccessToken);
-        using var narek = factory.CreateClientWithToken((await SignInDinerAsync(factory)).AccessToken);
+        var aniAccount = await SignInDinerAsync(factory);
+        var narekAccount = await SignInDinerAsync(factory);
+        using var ani = factory.CreateClientWithToken(aniAccount.AccessToken);
+        using var narek = factory.CreateClientWithToken(narekAccount.AccessToken);
         using var anyone = factory.CreateClient();
+
+        // Both sat at one of the branch's tables: a first review needs a visit (K8).
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            await ReviewTestData.SeedTabVisitAsync(
+                db, mine, factory.Clock.UtcNow, aniAccount.DinerUserId, narekAccount.DinerUserId);
+        }
 
         // The diner opens the place first, which fills the fifteen-second listing cache with no reviews.
         var before = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}");

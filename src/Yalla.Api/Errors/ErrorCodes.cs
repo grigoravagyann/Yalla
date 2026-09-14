@@ -303,6 +303,21 @@ public static class ErrorCodes
     /// </summary>
     public const string CoverChanged = "cover-changed";
 
+    /// <summary>
+    /// A first review of a branch from a diner with no visit there in the window (K8): no Seated or
+    /// Completed booking and no place on one of its tabs in the last 180 days. HTTP 403, with
+    /// <c>context.branchId</c> and <c>context.windowDays</c>. Revising a review the diner already has
+    /// is never refused for this.
+    /// </summary>
+    public const string ReviewNeedsVisit = "review-needs-visit";
+
+    /// <summary>
+    /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
+    /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
+    /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
+    /// </summary>
+    public const string BookingsNotAccepted = "bookings-not-accepted";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -362,6 +377,8 @@ public static class ErrorCodes
         RelocationNotAllowed => "Relocation not allowed",
         FloorPlanChanged => "Floor plan changed",
         CoverChanged => "Cover photo changed",
+        ReviewNeedsVisit => "Review needs a visit",
+        BookingsNotAccepted => "Bookings not accepted",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a
