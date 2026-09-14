@@ -94,9 +94,30 @@ public static class DependencyInjection
 
         // Photos. The storage root is verified once, at construction, so a folder that cannot be
         // written to stops the process rather than surfacing as a broken menu three screens later.
-        services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));
+        //
+        // The root is resolved here, once: "~" is this user's Yalla data folder, so Development's
+        // "~/photos" is one folder every worktree shares, as they share the database. The sweep
+        // service logs the absolute path at startup.
+        var photoStorage = Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName);
+        photoStorage.RootPath = PhotoStorageRoot.Resolve(photoStorage.RootPath);
+
+        services.AddSingleton(photoStorage);
         services.AddSingleton<IPhotoStorage, LocalDiskPhotoStorage>();
         services.AddScoped<IPhotoService, PhotoService>();
+
+        // The orphan sweep, every PhotoStorage:SweepIntervalMinutes (K10). Zero switches it off; a
+        // negative value is a typo, and a typo here should not quietly mean "never".
+        var photoSweep = Bind<PhotoSweepOptions>(configuration, PhotoSweepOptions.SectionName);
+
+        if (photoSweep.SweepIntervalMinutes < 0)
+        {
+            throw new InvalidOperationException(
+                $"PhotoStorage:SweepIntervalMinutes is {photoSweep.SweepIntervalMinutes}. Use the minutes "
+                + "between orphan photo sweeps, or 0 to switch the sweep off.");
+        }
+
+        services.AddSingleton(photoSweep);
+        services.AddHostedService<PhotoSweepHostedService>();
 
         // A diner's own account - profile, password, picture. Beside the photo service because
         // the picture goes through the same storage, and apart from the sign-in flows because

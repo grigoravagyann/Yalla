@@ -173,8 +173,11 @@ public static class DinerAccountEndpoints
                 + "and everything else refused whatever the declared type says; **EXIF is stripped**; "
                 + "three WebP variants are kept and the original is discarded. Same size cap.\n\n"
                 + "Replaces whatever picture was there. The same bytes uploaded twice by the same "
-                + "person are one photo; the picture replaced is deleted by the orphan sweep after a "
-                + "day, so its old URL keeps working for that long and then does not.")
+                + "person are one photo. The picture replaced is left for the orphan sweep, which runs "
+                + "every hour by default (`PhotoStorage:SweepIntervalMinutes`) and deletes a picture "
+                + "nothing uses once it is more than a day old - so its old URL keeps working for at "
+                + "least a day and stops within about an hour after that. To end it at once, "
+                + "`DELETE /api/diner/me/photo` before uploading.")
             .Accepts<IFormFile>("multipart/form-data")
             .Produces<PhotoView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "No `file` part in the upload.")

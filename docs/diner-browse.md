@@ -29,7 +29,7 @@ as **in progress**: the route or field is not served yet.
 | K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | **Implemented** |
 | K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | **Implemented** |
 | K9 | App booking gate and booking note | B3 | **Implemented** |
-| K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | In progress |
+| K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | **Implemented** |
 | K11 | Favourites synced to the account | B6 | **Implemented** |
 | K12 | Diner notifications feed | B6 | **Implemented** |
 
@@ -426,14 +426,26 @@ Development - every start seeds, idempotently:
 - **Five reviews** by five development reviewer accounts - "Dev Reviewer 1" to "Dev Reviewer 5", on the
   +374 99 000 051-055 test range, phone verified - rated 5, 4, 5, 3 and 4, dated 1 to 25 days back. A
   review is added only for a reviewer who has none at the branch.
+- **A cover and a two-picture gallery** (B4), only while the branch has no cover: three JPEGs embedded
+  in `Yalla.Infrastructure` (`DevSeed/cover.jpg`, `gallery-1.jpg`, `gallery-2.jpg`), drawn by code for
+  this repository - no photograph or third-party artwork, see `DevSeed/README.md` - and stored through
+  `IPhotoStorage` like an upload, so the three variants exist and every URL answers. The gallery is
+  added only when the branch has none. A manager's own cover is never replaced; a cover somebody
+  cleared comes back on the next start.
+- **Bookings open** (B4), only while nobody has saved the reservation policy: `acceptsWebBookings` on
+  and the policy marked reviewed, so `acceptsAppBookings` is true (K9). Once a manager saves the policy,
+  the booking switch is theirs, off included.
 - **Table pins** on the cover photo, mapped from each table's floor-plan position into the middle of
   the picture - only when the branch has a cover and no active table has a pin yet, so a manager who
-  takes a table off the photo keeps it off. **The seed sets no cover photo**, so a fresh database has
-  no markers until a cover is set.
+  takes a table off the photo keeps it off. The seeded cover is drawn to the same mapping, so each pin
+  lands on its table.
 
-`DevListingSeedTests` proves that a second run adds nothing, that a manager's amenities and a table
-they took off the photo survive the next seed, that seeding runs with `DevActor:Enabled` off, and that
-nothing is seeded outside Development.
+`DevListingSeedTests` proves that a dropped database and an empty photo folder start with the demo
+branch in the browse list with a cover whose variants load, table markers on it, a gallery whose
+pictures load and app bookings open - without the test inserting a photo; that a second run adds
+nothing; that a manager's cover, amenities, saved policy and a table they took off the photo survive
+the next seed; that seeding runs with `DevActor:Enabled` off; and that nothing is seeded outside
+Development.
 
 ---
 
@@ -662,12 +674,24 @@ The user's decision: moderation and reporting are built now.
   approve and reject answers - and on `GET /api/public/bookings/{token}`. There is no separate diner
   booking-detail route; `/mine` is that read.
 
-### K10. Configuration - in progress (B4)
+### K10. Configuration - **implemented (B4)**
 
 - `ForwardedHeaders:KnownProxies: string[]`, `ForwardedHeaders:KnownNetworks: string[]` (CIDR),
-  `ForwardedHeaders:ForwardLimit: int = 1`. Empty trusts no proxy. In Production with rate limiting on,
-  a warning is logged at startup.
-- `PhotoStorage:SweepIntervalMinutes: int = 60` (0 turns the sweep off).
+  `ForwardedHeaders:ForwardLimit: int = 1`. `X-Forwarded-For` and `X-Forwarded-Proto` are read only on
+  a connection from a listed proxy or network, and only the last `ForwardLimit` hops. Empty trusts no
+  proxy: the middleware is not added at all, so the header is ignored from every address, loopback
+  included. In Production with rate limiting on and nothing listed, a warning is logged at startup. A
+  value that is not an address, a CIDR block or a limit of at least 1 stops startup. Called first in the
+  pipeline, before the Swagger allowlist, authentication and the rate limiter. See README.md, "Behind a
+  reverse proxy".
+- `PhotoStorage:SweepIntervalMinutes: int = 60` (0 turns the sweep off; negative stops startup).
+  `PhotoSweepHostedService` runs the orphan sweep that often, first one interval after start, each pass
+  in its own scope; a failed pass is logged and the next still runs. The sweep takes a photo nothing
+  references once it is more than 24 hours old, so a replaced picture's URL keeps working for at least
+  a day and stops within one interval after that.
+- `PhotoStorage:RootPath` starting with `~` (or blank) resolves under the user's local application data
+  folder: Development's `~/photos` is `%LOCALAPPDATA%\Yalla\photos`, shared by every worktree that
+  shares the database. The absolute root is logged at startup.
 - `appsettings.Staging.json`: `RateLimiting:Enabled = true`.
 - `GET /api/branches/{id}/readiness` is unchanged; only the frontend starts using it.
 

@@ -16,7 +16,8 @@ tablet, and the owner's admin panel.
   - [`error-contract.md`](docs/error-contract.md) — which refusals name their field
   - [`menu-completeness.md`](docs/menu-completeness.md) — what makes a menu item complete
   - [`notifications.md`](docs/notifications.md) — the outbox, what is sent, and what nothing sends
-  - [`openapi.md`](docs/openapi.md) — the OpenAPI document
+  - [`openapi.md`](docs/openapi.md) — the OpenAPI document, the frontend's committed copy of it, and
+    the CI artifact to compare that copy with
   - [`platform-admin.md`](docs/platform-admin.md) — the tier above every venue
   - [`public-surface.md`](docs/public-surface.md) — the anonymous routes: browse lists, branch pages,
     managing a booking without an account
@@ -47,11 +48,12 @@ dotnet run --project src/Yalla.Api
 On first start the database is migrated, the demo branch is seeded, and the platform admin above
 is created. Swagger UI is at `/swagger`.
 
-The demo data - the `yalla-demo` venue with its tables, opening hours, listing, reviews and table
-pins - is switched by `DevSeed:Enabled`, which is on in `appsettings.Development.json` and runs on
-every Development start (idempotently). It is independent of `DevActor:Enabled`, so it is there when
-you sign in for real with the actor stub off. Set `DevSeed:Enabled` to `false` for an empty
-database; it has no effect outside Development.
+The demo data - the `yalla-demo` venue with its tables, opening hours, listing, cover and gallery
+pictures, table pins, open bookings and reviews - is switched by `DevSeed:Enabled`, which is on in
+`appsettings.Development.json` and runs on every Development start (idempotently). It is independent
+of `DevActor:Enabled`, so it is there when you sign in for real with the actor stub off. Set
+`DevSeed:Enabled` to `false` for an empty database; it has no effect outside Development. What it
+writes, and what it leaves alone, is in [`docs/diner-browse.md`](docs/diner-browse.md#development-seed-data).
 
 ```
 dotnet test
@@ -59,6 +61,42 @@ dotnet test
 
 The integration tests run against a throwaway SQL Server database and **skip** when no server is
 reachable; set `YALLA_TEST_SQL_SERVER` to point them at one.
+
+## Photos
+
+Uploaded photos - menu dishes, branch covers and galleries, diner profile pictures - are stored on
+local disk under `PhotoStorage:RootPath`, as three WebP variants per photo at
+`{owner}/{sha256}/{thumbnail,card,full}.webp`. The database holds the rows; the folder holds the
+bytes. A row without its files serves 404.
+
+**How the setting resolves.** A value starting with `~` is under this user's Yalla data folder -
+`%LOCALAPPDATA%\Yalla` on Windows, `~/.local/share/Yalla` on Linux - and a blank value means
+`~/photos`. Anything else is an absolute path, or a path relative to the working directory. The
+absolute folder is **logged at startup** ("Photo storage root is …"), and the API refuses to start if
+it cannot write there.
+
+| Where | `RootPath` | Folder |
+| --- | --- | --- |
+| Development (`appsettings.Development.json`) | `~/photos` | `%LOCALAPPDATA%\Yalla\photos` |
+| Everywhere else (`appsettings.json`) | `.photos` | beside the working directory; set `PhotoStorage__RootPath` to a real volume |
+| Tests | a temp folder | set by `YallaApiFactory`, never your own photos |
+
+**Why Development keeps photos outside the checkout.** Every worktree of this repository uses the same
+local `Yalla` database, so they must use the same files too. With a folder inside each checkout, a
+cover uploaded while running one worktree was a row the other worktree could read and a 404 when it
+served it. `~/photos` is one folder for all of them, and it is outside the repository, so nothing in
+it can be committed. The other default, `.photos/`, is **gitignored** for the same reason. If you point
+a worktree at a database of its own, a shared folder is harmless: files are keyed by owner id and
+content hash.
+
+**What is deleted, and when.** A photo nothing references - a replaced profile picture, a cover
+swapped for another, an upload never attached - is deleted, row and files, once it is more than a day
+old, by a background sweep every `PhotoStorage:SweepIntervalMinutes` (60 by default; `0` switches it
+off). The first pass runs one interval after start. A diner removing their picture or deleting their
+account deletes it at once instead.
+
+Moving to object storage is a copy of the folder and a different `IPhotoStorage` - see
+[`docs/notifications.md`](docs/notifications.md), section 10.
 
 ## Reaching the API from a phone on the same wifi
 
@@ -125,6 +163,40 @@ netsh advfirewall firewall add rule name="Yalla API dev HTTP" dir=in action=allo
 Also check that the phone and the machine are on the same network (a guest wifi or a personal
 hotspot often isolates clients from each other), and that you used the HTTP URL - the phone will
 reject HTTPS with the dev certificate.
+
+## Behind a reverse proxy
+
+A load balancer or reverse proxy in front of the API changes who the API thinks is calling: every
+connection comes from the proxy. The per-address rate limits then give **the whole internet one
+budget** (thirty public page views a minute, shared by everybody), and the Swagger allowlist sees the
+proxy rather than the office.
+
+List the proxies under `ForwardedHeaders`, and the API believes their `X-Forwarded-For` and
+`X-Forwarded-Proto` - from them and from nobody else:
+
+```
+ForwardedHeaders__KnownProxies__0=10.0.0.4
+ForwardedHeaders__KnownNetworks__0=10.0.0.0/24
+ForwardedHeaders__ForwardLimit=1
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `KnownProxies` | Single addresses of the proxies directly in front of the API. |
+| `KnownNetworks` | CIDR blocks, for a proxy pool whose addresses change. |
+| `ForwardLimit` | How many proxies are chained in front of the API (default `1`). That many entries are read from the **right-hand** end of `X-Forwarded-For` - the ones the proxies appended - and never the left-hand end, which a client can write. |
+
+- **Both lists empty trusts no proxy**, and the headers are ignored from every address, loopback
+  included. That is the default.
+- **In Production with rate limiting on and no proxy listed, a warning is logged at startup.** Running
+  behind a proxy like that is the "everybody shares one budget" failure above.
+- **A value that is not an address or a CIDR block stops startup**, naming the key.
+- **Do not set `ASPNETCORE_FORWARDEDHEADERS_ENABLED`.** It makes ASP.NET Core trust the header from
+  every caller, so any client could pick its own rate-limit budget; the API logs a warning if it is set.
+
+Rate limiting is on in Production and Staging (`appsettings.Staging.json`) and off in Development;
+`RateLimiting:Enabled` overrides either way. The limits are listed in
+[`docs/diner-browse.md`](docs/diner-browse.md).
 
 ## Continuous integration
 

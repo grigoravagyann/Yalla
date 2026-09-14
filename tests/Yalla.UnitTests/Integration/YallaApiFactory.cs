@@ -81,6 +81,11 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         // Same rule, same reason: the reset link is handed to a person once, so a deployment-shaped
         // host has to say where the console is. Loopback is refused outside Development.
         ["Auth:PasswordResetUrlTemplate"] = "https://test.yalla.app/reset-password#token={token}",
+
+        // appsettings.Development.json puts photos in the developer's own data folder, shared by
+        // every worktree. A test host writes to a throwaway folder instead; the tests that read the
+        // files back set a root of their own.
+        ["PhotoStorage:RootPath"] = Path.Combine(Path.GetTempPath(), "yalla-test-photos"),
     };
 
     private readonly List<Action<IServiceCollection>> _serviceOverrides = [];
@@ -89,6 +94,20 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
     public YallaApiFactory With(string key, string? value)
     {
         _settings[key] = value;
+
+        return this;
+    }
+
+    /// <summary>
+    /// Drops one of the factory's own settings, so the environment's appsettings file decides it.
+    /// </summary>
+    /// <remarks>
+    /// For the tests about those files: <c>RateLimiting:Enabled</c> is forced off here, and a host
+    /// that is meant to prove Staging switches it on has to stop forcing it.
+    /// </remarks>
+    public YallaApiFactory Without(string key)
+    {
+        _settings.Remove(key);
 
         return this;
     }

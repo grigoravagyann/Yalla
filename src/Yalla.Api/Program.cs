@@ -110,6 +110,11 @@ else if (delivery.DeliversNothing)
         app.Environment.EnvironmentName);
 }
 
+// First, so everything after it - the Swagger allowlist, HTTPS redirection, authentication and the
+// rate limiter's per-address budgets - sees the caller's address rather than the proxy's. Only proxies
+// listed under ForwardedHeaders are believed; with none listed it adds nothing (K10).
+app.UseYallaForwardedHeaders();
+
 // Enriches log events with TraceId and RequestPath. Does NOT catch or log exceptions -
 // UnifiedExceptionHandler is the single log point.
 app.UseMiddleware<ErrorContextMiddleware>();
