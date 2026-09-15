@@ -85,12 +85,16 @@ internal sealed class DevDataSeeder(
 
         await EnsureFloorAsync(branch, cancellationToken);
         await EnsureOpeningHoursAsync(branch, cancellationToken);
-        await EnsureMenuAsync(branch, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 
         // Listing fields, photo pins and reviews for the diner app. Same gate as this seeder.
         await listing.SeedAsync(branch, cancellationToken);
+
+        // After the listing: the public menu only shows complete items, and complete means a photo,
+        // so the dishes borrow the branch's seeded pictures.
+        await EnsureMenuAsync(branch, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
 
         registry.Publish(venue.Id, branch.Id, waiter.Id, manager.Id);
 
@@ -113,19 +117,38 @@ internal sealed class DevDataSeeder(
             return;
         }
 
+        var pictures = await db.BranchGalleryPhotos
+            .Where(g => g.BranchId == branch.Id)
+            .OrderBy(g => g.Position)
+            .Select(g => (Guid?)g.PhotoId)
+            .ToListAsync(cancellationToken);
+        if (branch.CoverPhotoId is not null)
+        {
+            pictures.Add(branch.CoverPhotoId);
+        }
+
+        if (pictures.Count == 0)
+        {
+            // Without a picture the items would be incomplete and hidden, which helps nobody.
+            logger.LogInformation("No development pictures on branch {BranchId}; menu not seeded.", branch.Id);
+            return;
+        }
+
+        Guid? Picture(int index) => pictures[index % pictures.Count];
+
         var coffee = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Coffee", 0);
         var food = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Breakfast", 1);
         db.Add(coffee);
         db.Add(food);
 
         db.Add(new Yalla.Domain.Menus.MenuItem(
-            coffee.Id, "Armenian coffee", "Strong, served with a glass of water.", 900, null,
+            coffee.Id, "Armenian coffee", "Strong, served with a glass of water.", 900, Picture(0),
             "Coffee, water", "None", "80 ml", 5, displayOrder: 0));
         db.Add(new Yalla.Domain.Menus.MenuItem(
-            coffee.Id, "Cappuccino", "Espresso with steamed milk.", 1400, null,
+            coffee.Id, "Cappuccino", "Espresso with steamed milk.", 1400, Picture(1),
             "Coffee, milk", "Milk", "250 ml", 5, displayOrder: 1));
         db.Add(new Yalla.Domain.Menus.MenuItem(
-            food.Id, "Khachapuri", "Bread boat with cheese and egg.", 2800, null,
+            food.Id, "Khachapuri", "Bread boat with cheese and egg.", 2800, Picture(0),
             "Flour, cheese, egg, butter", "Gluten, milk, egg", "1 piece", 15, displayOrder: 0));
 
         logger.LogInformation("Seeding development menu for branch {BranchId}.", branch.Id);
