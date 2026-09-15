@@ -248,6 +248,12 @@ public static class ErrorCodes
     public const string BookingNotActive = "booking-not-active";
 
     /// <summary>
+    /// The booked table still has another party's sitting open - not this booking's - so the booker
+    /// is not put on that tab. HTTP 409, with the booking's facts. A member of staff frees the table.
+    /// </summary>
+    public const string BookingTableOccupied = "booking-table-occupied";
+
+    /// <summary>
     /// A diner's username, email or password did not match a usable account. HTTP 401. Unknown
     /// identifier, wrong password, an account with no password and a deactivated account all
     /// arrive as this one code, so the sign-in form cannot be used to discover which exist.
@@ -368,6 +374,7 @@ public static class ErrorCodes
         BookingTooEarly => "Too early for this booking",
         BookingEnded => "Booking has ended",
         BookingNotActive => "Booking not active",
+        BookingTableOccupied => "Booked table still occupied",
         InvalidCredentials => "Invalid credentials",
         UsernameTaken => "Username taken",
         EmailTaken => "Email address taken",

@@ -547,6 +547,7 @@ facts under `context`:
 | "I'm at my table" before the branch's walk-in holdback | 409 | `booking-too-early`, with `context.earliestUtc` |
 | "I'm at my table" from the booking's end, or once its sitting has finished | 409 | `booking-ended`, with `context.endUtc` |
 | "I'm at my table" on a booking pending approval, cancelled or a no-show | 409 | `booking-not-active`, with `context.status` |
+| "I'm at my table" while another party's sitting is still open on the booked table | 409 | `booking-table-occupied`, with the booking's `context` |
 
 ---
 

@@ -592,6 +592,7 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
                 ["endUtc"] = e.EndUtc,
                 ["earliestUtc"] = e.EarliestUtc,
+                ["tableLabel"] = e.TableLabel,
             }),
 
         // A diner's username, email or number is somebody else's. Three codes, one shape: the

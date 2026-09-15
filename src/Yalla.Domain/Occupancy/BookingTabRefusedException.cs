@@ -3,7 +3,7 @@ using Yalla.Domain.Enums;
 namespace Yalla.Domain.Occupancy;
 
 /// <summary>
-/// "I'm at my table" was refused, and which of three refusals it was.
+/// "I'm at my table" was refused, and which refusal it was.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,7 +22,8 @@ public sealed class BookingTabRefusedException(
     string code,
     Reservation reservation,
     DateTime earliestUtc,
-    string message)
+    string message,
+    string? tableLabel = null)
     : DomainStateException(message)
 {
     /// <summary>
@@ -40,7 +41,13 @@ public sealed class BookingTabRefusedException(
     /// </summary>
     public const string NotActive = "booking-not-active";
 
-    /// <summary>Which refusal: one of the three constants above. Reaches the wire as the error code.</summary>
+    /// <summary>
+    /// The booked table still has another sitting open - a party that is not this booking's, often a
+    /// walk-in nobody cleared. The booker never joins a stranger's tab; a waiter frees the table.
+    /// </summary>
+    public const string TableOccupied = "booking-table-occupied";
+
+    /// <summary>Which refusal: one of the constants above. Reaches the wire as the error code.</summary>
     public string Code { get; } = code;
 
     /// <summary>The booking.</summary>
@@ -60,4 +67,10 @@ public sealed class BookingTabRefusedException(
     /// the tab.
     /// </summary>
     public DateTime EarliestUtc { get; } = earliestUtc;
+
+    /// <summary>
+    /// The booked table's label, for <see cref="TableOccupied"/> - "Table 1 still has another party
+    /// seated". Null on the other refusals, which are about the booking rather than the table.
+    /// </summary>
+    public string? TableLabel { get; } = tableLabel;
 }

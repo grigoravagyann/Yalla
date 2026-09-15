@@ -588,8 +588,9 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
     // ------------------------------------------------------------ the tab at the table
 
     /// <summary>
-    /// Whoever gets to the table first, the second phone is treated exactly as a scan treats it: one
-    /// tab, the first phone hosts it, and the second waits to be let on.
+    /// A phone scanning after the booker is treated exactly as a scan treats it: one tab, the booker
+    /// hosts it, and the second phone waits to be let on. A walk-in sitting a scan opened before the
+    /// booker arrived is not the booking's, and the booker is not put on it.
     /// </summary>
     [SkippableFact]
     public async Task A_second_phone_at_the_table_is_treated_exactly_as_a_scan_would_treat_it()
@@ -622,24 +623,144 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
             ParticipantStatus.PendingApproval,
             EnumOf<ParticipantStatus>(friend.GetProperty("tab").GetProperty("me").GetProperty("status")));
 
-        // The other way round: a friend got there first and scanned, then the booker arrives.
+        // The other way round: somebody scanned the free table before the booker arrived. That sat
+        // a walk-in, not the booking, so the booker is refused rather than put on that tab.
         var early = await ScanAsync(anonymous, await QrTokenAsync(factory, branch.TableIds[1]), "phone-early-friend");
 
         Assert.Equal(TabOpenOutcome.OpenedNewSession, EnumOf<TabOpenOutcome>(early.GetProperty("outcome")));
 
-        var arrived = await OpenByBookingAsync(diner, second.Code, "phone-booker-second");
-        Assert.Equal(HttpStatusCode.OK, arrived.StatusCode);
-        var booker = await arrived.Content.ReadFromJsonAsync<JsonElement>();
+        await RefusedAsync(
+            await OpenByBookingAsync(diner, second.Code, "phone-booker-second"),
+            HttpStatusCode.Conflict,
+            "booking-table-occupied");
+    }
 
-        Assert.Equal(TabOpenOutcome.JoinedExistingTab, EnumOf<TabOpenOutcome>(booker.GetProperty("outcome")));
+    /// <summary>
+    /// The bug from the phone: a walk-in sitting left open on the booked table from days ago, with a
+    /// stranger hosting its tab. The booker was put on it as a pending guest and told to wait for
+    /// the host. Now they are refused with a code of their own, and nobody is added to that tab.
+    /// </summary>
+    [SkippableFact]
+    public async Task Another_party_still_seated_at_the_booked_table_is_refused_and_their_tab_is_left_alone()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var stranger = await ScanAsync(anonymous, await QrTokenAsync(factory, branch.TableIds[0]), "phone-stranger");
+        var strangerTabId = stranger.GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+
+        var problem = await RefusedAsync(
+            await OpenByBookingAsync(diner, booking.Code, "phone-booker"),
+            HttpStatusCode.Conflict,
+            "booking-table-occupied");
+
+        var context = problem.GetProperty("context");
+
+        Assert.Equal(booking.Id, context.GetProperty("reservationId").GetGuid());
+        Assert.Equal((int)ReservationStatus.Confirmed, context.GetProperty("status").GetInt32());
+        Assert.Equal("1", context.GetProperty("tableLabel").GetString());
+        Assert.Contains("Table 1", problem.GetProperty("detail").GetString(), StringComparison.Ordinal);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        Assert.Equal(1, await db.TabParticipants.CountAsync(p => p.TabId == strangerTabId));
         Assert.Equal(
-            early.GetProperty("tab").GetProperty("tabId").GetGuid(),
-            booker.GetProperty("tab").GetProperty("tabId").GetGuid());
+            ReservationStatus.Confirmed,
+            (await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == booking.Id)).Status);
+    }
 
-        var me = booker.GetProperty("tab").GetProperty("me");
+    /// <summary>
+    /// A waiter seated the booking and a friend in the party scanned the table first, so the friend
+    /// hosts the tab. The booker arriving with the code is let straight on - it is their booking - and
+    /// the friend stays host.
+    /// </summary>
+    [SkippableFact]
+    public async Task On_the_booking_s_own_sitting_the_booker_joins_a_friend_s_tab_approved()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+        await SeatBookingAsync(factory, branch, booking);
+
+        using var anonymous = factory.CreateClient();
+        var friend = await ScanAsync(anonymous, await QrTokenAsync(factory, branch.TableIds[0]), "phone-friend");
+        var tabId = friend.GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        Assert.Equal(
+            ParticipantRole.Host,
+            EnumOf<ParticipantRole>(friend.GetProperty("tab").GetProperty("me").GetProperty("role")));
+
+        var response = await OpenByBookingAsync(diner, booking.Code, "phone-booker");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var me = body.GetProperty("tab").GetProperty("me");
+
+        Assert.Equal(TabOpenOutcome.JoinedExistingTab, EnumOf<TabOpenOutcome>(body.GetProperty("outcome")));
+        Assert.Equal(tabId, body.GetProperty("tab").GetProperty("tabId").GetGuid());
         Assert.Equal(ParticipantRole.Guest, EnumOf<ParticipantRole>(me.GetProperty("role")));
-        Assert.Equal(ParticipantStatus.PendingApproval, EnumOf<ParticipantStatus>(me.GetProperty("status")));
+        Assert.Equal(ParticipantStatus.Approved, EnumOf<ParticipantStatus>(me.GetProperty("status")));
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var host = await db.TabParticipants.AsNoTracking()
+            .SingleAsync(p => p.TabId == tabId && p.Role == ParticipantRole.Host);
+
+        Assert.Equal("phone-friend", host.DeviceId);
+    }
+
+    /// <summary>
+    /// The booker scanned their own booking's table from another phone and was left pending on the
+    /// friend's tab. The booking code finds that same place by their account, and lets them on.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_booker_already_pending_on_their_own_booking_s_tab_is_approved_not_added_twice()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+        await SeatBookingAsync(factory, branch, booking);
+
+        using var anonymous = factory.CreateClient();
+        var friend = await ScanAsync(anonymous, await QrTokenAsync(factory, branch.TableIds[0]), "phone-friend");
+        var tabId = friend.GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        // The booker's own account scanned, from a phone that is not the one they use now.
+        var pending = await ScanAsync(diner, await QrTokenAsync(factory, branch.TableIds[0]), "phone-booker-old");
+        var pendingMe = pending.GetProperty("tab").GetProperty("me");
+
+        Assert.Equal(ParticipantStatus.PendingApproval, EnumOf<ParticipantStatus>(pendingMe.GetProperty("status")));
+
+        var response = await OpenByBookingAsync(diner, booking.Code, "phone-booker-new");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var me = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("tab").GetProperty("me");
+
+        Assert.Equal(pendingMe.GetProperty("participantId").GetGuid(), me.GetProperty("participantId").GetGuid());
+        Assert.Equal(ParticipantStatus.Approved, EnumOf<ParticipantStatus>(me.GetProperty("status")));
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        Assert.Equal(2, await db.TabParticipants.CountAsync(p => p.TabId == tabId));
     }
 
     /// <summary>
@@ -896,6 +1017,18 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
         while (await db.Reservations.AnyAsync(r => r.Code == code));
 
         return code;
+    }
+
+    /// <summary>Seats the booking from the floor, as a waiter does when the party walks in.</summary>
+    private static async Task SeatBookingAsync(YallaApiFactory factory, AuthBranch branch, Booking booking)
+    {
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var seated = await waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{branch.TableIds[0]}/seat-reservation",
+            new { reservationId = booking.Id, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.OK, seated.StatusCode);
     }
 
     private async Task<string> QrTokenAsync(YallaApiFactory factory, Guid tableId)
