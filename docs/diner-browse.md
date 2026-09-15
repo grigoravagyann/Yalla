@@ -144,7 +144,7 @@ up). Hidden reviews are absent, and are left out of `rating` and `reviewCount` t
 4. Add `" X."` - the second word's initial - only when the second word starts with a letter.
 
 So `"Anahit Sargsyan"` → `"Anahit S."`, `"Անահիտ Սարգսյան"` → `"Անահիտ Ս."`, `"Narek"` → `"Narek"`,
-`"ani@mail.am"` and `"+374 91 123456"` → `"Yalla diner"`, and no display name → `"Yalla diner"`.
+`"ani@example.test"` and `"+374 91 000 999"` → `"Yalla diner"`, and no display name → `"Yalla diner"`.
 
 ### `GET /api/public/branches/{branchId}/table-markers` → `PublicTableMarkers`
 
