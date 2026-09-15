@@ -15,8 +15,9 @@ namespace Yalla.Infrastructure.Persistence;
 /// <para>
 /// This exists because the dev actor stub has to report a <i>real</i> staff member -
 /// <c>TableSession.SeatedByStaffId</c> is a foreign key, so a made-up id fails on the first
-/// seating. It is deliberately tiny and has no menu, no bookings and no tabs: those belong to the
-/// tasks that build them.
+/// seating. It is deliberately tiny: a three-dish menu (so the diner app, the menu contract and the
+/// e2e specs have something to show), and no bookings or tabs - those belong to the tasks that
+/// build them.
 /// </para>
 /// <para>
 /// It is also what the diner app and the console show when they are tested with real sign-in, so
@@ -84,6 +85,7 @@ internal sealed class DevDataSeeder(
 
         await EnsureFloorAsync(branch, cancellationToken);
         await EnsureOpeningHoursAsync(branch, cancellationToken);
+        await EnsureMenuAsync(branch, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -95,6 +97,38 @@ internal sealed class DevDataSeeder(
         logger.LogInformation(
             "Development data ready. BranchId={BranchId} WaiterId={WaiterId} ManagerId={ManagerId}",
             branch.Id, waiter.Id, manager.Id);
+    }
+
+    /// <summary>
+    /// A small, complete menu so the diner app, the menu contract and the e2e specs have dishes to
+    /// show. Added only when the branch has no menu category at all, so a manager's menu is never
+    /// touched.
+    /// </summary>
+    private async Task EnsureMenuAsync(Branch branch, CancellationToken cancellationToken)
+    {
+        var hasMenu = await db.Set<Yalla.Domain.Menus.MenuCategory>()
+            .AnyAsync(c => c.BranchId == branch.Id, cancellationToken);
+        if (hasMenu)
+        {
+            return;
+        }
+
+        var coffee = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Coffee", 0);
+        var food = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Breakfast", 1);
+        db.Add(coffee);
+        db.Add(food);
+
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            coffee.Id, "Armenian coffee", "Strong, served with a glass of water.", 900, null,
+            "Coffee, water", "None", "80 ml", 5, displayOrder: 0));
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            coffee.Id, "Cappuccino", "Espresso with steamed milk.", 1400, null,
+            "Coffee, milk", "Milk", "250 ml", 5, displayOrder: 1));
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            food.Id, "Khachapuri", "Bread boat with cheese and egg.", 2800, null,
+            "Flour, cheese, egg, butter", "Gluten, milk, egg", "1 piece", 15, displayOrder: 0));
+
+        logger.LogInformation("Seeding development menu for branch {BranchId}.", branch.Id);
     }
 
     private async Task<StaffMember> EnsureStaffAsync(
