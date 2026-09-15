@@ -151,6 +151,12 @@ internal sealed class DevDataSeeder(
             food.Id, "Khachapuri", "Bread boat with cheese and egg.", 2800, Picture(0),
             "Flour, cheese, egg, butter", "Gluten, milk, egg", "1 piece", 15, displayOrder: 0));
 
+        // Deliberately unfinished: no photo or allergens yet. The console lists it as incomplete and
+        // diners never see it - which is what the menu contract checks.
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            food.Id, "Seasonal special", null, 3200, null,
+            null, null, null, null, displayOrder: 1));
+
         logger.LogInformation("Seeding development menu for branch {BranchId}.", branch.Id);
     }
 
