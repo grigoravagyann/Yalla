@@ -287,7 +287,9 @@ public sealed record FloorTableView(
     bool IsActive,
     string QrToken,
     TableStatus Status,
-    bool IsDeletable);
+    bool IsDeletable,
+    double? PhotoX = null,
+    double? PhotoY = null);
 
 /// <summary>
 /// Canvas size, areas, and every table with its geometry.
@@ -299,12 +301,22 @@ public sealed record FloorTableView(
 /// code. The diner-facing reads - availability and floor state - exclude them, which is the
 /// opposite requirement on the same flag and the reason both directions have a test.
 /// </remarks>
+/// <param name="BranchId">The branch.</param>
+/// <param name="FloorWidth">Canvas width.</param>
+/// <param name="FloorHeight">Canvas height.</param>
+/// <param name="Areas">The floor areas.</param>
+/// <param name="Tables">Every table, inactive ones included. <c>photoX</c>/<c>photoY</c> are read-only here.</param>
+/// <param name="Version">
+/// The plan's revision, opaque. Send it back as <c>expectedVersion</c> on the replace; a save against
+/// an older revision is refused with <c>floor-plan-changed</c>.
+/// </param>
 public sealed record FloorPlanView(
     Guid BranchId,
     int FloorWidth,
     int FloorHeight,
     IReadOnlyList<FloorAreaView> Areas,
-    IReadOnlyList<FloorTableView> Tables);
+    IReadOnlyList<FloorTableView> Tables,
+    string Version);
 
 /// <summary>An area as the editor sends it. <c>Id</c> matches an existing area; null means new.</summary>
 public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
@@ -325,6 +337,12 @@ public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
 /// <param name="Shape">1 Rectangle, 2 Round.</param>
 /// <param name="FloorAreaName">Names an area in the same plan, by name. Null for no area.</param>
 /// <param name="IsBookable">False for tables that only ever take walk-ins, e.g. bar stools.</param>
+/// <remarks>
+/// <b>No photo position (K6).</b> Where a table sits on the cover photo is saved through
+/// <c>PUT /api/branches/{branchId}/table-photo-positions</c>. It used to ride on this form, and a plan
+/// saved by an editor that did not know about pins took every pin off. <c>photoX</c>/<c>photoY</c> sent
+/// here are ignored; a kept table keeps its pin and a new table has none.
+/// </remarks>
 public sealed record FloorTableInput(
     Guid? Id,
     string Label,
@@ -339,11 +357,70 @@ public sealed record FloorTableInput(
     bool IsBookable = true);
 
 /// <summary>The whole plan, replaced in one atomic call.</summary>
+/// <param name="FloorWidth">Canvas width.</param>
+/// <param name="FloorHeight">Canvas height.</param>
+/// <param name="Areas">Every area in the plan.</param>
+/// <param name="Tables">Every table in the plan.</param>
+/// <param name="ExpectedVersion">
+/// <b>Required.</b> The <c>version</c> the editor loaded. A plan changed since then is refused with
+/// <c>409 floor-plan-changed</c> and <c>context.currentVersion</c>, and nothing is written.
+/// </param>
 public sealed record ReplaceFloorPlanCommand(
     int FloorWidth,
     int FloorHeight,
     IReadOnlyList<FloorAreaInput> Areas,
-    IReadOnlyList<FloorTableInput> Tables);
+    IReadOnlyList<FloorTableInput> Tables,
+    string? ExpectedVersion = null);
+
+/// <summary>
+/// The floor plan was saved by somebody else since the editor loaded it. Answers 409
+/// <c>floor-plan-changed</c> with <c>context.currentVersion</c>.
+/// </summary>
+public sealed class FloorPlanChangedException(string currentVersion)
+    : Exception("The floor plan was changed since you loaded it. Reload it, then make your changes again.")
+{
+    /// <summary>The revision now stored, for the editor to reload against.</summary>
+    public string CurrentVersion { get; } = currentVersion;
+}
+
+// ------------------------------------------------------------------ table pins on the cover photo
+
+/// <summary>Where some tables sit on the branch's cover photo.</summary>
+/// <param name="CoverPhotoId">
+/// <b>Required.</b> The cover the positions were placed on. When it is no longer the branch's cover -
+/// or the branch has none - the save is refused with <c>409 cover-changed</c>.
+/// </param>
+/// <param name="Positions">
+/// <b>Required.</b> The tables to change; tables not listed keep their pins. Each table at most once.
+/// </param>
+public sealed record TablePhotoPositionsCommand(
+    Guid? CoverPhotoId,
+    IReadOnlyList<TablePhotoPositionInput>? Positions);
+
+/// <summary>One table's place on the cover photo.</summary>
+/// <param name="TableId">An active table of this branch.</param>
+/// <param name="PhotoX">0 (left) to 1 (right). Sent with <paramref name="PhotoY"/>; both null takes the table off the photo.</param>
+/// <param name="PhotoY">0 (top) to 1 (bottom).</param>
+public sealed record TablePhotoPositionInput(Guid TableId, double? PhotoX, double? PhotoY);
+
+/// <summary>Every active table's place on the cover photo, after the save.</summary>
+/// <param name="CoverPhotoId">The cover the positions refer to.</param>
+/// <param name="Tables">All active tables, by label; a table not on the photo has no position.</param>
+public sealed record TablePhotoPositionsView(Guid CoverPhotoId, IReadOnlyList<TablePhotoPositionView> Tables);
+
+/// <summary>One table's pin.</summary>
+public sealed record TablePhotoPositionView(Guid TableId, string Label, double? PhotoX, double? PhotoY);
+
+/// <summary>
+/// The pins were placed on a cover the branch no longer has. Answers 409 <c>cover-changed</c> with
+/// <c>context.currentCoverPhotoId</c> (null when the branch has no cover).
+/// </summary>
+public sealed class CoverChangedException(Guid? currentCoverPhotoId)
+    : Exception("The branch's cover photo changed since you placed these tables. Place them on the new cover.")
+{
+    /// <summary>The cover now stored, or null.</summary>
+    public Guid? CurrentCoverPhotoId { get; } = currentCoverPhotoId;
+}
 
 /// <summary>
 /// The plan as applied, plus what the editor should know: overlaps (warnings, not errors), and
@@ -495,9 +572,23 @@ public interface IBranchSettingsService
     Task<FloorPlanView> GetFloorPlanAsync(Guid branchId, CancellationToken cancellationToken = default);
 
     /// <summary>Replaces canvas, areas and tables in one atomic call. See <see cref="FloorPlanRules"/>.</summary>
+    /// <exception cref="Yalla.Domain.FieldValidationException"><c>ExpectedVersion</c> is missing.</exception>
+    /// <exception cref="FloorPlanChangedException">The plan was saved since <c>ExpectedVersion</c>.</exception>
     Task<FloorPlanReplaceResult> ReplaceFloorPlanAsync(
         Guid branchId,
         ReplaceFloorPlanCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Places the listed tables on the cover photo, or takes them off. Only the listed tables change,
+    /// and only their photo position. Does not move the floor plan's version.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.FieldValidationException">A half position, a value outside 0-1, a repeated table, or a missing field.</exception>
+    /// <exception cref="CoverChangedException"><c>CoverPhotoId</c> is not the branch's cover.</exception>
+    /// <exception cref="KeyNotFoundException">No such branch, or a table that is not active here.</exception>
+    Task<TablePhotoPositionsView> UpdateTablePhotoPositionsAsync(
+        Guid branchId,
+        TablePhotoPositionsCommand command,
         CancellationToken cancellationToken = default);
 
     Task<FloorAreaView> CreateFloorAreaAsync(Guid branchId, FloorAreaCommand command, CancellationToken cancellationToken = default);

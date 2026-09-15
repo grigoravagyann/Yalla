@@ -215,7 +215,7 @@ public class RateLimitPartitionTests(SqlServerFixture fixture)
             PrincipalType.TabParticipant => issuer.IssueTabParticipantToken(
                 subject, Guid.CreateVersion7(), Guid.CreateVersion7(), clock.UtcNow.AddHours(4)).Token,
 
-            PrincipalType.Diner => issuer.IssueDinerToken(subject).Token,
+            PrincipalType.Diner => issuer.IssueDinerToken(subject, sessionGeneration: 0).Token,
 
             PrincipalType.StaffDevice => issuer.IssueDeviceToken(
                 subject, Guid.CreateVersion7(), Guid.CreateVersion7()).Token,

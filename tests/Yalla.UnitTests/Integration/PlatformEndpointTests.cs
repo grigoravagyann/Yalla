@@ -2,7 +2,9 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Yalla.Domain.Enums;
+using Yalla.Infrastructure.Identity;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -193,9 +195,11 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         // The platform admin passes the branch-scoped admin surface for a branch they do not belong to.
         var plan = await platform.GetAsync($"/api/branches/{branchId}/floor-plan");
         Assert.Equal(HttpStatusCode.OK, plan.StatusCode);
+        var loadedVersion = (await plan.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetString();
 
         var put = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
+            expectedVersion = loadedVersion,
             floorWidth = 1000,
             floorHeight = 700,
             areas = new[] { new { id = (Guid?)null, name = "Windows", displayOrder = 0 } },
@@ -213,6 +217,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         // A table off the canvas is a 422 naming it.
         var outside = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
+            expectedVersion = applied.GetProperty("plan").GetProperty("version").GetString(),
             floorWidth = 1000,
             floorHeight = 700,
             areas = Array.Empty<object>(),
@@ -254,7 +259,11 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        await using var factory = NewFactory().With("DevActor:Enabled", "true").With("DevActor:Role", "Waiter");
+        // Seeding on too: the stub reports the seeded waiter, and the demo venue is what is listed.
+        await using var factory = NewFactory()
+            .With("DevActor:Enabled", "true")
+            .With("DevActor:Role", "Waiter")
+            .With("DevSeed:Enabled", "true");
         PlatformAdminAccount admin;
 
         await using (var db = fixture.CreateContext(factory.Clock))
@@ -267,9 +276,16 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var listed = await platform.GetAsync("/api/platform/venues?search=yalla-demo");
         Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
 
-        // Proves the stub really was switched on for this host rather than the test passing
-        // vacuously: the demo venue exists only because enabling it also runs the dev seeder.
+        // The platform admin sees what a platform admin sees - the seeded demo venue - rather than
+        // a refusal addressed to the waiter.
         Assert.Equal(1, (await listed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("totalCount").GetInt32());
+
+        // Proves the stub really was switched on for this host rather than the test passing
+        // vacuously. Seeding no longer implies it, so the demo venue alone cannot say so.
+        using (var scope = factory.Services.CreateScope())
+        {
+            Assert.NotNull(scope.ServiceProvider.GetService<DevCurrentActor>());
+        }
 
         // And the stub still cannot get an untokened caller past a policy.
         using var anonymous = factory.CreateClient();

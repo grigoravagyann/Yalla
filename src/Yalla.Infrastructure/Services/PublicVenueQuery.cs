@@ -178,6 +178,7 @@ internal sealed class PublicVenueQuery(
             // have its page go on offering the button - see LiveBranchAsync.
             PhoneE164 = live.PhoneE164,
             AcceptsWebBookings = live.AcceptsWebBookings,
+            AcceptsAppBookings = live.AcceptsAppBookings,
             FloorPlan = plan.Page.FloorPlan with
             {
                 Tables =
@@ -295,14 +296,20 @@ internal sealed class PublicVenueQuery(
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
                         && b.Venue.DeletedAtUtc == null)
-            .Select(b => new LiveBranch(b.PhoneE164, b.AcceptsWebBookings))
+            .Select(b => new LiveBranch(
+                b.PhoneE164,
+                b.AcceptsWebBookings,
+
+                // K9: switched on, and a policy somebody at the venue has saved. Live for the same
+                // reason as the switch itself - the reservation service refuses on it live.
+                b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null))
             .FirstOrDefaultAsync(cancellationToken);
 
         return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
-    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings);
+    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.
@@ -587,46 +594,9 @@ internal sealed class PublicVenueQuery(
             ?? [];
     }
 
-    private async Task<HashSet<Guid>> ComputeOpenNowAsync(
+    // Shared with the diner app's listing routes, so the web page and the app cannot disagree.
+    private Task<HashSet<Guid>> ComputeOpenNowAsync(
         IReadOnlyList<Guid> branchIds,
-        CancellationToken cancellationToken)
-    {
-        var rows = await db.OpeningHours
-            .AsNoTracking()
-            .Where(h => branchIds.Contains(h.BranchId))
-            .Select(h => new
-            {
-                h.BranchId,
-                h.Branch.TimeZoneId,
-                h.Day,
-                h.OpensAt,
-                h.ClosesAt,
-                h.ClosesNextDay,
-            })
-            .ToListAsync(cancellationToken);
-
-        var nowUtc = clock.UtcNow;
-        var open = new HashSet<Guid>();
-
-        foreach (var group in rows.GroupBy(r => (r.BranchId, r.TimeZoneId)))
-        {
-            var local = BranchTime.ToLocal(nowUtc, group.Key.TimeZoneId);
-            var today = TimeOnly.FromDateTime(local);
-            var yesterdayDay = local.DayOfWeek == DayOfWeek.Sunday ? DayOfWeek.Saturday : local.DayOfWeek - 1;
-
-            var isOpen = group.Any(h =>
-                (h.Day == local.DayOfWeek && !h.ClosesNextDay && today >= h.OpensAt && today < h.ClosesAt)
-                || (h.Day == local.DayOfWeek && h.ClosesNextDay && today >= h.OpensAt)
-
-                // A block that ran past midnight is still the previous day's block until it closes.
-                || (h.Day == yesterdayDay && h.ClosesNextDay && today < h.ClosesAt));
-
-            if (isOpen)
-            {
-                open.Add(group.Key.BranchId);
-            }
-        }
-
-        return open;
-    }
+        CancellationToken cancellationToken) =>
+        BranchOpenNow.ComputeAsync(db, branchIds, clock.UtcNow, cancellationToken);
 }

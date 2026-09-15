@@ -66,6 +66,17 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!--
+    The Development seed's cover and gallery pictures, drawn by DevSeed/generate-images.cs - see
+    DevSeed/README.md. Embedded under fixed names so DevListingSeeder finds them however the folder
+    is laid out. The generator is a .NET 10 file-based script, never part of this assembly.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="DevSeed\*.jpg" LogicalName="Yalla.DevSeed.%(Filename)%(Extension)" />
+    <Compile Remove="DevSeed\**" />
+    <None Remove="DevSeed\**" />
+  </ItemGroup>
+
   <!-- Exposes the internal services (TableStateService, FloorQuery) to the unit tests. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Yalla.UnitTests" />

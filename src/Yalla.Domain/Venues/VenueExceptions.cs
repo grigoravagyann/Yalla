@@ -144,6 +144,52 @@ public sealed class WebBookingsNotAcceptedException(Guid branchId, string branch
 }
 
 /// <summary>
+/// The branch does not take bookings from the diner app yet (K9).
+/// </summary>
+/// <remarks>
+/// <para>
+/// The app channel needs two things the web channel needs only one of: the venue switched online
+/// bookings on (<c>AcceptsWebBookings</c>), <b>and</b> somebody saved its reservation policy
+/// (<c>ReservationPolicyReviewedAtUtc</c>). A branch ships with a default policy - a turn time and a
+/// booking window nobody at the venue chose - and an app that lists every branch in the city would
+/// otherwise take bookings against those guesses the day the branch is created.
+/// </para>
+/// <para>
+/// A conflict, like <see cref="WebBookingsNotAcceptedException"/>: the diner is welcome and the
+/// branch is real, it simply is not taking app bookings. The app reads
+/// <c>acceptsAppBookings</c> and hides the button, so in practice this fires for a screen that was
+/// open while the branch was switched off.
+/// </para>
+/// </remarks>
+public sealed class AppBookingsNotAcceptedException(Guid branchId, string branchName)
+    : DomainStateException(
+        $"{branchName} is not taking bookings from the app yet. "
+        + "Contact the venue directly to book a table.")
+{
+    public Guid BranchId { get; } = branchId;
+}
+
+/// <summary>
+/// A first review of a branch from a diner who has not been there (K8).
+/// </summary>
+/// <remarks>
+/// A visit is a seated or completed booking at the branch, or a place on one of its tabs, within
+/// <c>BranchReview.VisitWindowDays</c>. A permission refusal rather than a conflict: nothing about the
+/// review is wrong, the account has not earned the right to write one here. Revising a review the
+/// diner already has is never refused for this.
+/// </remarks>
+public sealed class ReviewNeedsVisitException(Guid branchId, int windowDays)
+    : Exception(
+        $"Reviews are for people who have been. Book a table or join one here, and you can review it "
+        + $"for {windowDays} days after.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    /// <summary>How far back a visit counts.</summary>
+    public int WindowDays { get; } = windowDays;
+}
+
+/// <summary>
 /// A floor plan that cannot be applied, with the offending tables named.
 /// </summary>
 public sealed class FloorPlanInvalidException(

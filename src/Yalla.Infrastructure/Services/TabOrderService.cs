@@ -455,7 +455,7 @@ internal sealed class TabOrderService(
             .Include(o => o.Lines)
             .ThenInclude(l => l.Shares)
             .Include(o => o.Tab).ThenInclude(t => t.DiningTable)
-            .Include(o => o.Tab).ThenInclude(t => t.Branch)
+            .Include(o => o.Tab).ThenInclude(t => t.Branch).ThenInclude(b => b.Venue)
             .Include(o => o.Tab).ThenInclude(t => t.Participants)
             .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
             ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
@@ -470,26 +470,46 @@ internal sealed class TabOrderService(
         // Food is up. Per-branch and off by default: noisy in a cafe where a waiter carries the
         // plate ten feet, useful in a canteen where the diner collects it. Defaulting it on would
         // train a city to switch our notifications off, taking the reminder and the nudge with them.
-        if (next == TabOrderStatus.Ready && order.Tab.Branch.NotifyOnOrderReady)
-        {
-            var recipient = order.OwningParticipantId is { } participantId
-                ? order.Tab.Participants.FirstOrDefault(p => p.Id == participantId)
-                : null;
+        var recipient = next == TabOrderStatus.Ready
+                        && order.Tab.Branch.NotifyOnOrderReady
+                        && order.OwningParticipantId is { } owningParticipantId
+            ? order.Tab.Participants.FirstOrDefault(p => p.Id == owningParticipantId)
+            : null;
 
-            if (recipient?.UserId is { } dinerUserId)
-            {
-                outbox.Enqueue(
-                    OutboxMessageTypes.OrderReady,
-                    new
-                    {
-                        tabId = order.TabId,
-                        participantId = recipient.Id,
-                        dinerUserId,
-                        tableLabel = order.Tab.DiningTable.Label,
-                    },
-                    clock.UtcNow,
-                    OutboxMessageTypes.KeyFor("order", order.Id, "ready"));
-            }
+        // The place was read above, and the diner can have deleted the account since - which cut the
+        // place loose and emptied their feed. The entry and its push are the person's, so they are
+        // written under the account's lock (DinerAccountLock), held to the save below, and only for a
+        // live account: a deletion that comes after waits for this commit and removes the entry.
+        await using var feedTransaction = recipient?.UserId is null
+            ? null
+            : await db.Database.BeginTransactionAsync(cancellationToken);
+
+        if (recipient?.UserId is { } dinerUserId
+            && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
+        {
+            outbox.Enqueue(
+                OutboxMessageTypes.OrderReady,
+                new
+                {
+                    tabId = order.TabId,
+                    participantId = recipient.Id,
+                    dinerUserId,
+                    tableLabel = order.Tab.DiningTable.Label,
+                },
+                clock.UtcNow,
+                OutboxMessageTypes.KeyFor("order", order.Id, "ready"));
+
+            // Into the diner's feed beside the push, saved with it by the ledger below (K12).
+            DinerNotices.OrderReady(
+                db,
+                dinerUserId,
+                order.Tab.BranchId,
+                order.Tab.Branch.Venue?.Name ?? order.Tab.Branch.Name,
+                order.Tab.Branch.Name,
+                order.TabId,
+                order.Id,
+                order.Tab.DiningTable.Label,
+                clock.UtcNow);
         }
 
         ledger.Append(order.TabId, TabEventType.OrderStatusChanged, new
@@ -504,6 +524,11 @@ internal sealed class TabOrderService(
         // that can change what the tab owes. It still goes through the ledger, because it appends an
         // event and the numbering is what the stream rests on.
         await ledger.SaveAppendedAsync(cancellationToken);
+
+        if (feedTransaction is not null)
+        {
+            await feedTransaction.CommitAsync(cancellationToken);
+        }
 
         logger.LogInformation(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);

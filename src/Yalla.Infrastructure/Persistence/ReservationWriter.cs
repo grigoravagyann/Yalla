@@ -4,6 +4,7 @@ using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.Infrastructure.Persistence;
 
@@ -86,6 +87,11 @@ internal sealed class ReservationWriter(
         try
         {
             await using var locked = await tableLock.AcquireAsync(table.Id, table.Label, cancellationToken);
+
+            // The account's lock too (DinerAccountLock), inside the table's. A booking committed behind
+            // the account's deletion would keep the deleted person's id on the venue's record; one that
+            // gets here second is refused with session-revoked, and deletion cuts loose one that was first.
+            await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
 
             if (await FindReplayAsync(reservation.ClientCommandId, dinerUserId, cancellationToken) is { } original)
             {

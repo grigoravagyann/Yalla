@@ -25,6 +25,15 @@ public static class FieldLengths
     public const int DeviceId = 128;
     public const int Reason = 500;
     public const int Description = 2000;
+
+    /// <summary>A branch's cuisine line, e.g. "Armenian &amp; Mediterranean".</summary>
+    public const int Cuisine = 120;
+
+    /// <summary>A diner's review text.</summary>
+    public const int ReviewText = 1000;
+
+    /// <summary>A branch's amenity keys, comma-joined.</summary>
+    public const int AmenityKeys = 200;
     public const int Url = 2048;
     public const int Ingredients = 2000;
     public const int Allergens = 500;

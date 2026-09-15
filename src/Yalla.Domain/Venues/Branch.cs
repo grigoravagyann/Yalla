@@ -109,6 +109,38 @@ public sealed class Branch : Entity
     /// <summary>Turns public-page booking on or off for this branch.</summary>
     public void SetAcceptsWebBookings(bool accepts) => AcceptsWebBookings = accepts;
 
+    /// <summary>The cuisine line on the browse card, e.g. "Armenian &amp; Mediterranean". Free text.</summary>
+    public string? Cuisine { get; private set; }
+
+    /// <summary>A paragraph about the place, for the details screen.</summary>
+    public string? About { get; private set; }
+
+    /// <summary>1 (cheap) to 4 (expensive), or null when the venue has not said.</summary>
+    public int? PriceLevel { get; private set; }
+
+    /// <summary>An http(s) address, or null.</summary>
+    public string? WebsiteUrl { get; private set; }
+
+    /// <summary>Comma-joined keys from <see cref="BranchListingRules.AmenityKeys"/>. See <see cref="Amenities"/>.</summary>
+    public string? AmenityKeys { get; private set; }
+
+    /// <summary>The amenity keys, in the order the venue gave them.</summary>
+    public IReadOnlyList<string> Amenities =>
+        string.IsNullOrEmpty(AmenityKeys) ? [] : AmenityKeys.Split(',', StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>Replaces every listing field at once. The console edits them as one form.</summary>
+    /// <exception cref="FieldValidationException">Every field that broke a rule.</exception>
+    public void UpdateListing(string? cuisine, string? about, int? priceLevel, string? websiteUrl, IEnumerable<string>? amenities)
+    {
+        var listing = BranchListingRules.Normalise(cuisine, about, priceLevel, websiteUrl, amenities);
+
+        Cuisine = listing.Cuisine;
+        About = listing.About;
+        PriceLevel = listing.PriceLevel;
+        WebsiteUrl = listing.WebsiteUrl;
+        AmenityKeys = listing.Amenities.Count == 0 ? null : string.Join(',', listing.Amenities);
+    }
+
     public Guid? CoverPhotoId { get; private set; }
 
     public Media.Photo? CoverPhoto { get; private set; }
@@ -224,6 +256,27 @@ public sealed class Branch : Entity
         FloorWidth = Guard.Positive(floorWidth, nameof(floorWidth));
         FloorHeight = Guard.Positive(floorHeight, nameof(floorHeight));
     }
+
+    /// <summary>
+    /// Which saved revision of the floor plan this is. An optimistic concurrency token.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two managers editing the plan in two tabs both start from the same revision. Replacing the
+    /// plan is replace-whole, so without this the second save silently throws away the first - the
+    /// tables somebody just drew are gone and nobody is told. The editor sends the revision it
+    /// loaded; a save against an older one is refused as <c>floor-plan-changed</c>.
+    /// </para>
+    /// <para>
+    /// <b>Only a floor-plan save moves it.</b> Pinning tables on the cover photo and changing the cover
+    /// do not: neither changes what the editor shows, and bumping it would make an open editor refuse
+    /// a save that conflicts with nothing.
+    /// </para>
+    /// </remarks>
+    public int FloorPlanVersion { get; private set; }
+
+    /// <summary>Marks a new revision of the floor plan. Called by the floor-plan replace, and only there.</summary>
+    public void BumpFloorPlanVersion() => FloorPlanVersion++;
 
     private static string NormaliseTimeZoneId(string? timeZoneId)
     {

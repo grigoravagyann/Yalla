@@ -257,4 +257,38 @@ public class ApiExceptionMapperTests
         Assert.Equal(ErrorCodes.UnsupportedImage, unknown.Code);
         Assert.Null(unknown.Context);
     }
+
+    /// <summary>A first review with no visit is a 403 with its own code and the window (K8).</summary>
+    [Fact]
+    public void A_review_without_a_visit_becomes_a_403_review_needs_visit_with_the_window()
+    {
+        var branchId = Guid.CreateVersion7();
+
+        var mapped = ApiExceptionMapper.Map(new ReviewNeedsVisitException(branchId, BranchReview.VisitWindowDays));
+
+        Assert.Equal(StatusCodes.Status403Forbidden, mapped.Status);
+        Assert.Equal("review-needs-visit", mapped.Code);
+        Assert.Equal(branchId, mapped.Context!["branchId"]);
+        Assert.Equal(180, mapped.Context["windowDays"]);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Review needs a visit", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
+    /// An app booking at a branch not taking them is its own 409, not the web page's and not a generic
+    /// conflict - even though it derives from the exception the generic arm catches (K9).
+    /// </summary>
+    [Fact]
+    public void An_app_booking_at_a_branch_not_taking_them_becomes_a_409_bookings_not_accepted()
+    {
+        var branchId = Guid.CreateVersion7();
+
+        var mapped = ApiExceptionMapper.Map(new AppBookingsNotAcceptedException(branchId, "Cascade"));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("bookings-not-accepted", mapped.Code);
+        Assert.Equal(branchId, mapped.Context!["branchId"]);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Bookings not accepted", ErrorCodes.TitleFor(mapped.Code));
+    }
 }

@@ -164,8 +164,9 @@ which one a diner came in by.
   and a displaced verifier sets a password through `PUT /api/diner/me/password` with no current
   one. An account whose number was already proved
   keeps its password and its sessions when it verifies again. The rule lives in
-  `DinerUser.ProveNumberByCode`, and a live access token the registrant still holds expires on its
-  own short clock; it can read the profile until then, and cannot book (below).
+  `DinerUser.ProveNumberByCode`, which also moves the account's session generation on: the access
+  token the registrant still holds is refused on its very next request with **401
+  `session-revoked`** - see [Ending a diner's sessions](#ending-a-diners-sessions).
 - **An unproved number cannot book.** Creating a booking (`POST /api/reservations`), extending its
   hold (`POST /api/reservations/{id}/extend-hold`) and opening a tab from one
   (`POST /api/tabs/open-by-booking`) answer **403 `phone-not-verified`** while
@@ -188,21 +189,123 @@ which one a diner came in by.
   be cleared - the name is read out at the door and the other two are how the person signs in.
 - `PUT /api/diner/me/password` — `{ currentPassword?, newPassword }`. An account the code flow
   created sets its first password with no current one: the bearer token is the proof, and there is
-  nothing to compare against anyway. One that has a password must send it, and a wrong one is 401
-  `invalid-credentials`. Changing it does not revoke other sessions - stated, so the app is not
-  surprised when its refresh token keeps working.
+  nothing to compare against anyway - which is why that token's session generation is compared with
+  the row once more here, past the token check's cache. One that has a password must send it, and a
+  wrong one is 401 `invalid-credentials`. **Setting or changing it ends every access token the
+  account holds, the caller's included, and revokes the refresh tokens of every other sign-in**
+  (reason `password-changed`). The sign-in the caller's token names in its `rch` claim keeps its
+  refresh token, so the app that made the change refreshes and carries on.
 - `POST /api/diner/me/photo` and `DELETE /api/diner/me/photo` — the profile picture, through the
   same pipeline as a branch photo: sniffed, stripped of EXIF, three WebP variants, same size cap,
   same **409 `unsupported-image`** (which branch uploads now answer too, in place of the generic
   conflict). A `Photo` now belongs to exactly one owner - a branch or a diner, enforced by a check
-  constraint - and is stored under `diner-{id}/` rather than a branch id. Replacing or removing a
-  picture leaves the old one for the orphan sweep, which excludes anything a `DinerUsers.PhotoId`
-  still points at.
+  constraint - and is stored under `diner-{id}/` rather than a branch id. Replacing a picture leaves
+  the old one for the orphan sweep, which excludes anything a `DinerUsers.PhotoId` still points at.
+  **Removing one deletes it at once**, row and files (`IPhotoService.DeleteAsync`), so its
+  `/api/photos/{id}/…` links answer 404 from the next request: somebody taking a picture of
+  themselves down means now, not after the sweep's day of grace.
 
 The `VerifiedDiner` policy keeps its name and admits any diner token, including one issued by
 `register` before the number is proved. The policy says "has an account, and is not a tab
 participant"; `DinerUser.PhoneVerifiedAtUtc` says whether the number is real, and anything that
 needs a real number reads that - today, the three booking routes above.
+
+### Ending a diner's sessions
+
+A refresh token lives in the database and can be revoked there. An access token cannot: it is a
+signed statement that stays valid for its fifteen minutes. That used to be accepted as short enough,
+and for one case it was not. A squatter displaced by the number's owner kept a working access token,
+and `PUT /api/diner/me/password` with no current password would have handed them the account back.
+
+So every diner access token carries **`sgen`** - the account's `DinerUsers.SessionGeneration` when it
+was minted - and every request carrying one is checked by `ITokenAuthorityCheck.CheckDinerSessionAsync`
+on token validation, before any handler: the account must exist, be active, not be deleted, and be on
+the token's generation. Otherwise the answer is **401 `session-revoked`** with
+`WWW-Authenticate: Bearer error="invalid_token"`, on every diner-authenticated route. A token minted
+before the claim existed reads as generation zero.
+
+The generation moves on - and every access token of the account ends - on exactly four events:
+
+| Event | Where | Refresh tokens |
+|---|---|---|
+| The number's owner proves it and displaces a registrant | `DinerUser.ProveNumberByCode` | All revoked (`phone-proved-by-another`) |
+| A password is set or changed | `DinerUser.SetPassword` | Every other sign-in's revoked (`password-changed`); the caller's chain, named by the token's `rch` claim, kept |
+| The account is deactivated | `DinerUser.SetActive(false)` | Kept; refresh refuses an inactive account, and `verify-code` and `login` both answer 401 `invalid-credentials` |
+| The account is deleted | `DinerUser.MarkDeleted` | All revoked (`account-deleted`) |
+
+Storing a stronger hash of the same password at sign-in (`RehashPassword`) is not a change and moves
+nothing.
+
+**The client's rule** is one line: on `session-revoked`, try the refresh token once; if that is
+refused too, sign out. After a password change the refresh succeeds on the device that made it and
+the app carries on; on every other device, and after a displacement or a deletion, it cannot.
+
+**Which sign-in made the change.** A diner access token carries **`rch`**, the refresh-token chain it
+was issued with - at sign-in, registration, code verification and every refresh. A password change
+revokes every refresh token of the account except that chain's, so a refresh token somebody else holds
+(a lost phone, a copied backup) cannot mint a token under the new generation. A token minted before the
+claim existed names no chain, and then nothing is kept: that device signs in again as well.
+
+**The cache.** The account read goes through the same five-second cache as a device's, with two
+differences. The window is measured on `IClock`, so a test and a deployment agree about when it
+lapses. And a token *newer* than the cached generation bypasses the cache: generations only go up, so
+that token proves the cache stale, and refusing it would sign the rightful owner out in the moment
+they signed in. Every write in this process that bumps the generation calls `InvalidateDiner`
+**after its commit** - before it, another request could re-read and re-cache the old value. A write
+that announces nothing, such as an operator's `UPDATE` or another instance, is noticed within the
+window. `DinerPhoneGate` and the first-password path read the row directly as well.
+
+### Deleting an account
+
+`DELETE /api/diner/me` under `VerifiedDiner`, body `{ "password": string | null, "code": string | null }`.
+An account with a password proves it with `password`; one without proves it with `code`, a one-time
+code from `POST /api/auth/diner/request-code` for the account's own number.
+
+- The proof the account needs, missing, is **422 `validation-failed`** naming `password` or `code`
+  (bound `required`).
+- A wrong password, or a wrong, expired or missing code, is **401 `invalid-credentials`**. A wrong
+  code spends one of the code's five attempts.
+- A spent code, or more than ten attempts on the account in fifteen minutes (the password sign-in's
+  `PasswordAttemptLimiter`, keyed on the account), is **429 `too-many-attempts`**. The route also
+  carries the `auth` pipeline policy.
+- Success is **204**.
+
+It is one transaction (`DinerAccountDeletion.EraseAsync`), and the retention rule is the product
+decision: **what is the person's is deleted; what is the venue's record is kept, with the link to the
+person cut.**
+
+| Row | What happens |
+|---|---|
+| `DinerUsers` | A tombstone: `DeletedAtUtc` set, `IsActive` false, `PhoneE164`, `Username`, `Email`, `DisplayName`, `PasswordHash`, `PhoneVerifiedAtUtc` and `PhotoId` cleared, `SessionGeneration` bumped. The number, username and email can make a new account; the id is never reused |
+| `RefreshTokens` | Every one revoked, reason `account-deleted` |
+| `DinerDevices` | Deleted |
+| `PhoneVerificationCodes` for the account's number | Deleted, the code that proved the deletion included (counted as `phoneCodes`). Keyed by the number, so clearing `DinerUsers.PhoneE164` would not reach them |
+| `DinerFavorites` | Deleted (K11) |
+| `DinerNotifications` | Deleted, including a reminder that has not appeared yet (K12) |
+| `Photos` the account owns | Deleted, files first - the current picture and any replaced one still waiting for the sweep |
+| `BranchReviews` by the account | Deleted; rating and count are computed on read |
+| `TabParticipants` | `UserId` cleared and `DisplayName` set to `Guest`, which is what an account-less scan looks like. The row stays: order lines and shares point at it |
+| `Reservations` | `DinerUserId` cleared. `GuestName` and `GuestPhone` stay - they are what the venue was given for that booking |
+| `TabOrders` and their lines | Untouched |
+| `PlatformAuditLogs` | One row: `Action` `diner.delete`, `TargetType` `DinerUser`, `TargetId` the account. `ActorStaffMemberId` holds the diner's id because no staff member acted; `ChangesJson` says `actorType: diner` and counts what was removed and detached, and carries nothing that identifies the person |
+
+**Writes racing the deletion.** Another phone's request can be past the token check - cached for five
+seconds, and per process - when the account is deleted. The deletion takes an update lock on the
+`DinerUsers` row first (`DinerAccountLock`) and re-reads the row and the account's photos under it.
+Every writer that keeps something of the person's takes the same lock and reads the row under it -
+adding or merging favourites, writing or revising a review, reporting one, editing the profile,
+setting a password, uploading a picture, booking a table: one that got there first commits before the
+deletion reads what to remove, and one that comes second is refused with 401 `session-revoked`. The
+two feed entries that are not written by the diner's own request - a booking's reminder, saved just
+after the booking commits, and a kitchen marking an order ready - take the lock as well, and leave the
+entry (and the order-ready push) out when the account is no longer live.
+
+**A new table with a `DinerUserId` needs one line** in `DinerAccountDeletion`:
+`RemoveRowsOwnedByAsync` if its rows are the person's, `DetachVenueRecordsAsync` if they are the
+venue's record. A foreign key will not catch the omission, because the account row is a tombstone
+rather than gone. Favourites (`DinerFavorites`), the notifications feed (`DinerNotifications`) and
+review reports are in the first of the two - review reports above the reviews line, and including the
+reports filed against the diner's own reviews.
 
 ## 3. Staff — device-bound branch token plus a per-person PIN
 
@@ -221,8 +324,9 @@ Enrolled devices live in `StaffDevice`, with a name, a last-seen timestamp and a
 lost tablet is revocable from the admin panel and stops working on its next request** - not when
 its year-long token expires. Every request carrying a device or session token costs one lookup on
 a primary key to check that row. That is the price of statelessness, paid deliberately and only
-where it is owed; diner and participant tokens do not pay it, because revoking their refresh chain
-is enough.
+where it is owed. Participant tokens pay it against their tab, and diner tokens against their
+account's session generation - a displaced squatter's token showed that fifteen minutes is not short
+(see [Ending a diner's sessions](#ending-a-diners-sessions)). Venue-user tokens still do not.
 
 The device token can do exactly one thing: offer a PIN. It names a branch but no person, so an
 enrolled tablet with nobody signed in cannot seat a table.
@@ -408,7 +512,7 @@ with the claim since. It cannot say whether that is still true, and for three of
 here it stops being true well inside the token's own lifetime:
 
 - A tab closes. The token stays valid for the two-hour receipt grace, and the participant should be
-  able to *read* the bill for those two hours {M} and add nothing to it.
+  able to *read* the bill for those two hours - and add nothing to it.
 - A manager revokes a stolen tablet. Its device token still has months to run.
 - A participant is removed from a tab, or has their ordering taken away. The claim minted at join
   time says nothing about it.
@@ -428,22 +532,23 @@ so the check caches for **five seconds**. What it caches matters:
 
 > The **read** is cached. The **decision** is not.
 
-`TabParticipantAccess` {M} the tab's status, the participant's status, their `CanOrder` flag {M} is a
+`TabParticipantAccess` - the tab's status, the participant's status, their `CanOrder` flag - is a
 database fact that changes when somebody changes it. The decision that follows depends on the clock:
 whether a closed tab is still inside its receipt grace is a different answer at 20:00 and at 22:01.
 Caching the decision froze that grace for five seconds at a time, which the token-authority tests
 caught: a tab whose grace had just expired went on accepting reads.
 
 Five seconds is chosen against the thing being protected. A revoked tablet is not usable for five
-seconds by anyone who is not already holding it, and the alternative {M} a database read per request
-per participant {M} costs a busy venue far more than that window is worth. Where the delay is *not*
+seconds by anyone who is not already holding it, and the alternative - a database read per request
+per participant - costs a busy venue far more than that window is worth. Where the delay is *not*
 acceptable, the cache is invalidated directly instead of waited out:
 
 | Event | Invalidation |
 |---|---|
-| A device is revoked | `InvalidateDevice` on the revoking path {M} immediate, not five seconds later |
+| A device is revoked | `InvalidateDevice` on the revoking path - immediate, not five seconds later |
 | A participant is approved, removed, or loses `CanOrder` | `InvalidateParticipant` |
 | A tab is closed or moved to closing | `InvalidateTab`, which drops **every** participant's entry through a per-tab `CancellationChangeToken` |
+| A diner's session generation moves on: the number proved by its owner, a password set, the account deleted | `InvalidateDiner`, after the commit. A token newer than the cached read bypasses the cache regardless |
 
 The last one is the subtle case. A tab has many participants and closing it changes the answer for
 all of them at once; without a per-tab token, each entry would expire on its own schedule and the
@@ -465,14 +570,14 @@ inside a handler is a check the next handler can forget, and the failure is sile
 |---|---|
 | `TabParticipant` | The token's `tabId` claim matches the route's tab id, the participant is still approved, and the tab has not closed beyond the grace period |
 | `TabParticipantCanOrder` | The above, plus the participant's `CanOrder` flag |
-| `TabParticipantMutating` | The above, and the tab is genuinely open {M} the receipt grace allows reading a closed tab, never adding to it |
+| `TabParticipantMutating` | The above, and the tab is genuinely open - the receipt grace allows reading a closed tab, never adding to it |
 | `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
 | `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager or Owner |
 | `KitchenOrAbove` | As `WaiterOrAbove`, and the Kitchen role too. Only the kitchen queue and the order rail carry it; on the rail the service then limits Kitchen to `InKitchen -> Ready`. The floor, tabs and service requests stay `WaiterOrAbove` |
 | `ManagerOrAbove` | Role is Manager or Owner |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner or manager acting inside their own venue |
-| `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number |
+| `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number. The token must also belong to a live session - an active, undeleted account on the token's `sgen` - which is checked on token validation, before the policy runs |
 
 Two of these are the real security of this system, and both have tests:
 
@@ -539,6 +644,12 @@ ordering exists - and is covered by `PolicyHandlerTests` rather than shipped une
 in Development when `DevActor:Enabled` is true, where its later registration replaces the real one -
 it is what the Prompt 2 integration tests use, and it is still the quickest way to exercise a
 manager-only path locally without minting a token. It is not registered in any other environment.
+
+The demo data the stub takes its staff member from is a separate switch, `DevSeed:Enabled` - on by
+default in Development, never registered anywhere else. Seeding used to ride on
+`DevActor:Enabled`, so turning the stub off for real sign-in also left the database without the demo
+venue, tables, listing and reviews. Now the two are independent: the stub off still seeds, and the
+stub on with seeding off reports no seeded staff member unless `DevActor:StaffMemberId` pins one.
 
 ## Out of scope
 

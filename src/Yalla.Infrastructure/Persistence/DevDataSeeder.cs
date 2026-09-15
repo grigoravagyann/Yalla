@@ -15,8 +15,13 @@ namespace Yalla.Infrastructure.Persistence;
 /// <para>
 /// This exists because the dev actor stub has to report a <i>real</i> staff member -
 /// <c>TableSession.SeatedByStaffId</c> is a foreign key, so a made-up id fails on the first
-/// seating. It is deliberately tiny and has no menu, no bookings and no tabs: those belong to the
-/// tasks that build them.
+/// seating. It is deliberately tiny: a three-dish menu (so the diner app, the menu contract and the
+/// e2e specs have something to show), and no bookings or tabs - those belong to the tasks that
+/// build them.
+/// </para>
+/// <para>
+/// It is also what the diner app and the console show when they are tested with real sign-in, so
+/// it is registered on its own switch, <c>DevSeed:Enabled</c>, rather than on the stub's.
 /// </para>
 /// <para>
 /// Idempotent, and keyed on the venue slug rather than on hardcoded primary keys, so it can run
@@ -26,6 +31,7 @@ namespace Yalla.Infrastructure.Persistence;
 internal sealed class DevDataSeeder(
     YallaDbContext db,
     DevSeedRegistry registry,
+    DevListingSeeder listing,
     ILogger<DevDataSeeder> logger)
 {
     private const string VenueSlug = "yalla-demo";
@@ -82,11 +88,76 @@ internal sealed class DevDataSeeder(
 
         await db.SaveChangesAsync(cancellationToken);
 
+        // Listing fields, photo pins and reviews for the diner app. Same gate as this seeder.
+        await listing.SeedAsync(branch, cancellationToken);
+
+        // After the listing: the public menu only shows complete items, and complete means a photo,
+        // so the dishes borrow the branch's seeded pictures.
+        await EnsureMenuAsync(branch, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+
         registry.Publish(venue.Id, branch.Id, waiter.Id, manager.Id);
 
         logger.LogInformation(
             "Development data ready. BranchId={BranchId} WaiterId={WaiterId} ManagerId={ManagerId}",
             branch.Id, waiter.Id, manager.Id);
+    }
+
+    /// <summary>
+    /// A small, complete menu so the diner app, the menu contract and the e2e specs have dishes to
+    /// show. Added only when the branch has no menu category at all, so a manager's menu is never
+    /// touched.
+    /// </summary>
+    private async Task EnsureMenuAsync(Branch branch, CancellationToken cancellationToken)
+    {
+        var hasMenu = await db.Set<Yalla.Domain.Menus.MenuCategory>()
+            .AnyAsync(c => c.BranchId == branch.Id, cancellationToken);
+        if (hasMenu)
+        {
+            return;
+        }
+
+        var pictures = await db.BranchGalleryPhotos
+            .Where(g => g.BranchId == branch.Id)
+            .OrderBy(g => g.Position)
+            .Select(g => (Guid?)g.PhotoId)
+            .ToListAsync(cancellationToken);
+        if (branch.CoverPhotoId is not null)
+        {
+            pictures.Add(branch.CoverPhotoId);
+        }
+
+        if (pictures.Count == 0)
+        {
+            // Without a picture the items would be incomplete and hidden, which helps nobody.
+            logger.LogInformation("No development pictures on branch {BranchId}; menu not seeded.", branch.Id);
+            return;
+        }
+
+        Guid? Picture(int index) => pictures[index % pictures.Count];
+
+        var coffee = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Coffee", 0);
+        var food = new Yalla.Domain.Menus.MenuCategory(branch.Id, "Breakfast", 1);
+        db.Add(coffee);
+        db.Add(food);
+
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            coffee.Id, "Armenian coffee", "Strong, served with a glass of water.", 900, Picture(0),
+            "Coffee, water", "None", "80 ml", 5, displayOrder: 0));
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            coffee.Id, "Cappuccino", "Espresso with steamed milk.", 1400, Picture(1),
+            "Coffee, milk", "Milk", "250 ml", 5, displayOrder: 1));
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            food.Id, "Khachapuri", "Bread boat with cheese and egg.", 2800, Picture(0),
+            "Flour, cheese, egg, butter", "Gluten, milk, egg", "1 piece", 15, displayOrder: 0));
+
+        // Deliberately unfinished: no photo or allergens yet. The console lists it as incomplete and
+        // diners never see it - which is what the menu contract checks.
+        db.Add(new Yalla.Domain.Menus.MenuItem(
+            food.Id, "Seasonal special", null, 3200, null,
+            null, null, null, null, displayOrder: 1));
+
+        logger.LogInformation("Seeding development menu for branch {BranchId}.", branch.Id);
     }
 
     private async Task<StaffMember> EnsureStaffAsync(

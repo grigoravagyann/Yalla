@@ -76,6 +76,12 @@ if (builder.Environment.IsDevelopment())
                 sp.GetRequiredService<Yalla.Api.Identity.ClaimsCurrentActor>(),
                 stub)
             : sp.GetRequiredService<Yalla.Api.Identity.ClaimsCurrentActor>());
+
+    // The demo venue, branch, tables, listing and reviews. Its own switch, DevSeed:Enabled - on in
+    // appsettings.Development.json - rather than DevActor:Enabled: the diner app and the console
+    // are tested with real sign-in, which needs the stub off, and they still need something to show.
+    // Never registered outside Development, whatever the setting says.
+    builder.Services.AddDevelopmentSeeding(configuration);
 }
 
 var app = builder.Build();
@@ -103,6 +109,11 @@ else if (delivery.DeliversNothing)
         + "serves anyone.",
         app.Environment.EnvironmentName);
 }
+
+// First, so everything after it - the Swagger allowlist, HTTPS redirection, authentication and the
+// rate limiter's per-address budgets - sees the caller's address rather than the proxy's. Only proxies
+// listed under ForwardedHeaders are believed; with none listed it adds nothing (K10).
+app.UseYallaForwardedHeaders();
 
 // Enriches log events with TraceId and RequestPath. Does NOT catch or log exceptions -
 // UnifiedExceptionHandler is the single log point.
@@ -177,7 +188,11 @@ api.MapVenueAdminEndpoints();
 api.MapOrderingEndpoints();
 api.MapPhotoEndpoints();
 api.MapDinerAccountEndpoints();
+api.MapDinerBrowseEndpoints();
+api.MapReviewModerationEndpoints();
 api.MapNotificationEndpoints();
+api.MapDinerFavoriteEndpoints();
+api.MapDinerNotificationFeedEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();
 
@@ -185,8 +200,9 @@ api.MapReportEndpoints();
 // frontend config - so nobody hunts for it in ipconfig.
 app.LogLanAddresses();
 
-// Migrates and seeds the demo branch so the dev actor stub has a real staff member to be.
-// Returns false, and does nothing at all, when DevActor:Enabled is off.
+// Migrates and seeds the demo branch: what the diner app and console show, and the real staff
+// member the dev actor stub reports. Returns false, and does nothing at all, when DevSeed:Enabled is
+// off.
 if (app.Environment.IsDevelopment() && await app.Services.InitialiseDevelopmentDataAsync())
 {
     app.Logger.LogInformation("Development data initialised.");

@@ -204,7 +204,8 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
     /// <summary>
     /// <b>Test 4.</b> A booking from the public page is refused while the branch has web bookings
-    /// off; the same booking from the app succeeds.
+    /// off - and so is one from the app, which needs the switch on and the reservation policy saved
+    /// as well (K9).
     /// </summary>
     [SkippableFact]
     public async Task A_web_booking_is_refused_while_the_branch_has_not_switched_them_on()
@@ -224,13 +225,16 @@ public class PublicBookingTests(SqlServerFixture fixture)
             "web-bookings-not-accepted",
             (await fromWeb.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
 
-        // The app is a different channel and is not gated by a setting about the public page.
+        // The app is refused too, with its own code (K9).
         var fromApp = await diner.PostAsJsonAsync(
             "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
 
-        Assert.Equal(HttpStatusCode.Created, fromApp.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, fromApp.StatusCode);
+        Assert.Equal(
+            "bookings-not-accepted",
+            (await fromApp.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
 
-        // Switch the page on, and the web booking goes through too.
+        // Switch the page on, and the web booking goes through.
         await SetWebBookingsAsync(factory, world, accepts: true);
 
         var allowed = await diner.PostAsJsonAsync(
@@ -238,6 +242,19 @@ public class PublicBookingTests(SqlServerFixture fixture)
             NewBooking(factory, world.Branch, ReservationChannel.Web, world.Branch.TableIds[1]));
 
         Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
+
+        // The app still waits for somebody to save the reservation policy, and then books.
+        var stillRefused = await diner.PostAsJsonAsync(
+            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+
+        Assert.Equal(HttpStatusCode.Conflict, stillRefused.StatusCode);
+
+        await MarkPolicySavedAsync(factory, world);
+
+        var fromAppNow = await diner.PostAsJsonAsync(
+            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+
+        Assert.Equal(HttpStatusCode.Created, fromAppNow.StatusCode);
     }
 
     // ------------------------------------------------------------ 5. the token is hashed
@@ -266,6 +283,10 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         await using var factory = NewFactory();
         var world = await ArrangeAsync(factory);
+
+        // An app booking needs a branch taking them: online bookings on and the policy saved (K9).
+        await SetWebBookingsAsync(factory, world, accepts: true);
+        await MarkPolicySavedAsync(factory, world);
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
@@ -640,6 +661,9 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         // An app booking's reminder does not carry one. A capability that opens somebody's booking
         // belongs in as few rows as possible, and the app already has a better cancel route.
+        // Switched on already; the app also waits for the policy to be saved (K9).
+        await MarkPolicySavedAsync(factory, world);
+
         var app = await BookAsync(
             factory, world, tableId: world.Branch.TableIds[1], channel: ReservationChannel.App);
 
@@ -682,11 +706,16 @@ public class PublicBookingTests(SqlServerFixture fixture)
     }
 
     /// <summary>Books a table and returns what the manage link needs, including the one-time token.</summary>
+    /// <remarks>
+    /// <see cref="ReservationChannel.Unknown"/> unless a test says otherwise: these are tests of the
+    /// manage link, and an app booking needs a branch that takes app bookings (K9), which is test 4's
+    /// subject rather than a precondition to repeat in every other one.
+    /// </remarks>
     private async Task<Booking> BookAsync(
         YallaApiFactory factory,
         World world,
         Guid? tableId = null,
-        ReservationChannel channel = ReservationChannel.App)
+        ReservationChannel channel = ReservationChannel.Unknown)
     {
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
@@ -711,6 +740,16 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         branch.SetAcceptsWebBookings(accepts);
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Saves the branch's reservation policy as it stands, which is what the app channel waits for on
+    /// top of the switch (K9).
+    /// </summary>
+    private async Task MarkPolicySavedAsync(YallaApiFactory factory, World world)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+        await ReviewTestData.SavePolicyAsync(db, world.BranchId, factory.Clock.UtcNow);
     }
 
     private static object NewBooking(

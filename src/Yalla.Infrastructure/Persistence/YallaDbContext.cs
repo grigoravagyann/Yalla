@@ -38,6 +38,12 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<DiningTable> DiningTables => Set<DiningTable>();
 
+    public DbSet<BranchReview> BranchReviews => Set<BranchReview>();
+
+    public DbSet<BranchReviewReport> BranchReviewReports => Set<BranchReviewReport>();
+
+    public DbSet<BranchGalleryPhoto> BranchGalleryPhotos => Set<BranchGalleryPhoto>();
+
     public DbSet<Reservation> Reservations => Set<Reservation>();
 
     public DbSet<TableSession> TableSessions => Set<TableSession>();
@@ -80,6 +86,10 @@ public sealed class YallaDbContext : DbContext
         Set<Yalla.Domain.Messaging.OutboxMessage>();
 
     public DbSet<DinerDevice> DinerDevices => Set<DinerDevice>();
+
+    public DbSet<DinerFavorite> DinerFavorites => Set<DinerFavorite>();
+
+    public DbSet<DinerNotification> DinerNotifications => Set<DinerNotification>();
 
     public DbSet<DinerUser> DinerUsers => Set<DinerUser>();
 

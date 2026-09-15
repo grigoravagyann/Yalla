@@ -48,6 +48,11 @@ public sealed record ReservationView
 
     public required string GuestPhone { get; init; }
 
+    /// <summary>
+    /// The diner's note to the venue - "window table", "a high chair" - or absent (K9).
+    /// </summary>
+    public string? Note { get; init; }
+
     public DateTime? ConfirmedAtUtc { get; init; }
 
     public DateTime? CancelledAtUtc { get; init; }

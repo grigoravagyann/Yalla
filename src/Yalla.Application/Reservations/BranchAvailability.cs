@@ -170,6 +170,12 @@ public sealed record TableAvailability
     /// <summary>The stored physical state: what somebody did to this table.</summary>
     public required TableStatus PhysicalStatus { get; init; }
 
+    /// <summary>Where the table is on the branch's cover photo, 0-1 across; null when it is not placed there.</summary>
+    public double? PhotoX { get; init; }
+
+    /// <summary>Where the table is on the branch's cover photo, 0-1 down; null when it is not placed there.</summary>
+    public double? PhotoY { get; init; }
+
     /// <summary>
     /// What to draw, derived for the <i>requested</i> instant rather than for now.
     /// </summary>

@@ -29,6 +29,7 @@ internal sealed class DinerAuthService(
     PhoneCodeRateLimiter phoneLimiter,
     PasswordAttemptLimiter passwordLimiter,
     SecretHasher hasher,
+    ITokenAuthorityCheck authority,
     IOptions<AuthOptions> authOptions,
     ILogger<DinerAuthService> logger) : IDinerAuthService
 {
@@ -150,6 +151,20 @@ internal sealed class DinerAuthService(
         entity.Consume(nowUtc);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.PhoneE164 == phone, cancellationToken);
+
+        if (diner is { IsActive: false })
+        {
+            // Refused here with the password sign-in's answer for a deactivated account, rather than
+            // issued a token the authority check turns away on first use and a refresh token refresh
+            // would refuse. The code was right, so it is spent: saved before refusing, it cannot be
+            // presented again. (A deleted account has no number and is never found by one.)
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogWarning("Code sign-in refused for inactive diner {DinerUserId}.", diner.Id);
+
+            throw SignInRejected();
+        }
+
         var isNewAccount = diner is null;
 
         if (diner is null)
@@ -175,7 +190,11 @@ internal sealed class DinerAuthService(
         // is issued, so the new one survives.
         var verifierIsAccountHolder = callerDinerUserId is { } caller && caller == diner.Id;
 
-        if (diner.ProveNumberByCode(nowUtc, verifierIsAccountHolder))
+        // Displacing also bumps the session generation, which is what ends the registrant's access
+        // tokens - the refresh tokens below are only half of "every session".
+        var displaced = diner.ProveNumberByCode(nowUtc, verifierIsAccountHolder);
+
+        if (displaced)
         {
             await refreshTokens.RevokeAllForSubjectAsync(
                 RefreshTokenSubject.Diner, diner.Id, "phone-proved-by-another", cancellationToken);
@@ -187,10 +206,19 @@ internal sealed class DinerAuthService(
 
         diner.RecordSignIn(nowUtc);
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        // Minted under the generation this save commits, so the owner's token is the one that works.
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
+
+        if (displaced)
+        {
+            // After the commit, not before: evicting first leaves a moment in which a request from
+            // the registrant re-reads the old generation and caches it for five seconds. The token
+            // above has not left this process yet, so nobody can present it before this line runs.
+            authority.InvalidateDiner(diner.Id);
+        }
 
         logger.LogInformation(
             "Diner {DinerUserId} signed in by phone verification. New account: {IsNewAccount}.",
@@ -245,8 +273,8 @@ internal sealed class DinerAuthService(
         diner.RecordSignIn(nowUtc);
         db.DinerUsers.Add(diner);
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await SaveGuardingIdentifiersAsync(cancellationToken);
 
@@ -306,7 +334,9 @@ internal sealed class DinerAuthService(
 
         if (needsRehash)
         {
-            diner!.SetPassword(hasher.Hash(password));
+            // The same password, stored more strongly. Not a change, so the account's other
+            // sessions keep working.
+            diner!.RehashPassword(hasher.Hash(password));
         }
 
         // Only a recognised locale moves the stored one. The code flow falls back to the default
@@ -319,8 +349,8 @@ internal sealed class DinerAuthService(
 
         diner!.RecordSignIn(clock.UtcNow);
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

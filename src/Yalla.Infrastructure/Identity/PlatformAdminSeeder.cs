@@ -77,7 +77,8 @@ internal sealed class PlatformAdminSeeder(
         db.StaffMembers.Add(admin);
         await db.SaveChangesAsync(cancellationToken);
 
-        logger.LogWarning("Platform admin {StaffMemberId} seeded for {Email}.", admin.Id, email);
+        // The id and nothing else: the address is personal data and the log is not the place for it.
+        logger.LogWarning("Platform admin {StaffMemberId} seeded from configuration.", admin.Id);
 
         return admin.Id;
     }

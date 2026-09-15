@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
@@ -21,7 +22,7 @@ internal sealed class PhotoService(
     YallaDbContext db,
     IPhotoStorage storage,
     IClock clock,
-    ICurrentActor actor,
+    IStaffBranchGuard branchGuard,
     ILogger<PhotoService> logger) : IPhotoService
 {
     /// <summary>
@@ -56,6 +57,11 @@ internal sealed class PhotoService(
 
         if (existing is not null)
         {
+            // Uploading it again is using it again: the grace period starts over, or a picture abandoned
+            // yesterday and re-uploaded now could be swept before the editor saves it.
+            existing.MarkUploaded(clock.UtcNow);
+            await db.SaveChangesAsync(cancellationToken);
+
             logger.LogInformation(
                 "Photo {ContentHash} already existed for branch {BranchId}; returning {PhotoId}.",
                 stored.ContentHash, branchId, existing.Id);
@@ -132,97 +138,159 @@ internal sealed class PhotoService(
     {
         var cutoff = clock.UtcNow - OrphanGrace;
 
-        // Nothing references it, and it has been sitting there long enough. Both halves matter: a
-        // photo attached the moment it was uploaded is old and in use, and one uploaded a minute ago
-        // is unattached and still being worked on. Three things can reference a photo - a dish, a
-        // venue card, a diner's profile - and a fourth added without a line here would be swept
-        // out from under whatever it was attached to.
-        var orphans = await db.Photos
-            .Where(p => p.UploadedAtUtc < cutoff)
-            .Where(p => !db.MenuItems.Any(i => i.PhotoId == p.Id))
-            .Where(p => !db.Branches.Any(b => b.CoverPhotoId == p.Id))
-            .Where(p => !db.DinerUsers.Any(d => d.PhotoId == p.Id))
+        // A list of candidates only: see Orphans for what makes one, and the loop for why each is
+        // asked again at the moment it is deleted.
+        var candidates = await Orphans(cutoff)
+            .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        if (orphans.Count == 0)
-        {
-            return 0;
-        }
+        var swept = 0;
 
-        foreach (var photo in orphans)
+        foreach (var photo in candidates)
         {
-            // Files first. A row deleted with its files left behind is a leak nothing will ever find
-            // again; files deleted with the row left behind is a broken image somebody reports.
-            if (!photo.IsExternallyHosted)
+            // The row first, one at a time, and only if it is still an orphan: the delete asks the
+            // question again in the same statement. An editor can attach a photo - or upload it again,
+            // which refreshes its age - between the list above and here, and that row is skipped with
+            // its files untouched. Deleting every candidate's files first and the rows in one save at
+            // the end meant one attach committing in between failed the save, kept every row, and left
+            // all of them - the one now in use included - pointing at files that were gone.
+            //
+            // The price is the other order's failure: a crash between this delete and the files below
+            // leaves files no row points at. A leak on disk, where the old order left a broken picture
+            // on a live page.
+            if (!await DeleteIfStillOrphanedAsync(photo.Id, cutoff, cancellationToken))
             {
-                foreach (var path in new[] { photo.ThumbnailPath, photo.CardPath, photo.FullPath })
-                {
-                    try
-                    {
-                        await storage.DeleteAsync(path, cancellationToken);
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        // Keep going. One stuck file must not stop the sweep, and the row is worth
-                        // removing either way - it references nothing anybody can reach.
-                        logger.LogWarning(
-                            ex, "Could not delete {Path} while sweeping photo {PhotoId}.", path, photo.Id);
-                    }
-                }
+                continue;
             }
 
-            db.Photos.Remove(photo);
+            swept++;
+
+            if (photo.IsExternallyHosted)
+            {
+                continue;
+            }
+
+            foreach (var path in new[] { photo.ThumbnailPath, photo.CardPath, photo.FullPath })
+            {
+                try
+                {
+                    await storage.DeleteAsync(path, cancellationToken);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Keep going. One stuck file must not stop the sweep, and the row is already gone.
+                    logger.LogWarning(
+                        ex, "Could not delete {Path} while sweeping photo {PhotoId}.", path, photo.Id);
+                }
+            }
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        if (swept > 0)
+        {
+            logger.LogInformation(
+                "Swept {Count} photo(s) that nothing referenced and were older than {Hours} hours.",
+                swept, OrphanGrace.TotalHours);
+        }
 
-        logger.LogInformation(
-            "Swept {Count} photo(s) that nothing referenced and were older than {Hours} hours.",
-            orphans.Count, OrphanGrace.TotalHours);
-
-        return orphans.Count;
+        return swept;
     }
 
     /// <summary>
-    /// The caller must be an active owner or manager of the venue the branch belongs to, or the
-    /// platform admin.
+    /// Photos nothing references that have been sitting there longer than the grace period.
+    /// </summary>
+    /// <remarks>
+    /// Both halves matter: a photo attached the moment it was uploaded is old and in use, and one
+    /// uploaded a minute ago is unattached and still being worked on. Four things can reference a
+    /// photo - a dish, a venue's cover, its gallery, a diner's profile - and a fifth added without a
+    /// line here would be swept out from under whatever it was attached to.
+    /// </remarks>
+    private IQueryable<Photo> Orphans(DateTime cutoff) =>
+        db.Photos
+            .Where(p => p.UploadedAtUtc < cutoff)
+            .Where(p => !db.MenuItems.Any(i => i.PhotoId == p.Id))
+            .Where(p => !db.Branches.Any(b => b.CoverPhotoId == p.Id))
+            .Where(p => !db.BranchGalleryPhotos.Any(g => g.PhotoId == p.Id))
+            .Where(p => !db.DinerUsers.Any(d => d.PhotoId == p.Id));
+
+    /// <summary>
+    /// Deletes one photo row in a single statement that re-checks it is still old and unreferenced.
+    /// False when it no longer is, or was attached in the instant between that check and the delete
+    /// (which the foreign key refuses).
+    /// </summary>
+    private async Task<bool> DeleteIfStillOrphanedAsync(Guid photoId, DateTime cutoff, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await Orphans(cutoff)
+                .Where(p => p.Id == photoId)
+                .ExecuteDeleteAsync(cancellationToken) > 0;
+        }
+        catch (Exception ex) when (IsReferenceViolation(ex))
+        {
+            logger.LogInformation("Photo {PhotoId} was attached while the sweep was deleting it; kept.", photoId);
+
+            return false;
+        }
+    }
+
+    /// <summary>SQL Server 547: the statement conflicted with a foreign key.</summary>
+    private static bool IsReferenceViolation(Exception exception) =>
+        (exception as SqlException ?? exception.InnerException as SqlException) is { Number: 547 };
+
+    public async Task DeleteAsync(Guid photoId, CancellationToken cancellationToken = default)
+    {
+        var photo = await db.Photos.FirstOrDefaultAsync(p => p.Id == photoId, cancellationToken);
+
+        if (photo is null)
+        {
+            return;
+        }
+
+        // Files first, for the sweep's reason: if the row delete then fails, what is left is a row
+        // whose variants answer 404 - "no such picture", which is true - rather than files nothing
+        // will ever find again.
+        if (!photo.IsExternallyHosted)
+        {
+            foreach (var path in new[] { photo.ThumbnailPath, photo.CardPath, photo.FullPath })
+            {
+                try
+                {
+                    await storage.DeleteAsync(path, cancellationToken);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    logger.LogWarning(ex, "Could not delete {Path} while deleting photo {PhotoId}.", path, photo.Id);
+                }
+            }
+        }
+
+        db.Photos.Remove(photo);
+        await db.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("Deleted photo {PhotoId} and its files.", photo.Id);
+    }
+
+    /// <summary>
+    /// The caller must be an active owner or manager who covers the branch (a manager with a home
+    /// branch covers that one only), or a platform admin.
     /// </summary>
     /// <remarks>
     /// The route carries <c>BranchScoped</c>, which decides the same thing from the token. This is
-    /// decided again from the stored row, so that the lock holds if a route ever forgets the policy,
-    /// and so that a deactivated account's still-valid token is refused here rather than honoured
-    /// until it expires. Same pattern as the staff service's actor check.
+    /// decided again from the stored row through <see cref="IStaffBranchGuard"/>, so that the lock
+    /// holds if a route ever forgets the policy, and so that a deactivated or reassigned account's
+    /// still-valid token is refused here rather than honoured until it expires.
     /// </remarks>
     private async Task<Guid> RequireActorAtBranchAsync(string operation, Guid branchId, CancellationToken cancellationToken)
     {
-        if (actor.Type != ActorType.Staff || actor.StaffMemberId is not { } staffId)
+        var staffId = await branchGuard.RequireAtBranchAsync(branchId, operation, cancellationToken);
+
+        // Only a platform admin can pass the guard for a branch that does not exist, and the photo
+        // row's foreign key would refuse it with a 500. Say so instead.
+        if (!await db.Branches.AsNoTracking().AnyAsync(b => b.Id == branchId, cancellationToken))
         {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
+            throw new KeyNotFoundException($"Branch {branchId} was not found.");
         }
 
-        var acting = await db.StaffMembers.AsNoTracking().FirstOrDefaultAsync(s => s.Id == staffId, cancellationToken)
-                     ?? throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-
-        if (!acting.IsActive)
-        {
-            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
-        }
-
-        var branch = await db.Branches
-            .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
-            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
-
-        if (acting.IsPlatformAdmin)
-        {
-            return acting.Id;
-        }
-
-        if (branch.VenueId != acting.VenueId || acting.Role is not (StaffRole.Owner or StaffRole.Manager))
-        {
-            throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
-        }
-
-        return acting.Id;
+        return staffId;
     }
 }

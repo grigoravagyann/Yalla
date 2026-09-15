@@ -25,7 +25,7 @@ namespace Yalla.Infrastructure.Services;
 /// noticing a change nobody announced.
 /// </para>
 /// </remarks>
-internal sealed class TokenAuthorityCheck(
+internal sealed partial class TokenAuthorityCheck(
     IAuthorizationQueries queries,
     IMemoryCache cache,
     IClock clock,

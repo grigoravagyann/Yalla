@@ -60,7 +60,8 @@ internal sealed class PublicBookingService(
                 r.StartUtc,
                 r.EndUtc,
                 r.CancelledAfterDeadline,
-                r.Branch.ReservationPolicy.CancellationDeadlineMinutes))
+                r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
+                r.Note))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -109,7 +110,10 @@ internal sealed class PublicBookingService(
         // deadline is allowed and merely recorded, which is the whole point of the deadline being
         // a record rather than a block.
         CanCancel: ReservationService.CanStillCancel(row.Status),
-        CancelledAfterDeadline: row.CancelledAfterDeadline);
+        CancelledAfterDeadline: row.CancelledAfterDeadline,
+
+        // The diner's own words to the venue (K9): nothing the link holder did not write.
+        Note: row.Note);
 
     private sealed record Row(
         string VenueName,
@@ -125,5 +129,6 @@ internal sealed class PublicBookingService(
         DateTime StartUtc,
         DateTime EndUtc,
         bool CancelledAfterDeadline,
-        int CancellationDeadlineMinutes);
+        int CancellationDeadlineMinutes,
+        string? Note);
 }

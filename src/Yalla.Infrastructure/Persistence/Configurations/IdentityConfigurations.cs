@@ -11,9 +11,9 @@ internal sealed class DinerUserConfiguration : EntityConfiguration<DinerUser>
     {
         builder.ToTable("DinerUsers");
 
+        // Nullable for one reason: a deleted account keeps its row and gives the number back.
         builder.Property(d => d.PhoneE164)
-            .HasMaxLength(FieldLengths.PhoneE164)
-            .IsRequired();
+            .HasMaxLength(FieldLengths.PhoneE164);
 
         builder.Property(d => d.DisplayName).HasMaxLength(FieldLengths.DisplayName);
 
@@ -28,12 +28,21 @@ internal sealed class DinerUserConfiguration : EntityConfiguration<DinerUser>
         builder.Property(d => d.PasswordHash).HasMaxLength(FieldLengths.PasswordHash);
         builder.Property(d => d.PhoneVerifiedAtUtc);
 
+        // Read on every diner request, through the authority check's cache. The migration gives
+        // the column a database default of 0, so rows written by raw SQL start where EF's do.
+        builder.Property(d => d.SessionGeneration).IsRequired();
+        builder.Property(d => d.DeletedAtUtc);
+
         builder.Ignore(d => d.HasPassword);
         builder.Ignore(d => d.IsPhoneVerified);
+        builder.Ignore(d => d.IsDeleted);
 
-        // The phone number is the account. Unique, and the index the code sign-in reads.
+        // The phone number is the account. Unique among the rows that have one - every live account
+        // does; a deleted one does not, which is what lets the number register again - and the
+        // index the code sign-in reads.
         builder.HasIndex(d => d.PhoneE164)
             .IsUnique()
+            .HasFilter("[PhoneE164] IS NOT NULL")
             .HasDatabaseName(DatabaseIndexNames.DinerUserPhone);
 
         // The other two sign-in keys, each filtered to the rows that have one: most accounts are

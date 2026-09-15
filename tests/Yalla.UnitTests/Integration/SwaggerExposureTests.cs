@@ -328,6 +328,9 @@ public class SwaggerExposureTests
             // A taken username, email or number on the sign-up form: the field to highlight, so
             // the form does not map a code back to an input by hand.
             ["IdentifierTakenProblem"] = ["field"],
+
+            // A first review with no visit: the app says how long after a visit a review is open.
+            ["ReviewNeedsVisitProblem"] = ["branchId", "windowDays"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.
@@ -400,6 +403,56 @@ public class SwaggerExposureTests
         Assert.Equal(2, union.Count);
         Assert.Contains(union, r => r.EndsWith("MenuItemUnavailableProblem", StringComparison.Ordinal));
         Assert.Contains(union, r => r.EndsWith("TabNotAcceptingOrdersProblem", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Writes the document this build serves to <c>artifacts/openapi/swagger.json</c>, which CI uploads.
+    /// </summary>
+    /// <remarks>
+    /// The frontend commits a copy of this document (<c>packages/api/src/generated/swagger.json</c>) and
+    /// generates its types from it. This is the one to compare that copy against - see
+    /// docs/openapi.md. Two-space indentation and LF line endings, the layout of the committed copy, so
+    /// a diff shows changes rather than whitespace.
+    /// </remarks>
+    [Fact]
+    public async Task The_served_document_is_written_to_artifacts_for_CI_to_upload()
+    {
+        using var document = await GetDocumentAsync();
+
+        Assert.NotEmpty(document.RootElement.GetProperty("paths").EnumerateObject());
+
+        var path = Path.Combine(RepositoryRoot(), "artifacts", "openapi", "swagger.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        var json = JsonSerializer.Serialize(
+            document.RootElement,
+            new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                NewLine = "\n",
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            });
+
+        await File.WriteAllTextAsync(path, json + "\n");
+
+        using var written = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        Assert.Equal(
+            document.RootElement.GetProperty("paths").EnumerateObject().Count(),
+            written.RootElement.GetProperty("paths").EnumerateObject().Count());
+    }
+
+    /// <summary>The folder holding Yalla.sln, found by walking up from the test output.</summary>
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Yalla.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName
+               ?? throw new InvalidOperationException("Could not find Yalla.sln above the test output directory.");
     }
 
     private static async Task<JsonDocument> GetDocumentAsync()

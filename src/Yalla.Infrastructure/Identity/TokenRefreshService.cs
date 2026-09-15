@@ -18,18 +18,21 @@ internal sealed class TokenRefreshService(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
-        var (_, successor, dinerUserId) =
+        var (successorEntity, successor, dinerUserId) =
             await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, cancellationToken);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.Id == dinerUserId, cancellationToken);
 
-        if (diner is null || !diner.IsActive)
+        // Deletion revokes every refresh token too; checked here as well so the tombstone can never
+        // mint an access token, whatever happened to the chain.
+        if (diner is null || !diner.IsActive || diner.IsDeleted)
         {
             throw new AuthenticationFailedException(
                 "account-inactive", "This account is no longer active.");
         }
 
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id);
+        // Named for the chain it continues, so a password change made with it keeps this sign-in.
+        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

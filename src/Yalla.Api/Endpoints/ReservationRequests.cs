@@ -66,8 +66,13 @@ public sealed record ReleaseReservationRequest(
 /// <param name="StayHint">Advisory only. The interval comes from the branch's turn time.</param>
 /// <param name="Channel">
 /// Where the booking was made from, so the reports can count how many arrive from the public page.
-/// Self-reported and never authorised on. Send <c>Web</c> from the browser and <c>App</c> from the
-/// diner app; a booking a waiter takes over the phone is <c>Staff</c>. See <c>docs/reports.md</c>.
+/// Self-reported. Send <c>Web</c> from the browser and <c>App</c> from the diner app; a booking a
+/// waiter takes over the phone is <c>Staff</c>. See <c>docs/reports.md</c>. <c>Web</c> needs the
+/// branch's online bookings on; <c>App</c> also needs its reservation policy saved (K9).
+/// </param>
+/// <param name="Note">
+/// A note to the venue - "window table", "a high chair". Optional; trimmed, blank means none, at
+/// most 500 characters, refused as <c>validation-failed</c> naming <c>note</c> with bound <c>max</c>.
 /// </param>
 public sealed record CreateReservationRequest(
     // NotEmpty as well as Required: a missing Guid binds Guid.Empty rather than null, so Required
@@ -91,7 +96,11 @@ public sealed record CreateReservationRequest(
     [Required][MaxLength(32)] string GuestPhone,
     [Required] Guid ClientCommandId,
     StayHint? StayHint = null,
-    ReservationChannel Channel = ReservationChannel.Unknown) : IClientCommandRequest;
+    ReservationChannel Channel = ReservationChannel.Unknown,
+
+    // No [MaxLength] here on purpose: the validation filter reports every attribute as bound
+    // `required`, and the contract says `max`. The service trims it and refuses it naming `note`.
+    string? Note = null) : IClientCommandRequest;
 
 /// <summary>Query of <c>GET /api/branches/{branchId}/reservations</c>.</summary>
 /// <param name="Status">

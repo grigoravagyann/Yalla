@@ -41,14 +41,83 @@ hundred a minute for every phone in the city. A 429 there is the no-restaurants 
 
 ---
 
+## The diner app's browse routes
+
+`GET /api/public/branches` · `GET /api/public/branches/search?q=&category=&lat=&lng=` ·
+`GET /api/public/branches/{branchId}` · `GET /api/public/branches/{branchId}/reviews?page=` ·
+`GET /api/public/branches/{branchId}/table-markers`
+
+Branch-first rather than venue-first, because the app's place *is* a branch: Explore, search, the
+map, the details screen and the photo table view all key on the branch id the booking flow takes.
+The list and search return `PublicBranchListing`; the details route returns `PublicBranchDetail`,
+whose `listing` is that same card. `/api/public/venues` is unchanged for the web chooser.
+
+- **Nothing is a constant.** `rating`/`reviewCount` come from `BranchReviews`; `badges` are
+  `BranchBadgeRules` over sittings and reviews; `isOpenNow` is the same opening-hours rule the branch
+  page uses (`BranchOpenNow`); `cuisine`, `priceLevel`, `about`, `amenities`, `websiteUrl` and the
+  gallery are what the venue wrote through `PUT /api/branches/{id}/listing`. A field the venue never
+  set is **absent**, and an unreviewed branch has no `rating` at all rather than a zero.
+- **Where a branch is** - its `address`, `latitude` and `longitude` - is the one part of that form a
+  manager cannot change. Moving it is for an owner of the venue or a platform admin signed in to the
+  admin panel, and is audited as `branch.relocate`. Anyone else sending a different location gets
+  `403 relocation-not-allowed`, and nothing on the form is saved. Sending the stored location back
+  unchanged is not a move.
+- **Distance** is computed server-side only when the caller sends `lat` and `lng` together, and then
+  orders the list nearest first. Without a position the list is best rated first.
+- **Table markers** are tables a manager placed on the cover photo (through
+  `PUT /api/branches/{id}/table-photo-positions`), each with the derived `state` the staff floor shows. Tables not placed are simply absent, and
+  a branch with no cover has none. The positions are fractions of that one picture, so saving the
+  public profile with a **different** cover (or none) takes every table off the photo in the same save;
+  re-saving the same cover keeps them.
+- **Caching**: the list and search hold the estate and every live number for fifteen seconds; the id
+  routes check their branch live, so a suspended venue is a 404 at once. The reviews route and the
+  details route read the review aggregate live, since they are the screens somebody opens right after
+  writing one and the details card sits beside `recentReviews`, which is live too.
+
+Writing a review is `POST`/`PUT /api/diner/branches/{branchId}/review` under the diner policy - one
+review per diner per branch, a phone-verified account only, and a **first** review only after a
+visit: a booking of the diner's at the branch that was Seated or Completed, or a place on one of its
+tabs, in the last 180 days (`403 review-needs-visit` otherwise). Revising a review the diner already
+has is never refused for the visit, and re-sending it unchanged writes nothing.
+
+**What is published.** The list and `recentReviews` are newest first by when each review was
+*written* - a revision does not lift an old review back to the top - and each carries `edited`. The
+name a review is published under is derived from the display name, never stored and never the full
+name:
+
+1. Take the first word of the display name.
+2. If it contains `@`, a digit, `/` or `www.`, the name is `Yalla diner` - that first word is where
+   people type an email address, a phone number or a link.
+3. Otherwise keep only letters (any script) and hyphens, at most 24 of them; if nothing is left, the
+   name is `Yalla diner` too.
+4. Add the second word's initial and a full stop only when that word starts with a letter:
+   `Anahit S.`, `Անահիտ Ս.`, `Narek`.
+
+**Takedown.** A platform admin (`PUT /api/platform/reviews/{reviewId}/visibility`) or an owner or
+manager who covers the branch (`PUT /api/branches/{branchId}/reviews/{reviewId}/visibility`) hides a
+review with a reason. A hidden review stays on its row and leaves every public read at once - the
+list, `recentReviews`, `rating`, `reviewCount`, and so the badges. A venue cannot put back what the
+platform hid. Every change is audited as `review.hide` or `review.unhide`. Diners flag reviews with
+`POST /api/diner/reviews/{reviewId}/report`; a report takes nothing down on its own.
+
+The full contract for these routes - every shape, the app's field maps, the rate limits, the Orders
+tab, the Development seed and the contract changes in progress - is
+[diner-browse.md](diner-browse.md).
+
+---
+
 ## The branch page
 
 `GET /api/public/branches/{venueSlug}/{branchSlug}`
 
 Two halves, and the split matters. The **stable** half — address, coordinates, hours, the room,
 the policy, `bookingWindowDays` — is cached for minutes. The **live** half — `freeTableCount`,
-`isOpenNow`, each table's `isFree`, `acceptsWebBookings` and `phoneE164` — is read per
-request and stamped with `asOfUtc`.
+`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings` and `phoneE164` — is
+read per request and stamped with `asOfUtc`.
+
+`acceptsAppBookings` (K9) is `acceptsWebBookings` **and** a reservation policy somebody at the venue has
+saved: the diner app books only where both hold, and `POST /api/reservations` from the app channel is
+`409 bookings-not-accepted` otherwise. The web channel's rule is unchanged.
 
 `acceptsWebBookings` and `phoneE164` are live despite looking stable. They gate and populate the
 booking UI, and the rule behind `acceptsWebBookings` is enforced live in the reservation service —
@@ -346,8 +415,9 @@ Chained, so a request passes every one that applies to it:
 | Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
 | Public | Client address — these routes are anonymous | 30 / min |
 | Public branch ceiling | One branch, whoever is asking | 300 / min |
-| Browse list, per caller | The caller, on `GET /api/public/venues` only - replaces the page budget there | 120 / min |
-| Browse list ceiling | The whole city: one partition for the list, sized for it rather than for one branch | 6,000 / min |
+| Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
+| Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
+| Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/table-markers` - replaces the page budget there; the branch ceiling still applies | 120 / min |
 | Public booking | Manage token (digest) | 20 / min |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands

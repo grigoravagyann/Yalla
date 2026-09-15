@@ -1,6 +1,7 @@
 ﻿using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.Platform;
+using Yalla.Application.Reviews;
 
 namespace Yalla.Api.Endpoints;
 
@@ -124,8 +125,62 @@ public static class PlatformEndpoints
                 StatusCodes.Status409Conflict,
                 "Going Paid with an unfinished menu, or going Free with open tabs.");
 
+        group.MapGet("/branches/{branchId:guid}/reviews", ListBranchReviewsAsync)
+            .WithName("listPlatformBranchReviews")
+            .WithSummary("A branch's reviews for moderation, hidden ones included")
+            .WithDescription(
+                "Every review of the branch - published or hidden, at any branch whether or not it is "
+                + "published - with `hidden`, `hiddenReason`, `hiddenAtUtc`, `hiddenByPlatform`, "
+                + "`reportCount` and `lastReportedAtUtc`. `authorName` is the public name, not the account's.\n\n"
+                + "`filter`: `all` (default, newest written first), `reported` (at least one report, most "
+                + "recently reported first) or `hidden`. `page` from 1, `pageSize` 1-100 (default 20); "
+                + "`total` counts the rows for the filter.")
+            .Produces<ModeratedReviewPage>()
+            .ProducesProblemDetails(
+                StatusCodes.Status400BadRequest, "`page`, `pageSize` or `filter` out of range; `context.field` names it.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
+        group.MapPut("/reviews/{reviewId:guid}/visibility", SetReviewVisibilityAsync)
+            .WithName("setPlatformReviewVisibility")
+            .WithSummary("Take a review down, or put one back")
+            .WithDescription(
+                "`{ \"hidden\": true, \"reason\": \"…\" }` takes it down: out of the public list, the rating, "
+                + "the count and the badges at once. `reason` is required when hiding, at most 500 characters. "
+                + "`{ \"hidden\": false }` puts it back; the reason is ignored.\n\n"
+                + "The platform can put back any review, including one the venue hid, and a review it hides "
+                + "is the platform's: the venue cannot put it back.\n\n"
+                + "**Audited** as `review.hide` or `review.unhide` with `actorType: platform`. A request that "
+                + "changes nothing writes nothing. Answers the review as the list shows it.")
+            .Produces<ModeratedReviewView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such review.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`hidden` missing, or `reason` missing (bound `required`) or over 500 characters (bound `max`) when hiding.");
+
         return app;
     }
+
+    private static async Task<IResult> ListBranchReviewsAsync(
+        Guid branchId,
+        Application.Reviews.IReviewModerationService moderation,
+        CancellationToken cancellationToken,
+        int page = 1,
+        int pageSize = 20,
+        string? filter = null) =>
+        Results.Ok(await moderation.ListForPlatformAsync(
+            branchId, new Application.Reviews.ReviewModerationQuery(page, pageSize, filter), cancellationToken));
+
+    private static async Task<IResult> SetReviewVisibilityAsync(
+        Guid reviewId,
+        SetReviewVisibilityRequest request,
+        Application.Reviews.IReviewModerationService moderation,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await moderation.SetVisibilityForPlatformAsync(
+            reviewId,
+
+            // The validation filter has refused a missing `hidden` before this runs.
+            new Application.Reviews.SetReviewVisibilityCommand(request.Hidden!.Value, request.Reason),
+            cancellationToken));
 
     private static async Task<IResult> CreateVenueAsync(
         CreateVenueCommand command,

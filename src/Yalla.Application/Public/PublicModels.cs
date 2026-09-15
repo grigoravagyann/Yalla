@@ -116,6 +116,10 @@ public sealed record PublicBranchCard(
 /// the live stitch: it changes once during onboarding, and a stale cover is not a claim about the
 /// room.
 /// </param>
+/// <param name="AcceptsAppBookings">
+/// Whether the diner app may book here: <paramref name="AcceptsWebBookings"/> <b>and</b> a reservation
+/// policy somebody at the venue has saved (K9). Read live, like <paramref name="AcceptsWebBookings"/>.
+/// </param>
 public sealed record PublicBranchPage(
     string VenueSlug,
     string BranchSlug,
@@ -137,7 +141,8 @@ public sealed record PublicBranchPage(
     int BookingWindowDays,
     PublicReservationPolicy Policy,
     DateTime AsOfUtc,
-    Media.PhotoView? CoverPhoto = null);
+    Media.PhotoView? CoverPhoto = null,
+    bool AcceptsAppBookings = false);
 
 /// <summary>
 /// The reservation rules a diner needs in order to book, and nothing else.

@@ -50,5 +50,10 @@ internal sealed class TabParticipantConfiguration : EntityConfiguration<TabParti
 
         // Recognises a returning anonymous guest on the same phone.
         builder.HasIndex(p => new { p.TabId, p.DeviceId });
+
+        // The diner app's Orders tab starts from the account: every tab this diner was on, and
+        // whether they may see each table's bill, without touching the order history first.
+        builder.HasIndex(p => p.UserId)
+            .IncludeProperties(p => new { p.TabId, p.Status, p.CanSeeTableTotal });
     }
 }

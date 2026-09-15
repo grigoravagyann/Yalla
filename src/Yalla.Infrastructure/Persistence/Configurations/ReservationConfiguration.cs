@@ -26,6 +26,10 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.CancellationReason)
             .HasMaxLength(FieldLengths.Reason);
 
+        // The diner's note to the venue (K9). Nullable: most bookings carry none.
+        builder.Property(r => r.Note)
+            .HasMaxLength(FieldLengths.Reason);
+
         builder.Property(r => r.PartySize).IsRequired();
         builder.Property(r => r.Status).IsRequired();
         builder.Property(r => r.GraceExtensionsUsed).IsRequired();

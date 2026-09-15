@@ -24,7 +24,8 @@ namespace Yalla.UnitTests.Integration;
 /// verification-code-in-response affordance are meant to be on, so gating them off here proves
 /// the gate is the <i>setting</i> rather than the environment name - which is the difference the
 /// spec asks for. <c>DevActor:Enabled</c> is forced off so the real claims-based actor is the one
-/// under test.
+/// under test, and <c>DevSeed:Enabled</c> is forced off so a host started against a test database
+/// does not write the demo venue into it; the tests about seeding switch it back on.
 /// </para>
 /// </remarks>
 public sealed class YallaApiFactory : WebApplicationFactory<Program>
@@ -53,6 +54,11 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         ["Jwt:SigningKey"] = "test-signing-key-that-is-comfortably-longer-than-thirty-two-bytes",
 
         ["DevActor:Enabled"] = "false",
+
+        // On in appsettings.Development.json, which this host reads. Off here: it used to ride on
+        // DevActor:Enabled, so no test host seeded unless it asked to, and that stays true.
+        ["DevSeed:Enabled"] = "false",
+
         ["Swagger:Enabled"] = "false",
 
         // Off unless a test asks for it. Throttling is not what most of these tests are about,
@@ -75,6 +81,11 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         // Same rule, same reason: the reset link is handed to a person once, so a deployment-shaped
         // host has to say where the console is. Loopback is refused outside Development.
         ["Auth:PasswordResetUrlTemplate"] = "https://test.yalla.app/reset-password#token={token}",
+
+        // appsettings.Development.json puts photos in the developer's own data folder, shared by
+        // every worktree. A test host writes to a throwaway folder instead; the tests that read the
+        // files back set a root of their own.
+        ["PhotoStorage:RootPath"] = Path.Combine(Path.GetTempPath(), "yalla-test-photos"),
     };
 
     private readonly List<Action<IServiceCollection>> _serviceOverrides = [];
@@ -83,6 +94,20 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
     public YallaApiFactory With(string key, string? value)
     {
         _settings[key] = value;
+
+        return this;
+    }
+
+    /// <summary>
+    /// Drops one of the factory's own settings, so the environment's appsettings file decides it.
+    /// </summary>
+    /// <remarks>
+    /// For the tests about those files: <c>RateLimiting:Enabled</c> is forced off here, and a host
+    /// that is meant to prove Staging switches it on has to stop forcing it.
+    /// </remarks>
+    public YallaApiFactory Without(string key)
+    {
+        _settings.Remove(key);
 
         return this;
     }
@@ -166,9 +191,9 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         //
         // A ConfigureAppConfiguration source is not merged until the host is built, which is
         // after Program has already read the configuration to register services - so it would
-        // arrive too late for the connection string, the signing key and DevActor:Enabled, and
-        // the tests would silently run against the developer's own database with the actor stub
-        // switched on. UseSetting writes into the builder's configuration immediately.
+        // arrive too late for the connection string, the signing key, DevActor:Enabled and
+        // DevSeed:Enabled, and the tests would silently run against the developer's own database
+        // with the actor stub and the demo seed switched on. UseSetting writes into the builder's configuration immediately.
         foreach (var (key, value) in _settings)
         {
             builder.UseSetting(key, value);

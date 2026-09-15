@@ -101,7 +101,8 @@ public static class AuthEndpoints
                 "`verification-code-invalid`: the code was wrong, with `context.attemptsRemaining` - "
                 + "zero when nothing is live for the number, which means ask for a new code rather "
                 + "than try again. `verification-code-expired`, with no context: codes last five "
-                + "minutes.")
+                + "minutes. `invalid-credentials`: the code was right but the number's account is "
+                + "deactivated - the password sign-in's answer; the code is spent and no token is issued.")
             .ProducesProblemDetails(
                 StatusCodes.Status429TooManyRequests,
                 "The code is out of attempts. Request a new one.")

@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
+using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.Diners;
 using Yalla.Application.Media;
 using Yalla.Domain.Media;
+using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.Endpoints;
 
@@ -30,6 +32,16 @@ public sealed record UpdateDinerProfileRequest(
 public sealed record SetDinerPasswordRequest(
     [Required] string NewPassword,
     string? CurrentPassword = null);
+
+/// <summary>Body of <c>DELETE /api/diner/me</c>: the proof that the account holder is asking.</summary>
+/// <param name="Password">Required when the account has a password (the profile's <c>hasPassword</c>).</param>
+/// <param name="Code">
+/// Required when it has none: a one-time code from <c>POST /api/auth/diner/request-code</c> for the
+/// account's own number.
+/// </param>
+public sealed record DeleteDinerAccountRequest(
+    string? Password = null,
+    string? Code = null);
 
 /// <summary>
 /// A diner's own account: reading it, editing it, the password, and the profile picture.
@@ -67,10 +79,15 @@ public static class DinerAccountEndpoints
                 + "code and can set a password without giving a current one.\n\n"
                 + "`photo` is absent when there is no picture.")
             .Produces<DinerProfileView>()
-            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "Needs a diner token.")
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized,
+                "Needs a diner token. `session-revoked` when the token's session has ended - the account was "
+                + "deactivated or deleted, the password was set or changed, or the number's owner proved it. "
+                + "Every `/api/diner` route answers that the same way: refresh once, and sign out if the "
+                + "refresh is refused too.")
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
-                "The token is not a diner's - a tab participant has no account - or the account is no longer active.");
+                "The token is not a diner's - a tab participant has no account.");
 
         app.MapPut("/api/diner/me", UpdateAsync)
             .WithTags(EndpointConventions.DinerTag)
@@ -101,14 +118,49 @@ public static class DinerAccountEndpoints
                 + "`currentPassword` - the bearer token is the proof. An account that has one must "
                 + "send it, and a wrong one is `401 invalid-credentials`.\n\n"
                 + "The new password is under the same rule as registration: 8-128 characters, and "
-                + "not the username or the email. Existing sessions stay signed in.")
+                + "not the username or the email.\n\n"
+                + "**Every access token the account holds ends, this one included**: the next call with "
+                + "it answers `401 session-revoked`. **Every other sign-in's refresh token is revoked**, so "
+                + "other devices are signed out; the sign-in this token came from keeps its refresh token, "
+                + "so the app refreshes and carries on.")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblemDetails(
                 StatusCodes.Status400BadRequest,
                 "The new password breaks the rule. `context.field` is `newPassword`.")
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized,
-                "`invalid-credentials`: the current password is wrong or was needed and not sent. Or no diner token.");
+                "`invalid-credentials`: the current password is wrong or was needed and not sent. "
+                + "`session-revoked`: the token's session has ended. Or no diner token.");
+
+        app.MapDelete("/api/diner/me", DeleteAccountAsync)
+            .WithTags(EndpointConventions.DinerTag)
+            .RequireAuthorization(YallaPolicies.VerifiedDiner)
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy)
+            .WithName("deleteDinerAccount")
+            .WithSummary("Delete the signed-in diner's account")
+            .WithDescription(
+                "Proof first: `password` when the account has one (`hasPassword`), otherwise `code` - a "
+                + "one-time code from `POST /api/auth/diner/request-code` for the account's own number.\n\n"
+                + "**In one transaction**: the account becomes a tombstone - number, username, email, name, "
+                + "password and verification stamp cleared, so all three can register again; every session "
+                + "ends (access and refresh tokens); push devices, every review by the account and its "
+                + "pictures (files included) are deleted. The venue keeps its records with the link to the "
+                + "person removed: bookings keep the guest name and number typed into them, places at a "
+                + "table become `Guest`, orders stay. An audit row `diner.delete` is written.\n\n"
+                + "Rate limited per address, and per account like a password sign-in: ten attempts in "
+                + "fifteen minutes, right or wrong.")
+            .Accepts<DeleteDinerAccountRequest>("application/json")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized,
+                "`invalid-credentials`: the password or code is wrong, or the code has expired. "
+                + "`session-revoked`: the token's session has ended. Or no diner token.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`validation-failed` naming `password` or `code`, bound `required`: the proof this account needs was not sent.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "`too-many-attempts`: the account's attempts, or the code's, are spent. Or `rate-limited` per address.");
 
         app.MapPost("/api/diner/me/photo", UploadPhotoAsync)
             .WithTags(EndpointConventions.DinerTag)
@@ -122,8 +174,11 @@ public static class DinerAccountEndpoints
                 + "and everything else refused whatever the declared type says; **EXIF is stripped**; "
                 + "three WebP variants are kept and the original is discarded. Same size cap.\n\n"
                 + "Replaces whatever picture was there. The same bytes uploaded twice by the same "
-                + "person are one photo; the picture replaced is deleted by the orphan sweep after a "
-                + "day, so its old URL keeps working for that long and then does not.")
+                + "person are one photo. The picture replaced is left for the orphan sweep, which runs "
+                + "every hour by default (`PhotoStorage:SweepIntervalMinutes`) and deletes a picture "
+                + "nothing uses once it is more than a day old - so its old URL keeps working for at "
+                + "least a day and stops within about an hour after that. To end it at once, "
+                + "`DELETE /api/diner/me/photo` before uploading.")
             .Accepts<IFormFile>("multipart/form-data")
             .Produces<PhotoView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "No `file` part in the upload.")
@@ -131,6 +186,10 @@ public static class DinerAccountEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
                 "`unsupported-image`: not a JPEG, PNG or WebP, or larger than this system accepts.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "`rate-limited`: more than the `diner-write` budget - ten writes a minute per account by default.")
+            .RequireRateLimiting(RateLimitingExtensions.DinerWritePolicy)
             .WithMetadata(new RequestSizeLimitAttribute(MaxUploadBytes));
 
         app.MapDelete("/api/diner/me/photo", RemovePhotoAsync)
@@ -138,7 +197,9 @@ public static class DinerAccountEndpoints
             .RequireAuthorization(YallaPolicies.VerifiedDiner)
             .WithName("removeDinerPhoto")
             .WithSummary("Remove the profile picture")
-            .WithDescription("Succeeds when there was none. The picture itself is left for the orphan sweep.")
+            .WithDescription(
+                "Succeeds when there was none. The picture is deleted at once, files included: its "
+                + "`/api/photos/{id}/…` links answer 404 from the next request.")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "Needs a diner token.");
 
@@ -161,9 +222,29 @@ public static class DinerAccountEndpoints
     private static async Task<IResult> SetPasswordAsync(
         SetDinerPasswordRequest request,
         IDinerProfileService profile,
+        HttpContext http,
         CancellationToken cancellationToken)
     {
-        await profile.SetPasswordAsync(request.CurrentPassword, request.NewPassword, cancellationToken);
+        // An unreadable claim cannot have come from this system; -1 never matches a generation.
+        var generation = YallaClaims.TryReadSessionGeneration(http.User, out var read) ? read : -1;
+
+        await profile.SetPasswordAsync(
+            request.CurrentPassword,
+            request.NewPassword,
+            generation,
+            YallaClaims.ReadRefreshChainId(http.User),
+            cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> DeleteAccountAsync(
+        [FromBody] DeleteDinerAccountRequest? request,
+        IDinerProfileService profile,
+        CancellationToken cancellationToken)
+    {
+        // A missing body is the same as one with neither field: the service names what is needed.
+        await profile.DeleteAccountAsync(request?.Password, request?.Code, cancellationToken);
 
         return Results.NoContent();
     }

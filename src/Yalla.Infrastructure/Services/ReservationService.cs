@@ -82,6 +82,7 @@ internal sealed class ReservationService(
     ICurrentActor actor,
     IAvailabilityQuery availabilityQuery,
     IAuthorizationQueries authorization,
+    IStaffBranchGuard branchGuard,
     NoShowPolicy noShowPolicy,
     ReservationWriter reservations,
     ITableStateService tableState,
@@ -96,6 +97,10 @@ internal sealed class ReservationService(
         ArgumentNullException.ThrowIfNull(command);
 
         var dinerUserId = RequireDiner("Book a table");
+
+        // The note is part of the body, so it is refused before anything is looked up: a 422 naming
+        // `note` is the answer whatever else would have gone on to be refused (K9).
+        var note = Reservation.NormaliseNote(command.Note);
 
         // Before the replay, too: an account that cannot book has no original to be handed back,
         // and a booking's reminders and no-show record land on the number, so it must be a real one.
@@ -129,6 +134,16 @@ internal sealed class ReservationService(
         // lives in the service holds for any caller, not only the one that remembered.
         RequireWebBookingsAccepted(command.Channel, branch);
 
+        // The app channel's gate (K9): bookings switched on AND a reservation policy somebody at the
+        // venue has saved. A branch ships with default rules nobody chose, and an app that lists
+        // every branch in the city would otherwise book against those guesses from the day it is
+        // created. Web keeps its own rule above, unchanged; Unknown and Staff are not gated.
+        if (command.Channel == ReservationChannel.App
+            && !(branch.AcceptsWebBookings && branch.ReservationPolicyReviewedAtUtc is not null))
+        {
+            throw new AppBookingsNotAcceptedException(branch.Id, branch.Name);
+        }
+
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
         var zone = BranchZone.For(branch.TimeZoneId);
@@ -159,7 +174,8 @@ internal sealed class ReservationService(
             dinerUserId: dinerUserId,
             stayHint: command.StayHint,
             clientCommandId: command.ClientCommandId,
-            channel: command.Channel);
+            channel: command.Channel,
+            note: note);
 
         // Minted here and returned exactly once, below. Only the hash is stored, so this plaintext
         // exists in this method and in the response and nowhere else - which is what makes it safe
@@ -376,6 +392,9 @@ internal sealed class ReservationService(
         await outbox.CancelAsync(
             OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
 
+        // And its feed entry that has not appeared yet - the reminder - with it (K12).
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         if (late)
@@ -442,7 +461,7 @@ internal sealed class ReservationService(
         // The same check approve and reject make. BranchScoped on the route widens a manager with
         // a home branch to their whole venue; this narrows them back, so the list never shows a
         // booking its reader would be refused permission to decide.
-        await RequireManagerForBranchAsync(branchId, "List a branch's bookings", cancellationToken);
+        await branchGuard.RequireAtBranchAsync(branchId, "List a branch's bookings", cancellationToken);
 
         var policy = await db.Branches
             .AsNoTracking()
@@ -712,7 +731,7 @@ internal sealed class ReservationService(
         var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
         var operation = approve ? "Approve a booking" : "Reject a booking";
 
-        await RequireManagerForBranchAsync(reservation.BranchId, operation, cancellationToken);
+        await branchGuard.RequireAtBranchAsync(reservation.BranchId, operation, cancellationToken);
 
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
         var nowUtc = clock.UtcNow;
@@ -744,11 +763,16 @@ internal sealed class ReservationService(
             clock.UtcNow,
             OutboxMessageTypes.KeyFor("reservation", reservation.Id, approve ? "approved" : "rejected"));
 
+        // The same fact into the diner's feed, beside its push and in the same save (K12).
+        DinerNotices.BookingDecided(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, approve, nowUtc);
+
         if (!approve)
         {
             // A rejected booking is not going to happen, so its reminder and nudge must not fire.
             await outbox.CancelAsync(
                 OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+
+            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -822,6 +846,12 @@ internal sealed class ReservationService(
 
         var remindAt = reservation.StartUtc.AddHours(-policy.ReminderHoursBefore);
 
+        // The booking committed a moment ago, and the account can have been deleted since - from another
+        // phone, past the token cache - which cut the booking loose and emptied the feed. The feed entry
+        // below is the person's, so it is written under the account's lock and only for a live account:
+        // a deletion that comes after waits for this commit and removes it.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         if (remindAt > nowUtc)
         {
             outbox.Enqueue(
@@ -829,6 +859,14 @@ internal sealed class ReservationService(
                 notice,
                 remindAt,
                 OutboxMessageTypes.KeyFor("reservation", reservation.Id, "reminder"));
+
+            // Its feed entry, written now beside the push and appearing when the push is due (K12).
+            // Cancelling the booking before then deletes both.
+            if (reservation.DinerUserId is { } dinerUserId
+                && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
+            {
+                DinerNotices.BookingReminder(db, reservation, branch.Venue?.Name ?? branch.Name, branch.Name, remindAt);
+            }
         }
 
         // The nudge is always in the future when the booking is made, because a booking cannot start
@@ -840,6 +878,7 @@ internal sealed class ReservationService(
             OutboxMessageTypes.KeyFor("reservation", reservation.Id, "late-nudge"));
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     // ---------------------------------------------------------------- the diner extends their hold
@@ -945,6 +984,18 @@ internal sealed class ReservationService(
         // after a waiter has already given the table away is the worst of both.
         await outbox.CancelAsync(
             OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+
+        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+        // The venue let an accepted booking go, and the diner's feed hears about it (K12). No push has
+        // ever been sent for this; the entry is saved with the release. A no-show tells nobody.
+        if (command.Outcome != ReleaseOutcome.NoShow && reservation.DinerUserId is not null)
+        {
+            var releasedAt = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+            DinerNotices.BookingCancelledByVenue(
+                db, reservation, releasedAt.Venue?.Name ?? releasedAt.Name, releasedAt.Name, nowUtc);
+        }
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -1107,59 +1158,6 @@ internal sealed class ReservationService(
         return dinerUserId;
     }
 
-    /// <summary>
-    /// A manager or owner, scoped to this branch.
-    /// </summary>
-    /// <remarks>
-    /// A staff member with a null <c>BranchId</c> works across every branch of their own venue - an
-    /// owner does - but never across venues. Both halves are checked: a manager of one restaurant
-    /// must not be able to approve bookings at another chain's branch by guessing an id.
-    /// </remarks>
-    private async Task RequireManagerForBranchAsync(
-        Guid branchId,
-        string operation,
-        CancellationToken cancellationToken)
-    {
-        if (actor.Type != ActorType.Staff
-            || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        var staff = await db.StaffMembers
-            .AsNoTracking()
-            .Where(s => s.Id == staffId)
-            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (staff is not { IsActive: true })
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        // A platform admin belongs to no venue and may decide for any branch.
-        if (staff.Role == StaffRole.PlatformAdmin)
-        {
-            return;
-        }
-
-        // The same read the BranchScoped policy does, through the same interface, rather than a
-        // second copy of the query that could drift from it.
-        if (staff.VenueId is not { } venueId
-            || !await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-
-        // A null BranchId means every branch of their own venue - an owner works everywhere. The
-        // venue check above is what stops that meaning every branch in the system.
-        if (staff.BranchId is { } assignedBranchId && assignedBranchId != branchId)
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
-        }
-    }
-
     // ---------------------------------------------------------------- loading
 
     private async Task<Branch> LoadBranchAsync(Guid branchId, CancellationToken cancellationToken)
@@ -1279,6 +1277,10 @@ internal sealed class ReservationService(
             Status = reservation.Status,
             GuestName = reservation.GuestName,
             GuestPhone = reservation.GuestPhone,
+
+            // What the diner asked for, on every view of the booking - the approval queue included,
+            // which is where the venue reads it (K9).
+            Note = reservation.Note,
             ConfirmedAtUtc = reservation.ConfirmedAtUtc,
             CancelledAtUtc = reservation.CancelledAtUtc,
             CancellationReason = reservation.CancellationReason,

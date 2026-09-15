@@ -1,3 +1,6 @@
+using System.Data;
+using System.Globalization;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
@@ -20,30 +23,43 @@ namespace Yalla.Infrastructure.Services;
 /// and are otherwise left exactly as they were.
 /// </para>
 /// <para>
-/// <b>The floor plan is replaced whole.</b> Canvas, areas and tables land in one <c>SaveChanges</c>
-/// and so one transaction; a partially applied plan is a broken room. A table left out of the
-/// plan is deleted only if nothing ever happened at it - otherwise it is deactivated, because a
-/// reservation, session or tab that pointed at it must still resolve.
+/// <b>The floor plan is replaced whole.</b> Canvas, areas and tables land in one transaction; a
+/// partially applied plan is a broken room. A table left out of the plan is deleted only if nothing
+/// ever happened at it - otherwise it is deactivated, because a reservation, session or tab that
+/// pointed at it must still resolve.
 /// </para>
 /// <para>
 /// <b>A QR token never changes on edit.</b> Nothing in the replace path writes it. The one way it
 /// changes is <see cref="RegenerateQrTokenAsync"/>, which is audited.
+/// </para>
+/// <para>
+/// <b>Who (K4).</b> Every method checks the caller again from the stored staff row through
+/// <see cref="IStaffBranchGuard"/>, underneath the route's <c>BranchScoped</c> policy: a manager
+/// with a home branch is confined to it even while their token still says otherwise.
+/// </para>
+/// <para>
+/// <b>Three writers that must not interleave.</b> The floor-plan replace (K6), the table pins (K7)
+/// and a cover change on the public profile all decide what a table's photo position means. Each
+/// takes an update lock on the branch row first and reads everything it decides on inside it, so
+/// a pin can never land on a cover that was just replaced, and a plan save can never undo a pin it
+/// did not know about.
 /// </para>
 /// </remarks>
 internal sealed class BranchSettingsService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
+    IStaffBranchGuard branchGuard,
     ILogger<BranchSettingsService> logger) : IBranchSettingsService
 {
-    // ------------------------------------------------------------ reservation policy
-
     // ------------------------------------------------------------ the public page
 
     public async Task<PublicProfileView> GetPublicProfileAsync(
         Guid branchId,
         CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the public profile", cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         return await PublicProfileOfAsync(branch, cancellationToken);
@@ -55,6 +71,12 @@ internal sealed class BranchSettingsService(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        await branchGuard.RequireAtBranchAsync(branchId, "Save the public profile", cancellationToken);
+
+        // The cover decides what every pin means, so the pins it clears are read under the same lock
+        // the pin save takes - otherwise a pin placed in between would survive on the new picture.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
 
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
@@ -72,9 +94,25 @@ internal sealed class BranchSettingsService(
         // switched on for bookings with its old phone still published.
         branch.SetPhoneE164(command.PhoneE164);
         branch.SetAcceptsWebBookings(command.AcceptsWebBookings);
+
+        // A table's photoX/photoY are fractions of the picture it was placed on. On a new picture,
+        // or on none, they point at the wrong spot - so a different cover takes every table off the
+        // photo, in the same save. The form re-sends the same cover on every save, which keeps them.
+        if (branch.CoverPhotoId != command.CoverPhotoId)
+        {
+            var placed = await db.DiningTables
+                .Where(t => t.BranchId == branchId && (t.PhotoX != null || t.PhotoY != null))
+                .ToListAsync(cancellationToken);
+
+            foreach (var table in placed)
+            {
+                table.PlaceOnPhoto(null, null);
+            }
+        }
+
         branch.SetCoverPhoto(command.CoverPhotoId);
 
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
         logger.LogInformation(
             "Branch {BranchId} public profile saved; web bookings {State}; cover photo {Cover}.",
@@ -99,10 +137,14 @@ internal sealed class BranchSettingsService(
             cover is null ? null : Application.Media.PhotoView.From(cover));
     }
 
+    // ------------------------------------------------------------ reservation policy
+
     public async Task<ReservationPolicyView> GetReservationPolicyAsync(
         Guid branchId,
         CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the reservation policy", cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         return ReservationPolicyView.From(branch.ReservationPolicy);
@@ -114,6 +156,8 @@ internal sealed class BranchSettingsService(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        await branchGuard.RequireAtBranchAsync(branchId, "Save the reservation policy", cancellationToken);
 
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
@@ -155,20 +199,26 @@ internal sealed class BranchSettingsService(
 
     public async Task<IReadOnlyList<OpeningHoursView>> GetOpeningHoursAsync(
         Guid branchId,
-        CancellationToken cancellationToken = default) =>
-        await db.OpeningHours
+        CancellationToken cancellationToken = default)
+    {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the opening hours", cancellationToken);
+
+        return await db.OpeningHours
             .AsNoTracking()
             .Where(h => h.BranchId == branchId)
             .OrderBy(h => h.Day)
             .ThenBy(h => h.OpensAt)
             .Select(h => new OpeningHoursView(h.Day, h.OpensAt, h.ClosesAt, h.ClosesNextDay))
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<IReadOnlyList<OpeningHoursView>> ReplaceOpeningHoursAsync(
         Guid branchId,
         IReadOnlyList<OpeningHoursBlock> blocks,
         CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Save the opening hours", cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         // Derives ClosesNextDay and refuses overlaps before anything is touched.
@@ -192,10 +242,17 @@ internal sealed class BranchSettingsService(
 
     public async Task<FloorPlanView> GetFloorPlanAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the floor plan", cancellationToken);
+
+        return await ReadFloorPlanAsync(branchId, cancellationToken);
+    }
+
+    private async Task<FloorPlanView> ReadFloorPlanAsync(Guid branchId, CancellationToken cancellationToken)
+    {
         var branch = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.Id, b.FloorWidth, b.FloorHeight })
+            .Select(b => new { b.Id, b.FloorWidth, b.FloorHeight, b.FloorPlanVersion })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
@@ -213,7 +270,8 @@ internal sealed class BranchSettingsService(
             .Select(TableProjection)
             .ToListAsync(cancellationToken);
 
-        return new FloorPlanView(branch.Id, branch.FloorWidth, branch.FloorHeight, areas, tables);
+        return new FloorPlanView(
+            branch.Id, branch.FloorWidth, branch.FloorHeight, areas, tables, VersionOf(branch.FloorPlanVersion));
     }
 
     public async Task<FloorPlanReplaceResult> ReplaceFloorPlanAsync(
@@ -223,6 +281,20 @@ internal sealed class BranchSettingsService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        await branchGuard.RequireAtBranchAsync(branchId, "Replace the floor plan", cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(command.ExpectedVersion))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "expectedVersion",
+                "Send the version of the floor plan you loaded, so a save cannot overwrite somebody else's.",
+                FieldBounds.Required));
+        }
+
+        // Held to the end: the version is compared, the plan written and the version bumped as one
+        // step, so two editors who loaded the same revision cannot both save.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
         // Two collections on one root: split, so the areas do not multiply the tables on the wire.
         var branch = await db.Branches
             .Include(b => b.FloorAreas)
@@ -230,6 +302,11 @@ internal sealed class BranchSettingsService(
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        if (!IsVersion(command.ExpectedVersion, branch.FloorPlanVersion))
+        {
+            throw new FloorPlanChangedException(VersionOf(branch.FloorPlanVersion));
+        }
 
         var areasInput = command.Areas ?? [];
         var tablesInput = command.Tables ?? [];
@@ -401,8 +478,8 @@ internal sealed class BranchSettingsService(
         // Two tables trading labels - renumbering a room during onboarding - is a legal plan that a
         // single pass cannot write: the unique index on (branch, label) is checked per statement, so
         // "table A becomes B" lands while the real B still holds the name. Park the movers on
-        // throwaway labels, flush, then write the real ones. One transaction either way, so a plan
-        // still applies whole or not at all.
+        // throwaway labels, flush, then write the real ones. Both flushes are inside the branch
+        // lock's transaction, so a plan still applies whole or not at all.
         var currentLabels = existingTables.ToDictionary(t => t.Id, t => t.Label);
 
         var movers = updatedTables
@@ -411,12 +488,8 @@ internal sealed class BranchSettingsService(
                                                    && string.Equals(other.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
-        IDbContextTransaction? transaction = null;
-
         if (movers.Count > 0)
         {
-            transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
             foreach (var (_, table) in movers)
             {
                 table.Relabel(StagingLabel());
@@ -427,7 +500,9 @@ internal sealed class BranchSettingsService(
 
         foreach (var (input, table) in updatedTables)
         {
-            // Geometry, label, seats, area, bookability. Never the QR token.
+            // Geometry, label, seats, area, bookability. Never the QR token, and never the photo
+            // position: pins are saved through the table-photo-positions route (K7), so a plan saved
+            // by an editor that knows nothing about them leaves them exactly where they were.
             table.Relabel(input.Label);
             table.SetSeats(input.Seats);
             table.MoveTo(input.X, input.Y, input.RotationDegrees);
@@ -440,6 +515,7 @@ internal sealed class BranchSettingsService(
 
         foreach (var (input, _) in newTables)
         {
+            // Created with no pin; the manager places it on the cover photo separately.
             db.DiningTables.Add(new DiningTable(
                 branch.Id,
                 input.Label,
@@ -468,14 +544,12 @@ internal sealed class BranchSettingsService(
 
         branch.ResizeFloor(command.FloorWidth, command.FloorHeight);
 
+        // The only place the version moves.
+        branch.BumpFloorPlanVersion();
+
         try
         {
-            await db.SaveChangesAsync(cancellationToken);
-
-            if (transaction is not null)
-            {
-                await transaction.CommitAsync(cancellationToken);
-            }
+            await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
         }
         catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TableLabelPerBranch))
         {
@@ -483,26 +557,165 @@ internal sealed class BranchSettingsService(
             throw new FloorPlanInvalidException(
                 ["A table label in this plan is already used by another table in the branch."], [], []);
         }
-        finally
-        {
-            // Disposing an uncommitted transaction rolls it back, so a failure between the two
-            // phases leaves the staging labels nowhere.
-            if (transaction is not null)
-            {
-                await transaction.DisposeAsync();
-            }
-        }
 
         logger.LogInformation(
-            "Floor plan on branch {BranchId} replaced: {Updated} updated, {Added} added, {Deactivated} deactivated, {Removed} removed, {Warnings} warning(s).",
-            branch.Id, updatedTables.Count, newTables.Count, deactivated.Count, removed.Count, validation.Warnings.Count);
+            "Floor plan on branch {BranchId} replaced at version {Version} by staff member {StaffMemberId}: {Updated} updated, {Added} added, {Deactivated} deactivated, {Removed} removed, {Warnings} warning(s).",
+            branch.Id, branch.FloorPlanVersion, actor.StaffMemberId, updatedTables.Count, newTables.Count, deactivated.Count, removed.Count, validation.Warnings.Count);
 
         return new FloorPlanReplaceResult(
-            await GetFloorPlanAsync(branch.Id, cancellationToken),
+            await ReadFloorPlanAsync(branch.Id, cancellationToken),
             validation.Warnings,
             deactivated,
             removed);
     }
+
+    // ------------------------------------------------------------ table pins on the cover photo
+
+    public async Task<TablePhotoPositionsView> UpdateTablePhotoPositionsAsync(
+        Guid branchId,
+        TablePhotoPositionsCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var staffId = await branchGuard.RequireAtBranchAsync(
+            branchId, "Place tables on the cover photo", cancellationToken);
+
+        var positions = ValidatePositions(command);
+
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var cover = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId)
+            .Select(b => new { b.CoverPhotoId })
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        // Positions are fractions of one picture. Placed on a cover that has since been replaced -
+        // or removed - they point at the wrong spot, so nothing is written and the editor is told
+        // which cover is current.
+        if (cover.CoverPhotoId is null || cover.CoverPhotoId != command.CoverPhotoId)
+        {
+            throw new CoverChangedException(cover.CoverPhotoId);
+        }
+
+        var tableIds = positions.Select(p => p.TableId).ToList();
+
+        var tables = await db.DiningTables
+            .Where(t => t.BranchId == branchId && t.IsActive && tableIds.Contains(t.Id))
+            .ToListAsync(cancellationToken);
+
+        if (tables.Count != tableIds.Count)
+        {
+            throw new KeyNotFoundException("A table in positions is not an active table at this branch.");
+        }
+
+        var byId = tables.ToDictionary(t => t.Id);
+
+        foreach (var position in positions)
+        {
+            // The photo position and nothing else: label, seats, geometry, area and state are the
+            // floor plan's, and a pin save must not be a second way to change them.
+            byId[position.TableId].PlaceOnPhoto(position.PhotoX, position.PhotoY);
+        }
+
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
+
+        logger.LogInformation(
+            "Table pins on branch {BranchId} saved by staff member {StaffMemberId}: {Count} table(s) listed.",
+            branchId, staffId, positions.Count);
+
+        var all = await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.BranchId == branchId && t.IsActive)
+            .OrderBy(t => t.Label)
+            .Select(t => new TablePhotoPositionView(t.Id, t.Label, t.PhotoX, t.PhotoY))
+            .ToListAsync(cancellationToken);
+
+        return new TablePhotoPositionsView(cover.CoverPhotoId.Value, all);
+    }
+
+    /// <summary>
+    /// Every shape problem in a pin save, named against the payload: <c>positions[2].photoY</c>.
+    /// </summary>
+    /// <exception cref="FieldValidationException">One or more fields are missing, half-sent or out of range.</exception>
+    private static IReadOnlyList<TablePhotoPositionInput> ValidatePositions(TablePhotoPositionsCommand command)
+    {
+        var violations = new List<FieldViolation>();
+
+        if (command.CoverPhotoId is null || command.CoverPhotoId == Guid.Empty)
+        {
+            violations.Add(new FieldViolation(
+                "coverPhotoId", "Send the cover photo the tables were placed on.", FieldBounds.Required));
+        }
+
+        if (command.Positions is null)
+        {
+            violations.Add(new FieldViolation("positions", "Send the tables to place.", FieldBounds.Required));
+
+            throw new FieldValidationException(violations);
+        }
+
+        for (var i = 0; i < command.Positions.Count; i++)
+        {
+            var position = command.Positions[i];
+
+            if (position is null)
+            {
+                violations.Add(new FieldViolation($"positions[{i}]", "A position cannot be empty.", FieldBounds.Required));
+                continue;
+            }
+
+            if (position.TableId == Guid.Empty)
+            {
+                violations.Add(new FieldViolation(
+                    $"positions[{i}].tableId", "Name the table to place.", FieldBounds.Required));
+            }
+
+            if (position.PhotoX.HasValue != position.PhotoY.HasValue)
+            {
+                violations.Add(new FieldViolation(
+                    $"positions[{i}].{(position.PhotoX.HasValue ? "photoY" : "photoX")}",
+                    "Send both photo coordinates to place a table, or both as null to take it off the photo.",
+                    FieldBounds.Required));
+            }
+
+            foreach (var (field, value) in new[] { ("photoX", position.PhotoX), ("photoY", position.PhotoY) })
+            {
+                if (value is { } v && (double.IsNaN(v) || v < 0d || v > 1d))
+                {
+                    violations.Add(new FieldViolation(
+                        $"positions[{i}].{field}",
+                        "Photo coordinates are fractions of the picture, from 0 to 1.",
+                        FieldBounds.Range,
+                        0d,
+                        1d,
+                        v));
+                }
+            }
+        }
+
+        var repeated = command.Positions
+            .Where(p => p is not null && p.TableId != Guid.Empty)
+            .GroupBy(p => p.TableId)
+            .Any(g => g.Count() > 1);
+
+        if (repeated)
+        {
+            violations.Add(new FieldViolation(
+                "positions", "Each table can appear in positions only once.", FieldBounds.Conflict));
+        }
+
+        if (violations.Count > 0)
+        {
+            throw new FieldValidationException(violations);
+        }
+
+        return command.Positions;
+    }
+
+    // ------------------------------------------------------------ areas and tables
 
     public async Task<FloorAreaView> CreateFloorAreaAsync(
         Guid branchId,
@@ -510,6 +723,9 @@ internal sealed class BranchSettingsService(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        await branchGuard.RequireAtBranchAsync(branchId, "Add a floor area", cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         var area = new FloorArea(branch.Id, command.Name, command.DisplayOrder);
@@ -527,6 +743,8 @@ internal sealed class BranchSettingsService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        await branchGuard.RequireAtBranchAsync(branchId, "Edit a floor area", cancellationToken);
+
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
@@ -539,6 +757,8 @@ internal sealed class BranchSettingsService(
 
     public async Task DeleteFloorAreaAsync(Guid branchId, Guid areaId, CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Remove a floor area", cancellationToken);
+
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
@@ -559,6 +779,8 @@ internal sealed class BranchSettingsService(
         Guid tableId,
         CancellationToken cancellationToken = default)
     {
+        await branchGuard.RequireAtBranchAsync(branchId, "Delete a table", cancellationToken);
+
         var table = await db.DiningTables.FirstOrDefaultAsync(t => t.Id == tableId && t.BranchId == branchId, cancellationToken)
                     ?? throw new KeyNotFoundException($"Table {tableId} was not found at this branch.");
 
@@ -595,6 +817,8 @@ internal sealed class BranchSettingsService(
         var table = await db.DiningTables.FirstOrDefaultAsync(t => t.Id == tableId, cancellationToken)
                     ?? throw new KeyNotFoundException($"Table {tableId} was not found.");
 
+        await branchGuard.RequireAtBranchAsync(table.BranchId, "Replace a table's QR code", cancellationToken);
+
         var previous = table.QrToken;
         table.RegenerateQrToken();
 
@@ -624,11 +848,132 @@ internal sealed class BranchSettingsService(
             .FirstAsync(cancellationToken);
     }
 
+    // ------------------------------------------------------------ the branch write lock
+
+    /// <summary>How long a layout save waits for another one on the same branch.</summary>
+    /// <remarks>
+    /// A plan replace is a handful of statements; five seconds is many of them. Longer than that and
+    /// somebody's save is stuck, which the editor should hear about as "try again" rather than hang.
+    /// </remarks>
+    private const string SetLockTimeout = "SET LOCK_TIMEOUT 5000;";
+
+    /// <summary>
+    /// Opens a transaction and takes an update lock on the branch row, for the writers that decide
+    /// what a table's photo position means: the plan replace, the pin save, the cover change.
+    /// </summary>
+    /// <remarks>
+    /// <c>UPDLOCK</c> serialises those writers against each other without blocking readers, and
+    /// <c>HOLDLOCK</c> keeps it to the end of the transaction, so what each reads inside the lock is
+    /// still true when it commits. The same protocol as <see cref="TableLock"/>, one level up.
+    /// </remarks>
+    /// <exception cref="DbUpdateConcurrencyException">
+    /// Another save held the lock for longer than the wait allows. Answers 409
+    /// <c>concurrent-update</c>: reload and try again. Nothing was changed.
+    /// </exception>
+    private async Task<BranchWriteLock> LockBranchAsync(Guid branchId, CancellationToken cancellationToken)
+    {
+        var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var scope = new BranchWriteLock(db, transaction);
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(SetLockTimeout, cancellationToken);
+
+            await db.Database.ExecuteSqlRawAsync(
+                "SELECT Id FROM Branches WITH (UPDLOCK, HOLDLOCK) WHERE Id = @branchId",
+                [new SqlParameter("@branchId", branchId)],
+                cancellationToken);
+
+            return scope;
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
+            await scope.DisposeAsync();
+            throw Busy(branchId);
+        }
+        catch
+        {
+            await scope.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>Saves and commits inside the branch lock, answering a lock wait as a concurrent update.</summary>
+    private async Task SaveUnderLockAsync(BranchWriteLock writeLock, Guid branchId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await writeLock.CommitAsync(cancellationToken);
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
+            // A table row held by a booking or a seating for longer than the wait. Nothing was
+            // decided, so the honest answer is the retryable one.
+            db.ChangeTracker.Clear();
+            throw Busy(branchId);
+        }
+    }
+
+    private static DbUpdateConcurrencyException Busy(Guid branchId) =>
+        new($"Branch {branchId} is being saved by somebody else right now. Reload and try again.");
+
+    /// <summary>A held branch lock. Commit to keep the work; disposing without committing rolls it back.</summary>
+    private sealed class BranchWriteLock(YallaDbContext db, IDbContextTransaction transaction) : IAsyncDisposable
+    {
+        private bool committed;
+
+        public async Task CommitAsync(CancellationToken cancellationToken)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            committed = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                if (!committed)
+                {
+                    await transaction.RollbackAsync();
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or SqlException)
+            {
+                // Already rolled back by the provider, or the connection went. Nothing left to undo.
+                _ = ex;
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
+
+                // LOCK_TIMEOUT belongs to the pooled connection; put it back for the rest of the request.
+                try
+                {
+                    await db.Database.ExecuteSqlRawAsync("SET LOCK_TIMEOUT -1;");
+                }
+                catch (Exception ex) when (ex is SqlException or InvalidOperationException or ObjectDisposedException)
+                {
+                    _ = ex;
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
     private async Task<Branch> LoadBranchAsync(Guid branchId, CancellationToken cancellationToken) =>
         await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
         ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+    /// <summary>The wire form of a plan revision. Opaque to clients.</summary>
+    private static string VersionOf(int floorPlanVersion) =>
+        floorPlanVersion.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Whether the version the editor sent is the one stored. Anything unreadable is stale.</summary>
+    private static bool IsVersion(string expected, int current) =>
+        int.TryParse(expected.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+        && parsed == current;
 
     /// <summary>
     /// Which of these tables anything ever happened at: a booking, a seating, a bill - or an entry
@@ -685,5 +1030,7 @@ internal sealed class BranchSettingsService(
             !db.Reservations.Any(r => r.DiningTableId == t.Id)
             && !db.TableSessions.Any(ts => ts.DiningTableId == t.Id)
             && !db.Tabs.Any(tb => tb.DiningTableId == t.Id)
-            && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id));
+            && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id),
+            t.PhotoX,
+            t.PhotoY);
 }

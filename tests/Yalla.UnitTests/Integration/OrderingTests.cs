@@ -971,49 +971,6 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         }
     }
 
-    /// <summary>
-    /// Runs something once, just before the first statement that inserts into one table executes.
-    /// </summary>
-    private sealed class BeforeFirstInsertInto(string table, Func<Task> action) : DbCommandInterceptor
-    {
-        private int _fired;
-
-        public bool Fired => _fired == 1;
-
-        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
-            DbCommand command,
-            CommandEventData eventData,
-            InterceptionResult<DbDataReader> result,
-            CancellationToken cancellationToken = default)
-        {
-            await RunOnceIfInsertAsync(command);
-
-            return result;
-        }
-
-        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
-            DbCommand command,
-            CommandEventData eventData,
-            InterceptionResult<int> result,
-            CancellationToken cancellationToken = default)
-        {
-            await RunOnceIfInsertAsync(command);
-
-            return result;
-        }
-
-        private async Task RunOnceIfInsertAsync(DbCommand command)
-        {
-            var inserts = command.CommandText.Contains($"INSERT INTO [{table}]", StringComparison.OrdinalIgnoreCase)
-                          || command.CommandText.Contains($"MERGE [{table}]", StringComparison.OrdinalIgnoreCase);
-
-            if (inserts && Interlocked.Exchange(ref _fired, 1) == 0)
-            {
-                await action();
-            }
-        }
-    }
-
     // ------------------------------------------------------------ helpers
 
     private sealed record World(

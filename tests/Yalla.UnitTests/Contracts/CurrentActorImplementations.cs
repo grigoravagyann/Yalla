@@ -59,7 +59,7 @@ public sealed class ClaimsCurrentActorContractTests : CurrentActorContract
                 identity.BranchId!.Value,
                 clock.UtcNow.AddHours(4)).Token,
 
-            PrincipalType.Diner => issuer.IssueDinerToken(identity.DinerUserId!.Value).Token,
+            PrincipalType.Diner => issuer.IssueDinerToken(identity.DinerUserId!.Value, sessionGeneration: 0).Token,
 
             PrincipalType.StaffSession => issuer.IssueStaffSessionToken(
                 identity.StaffMemberId!.Value,

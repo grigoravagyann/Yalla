@@ -43,6 +43,53 @@ with a shipped default, never a constant in code. "How long do we hold a table?"
 answer in a breakfast cafe and a tasting-menu restaurant, and the only default that varies by
 venue type is the turn time: 120 minutes for a cafe, 90 for a restaurant.
 
+**Listing fields**, for the diner app's browse screens, all nullable because "not said" must read
+as unknown rather than as a made-up default: `Cuisine` (free text, 120), `About` (2000),
+`PriceLevel` (1–4), `WebsiteUrl` (absolute http/https) and `AmenityKeys` — a comma-joined subset of
+`outdoorSeating, wifi, parking, cardPayment, vegan`, a closed list because the app has to have words
+for each key. Edited as one form through `PUT /api/branches/{id}/listing`, which also moves the map
+pin (`Latitude`/`Longitude`, which predate it and are required) and replaces the gallery.
+
+### BranchGalleryPhoto
+
+A branch's pictures beyond its cover, in order: `(BranchId, PhotoId, Position)`, at most 12 per
+branch, `(BranchId, PhotoId)` unique. A row per picture rather than a list of ids on the branch so
+the photo is a real foreign key (Restrict) and the orphan sweep can see it is in use. Cascades from
+its branch.
+
+### BranchReview
+
+One diner's rating of one branch: `Rating` 1–5 (check constraint `CK_BranchReviews_Rating`),
+optional `Text` (1000), `UpdatedAtUtc`. **`(BranchId, DinerUserId)` is unique**
+(`UX_BranchReviews_BranchId_DinerUserId`) — one review per diner per branch, revised rather than
+repeated; the service turns a violation into "already reviewed" on create and a revision on replace.
+Only a phone-verified account may write one, checked from the stored row, and a first one only
+after a visit to the branch in the last 180 days - a Seated or Completed booking, or a
+`TabParticipants` row on one of its tabs. Both foreign keys Restrict. The public name is derived
+(`Anahit S.`, or `Yalla diner` when the first word looks like contact details), never stored and never
+the full name. `UpdatedAtUtc` moves only when the rating or text actually changes, so
+`UpdatedAtUtc <> CreatedAtUtc` is what "edited" means. `(BranchId, CreatedAtUtc)` is the index the
+reviews page and the moderation list read, newest written first.
+
+**Moderation** hides rather than deletes: `HiddenAtUtc`, `HiddenReason` (500), `HiddenByStaffMemberId`
+(no foreign key - the audit log is the record of who acted) and `HiddenByPlatform`, which says which
+tier took it down, because a venue may not put back what the platform hid. A hidden review is left
+out of every public read and every derived number below.
+
+Rating, review count and the `popular`/`new` badges on the browse routes are **derived at read
+time, never stored**, from published reviews only: average of `Rating`; `new` when the branch row is
+under 30 days old; `popular` when the branch seated 20+ parties (`TableSessions.SeatedAtUtc`) in the
+last 30 days or has 5+ reviews averaging 4.5+. See `BranchBadgeRules`.
+
+### BranchReviewReport
+
+One diner flagging somebody else's review: `ReviewId`, `DinerUserId`, `Reason` (one of `spam`,
+`offensive`, `not-a-visit`, `personal-info`, `other`, held by `CK_BranchReviewReports_Reason`), optional
+`Note` (500). **`(ReviewId, DinerUserId)` is unique** (`UX_BranchReviewReports_ReviewId_DinerUserId`) —
+one report per diner per review, so a count is a count of people. Cascades from its review (a report is
+about that review), Restrict from the reporter. A report takes nothing down; the moderation list counts
+them. Deleting an account deletes the reports it filed and the reports about its reviews.
+
 ### OpeningHours
 
 When a branch is open on one day of the week, as wall-clock `TimeOnly` values. `ClosesNextDay`
@@ -67,6 +114,11 @@ stored](#why-reserved-and-late-are-derived-not-stored). `TableSession` is author
 be recomputed. `CurrentSessionId` is a pointer, not a foreign key — `TableSession` already points
 at the table, and an opposing key would make the pair circular and uninsertable. `RowVersion`
 stops two waiters seating a walk-in on the same table at the same moment.
+
+`PhotoX` and `PhotoY` (nullable, 0–1, both or neither) place the table on the branch's **cover
+photo**, as fractions of its width and height, so the diner app can draw a marker on the picture of
+the room. Set per table through the floor-plan `PUT`; served on availability and on
+`GET /api/public/branches/{id}/table-markers`.
 
 ### Reservation
 
@@ -110,6 +162,16 @@ permissions travel with them: `CanOrder`, `CanSeeTableTotal`, `CanPay`. **`CanPa
 `CanSeeTableTotal`** — nobody pays toward a total they are not allowed to see — and that is
 enforced as a domain invariant in the entity, not as a UI rule, because three separate clients
 consume this API and a rule living in one of them is a rule the other two will forget.
+
+`UserId` is the diner account a participant belongs to, recorded when the scanning phone happened to
+carry a diner token - usually it did not, and the column is null. It is indexed by
+**`IX_TabParticipants_UserId`** (migration `20260913235419_TabParticipantsByDinerAccount`), which
+**includes `TabId`, `Status` and `CanSeeTableTotal`**. The index exists for the diner app's Orders
+tab, `GET /api/diner/orders`, which starts from the account rather than from the order history: every
+tab this diner was on, and whether each lets them see the table's bill (the rule that decides whether
+a whole-table order is theirs), comes out of one seek with no key lookups. Without it every open of
+the Orders tab scanned every participant on the platform. Deleting a diner account clears `UserId`
+and renames the participant `Guest`; the row stays, because order lines and shares point at it.
 
 `TabJoinToken` is a short-lived invitation to join an *open* tab (the table's QR code is stable
 and opens a *new* one). Tokens expire 30 minutes after issue so a screenshot from last Tuesday
@@ -163,8 +225,8 @@ constraint (`CK_Photos_OneOwner`) says so, and the owner is the first segment of
 (`{branchId}/…` or `diner-{id}/…`). Uniqueness on `(owner, ContentHash)` is two filtered indexes,
 one per kind of owner, because SQL Server treats two NULLs as equal in a unique index and an
 unfiltered one would let only one diner ever upload a given picture. Referenced by
-`MenuItems.PhotoId`, `Branches.CoverPhotoId` and `DinerUsers.PhotoId`; a row none of the three
-points at is deleted, files included, a day after upload.
+`MenuItems.PhotoId`, `Branches.CoverPhotoId`, `BranchGalleryPhotos.PhotoId` and
+`DinerUsers.PhotoId`; a row none of the four points at is deleted, files included, a day after upload.
 
 ### StaffMember
 
@@ -194,6 +256,16 @@ an account that registered with the number typed and has never proved it, and th
 reminder should read rather than assuming the row implies a real number. Existing rows were
 backfilled from their last sign-in, because a code was the only way a row could come to exist.
 
+`SessionGeneration` (`int`, database default 0) is the generation every diner access token's `sgen`
+claim must match. It is bumped when the number's owner displaces a registrant, when a password is set
+or changed, and when the account is deactivated or deleted, and each bump ends every access token the
+account holds. `DeletedAtUtc` marks a deleted account, which is a **tombstone**: the row stays for the
+ids that point at it, with the number, username, email, name, password and verification stamp
+cleared. That is why, since migration `20260914102955_DinerSessionGenerationAndDeletion`, `PhoneE164`
+is nullable and its unique index `UX_DinerUsers_PhoneE164` is filtered to `PhoneE164 IS NOT NULL`:
+every live account still has exactly one number, and a deleted one gives its number back. See
+[docs/auth.md](docs/auth.md#deleting-an-account).
+
 `PhoneVerificationCode` — six digits, five minutes, five attempts, single use, hashed at rest.
 Indexed on `(PhoneE164, ExpiresAtUtc)` filtered to unconsumed rows, which is the read the
 verification path makes.
@@ -217,6 +289,24 @@ thief.
 
 `PasswordResetToken` — single use, one hour, hashed. Consuming one revokes every refresh token the
 account holds.
+
+`DinerFavorite` — a place a diner hearted, kept on the account (K11): `DinerUserId`, `BranchId`,
+`CreatedAtUtc`. **`(DinerUserId, BranchId)` is unique** (`UX_DinerFavorites_DinerUserId_BranchId`), and
+leading with the diner it is also the index the list and the 500-per-account limit read. Cascades from
+the account; **no foreign key to the branch** - a heart is checked against a published branch when it
+is added and read back through the same rule, so a place that closes drops out of the list and one that
+reopens comes back with its hearts. Deleting an account deletes them.
+
+`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of six slugs, held by
+`CK_DinerNotifications_Kind`), `ParamsJson` (2000, the string values the app builds its own text from -
+the server writes no prose), optional `BranchId`, `ReservationId`, `TabId`, `OrderId` (pointers the app
+follows, deliberately without foreign keys), `ReadAtUtc`, and `Sequence`, an identity column that breaks
+ties so the feed's cursor has a total order. Written beside the push in the same unit of work.
+`CreatedAtUtc` is **when the entry appears**: a booking reminder is written with the booking and carries
+the moment its push is due, and cancelling the booking before then deletes it. Indexed on
+`(DinerUserId, CreatedAtUtc)`, again filtered to `ReadAtUtc IS NULL` for the unread count, on
+`CreatedAtUtc` for the 90-day sweep, and on `ReservationId` for cancellation. Cascades from the account;
+deleting an account deletes them.
 
 Note what is **not** here: there is no table for a tab participant's identity, because a walk-in
 who scans a QR code has no account. They get a `TabParticipant` row and a token scoped to that one

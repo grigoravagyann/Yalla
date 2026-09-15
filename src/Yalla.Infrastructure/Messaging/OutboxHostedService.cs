@@ -85,5 +85,57 @@ internal sealed class OutboxHostedService(
             // batch stops every notification in the system, and the symptom is silence.
             logger.LogError(ex, "An outbox pass failed. The dispatcher will try again on the next tick.");
         }
+
+        await SweepFeedAsync(cancellationToken);
+    }
+
+    /// <summary>How often the notifications feed is swept for entries past their retention.</summary>
+    private static readonly TimeSpan FeedSweepInterval = TimeSpan.FromHours(1);
+
+    private DateTimeOffset? _lastFeedSweep;
+
+    /// <summary>
+    /// Deletes feed entries older than their 90 days (K12), on the wake-up pass and then about hourly.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than in a loop of its own: the feed is written beside the messages this loop
+    /// dispatches, so its retention rides on the same timer. It is not the process's only background
+    /// work - <see cref="Yalla.Infrastructure.Services.PhotoSweepHostedService"/> runs the orphan photo
+    /// sweep on its own interval. Its own try, so a failed dispatch pass does not stop the sweep and a
+    /// failed sweep does not stop the next pass.
+    /// </remarks>
+    private async Task SweepFeedAsync(CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+
+        if (_lastFeedSweep is { } last && now - last < FeedSweepInterval)
+        {
+            return;
+        }
+
+        _lastFeedSweep = now;
+
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+
+            if (scope.ServiceProvider.GetService<Yalla.Infrastructure.Services.DinerNotificationRetention>() is not { } retention)
+            {
+                return;
+            }
+
+            var deleted = await retention.PurgeAsync(cancellationToken);
+
+            if (deleted > 0)
+            {
+                logger.LogInformation(
+                    "Deleted {Count} notifications feed entries older than {Days} days.",
+                    deleted, Yalla.Domain.Identity.DinerNotification.RetentionDays);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "The notifications feed sweep failed. It will try again on a later tick.");
+        }
     }
 }

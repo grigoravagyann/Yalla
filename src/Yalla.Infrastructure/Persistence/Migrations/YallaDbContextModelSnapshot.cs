@@ -214,12 +214,98 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("DinerDevices", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerFavorite", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DinerUserId", "BranchId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_DinerFavorites_DinerUserId_BranchId");
+
+                    b.ToTable("DinerFavorites", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerNotification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid?>("OrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ParamsJson")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime?>("ReadAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ReservationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Sequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Sequence"));
+
+                    b.Property<Guid?>("TabId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("ReservationId")
+                        .HasFilter("[ReservationId] IS NOT NULL");
+
+                    b.HasIndex(new[] { "DinerUserId", "CreatedAtUtc" }, "IX_DinerNotifications_DinerUserId_CreatedAtUtc");
+
+                    b.HasIndex(new[] { "DinerUserId", "CreatedAtUtc" }, "IX_DinerNotifications_DinerUserId_Unread")
+                        .HasFilter("[ReadAtUtc] IS NULL");
+
+                    b.ToTable("DinerNotifications", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden')");
+                        });
+                });
+
             modelBuilder.Entity("Yalla.Domain.Identity.DinerUser", b =>
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("DisplayName")
@@ -246,7 +332,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(256)");
 
                     b.Property<string>("PhoneE164")
-                        .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
@@ -255,6 +340,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("PhotoId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SessionGeneration")
+                        .HasColumnType("int");
 
                     b.Property<string>("Username")
                         .HasMaxLength(30)
@@ -269,7 +357,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PhoneE164")
                         .IsUnique()
-                        .HasDatabaseName("UX_DinerUsers_PhoneE164");
+                        .HasDatabaseName("UX_DinerUsers_PhoneE164")
+                        .HasFilter("[PhoneE164] IS NOT NULL");
 
                     b.HasIndex("PhotoId");
 
@@ -818,6 +907,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<string>("ManageTokenHash")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<int>("PartySize")
                         .HasColumnType("int");
@@ -1489,6 +1582,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("UserId");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("UserId"), new[] { "TabId", "Status", "CanSeeTableTotal" });
+
                     b.HasIndex("TabId", "DeviceId");
 
                     b.HasIndex("TabId", "Status");
@@ -1501,6 +1598,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("About")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
                     b.Property<bool>("AcceptsWebBookings")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
@@ -1511,14 +1612,28 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
+                    b.Property<string>("AmenityKeys")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<Guid?>("CoverPhotoId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("Cuisine")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
                     b.Property<int>("FloorHeight")
                         .HasColumnType("int");
+
+                    b.Property<int>("FloorPlanVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
 
                     b.Property<int>("FloorWidth")
                         .HasColumnType("int");
@@ -1544,6 +1659,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
+                    b.Property<int?>("PriceLevel")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("ReservationPolicyReviewedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -1565,6 +1683,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("VenueId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("WebsiteUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CoverPhotoId");
@@ -1573,6 +1695,125 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("Branches", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchGalleryPhoto", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("PhotoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PhotoId");
+
+                    b.HasIndex("BranchId", "PhotoId")
+                        .IsUnique();
+
+                    b.HasIndex("BranchId", "Position");
+
+                    b.ToTable("BranchGalleryPhotos", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchReview", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("HiddenAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("HiddenByPlatform")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid?>("HiddenByStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("HiddenReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("Rating")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Text")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DinerUserId");
+
+                    b.HasIndex("BranchId", "CreatedAtUtc");
+
+                    b.HasIndex("BranchId", "DinerUserId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_BranchReviews_BranchId_DinerUserId");
+
+                    b.ToTable("BranchReviews", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_BranchReviews_Rating", "[Rating] BETWEEN 1 AND 5");
+                        });
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchReviewReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("ReviewId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DinerUserId");
+
+                    b.HasIndex("ReviewId", "DinerUserId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_BranchReviewReports_ReviewId_DinerUserId");
+
+                    b.ToTable("BranchReviewReports", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_BranchReviewReports_Reason", "[Reason] IN ('spam', 'offensive', 'not-a-visit', 'personal-info', 'other')");
+                        });
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.DiningTable", b =>
@@ -1605,6 +1846,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
+
+                    b.Property<double?>("PhotoX")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PhotoY")
+                        .HasColumnType("float");
 
                     b.Property<string>("QrToken")
                         .IsRequired()
@@ -1777,6 +2024,24 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("DinerUser");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerFavorite", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.DinerNotification", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Yalla.Domain.Identity.DinerUser", b =>
@@ -2258,6 +2523,61 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Venue");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchGalleryPhoto", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Media.Photo", "Photo")
+                        .WithMany()
+                        .HasForeignKey("PhotoId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+
+                    b.Navigation("Photo");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchReview", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", "DinerUser")
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+
+                    b.Navigation("DinerUser");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.BranchReviewReport", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Venues.BranchReview", "Review")
+                        .WithMany()
+                        .HasForeignKey("ReviewId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Review");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.DiningTable", b =>

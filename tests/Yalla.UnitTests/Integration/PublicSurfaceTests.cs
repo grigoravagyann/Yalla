@@ -186,11 +186,29 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
 
         opened.EnsureSuccessStatusCode();
 
+        // Two reviewers who typed contact details where their name goes, which is how a display name
+        // most often leaks one (K8). Written straight to the table: this is about what the reads publish.
+        const string emailName = "ani.sargsyan@mail.example";
+        const string phoneName = "+374 99 000 123";
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            foreach (var (name, rating) in new[] { (emailName, 5), (phoneName, 2) })
+            {
+                var reviewer = await ReviewTestData.SeedDinerAsync(db, name, factory.Clock.UtcNow);
+                await ReviewTestData.SeedReviewAsync(db, world.BranchId, reviewer, rating, "Fine.", factory.Clock.UtcNow);
+            }
+        }
+
         var forbidden = new[]
         {
             qrToken,
             waiterName,
             "Anahit Secret",
+            emailName,
+            phoneName,
+            "mail.example",
+            "99 000 123",
 
             // Field names, not only values: a field that is present and empty is still a field a
             // scraper learns the shape of.
@@ -201,17 +219,77 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
             "subtotalAmd",
             "pinHash",
             "deviceId",
+            "dinerUserId",
         };
 
-        foreach (var route in Routes(world))
+        var routes = Routes(world).Concat(
+        [
+            $"/api/public/branches/{world.BranchId}",
+            $"/api/public/branches/{world.BranchId}/reviews?page=1",
+        ]);
+
+        foreach (var route in routes)
         {
-            var body = await (await anonymous.GetAsync(route)).Content.ReadAsStringAsync();
+            var response = await anonymous.GetAsync(route);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            // And unescaped: the serialiser writes "+" as +, so a leaked number would slip past a
+            // search of the raw body.
+            var decoded = Decoded(body);
 
             foreach (var secret in forbidden)
             {
                 Assert.DoesNotContain(secret, body, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain(secret, decoded, StringComparison.OrdinalIgnoreCase);
             }
         }
+
+        // The reviews were served, so their absence above is a fact about the names.
+        var page = await ReadAsync(anonymous, $"/api/public/branches/{world.BranchId}/reviews?page=1");
+        Assert.Equal(2, page.GetProperty("reviewCount").GetInt32());
+        Assert.All(
+            page.GetProperty("reviews").EnumerateArray(),
+            r => Assert.Equal("Yalla diner", r.GetProperty("authorName").GetString()));
+    }
+
+    /// <summary>Every property name and string value in a JSON body, unescaped, one per line.</summary>
+    private static string Decoded(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        var parts = new List<string>();
+
+        void Walk(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        parts.Add(property.Name);
+                        Walk(property.Value);
+                    }
+
+                    break;
+
+                case JsonValueKind.Array:
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Walk(item);
+                    }
+
+                    break;
+
+                case JsonValueKind.String:
+                    parts.Add(element.GetString()!);
+                    break;
+            }
+        }
+
+        Walk(document.RootElement);
+
+        return string.Join('\n', parts);
     }
 
     // ------------------------------------------------------------ 5. the slug pair
@@ -642,6 +720,110 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         }
 
         Assert.Equal(limit, statuses.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
+    /// <summary>
+    /// The diner app's list and search are browse lists: refused neither at the shared unaddressed
+    /// branch ceiling nor at the page budget.
+    /// </summary>
+    /// <remarks>
+    /// They carry no branch in their route, so they fell into the one <c>public:unaddressed</c>
+    /// partition under the per-branch ceiling - three hundred a minute for every phone in the city,
+    /// on Explore, the map and every search keystroke.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_apps_list_and_search_are_not_refused_at_a_branch_ceiling_or_the_page_budget()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int ceiling = 3;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicPermitLimit", ceiling.ToString())
+            .With("RateLimiting:PublicBranchPermitLimit", ceiling.ToString())
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        using var anonymous = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < ceiling * 2; i++)
+        {
+            statuses.Add((await anonymous.GetAsync("/api/public/branches")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search?q=cafe")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search/")).StatusCode);
+        }
+
+        Assert.All(statuses, status => Assert.Equal(HttpStatusCode.OK, status));
+    }
+
+    /// <summary>The browse list's city-wide ceiling is what bounds the app's list and search.</summary>
+    [SkippableFact]
+    public async Task The_apps_list_and_search_share_the_browse_ceiling()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int limit = 4;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicBrowseCeilingPermitLimit", limit.ToString())
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        using var anonymous = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < limit; i++)
+        {
+            statuses.Add((await anonymous.GetAsync("/api/public/branches")).StatusCode);
+            statuses.Add((await anonymous.GetAsync("/api/public/branches/search")).StatusCode);
+        }
+
+        Assert.Equal(limit, statuses.Count(s => s == HttpStatusCode.OK));
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+    }
+
+    /// <summary>
+    /// A place's details, reviews and table markers are on the app's per-tap budget, not the page
+    /// budget - and that budget fires at its own threshold.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_places_details_reviews_and_markers_have_a_budget_of_their_own()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        const int pageBudget = 2;
+        const int placeBudget = 7;
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:PublicPermitLimit", pageBudget.ToString())
+            .With("RateLimiting:PublicPlacePermitLimit", placeBudget.ToString())
+            .With("RateLimiting:PublicBranchPermitLimit", "1000")
+            .With("RateLimiting:GlobalPermitLimit", "1000");
+
+        var world = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        string[] routes =
+        [
+            $"/api/public/branches/{world.BranchId}",
+            $"/api/public/branches/{world.BranchId}/reviews",
+            $"/api/public/branches/{world.BranchId}/table-markers",
+        ];
+
+        var statuses = new List<HttpStatusCode>();
+
+        for (var i = 0; i < 3; i++)
+        {
+            statuses.AddRange(await Task.WhenAll(routes.Select(async r => (await anonymous.GetAsync(r)).StatusCode)));
+        }
+
+        // Nine calls: well past the page budget of two, and past the place budget of seven.
+        Assert.Equal(placeBudget, statuses.Count(s => s == HttpStatusCode.OK));
         Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
     }
 

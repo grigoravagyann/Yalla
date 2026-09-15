@@ -260,6 +260,26 @@ public sealed record FloorPlanRejectedProblem : ProblemShape
     public required FloorPlanRejectedContext Context { get; init; }
 }
 
+/// <summary>The floor plan was saved by somebody else since the editor loaded it.</summary>
+/// <param name="CurrentVersion">The revision now stored. Reload the plan; it carries this as <c>version</c>.</param>
+public sealed record FloorPlanChangedContext(string CurrentVersion);
+
+/// <summary><c>floor-plan-changed</c>, 409. Nothing was written.</summary>
+public sealed record FloorPlanChangedProblem : ProblemShape
+{
+    public required FloorPlanChangedContext Context { get; init; }
+}
+
+/// <summary>Table pins were placed on a cover photo the branch no longer has.</summary>
+/// <param name="CurrentCoverPhotoId">The branch's cover now, or null when it has none.</param>
+public sealed record CoverChangedContext(Guid? CurrentCoverPhotoId);
+
+/// <summary><c>cover-changed</c>, 409. Nothing was written.</summary>
+public sealed record CoverChangedProblem : ProblemShape
+{
+    public required CoverChangedContext Context { get; init; }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reservations and sign-in
 // ---------------------------------------------------------------------------------------------
@@ -339,4 +359,22 @@ public sealed record BookingTabRefusedContext(
 public sealed record BookingTabRefusedProblem : ProblemShape
 {
     public BookingTabRefusedContext? Context { get; init; }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reviews
+// ---------------------------------------------------------------------------------------------
+
+/// <summary>A first review of a branch the diner has not visited in the window.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="WindowDays">How far back a visit counts, in days. The app says "after a visit" with it.</param>
+public sealed record ReviewNeedsVisitContext(Guid BranchId, int WindowDays);
+
+/// <summary>
+/// <c>review-needs-visit</c>, 403, with the window. <c>phone-not-verified</c> arrives on the same status
+/// with no <c>context</c>: branch on the code.
+/// </summary>
+public sealed record ReviewNeedsVisitProblem : ProblemShape
+{
+    public ReviewNeedsVisitContext? Context { get; init; }
 }

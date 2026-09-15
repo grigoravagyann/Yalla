@@ -78,14 +78,46 @@ public static class DependencyInjection
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.
         services.AddScoped<IPublicVenueQuery, PublicVenueQuery>();
+        services.AddScoped<IPublicListingQuery, PublicListingQuery>();
+        services.AddScoped<IBranchListingService, BranchListingService>();
+        services.AddScoped<IBranchReviewService, BranchReviewService>();
+        services.AddScoped<Yalla.Application.Reviews.IReviewModerationService, ReviewModerationService>();
+        services.AddScoped<IDinerOrderQuery, DinerOrderQuery>();
+
+        // The diner's favourites and notifications feed (K11, K12). The feed is written by the services
+        // that enqueue its pushes, through DinerNotices; these are the diner's reads and the sweep.
+        services.AddScoped<IDinerFavoriteService, DinerFavoriteService>();
+        services.AddScoped<IDinerNotificationFeed, DinerNotificationFeed>();
+        services.AddScoped<DinerNotificationRetention>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 
         // Photos. The storage root is verified once, at construction, so a folder that cannot be
         // written to stops the process rather than surfacing as a broken menu three screens later.
-        services.AddSingleton(Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName));
+        //
+        // The root is resolved here, once: "~" is this user's Yalla data folder, so Development's
+        // "~/photos" is one folder every worktree shares, as they share the database. The sweep
+        // service logs the absolute path at startup.
+        var photoStorage = Bind<PhotoStorageOptions>(configuration, PhotoStorageOptions.SectionName);
+        photoStorage.RootPath = PhotoStorageRoot.Resolve(photoStorage.RootPath);
+
+        services.AddSingleton(photoStorage);
         services.AddSingleton<IPhotoStorage, LocalDiskPhotoStorage>();
         services.AddScoped<IPhotoService, PhotoService>();
+
+        // The orphan sweep, every PhotoStorage:SweepIntervalMinutes (K10). Zero switches it off; a
+        // negative value is a typo, and a typo here should not quietly mean "never".
+        var photoSweep = Bind<PhotoSweepOptions>(configuration, PhotoSweepOptions.SectionName);
+
+        if (photoSweep.SweepIntervalMinutes < 0)
+        {
+            throw new InvalidOperationException(
+                $"PhotoStorage:SweepIntervalMinutes is {photoSweep.SweepIntervalMinutes}. Use the minutes "
+                + "between orphan photo sweeps, or 0 to switch the sweep off.");
+        }
+
+        services.AddSingleton(photoSweep);
+        services.AddHostedService<PhotoSweepHostedService>();
 
         // A diner's own account - profile, password, picture. Beside the photo service because
         // the picture goes through the same storage, and apart from the sign-in flows because
@@ -134,6 +166,7 @@ public static class DependencyInjection
         // One copy of the branch boundary for every staff write that needs it. It was three
         // identical private helpers, and two services were written without one - see the class.
         services.AddScoped<StaffBranchGuard>();
+        services.AddScoped<IStaffBranchGuard>(provider => provider.GetRequiredService<StaffBranchGuard>());
         services.AddScoped<IMenuQuery, MenuQuery>();
         services.AddScoped<ITabOrderService, TabOrderService>();
         services.AddScoped<ITabBillingQuery, TabBillingQuery>();
@@ -333,12 +366,14 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Registers the development actor stub and the seeder that gives it a real staff member.
+    /// Registers the development actor stub.
     /// </summary>
     /// <remarks>
     /// Call this from Development only. It is a no-op unless <c>DevActor:Enabled</c> is true, so
     /// switching it on is always deliberate. The stub answers only for requests that carry no
-    /// token; see <c>DevelopmentActorOrToken</c> in the API layer.
+    /// token; see <c>DevelopmentActorOrToken</c> in the API layer. With no pinned id it reports the
+    /// staff member the development seed created, so it is only useful alongside
+    /// <see cref="AddDevelopmentSeeding"/> - which Development switches on by default.
     /// </remarks>
     public static IServiceCollection AddDevelopmentActor(
         this IServiceCollection services,
@@ -353,8 +388,9 @@ public static class DependencyInjection
             return services;
         }
 
-        services.AddSingleton<DevSeedRegistry>();
-        services.AddScoped<DevDataSeeder>();
+        // Shared with the seeder, which writes the ids the stub reads. TryAdd in both places, so
+        // it is one singleton whichever of the two is switched on, or both.
+        services.TryAddSingleton<DevSeedRegistry>();
 
         // Registered as itself, not as ICurrentActor. The host composes it with the real
         // claims-based actor so that a request carrying a token is never overridden by the stub.
@@ -364,8 +400,44 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Applies pending migrations and seeds development data. Returns false when the dev actor is
-    /// switched off, in which case nothing was touched.
+    /// Registers the seeder that writes the Development demo data: the demo venue and branch, its
+    /// floor, opening hours and two staff, and the listing, reviews and table pins the diner app
+    /// shows.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Call this from Development only; the host does, and it calls
+    /// <see cref="InitialiseDevelopmentDataAsync"/> only there too. It is a no-op unless
+    /// <c>DevSeed:Enabled</c> is true.
+    /// </para>
+    /// <para>
+    /// Deliberately independent of <c>DevActor:Enabled</c>. Real diner and staff sign-in is how the
+    /// apps are tested, and that is done with the stub off - which used to take the demo data with
+    /// it, leaving an empty database in exactly the mode people test in.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddDevelopmentSeeding(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        if (!configuration.GetValue<bool>("DevSeed:Enabled"))
+        {
+            return services;
+        }
+
+        // The seeder publishes what it created here. The stub reads it when that is on; nothing
+        // else does, but the seeder cannot be constructed without it.
+        services.TryAddSingleton<DevSeedRegistry>();
+        services.AddScoped<DevListingSeeder>();
+        services.AddScoped<DevDataSeeder>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Applies pending migrations and seeds development data. Returns false when development
+    /// seeding is not registered - <c>DevSeed:Enabled</c> off, or not Development - in which case
+    /// nothing was touched.
     /// </summary>
     public static async Task<bool> InitialiseDevelopmentDataAsync(
         this IServiceProvider services,

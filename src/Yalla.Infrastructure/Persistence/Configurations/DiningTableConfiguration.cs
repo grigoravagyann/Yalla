@@ -24,6 +24,10 @@ internal sealed class DiningTableConfiguration : EntityConfiguration<DiningTable
         builder.Property(t => t.Height).IsRequired();
         builder.Property(t => t.RotationDegrees).IsRequired();
 
+        // Position on the branch's cover photo, 0-1 each way. Nullable: most tables are not in the picture.
+        builder.Property(t => t.PhotoX);
+        builder.Property(t => t.PhotoY);
+
         builder.Property(t => t.Shape).IsRequired();
         builder.Property(t => t.IsBookable).IsRequired();
         builder.Property(t => t.IsActive).IsRequired();

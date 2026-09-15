@@ -85,6 +85,31 @@ public static class RateLimitingExtensions
     public const string PublicBrowsePolicy = "public-browse";
 
     /// <summary>
+    /// The diner app's per-tap routes - a place's details, its reviews and its table markers: their
+    /// own budget per caller, instead of the page budget.
+    /// </summary>
+    /// <remarks>
+    /// Same reason as <see cref="PublicBrowsePolicy"/>: every tap on a place in the app costs these,
+    /// the table view refetches its markers, and a carrier puts thousands of phones behind one
+    /// address. A budget of their own, rather than the browse list's, so pull-to-refresh on Explore
+    /// does not spend the details screen. Each branch's chained ceiling still applies to them - they
+    /// carry a branch id - which is what bounds a distributed walk of the estate.
+    /// </remarks>
+    public const string PublicPlacePolicy = "public-place";
+
+    /// <summary>
+    /// Writes a signed-in caller makes that store something other people read: a review, a report of
+    /// one, a profile picture, a branch photo (K8).
+    /// </summary>
+    /// <remarks>
+    /// Per principal, ten a minute by default - more than anybody editing a review or choosing a
+    /// picture needs, and few enough that one stolen token cannot fill a branch's page with reviews or
+    /// the photo store with uploads in an afternoon. Every upload also costs a decode and three
+    /// encodes, so this is the ceiling on the work one account can make the server do.
+    /// </remarks>
+    public const string DinerWritePolicy = "diner-write";
+
+    /// <summary>
     /// The browse list's path, which carries no branch.
     /// </summary>
     /// <remarks>
@@ -94,6 +119,14 @@ public static class RateLimitingExtensions
     /// own, sized for a city rather than for one branch.
     /// </remarks>
     public const string PublicBrowsePath = "/api/public/venues";
+
+    /// <summary>The diner app's Explore and map list, which carries no branch either.</summary>
+    /// <remarks>Shares the browse list's city-wide ceiling, for the reason on <see cref="PublicBrowsePath"/>.</remarks>
+    public const string PublicBranchListPath = "/api/public/branches";
+
+    /// <summary>The diner app's search, which carries no branch either.</summary>
+    /// <remarks>Shares the browse list's city-wide ceiling, for the reason on <see cref="PublicBrowsePath"/>.</remarks>
+    public const string PublicBranchSearchPath = "/api/public/branches/search";
 
     /// <summary>
     /// A cap on one branch's public traffic, whoever is asking.
@@ -167,6 +200,14 @@ public static class RateLimitingExtensions
         var publicBrowseWindowSeconds = section.GetValue<int?>("PublicBrowseWindowSeconds") ?? 60;
         var publicBrowseCeilingPermitLimit = section.GetValue<int?>("PublicBrowseCeilingPermitLimit") ?? 6000;
         var publicBrowseCeilingWindowSeconds = section.GetValue<int?>("PublicBrowseCeilingWindowSeconds") ?? 60;
+
+        // The app's per-tap place routes: their own budget per caller.
+        var publicPlacePermitLimit = section.GetValue<int?>("PublicPlacePermitLimit") ?? 120;
+        var publicPlaceWindowSeconds = section.GetValue<int?>("PublicPlaceWindowSeconds") ?? 60;
+
+        // Reviews, reports and photo uploads: per signed-in caller (K8).
+        var dinerWritePermitLimit = section.GetValue<int?>("DinerWritePermitLimit") ?? 10;
+        var dinerWriteWindowSeconds = section.GetValue<int?>("DinerWriteWindowSeconds") ?? 60;
 
         // And a ceiling per manage token, for the link that went round a group chat.
         var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
@@ -294,6 +335,29 @@ public static class RateLimitingExtensions
                         QueueLimit = 0,
                     }));
 
+            // The app's per-tap place routes' own per-caller budget, replacing the page budget there.
+            options.AddPolicy(PublicPlacePolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = publicPlacePermitLimit,
+                        Window = TimeSpan.FromSeconds(publicPlaceWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            // Reviews, reports and photo uploads (K8): one budget per signed-in caller, shared across
+            // all of them, so a token cannot spend ten on reviews and ten more on uploads.
+            options.AddPolicy(DinerWritePolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = dinerWritePermitLimit,
+                        Window = TimeSpan.FromSeconds(dinerWriteWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
             options.AddPolicy(PinPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     PartitionKey(context),
@@ -392,10 +456,29 @@ public static class RateLimitingExtensions
     /// <summary>The browse list's one city-wide partition under the chained public limiter.</summary>
     private const string BrowsePartitionKey = "public:browse";
 
-    /// <summary>Whether this request is the browse list, with or without a trailing slash.</summary>
-    private static bool IsBrowseList(HttpContext context) =>
-        context.Request.Path.StartsWithSegments(PublicBrowsePath, StringComparison.OrdinalIgnoreCase, out var rest)
-        && (!rest.HasValue || rest.Value == "/");
+    /// <summary>The routes that carry no branch and serve the whole estate: the web chooser, Explore and search.</summary>
+    private static readonly string[] BrowseListPaths = [PublicBrowsePath, PublicBranchListPath, PublicBranchSearchPath];
+
+    /// <summary>
+    /// Whether this request is one of the browse lists, exactly, with or without a trailing slash.
+    /// </summary>
+    /// <remarks>
+    /// Exact, so <c>/api/public/branches/{id}</c> - which is a branch's, and carries its id - keeps
+    /// that branch's ceiling rather than joining the city's.
+    /// </remarks>
+    private static bool IsBrowseList(HttpContext context)
+    {
+        foreach (var path in BrowseListPaths)
+        {
+            if (context.Request.Path.StartsWithSegments(path, StringComparison.OrdinalIgnoreCase, out var rest)
+                && (!rest.HasValue || rest.Value == "/"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Adds the limiter to the pipeline, but only when it was registered. Call this after routing

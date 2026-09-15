@@ -29,8 +29,11 @@ namespace Yalla.Domain.Identity;
 /// </remarks>
 public sealed class DinerUser : Entity
 {
-    /// <summary>The number, in E.164. Unique across the system and the natural key.</summary>
-    public string PhoneE164 { get; private set; } = null!;
+    /// <summary>
+    /// The number, in E.164. Unique across the live accounts and their natural key. Null only on a
+    /// deleted account, so the number can make a new one - see <see cref="MarkDeleted"/>.
+    /// </summary>
+    public string? PhoneE164 { get; private set; }
 
     /// <summary>
     /// Sign-in name, stored lowercased. Null for an account the code flow created and nobody has
@@ -68,6 +71,36 @@ public sealed class DinerUser : Entity
 
     /// <summary>Last successful sign-in, by code or by password. Null until the row has been signed in to once.</summary>
     public DateTime? LastSignInAtUtc { get; private set; }
+
+    /// <summary>
+    /// Which generation of sessions is still good. Every access token carries the value it was
+    /// minted under (the <c>sgen</c> claim), and a token whose value differs is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A refresh token can be revoked in the database; an access token cannot - it is a signed
+    /// statement that stays valid until it expires. Before this column a squatter evicted by the
+    /// number's owner kept a working access token for up to fifteen minutes, and with it could set a
+    /// password on the account the owner had just taken back. Bumping this number ends every access
+    /// token the account has, at once.
+    /// </para>
+    /// <para>
+    /// Bumped by exactly four things: the number's owner proving it and displacing a registrant
+    /// (<see cref="ProveNumberByCode"/>), setting or changing the password
+    /// (<see cref="SetPassword"/>), deactivation (<see cref="SetActive"/> with false) and deletion
+    /// (<see cref="MarkDeleted"/>). It only ever goes up.
+    /// </para>
+    /// </remarks>
+    public int SessionGeneration { get; private set; }
+
+    /// <summary>
+    /// When the diner deleted the account. The row stays as a tombstone - bookings and orders the
+    /// venue keeps still point at an id - but everything that identified the person is gone.
+    /// </summary>
+    public DateTime? DeletedAtUtc { get; private set; }
+
+    /// <summary>Whether the account has been deleted.</summary>
+    public bool IsDeleted => DeletedAtUtc is not null;
 
     /// <summary>Whether a password sign-in is possible at all.</summary>
     public bool HasPassword => PasswordHash is not null;
@@ -119,7 +152,10 @@ public sealed class DinerUser : Entity
 
         diner.SetUsername(username);
         diner.SetEmail(email);
-        diner.SetPassword(passwordHash);
+
+        // Assigned rather than set through SetPassword: a brand-new account has no sessions to end,
+        // and its first token is minted under generation zero.
+        diner.PasswordHash = Guard.NotBlank(passwordHash, nameof(passwordHash), FieldLengths.PasswordHash);
 
         return diner;
     }
@@ -148,10 +184,26 @@ public sealed class DinerUser : Entity
         Email = DinerAccountRules.NormaliseEmail(email, nameof(email));
 
     /// <summary>
-    /// Sets or replaces the password hash. The plain password is checked by
-    /// <see cref="DinerAccountRules.CheckPassword"/> before it is hashed; this only keeps the result.
+    /// Sets or replaces the password hash, and ends every access token the account holds. The plain
+    /// password is checked by <see cref="DinerAccountRules.CheckPassword"/> before it is hashed; this
+    /// only keeps the result.
     /// </summary>
-    public void SetPassword(string passwordHash) =>
+    /// <remarks>
+    /// The token the change was made with ends too. The service revokes every other sign-in's refresh
+    /// tokens alongside and keeps the caller's, so the app that made the change refreshes and carries
+    /// on; see <c>docs/auth.md</c>.
+    /// </remarks>
+    public void SetPassword(string passwordHash)
+    {
+        PasswordHash = Guard.NotBlank(passwordHash, nameof(passwordHash), FieldLengths.PasswordHash);
+        SessionGeneration++;
+    }
+
+    /// <summary>
+    /// Replaces the stored hash of the <b>same</b> password with a stronger one, at sign-in. Not a
+    /// password change, so no session ends.
+    /// </summary>
+    public void RehashPassword(string passwordHash) =>
         PasswordHash = Guard.NotBlank(passwordHash, nameof(passwordHash), FieldLengths.PasswordHash);
 
     /// <summary>
@@ -207,7 +259,9 @@ public sealed class DinerUser : Entity
 
         if (displacesRegistrant)
         {
+            // The registrant's access tokens end with the password, not fifteen minutes later.
             PasswordHash = null;
+            SessionGeneration++;
         }
 
         MarkPhoneVerified(verifiedAtUtc);
@@ -215,14 +269,68 @@ public sealed class DinerUser : Entity
         return displacesRegistrant;
     }
 
-    /// <summary>Points the profile at a photo, or clears it. The old photo is left for the sweep.</summary>
+    /// <summary>
+    /// Points the profile at a photo, or clears it. The caller deletes a picture that is being
+    /// removed; one that is replaced is left for the orphan sweep.
+    /// </summary>
     public void SetPhoto(Guid? photoId) =>
         PhotoId = photoId is { } id ? Guard.NotEmpty(id, nameof(photoId)) : null;
 
     public void SetLocale(string localeCode) =>
         LocaleCode = Guard.NotBlank(localeCode, nameof(localeCode), FieldLengths.LocaleCode);
 
-    public void SetActive(bool isActive) => IsActive = isActive;
+    /// <summary>Switches the account on or off. Switching it off ends every access token it holds.</summary>
+    public void SetActive(bool isActive)
+    {
+        if (IsActive && !isActive)
+        {
+            SessionGeneration++;
+        }
+
+        IsActive = isActive;
+    }
+
+    /// <summary>
+    /// Deletes the account: a tombstone with nothing left that identifies the person, and every
+    /// session ended.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The row stays because the venue's records point at it until the caller detaches them, and
+    /// because an id that was deleted must never be handed to somebody new. What goes is everything
+    /// a person could be recognised by: the number, the username, the email, the name, the password
+    /// and the stamp that said the number was real. Clearing the three sign-in keys is also what lets
+    /// the same number, username and email make a new account afterwards - the unique indexes only
+    /// count rows that have one.
+    /// </para>
+    /// <para>
+    /// This is the domain half. Reviews, the picture, devices, tokens, tab and booking links are
+    /// other tables, and the account-deletion service removes or detaches them in the same
+    /// transaction. Deleting twice is a no-op.
+    /// </para>
+    /// </remarks>
+    /// <param name="atUtc">When the deletion was asked for.</param>
+    public void MarkDeleted(DateTime atUtc)
+    {
+        if (IsDeleted)
+        {
+            return;
+        }
+
+        DeletedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        PhoneE164 = null;
+        Username = null;
+        Email = null;
+        DisplayName = null;
+        PasswordHash = null;
+        PhoneVerifiedAtUtc = null;
+        PhotoId = null;
+        Photo = null;
+
+        IsActive = false;
+        SessionGeneration++;
+    }
 
     public void RecordSignIn(DateTime atUtc) =>
         LastSignInAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));

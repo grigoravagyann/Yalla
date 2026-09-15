@@ -481,5 +481,9 @@ public class PolicyHandlerTests
         public Task<bool> IsStaffDeviceActiveAsync(
             Guid deviceId, CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
+
+        public Task<DinerSessionState?> GetDinerSessionStateAsync(
+            Guid dinerUserId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<DinerSessionState?>(new DinerSessionState(IsActive: true, IsDeleted: false, SessionGeneration: 0));
     }
 }

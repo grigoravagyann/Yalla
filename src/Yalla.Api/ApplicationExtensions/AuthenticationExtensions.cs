@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
@@ -48,12 +49,57 @@ public static class AuthenticationExtensions
                 options.Events = new JwtBearerEvents
                 {
                     OnTokenValidated = RejectRevokedDevicesAsync,
+                    OnChallenge = AnswerRevokedSessionAsync,
                 };
             });
 
         builder.Services.AddYallaAuthorization();
 
         return builder;
+    }
+
+    /// <summary>
+    /// Where <see cref="RejectRevokedDevicesAsync"/> leaves the reason a diner session was refused,
+    /// for the challenge to put in the body.
+    /// </summary>
+    private const string RevokedSessionItem = "yalla:session-revoked";
+
+    /// <summary>
+    /// Answers a refused diner session with a body the app can branch on, rather than the bare 401
+    /// the bearer handler writes.
+    /// </summary>
+    /// <remarks>
+    /// The failure is recorded during token validation, but the response is written here: the
+    /// authorisation middleware challenges only when the route needs a signed-in caller, and an
+    /// anonymous route carrying a stale token should simply run as anonymous.
+    /// </remarks>
+    private static async Task AnswerRevokedSessionAsync(JwtBearerChallengeContext context)
+    {
+        if (context.HttpContext.Items[RevokedSessionItem] is not TokenRevoked revoked)
+        {
+            return;
+        }
+
+        context.HandleResponse();
+
+        var response = context.Response;
+        response.StatusCode = StatusCodes.Status401Unauthorized;
+        response.Headers.WWWAuthenticate = "Bearer error=\"invalid_token\"";
+
+        await response.WriteAsJsonAsync(
+            new UnifiedErrorEnvelope
+            {
+                Type = ErrorCodes.TypeFor(ErrorCodes.SessionRevoked),
+                Title = ErrorCodes.TitleFor(ErrorCodes.SessionRevoked),
+                Status = StatusCodes.Status401Unauthorized,
+                Detail = revoked.Message,
+                Instance = context.Request.Path.Value,
+                Code = ErrorCodes.SessionRevoked,
+                TraceId = context.HttpContext.TraceIdentifier,
+            },
+            options: null,
+            contentType: "application/problem+json",
+            context.HttpContext.RequestAborted);
     }
 
     /// <summary>
@@ -67,14 +113,47 @@ public static class AuthenticationExtensions
     /// requests carrying a device or session token cost one lookup on a primary key.
     /// </para>
     /// <para>
-    /// Diner, venue-user and tab participant tokens do not pay it: their access tokens last
-    /// fifteen minutes or track a tab, and revoking their refresh chain is enough.
+    /// Diner tokens pay it too, through the same five-second cache: a squatter evicted by the
+    /// number's owner, a deactivated account and a deleted one must stop working now, and fifteen
+    /// minutes of a token that can set a password is not "short". Venue-user tokens still do not.
     /// </para>
     /// </remarks>
     private static async Task RejectRevokedDevicesAsync(TokenValidatedContext context)
     {
         var principalType = context.Principal?.PrincipalType();
         var authority = context.HttpContext.RequestServices.GetRequiredService<ITokenAuthorityCheck>();
+
+        // A diner session that has ended: deactivated, deleted, or its generation moved on. Failed
+        // here so no handler has to remember it, and answered by AnswerRevokedSessionAsync with
+        // `session-revoked` so the app refreshes or signs out instead of reporting a bug.
+        if (principalType == PrincipalType.Diner)
+        {
+            var dinerUserId = context.Principal?.Guid(YallaClaims.DinerUserId);
+
+            TokenRevoked? refused;
+
+            if (dinerUserId is null)
+            {
+                refused = new TokenRevoked(TokenRevoked.SessionRevoked, "Diner token carries no account.");
+            }
+            else if (!YallaClaims.TryReadSessionGeneration(context.Principal, out var generation))
+            {
+                refused = new TokenRevoked(TokenRevoked.SessionRevoked, "Diner token carries an unreadable session.");
+            }
+            else
+            {
+                refused = await authority.CheckDinerSessionAsync(
+                    dinerUserId.Value, generation, context.HttpContext.RequestAborted);
+            }
+
+            if (refused is not null)
+            {
+                context.HttpContext.Items[RevokedSessionItem] = refused;
+                context.Fail(refused.Message);
+            }
+
+            return;
+        }
 
         // A tab that has closed. The token was minted before anybody knew when that would be, so
         // its own expiry cannot express it. Failing here rather than in a policy is deliberate: it

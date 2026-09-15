@@ -120,6 +120,15 @@ public static class ErrorCodes
     public const string Unauthenticated = "unauthenticated";
 
     /// <summary>
+    /// A diner token from a session that has ended. HTTP 401, with
+    /// <c>WWW-Authenticate: Bearer error="invalid_token"</c>. The account was deactivated or deleted,
+    /// or its session generation moved on: the password was set or changed, or the number's owner
+    /// proved it and displaced a registrant. The client tries its refresh token once; when that is
+    /// refused too, it signs out.
+    /// </summary>
+    public const string SessionRevoked = "session-revoked";
+
+    /// <summary>
     /// A one-time credential is out of attempts, or a per-identity limit is spent. HTTP 429.
     /// Asking again immediately will not help; ask for a new code.
     /// </summary>
@@ -276,6 +285,39 @@ public static class ErrorCodes
     /// </summary>
     public const string UnsupportedImage = "unsupported-image";
 
+    /// <summary>
+    /// The listing form moves the branch - its address or map pin - and only an owner or platform
+    /// admin signed in to the admin panel may. HTTP 403. Nothing on the form was saved.
+    /// </summary>
+    public const string RelocationNotAllowed = "relocation-not-allowed";
+
+    /// <summary>
+    /// The floor plan was saved by somebody else since the editor loaded it. HTTP 409, with
+    /// <c>context.currentVersion</c>. Reload, reapply, save against the new version.
+    /// </summary>
+    public const string FloorPlanChanged = "floor-plan-changed";
+
+    /// <summary>
+    /// Table pins were placed on a cover photo the branch no longer has. HTTP 409, with
+    /// <c>context.currentCoverPhotoId</c> (null when there is no cover). Nothing was written.
+    /// </summary>
+    public const string CoverChanged = "cover-changed";
+
+    /// <summary>
+    /// A first review of a branch from a diner with no visit there in the window (K8): no Seated or
+    /// Completed booking and no place on one of its tabs in the last 180 days. HTTP 403, with
+    /// <c>context.branchId</c> and <c>context.windowDays</c>. Revising a review the diner already has
+    /// is never refused for this.
+    /// </summary>
+    public const string ReviewNeedsVisit = "review-needs-visit";
+
+    /// <summary>
+    /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
+    /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
+    /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
+    /// </summary>
+    public const string BookingsNotAccepted = "bookings-not-accepted";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -310,6 +352,7 @@ public static class ErrorCodes
         ClientCommandIdInUse => "Command id already used",
         RateLimited => "Rate limited",
         Unauthenticated => "Not authenticated",
+        SessionRevoked => "Session revoked",
         TooManyAttempts => "Too many attempts",
         AccountLocked => "Account locked",
         FeatureNotEnabled => "Feature not enabled for this branch",
@@ -331,6 +374,11 @@ public static class ErrorCodes
         PhoneInUse => "Phone number already has an account",
         PhoneNotVerified => "Phone number not verified",
         UnsupportedImage => "Unsupported image",
+        RelocationNotAllowed => "Relocation not allowed",
+        FloorPlanChanged => "Floor plan changed",
+        CoverChanged => "Cover photo changed",
+        ReviewNeedsVisit => "Review needs a visit",
+        BookingsNotAccepted => "Bookings not accepted",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

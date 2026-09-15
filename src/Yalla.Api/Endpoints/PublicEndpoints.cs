@@ -4,6 +4,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Menus;
 using Yalla.Application.Public;
 using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
@@ -162,8 +163,114 @@ public static class PublicEndpoints
             .Produces<PublicBranchMeta>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
 
+        MapListingRoutes(group);
+
         return app;
     }
+
+    /// <summary>The diner app's browse reads: Explore, search, the map, details, reviews and table markers.</summary>
+    private static void MapListingRoutes(RouteGroupBuilder group)
+    {
+        const string listingFields =
+            "Each entry is a `PublicBranchListing`: ids and slugs, `venueName`, `branchName`, `venueType` "
+            + "(1 Cafe, 2 Restaurant), `cuisine` and `priceLevel` (absent until the venue sets them), "
+            + "`address`, `latitude`, `longitude`, `timeZoneId`, `isOpenNow`, `freeTableCount`, `rating` "
+            + "(average to one decimal, **absent with no reviews**), `reviewCount`, `badges` and "
+            + "`coverPhoto`.\n\n"
+            + "`badges` is derived, never stored: `new` for a branch created in the last 30 days; "
+            + "`popular` for one that seated 20 or more parties in the last 30 days, or has 5 or more "
+            + "reviews averaging 4.5 or better.\n\n"
+            + "Send `lat` and `lng` together to get `distanceKm` on every entry and nearest-first order; "
+            + "without them the order is best rated first. Cached for fifteen seconds.";
+
+        group.MapGet("/branches", SearchBranchesAsync)
+            .WithName("getPublicBranches")
+            .WithSummary("Every published branch, for Explore and the map")
+            .WithDescription(listingFields)
+            .Produces<IReadOnlyList<PublicBranchListing>>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`lat` without `lng`, or either out of range.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicBrowsePolicy);
+
+        group.MapGet("/branches/search", SearchBranchesAsync)
+            .WithName("searchPublicBranches")
+            .WithSummary("Search published branches by name, cuisine or address")
+            .WithDescription(
+                "`q` matches venue name, branch name, cuisine and address, contains and case-insensitive; "
+                + "blank matches everything. `category` narrows to one venue type (1 Cafe, 2 Restaurant). "
+                + "`q` is at most 100 characters.\n\n" + listingFields)
+            .Produces<IReadOnlyList<PublicBranchListing>>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`q` too long, or a half or out-of-range position.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicBrowsePolicy);
+
+        group.MapGet("/branches/{branchId:guid}", GetBranchDetailAsync)
+            .WithName("getPublicBranchDetail")
+            .WithSummary("One branch's details screen, by id")
+            .WithDescription(
+                "`listing` is the card exactly as the list serves it. Beside it: `about`, `websiteUrl`, "
+                + "`phoneE164`, `amenities`, `openingHours` (`day` 0 = Sunday, wall-clock `opensAt`/"
+                + "`closesAt` as `HH:mm:ss`, `closesNextDay`), `gallery` (pictures beyond the cover, in "
+                + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three) and "
+                + "`tableMarkers` - the tables placed on the cover photo with their live state.\n\n"
+                + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
+                + "`listing.rating` and `listing.reviewCount` are read live too; the other live numbers "
+                + "share the list's fifteen seconds.")
+            .Produces<PublicBranchDetail>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+
+            // The app's per-tap routes: their own per-caller budget, not the page budget. See
+            // RateLimitingExtensions.PublicPlacePolicy.
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
+
+        group.MapGet("/branches/{branchId:guid}/reviews", GetReviewsAsync)
+            .WithName("getPublicBranchReviews")
+            .WithSummary("A page of a branch's reviews, newest first")
+            .WithDescription(
+                "Twenty a page from `page=1`. `rating` and `reviewCount` are read live. Each review "
+                + "carries `authorName` as a first name and last initial, never the account or its id.")
+            .Produces<PublicReviewPage>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`page` below 1, or past the last page that can exist.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
+
+        group.MapGet("/branches/{branchId:guid}/table-markers", GetTableMarkersAsync)
+            .WithName("getPublicTableMarkers")
+            .WithSummary("Tables drawn on the cover photo, with their live state")
+            .WithDescription(
+                "Only tables a manager placed on the photo (`photoX`/`photoY` on the floor plan) appear, "
+                + "and none while the branch has no cover. Changing or clearing the cover takes every table "
+                + "off the photo, because the positions described the old picture. "
+                + "`photoX` and `photoY` are 0-1 across and down `photo`, the branch's cover. `state` is "
+                + "what the floor plan derives now: 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, "
+                + "5 OutOfService. Refetch this more often than the details.")
+            .Produces<PublicTableMarkers>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
+            .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
+    }
+
+    private static async Task<IResult> SearchBranchesAsync(
+        IPublicListingQuery listings,
+        CancellationToken ct,
+        string? q = null,
+        VenueType? category = null,
+        double? lat = null,
+        double? lng = null) =>
+        Results.Ok(await listings.SearchAsync(new BranchSearchRequest(q, category, lat, lng), ct));
+
+    private static async Task<IResult> GetBranchDetailAsync(
+        Guid branchId,
+        IPublicListingQuery listings,
+        CancellationToken ct,
+        double? lat = null,
+        double? lng = null) =>
+        Results.Ok(await listings.GetDetailAsync(branchId, lat, lng, ct));
+
+    private static async Task<IResult> GetReviewsAsync(
+        Guid branchId, IPublicListingQuery listings, CancellationToken ct, int page = 1) =>
+        Results.Ok(await listings.GetReviewsAsync(branchId, page, ct));
+
+    private static async Task<IResult> GetTableMarkersAsync(
+        Guid branchId, IPublicListingQuery listings, CancellationToken ct) =>
+        Results.Ok(await listings.GetTableMarkersAsync(branchId, ct));
 
     private static async Task<IResult> GetVenuesAsync(IPublicVenueQuery venues, CancellationToken ct) =>
         Results.Ok(await venues.GetVenuesAsync(ct));

@@ -46,8 +46,22 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         return (Write(claims, expiresAtUtc), expiresAtUtc);
     }
 
-    /// <summary>A token for a diner who verified a phone number.</summary>
-    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(Guid dinerUserId)
+    /// <summary>A token for a diner account.</summary>
+    /// <param name="dinerUserId">The account.</param>
+    /// <param name="sessionGeneration">
+    /// The account's <c>SessionGeneration</c> as it will be <b>after</b> the caller saves. Required
+    /// rather than defaulted: a token minted under the wrong generation is refused on its first use,
+    /// and a default of zero is exactly the value that looks right in a test and is wrong for every
+    /// account that has ever changed its password.
+    /// </param>
+    /// <param name="refreshChainId">
+    /// The refresh-token chain issued alongside, carried as <see cref="YallaClaims.RefreshChainId"/> so
+    /// a password change can keep this sign-in and end every other.
+    /// </param>
+    public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(
+        Guid dinerUserId,
+        int sessionGeneration,
+        Guid? refreshChainId = null)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -56,7 +70,13 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
             new(YallaClaims.PrincipalType, ((int)PrincipalType.Diner).ToString(CultureInfo.InvariantCulture)),
             new(YallaClaims.DinerUserId, dinerUserId.ToString()),
             new(JwtRegisteredClaimNames.Sub, dinerUserId.ToString()),
+            new(YallaClaims.SessionGeneration, sessionGeneration.ToString(CultureInfo.InvariantCulture)),
         };
+
+        if (refreshChainId is { } chainId)
+        {
+            claims.Add(new Claim(YallaClaims.RefreshChainId, chainId.ToString()));
+        }
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);
     }

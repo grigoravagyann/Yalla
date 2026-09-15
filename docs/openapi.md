@@ -4,35 +4,56 @@ The React monorepo generates its TypeScript types from this API's OpenAPI docume
 `openapi-typescript`. The document is a dependency of the frontend build, not a convenience: a
 schema that is wrong produces types that compile and are quietly untrue.
 
-## Where to point `pnpm api:generate`
+## Where the document is served
 
 | Environment | Swagger JSON URL |
 |---|---|
 | Local (`dotnet run`, HTTP) | `http://localhost:5086/swagger/v1/swagger.json` |
 | Local (`dotnet run`, HTTPS) | `https://localhost:7289/swagger/v1/swagger.json` |
 | Local, from another device on the wifi | `http://<LAN-IP>:5086/swagger/v1/swagger.json` - the exact address is logged at startup |
+| Staging / QA, when `Swagger:Enabled` is on there | `https://<host>/swagger/v1/swagger.json` |
 
-The local ports come from `applicationUrl` in `src/Yalla.Api/Properties/launchSettings.json`. See
-README.md for which profile binds what, and why HTTP is for local device testing only.
-| Staging / QA | `https://<host>/swagger/v1/swagger.json` |
+The local ports come from `applicationUrl` in `src/Yalla.Api/Properties/launchSettings.json` - see
+README.md for which profile binds what, and why HTTP is for local device testing only. The path is
+always `/swagger/v1/swagger.json`; the UI, for humans, is at `/swagger`.
 
-The local ports come from `src/Yalla.Api/Properties/launchSettings.json`; the path is always
-`/swagger/v1/swagger.json`. The UI, for humans, is at `/swagger`.
+## The frontend's committed copy
 
-Prefer the HTTP port for generation. The HTTPS one serves the same document, but a development
-certificate the toolchain does not trust turns a schema refresh into a TLS argument.
+The frontend monorepo **commits** two generated files in `packages/api/src/generated/`, so the
+workspace typechecks with no backend running and its CI needs no network:
 
-```jsonc
-// package.json in the monorepo
-{
-  "scripts": {
-    "api:generate": "openapi-typescript http://localhost:5086/swagger/v1/swagger.json -o packages/api/src/schema.d.ts"
-  }
-}
+| File | What it is |
+|---|---|
+| `swagger.json` | The document exactly as fetched, pretty-printed with two-space indentation. `check-gateway-schema.mjs` reads its `required` lists, which the types alone cannot express. |
+| `schema.ts` | The TypeScript types `openapi-typescript` generates from that same fetch. Never edited by hand. |
+
+Both are written in one run by `pnpm api:generate` (`packages/api/scripts/generate.mjs`), from
+`http://localhost:5086/swagger/v1/swagger.json` by default. Another address goes in `--url` or
+`YALLA_OPENAPI_URL`:
+
+```
+pnpm api:generate
+pnpm api:generate --url http://192.168.1.42:5086/swagger/v1/swagger.json
 ```
 
-Run the API first. There is no committed copy of the document to generate from - a checked-in
-schema is a schema that is stale the first time somebody forgets to regenerate it.
+Run the API first, in Development, where Swagger is on. Prefer the HTTP port: the HTTPS one serves the
+same document, but a development certificate the toolchain does not trust turns a schema refresh into
+a TLS argument.
+
+A committed copy is only as current as the last regeneration. **Regenerate whenever a backend change
+touches a route, a request or a response,** and commit both files with the frontend change that uses
+them.
+
+## The CI artifact
+
+`.github/workflows/backend.yml` uploads the document every backend build serves, as the artifact
+**`openapi-swagger`** (`swagger.json`). `SwaggerExposureTests` writes it to
+`artifacts/openapi/swagger.json` during the test run - `./verify.sh` produces the same file locally -
+in the committed copy's layout: two-space indentation, LF line endings.
+
+That is the document to compare the frontend's `swagger.json` with, without starting an API: download
+the artifact for the backend commit the frontend targets and diff the two. A difference means the
+committed copy is stale and `pnpm api:generate` is due.
 
 ## Availability
 

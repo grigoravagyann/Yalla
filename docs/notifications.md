@@ -54,6 +54,19 @@ cafe where a waiter carries the plate ten feet and genuinely useful in a canteen
 collects it. Defaulting it on would train a city to switch our notifications off, and the two that
 matter would go with them.
 
+### The feed beside the pushes
+
+A push is gone once it is read or swiped away, so the diner app also lists what it was told
+(K12, [diner-browse.md](diner-browse.md#k12-notifications-feed---implemented-b6)). Where
+`reservation.reminder`, `reservation.decided` and `tab.order-ready` are enqueued, a `DinerNotifications`
+row is added to the same unit of work - whether or not the diner has a device, because the feed is what
+a diner without push reads. It carries a `kind` and string `params`, never rendered text: the app writes
+the words in the diner's language. A reminder's row carries its due time and does not show before then,
+and cancelling a booking deletes it with the unsent message. Two entries have no push beside them - a
+booking the venue lets go, and a review moderation takes down - and are written with that change. The
+late nudge and the participant approval write none. Rows older than 90 days are deleted by this loop's
+host, `OutboxHostedService`, about hourly.
+
 ### These are not tab events
 
 `OutboxMessages` is its own table with its own string type names. **None of them is a

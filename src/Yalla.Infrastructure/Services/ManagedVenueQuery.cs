@@ -18,11 +18,10 @@ namespace Yalla.Infrastructure.Services;
 /// owner's names none, so a decision made from the claim is the decision the console got wrong.
 /// </para>
 /// <para>
-/// A manager whose row names a branch is shown that branch and no other. That is narrower than
-/// what <c>BranchScoped</c> enforces for them - the handler widens an admin-panel token to the
-/// whole venue - and the gap is deliberate: whether a branch manager should reach the other
-/// branches is a product decision not taken here. What this guarantees is the safe direction:
-/// nothing listed is something the server would refuse.
+/// A manager whose row names a branch is shown that branch and no other. <b>This is an enforcement
+/// rule, not only a view rule (K4)</b>: <c>BranchScoped</c> refuses such a manager on every other
+/// branch from their token, and <c>IStaffBranchGuard</c> refuses them again from the stored row. So
+/// what this lists and what the server allows are the same set, in both directions.
 /// </para>
 /// <para>
 /// Ordering: active first, then by name. The id tiebreak after that only makes the list stable;
@@ -48,8 +47,7 @@ internal sealed class ManagedVenueQuery(YallaDbContext db, ICurrentActor actor) 
         var branches = db.Branches.AsNoTracking().Where(b => b.VenueId == venueId);
 
         // The one narrowing: a manager whose row names a branch. Owners, venue-wide managers and
-        // the platform tier cover the whole venue. See the class remarks for why this is a view
-        // rule rather than an enforcement rule.
+        // the platform tier cover the whole venue. The same rule the branch routes enforce (K4).
         if (acting.Role == StaffRole.Manager && acting.BranchId is { } home)
         {
             branches = branches.Where(b => b.Id == home);

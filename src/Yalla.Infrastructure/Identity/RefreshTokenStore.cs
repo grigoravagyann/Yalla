@@ -108,9 +108,31 @@ internal sealed class RefreshTokenStore(YallaDbContext db, IClock clock)
     /// Revokes everything an account holds, however many devices it is signed in on. Used when a
     /// password changes: the reason to change one is usually that somebody else knows it.
     /// </summary>
-    public async Task RevokeAllForSubjectAsync(
+    public Task RevokeAllForSubjectAsync(
         RefreshTokenSubject subjectType,
         Guid subjectId,
+        string reason,
+        CancellationToken cancellationToken) =>
+        RevokeForSubjectAsync(subjectType, subjectId, keepChainId: null, reason, cancellationToken);
+
+    /// <summary>
+    /// Revokes everything an account holds except one sign-in's chain - the one the request was made
+    /// from. Used when a diner sets or changes a password: every other device is signed out, and the
+    /// app that made the change refreshes and carries on. A null <paramref name="keepChainId"/> keeps
+    /// nothing.
+    /// </summary>
+    public Task RevokeAllForSubjectExceptChainAsync(
+        RefreshTokenSubject subjectType,
+        Guid subjectId,
+        Guid? keepChainId,
+        string reason,
+        CancellationToken cancellationToken) =>
+        RevokeForSubjectAsync(subjectType, subjectId, keepChainId, reason, cancellationToken);
+
+    private async Task RevokeForSubjectAsync(
+        RefreshTokenSubject subjectType,
+        Guid subjectId,
+        Guid? keepChainId,
         string reason,
         CancellationToken cancellationToken)
     {
@@ -118,6 +140,7 @@ internal sealed class RefreshTokenStore(YallaDbContext db, IClock clock)
 
         var tokens = await db.RefreshTokens
             .Where(t => t.SubjectType == subjectType && t.SubjectId == subjectId && t.RevokedAtUtc == null)
+            .Where(t => keepChainId == null || t.ChainId != keepChainId)
             .ToListAsync(cancellationToken);
 
         foreach (var token in tokens)

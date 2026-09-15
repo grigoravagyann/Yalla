@@ -191,3 +191,14 @@ jobs:
           name: test-results
           path: artifacts/test-results
           if-no-files-found: warn
+
+      # The OpenAPI document this commit serves, written by SwaggerExposureTests during the Test step.
+      # The frontend commits packages/api/src/generated/swagger.json and generates schema.ts from it;
+      # this is the document to compare that copy with, without starting the API - see docs/openapi.md.
+      - name: Upload OpenAPI document
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-swagger
+          path: artifacts/openapi/swagger.json
+          if-no-files-found: warn
