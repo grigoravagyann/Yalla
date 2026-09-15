@@ -343,15 +343,21 @@ public sealed record VerificationCodeInvalidProblem : ProblemShape
 /// When the branch starts holding the table for the party - the earliest the code opens the tab.
 /// Before it, <c>booking-too-early</c>: render it in the branch's time zone, "from 19:10".
 /// </param>
+/// <param name="TableLabel">
+/// The booked table's label on <c>booking-table-occupied</c>, for "Table 1 still has another party
+/// seated". Null on the other codes.
+/// </param>
 public sealed record BookingTabRefusedContext(
     Guid ReservationId,
     ReservationStatus Status,
     DateTime StartUtc,
     DateTime EndUtc,
-    DateTime EarliestUtc);
+    DateTime EarliestUtc,
+    string? TableLabel);
 
 /// <summary>
-/// <c>booking-too-early</c>, <c>booking-ended</c> or <c>booking-not-active</c>, 409, with the
+/// <c>booking-too-early</c>, <c>booking-ended</c>, <c>booking-not-active</c> or
+/// <c>booking-table-occupied</c> (another party still seated at the booked table), 409, with the
 /// booking's facts. Branch on the code. The other 409s the route shares with the scan - the table out
 /// of service, the tab being settled, the command id taken by another device - arrive on the same
 /// status with no <c>context</c>.

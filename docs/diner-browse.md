@@ -398,6 +398,10 @@ participant, the tablet, the staff member - and per remote address otherwise.
   past-midnight block (the same rule as the web branch page).
 - **marker state** = `TableStateProjection.Derive(physical status, next Confirmed/PendingApproval
   booking, now, branch buffer)` - the staff floor's rule.
+- **opening a tab by booking code** (`POST /api/tabs/open-by-booking`) joins only the booking's own
+  sitting. Another party's open sitting on the booked table answers `409 booking-table-occupied`
+  ("Table 1 still has another party seated. Ask a member of staff to free it."); on the booking's own
+  sitting the booker joins an existing tab **approved**, never pending. See [tabs.md](tabs.md).
 
 ---
 

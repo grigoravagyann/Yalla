@@ -142,6 +142,11 @@ public static class TabEndpoints
                 + "the party there. Pending-approval, cancelled and no-show bookings answer "
                 + "`409 booking-not-active`, with `context.status` saying which; a completed one, "
                 + "`booking-ended`.\n\n"
+                + "**Whose sitting.** A booking opens only its own sitting. If the table still has "
+                + "another party's sitting open - one that is not this booking's - the answer is "
+                + "`409 booking-table-occupied` and nobody is put on that tab. On the booking's own "
+                + "sitting, a tab somebody else opened first (a friend who scanned) takes the booker "
+                + "on **approved**, with no host tap; the host stays host.\n\n"
                 + "**Seating.** A free table is seated *as the booking*: the sitting names it and the "
                 + "booking becomes `Seated`, so the floor does not go on treating a party that is "
                 + "eating as one that has not arrived.\n\n"
@@ -158,7 +163,8 @@ public static class TabEndpoints
             .ProducesProblem<Errors.BookingTabRefusedProblem>(
                 StatusCodes.Status409Conflict,
                 "`booking-too-early` (`context.earliestUtc` says when), `booking-ended`, or "
-                + "`booking-not-active` (`context.status` says why) - branch on the code. And, as on "
+                + "`booking-not-active` (`context.status` says why), or `booking-table-occupied` "
+                + "(another party is still seated there) - branch on the code. And, as on "
                 + "the scan, the table out of service, the tab there being settled, or this "
                 + "`clientCommandId` used by another device - those with no `context`.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);

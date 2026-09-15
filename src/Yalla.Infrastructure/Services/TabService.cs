@@ -181,7 +181,8 @@ internal sealed class TabService(
                     seatToken => tableState.SeatBookedPartyAsync(
                         new SeatBookedPartyCommand(
                             table.BranchId, table.Id, booking.Id, command.ClientCommandId, command.PartySize),
-                        seatToken));
+                        seatToken),
+                    booking);
             },
             cancellationToken);
     }
@@ -272,7 +273,8 @@ internal sealed class TabService(
     /// </summary>
     private sealed record TableToOpen(
         DiningTable Table,
-        Func<CancellationToken, Task<TableStateChangeResult>> SeatFreeTable);
+        Func<CancellationToken, Task<TableStateChangeResult>> SeatFreeTable,
+        Reservation? Booking = null);
 
     /// <summary>
     /// The four table-state cases of <c>docs/tabs.md</c>, for a scan and a booking alike.
@@ -290,7 +292,7 @@ internal sealed class TabService(
     {
         for (var attempt = 1; attempt <= MaxOpenAttempts; attempt++)
         {
-            var (table, seatFreeTable) = await findTable(cancellationToken);
+            var (table, seatFreeTable, booking) = await findTable(cancellationToken);
 
             // The sticker on the table outlives the business relationship. A suspended or deleted
             // venue seats nobody new, whatever is still printed on the furniture.
@@ -340,12 +342,27 @@ internal sealed class TabService(
                 outcome = TabOpenOutcome.OpenedNewSession;
             }
 
+            // A booking opens only its own sitting. Anybody else still sitting at the table - a
+            // walk-in nobody cleared, another party the waiter put there - is not this booker's
+            // company, and joining their tab would hand a stranger's bill to the booker and the
+            // booker to a stranger's approval. A waiter has to free the table first.
+            if (booking is not null && session.ReservationId != booking.Id)
+            {
+                throw new BookingTabRefusedException(
+                    BookingTabRefusedException.TableOccupied,
+                    booking,
+                    booking.TableIsTheirsFromUtc(table.Branch.ReservationPolicy.WalkInHoldbackMinutes),
+                    $"Table {table.Label} still has another party seated. Ask a member of staff to free it.",
+                    table.Label);
+            }
+
             // Case 2 - the session already has a tab. No second tab: the newcomer joins it.
             var existingTab = await LoadTabBySessionAsync(session.Id, cancellationToken);
 
             if (existingTab is not null)
             {
-                var joined = await JoinExistingAsync(existingTab, opening.Device, opening.DisplayName, cancellationToken);
+                var joined = await JoinExistingAsync(
+                    existingTab, opening.Device, opening.DisplayName, cancellationToken, asBooker: booking is not null);
 
                 return await ResultAsync(existingTab, joined, TabOpenOutcome.JoinedExistingTab, wasReplay: false, cancellationToken);
             }
@@ -450,17 +467,33 @@ internal sealed class TabService(
         Tab tab,
         string device,
         string? displayName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool asBooker = false)
     {
         var nowUtc = clock.UtcNow;
 
-        var existing = tab.Participants.FirstOrDefault(p => p.DeviceId == device && !p.IsRemoved);
+        // The booker is recognised by their account as well as the phone: a second phone of theirs,
+        // or the app reinstalled, is still the person whose booking this sitting is.
+        var bookerId = asBooker ? actor.DinerUserId : null;
+
+        var existing = tab.Participants.FirstOrDefault(p => p.DeviceId == device && !p.IsRemoved)
+                       ?? (bookerId is { } id
+                           ? tab.Participants.FirstOrDefault(p => p.UserId == id && !p.IsRemoved)
+                           : null);
 
         if (existing is not null)
         {
             if (!string.IsNullOrWhiteSpace(displayName))
             {
                 existing.SetDisplayName(displayName);
+            }
+
+            if (asBooker && !existing.IsApproved)
+            {
+                await ApproveBookerAsync(tab, existing, nowUtc, cancellationToken);
+            }
+            else
+            {
                 await db.SaveChangesAsync(cancellationToken);
             }
 
@@ -483,12 +516,52 @@ internal sealed class TabService(
             actor.DinerUserId);
 
         db.TabParticipants.Add(guest);
+
+        // It is their booking: the party at the table is theirs, so nobody has to let them on. The
+        // host - the friend who scanned first - stays host.
+        if (asBooker)
+        {
+            await ApproveBookerAsync(tab, guest, nowUtc, cancellationToken);
+
+            logger.LogInformation(
+                "Booker {ParticipantId} joined tab {TabId} on their own booking's sitting, approved.", guest.Id, tab.Id);
+
+            return guest;
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
             "Participant {ParticipantId} joined tab {TabId} pending the host's approval.", guest.Id, tab.Id);
 
         return guest;
+    }
+
+    /// <summary>
+    /// Lets the booker onto their own booking's tab without the host's tap, recorded on the ledger as
+    /// an approval so the other phones' rosters move as if the host had approved them.
+    /// </summary>
+    private async Task ApproveBookerAsync(
+        Tab tab,
+        TabParticipant participant,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        participant.Approve(nowUtc);
+
+        ledger.Append(tab.Id, TabEventType.ParticipantApproved, new
+        {
+            participantId = participant.Id,
+            displayName = participant.DisplayName,
+            status = (int)participant.Status,
+            canOrder = participant.CanOrder,
+            canSeeTableTotal = participant.CanSeeTableTotal,
+            canPay = participant.CanPay,
+        });
+
+        await ledger.SaveAppendedAsync(cancellationToken);
+
+        authority.InvalidateParticipant(tab.Id, participant.Id);
     }
 
     // ---------------------------------------------------------------- invitations

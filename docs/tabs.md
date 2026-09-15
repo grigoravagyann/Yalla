@@ -154,8 +154,16 @@ rather than letting the seating throw, and that is what keeps the answer in the 
 DFJFQY is Seated.", which reaches the app as a bare `conflicting-state` with none of the booking's
 facts and the machine's own wording in the diner's face.
 
+**Whose sitting.** A booking opens only **its own** sitting (`TableSession.ReservationId` = the
+booking). If the table still has any other sitting open — a walk-in nobody cleared, a party a waiter
+put there, a scan that sat the free table as a walk-in before the booker arrived — the answer is
+**409 `booking-table-occupied`** ("Table 1 still has another party seated. Ask a member of staff to
+free it."), with `context.tableLabel` set, and nobody is added to that tab. Before this rule the booker landed as a *pending guest* on
+a stranger's tab and was told to wait for a host they had never met. A scan of the same table is
+unchanged: it still joins whatever tab is there.
+
 Every 409 above carries the same `context` — `reservationId`, `status`, `startUtc`, `endUtc`,
-`earliestUtc` (`BookingTabRefusedProblem`) — and none of them touches the table.
+`earliestUtc`, plus `tableLabel` (null except on `booking-table-occupied`) (`BookingTabRefusedProblem`) — and none of them touches the table.
 
 **Seated as the booking.** On a free or held table the party is seated **against the booking**, by
 `ITableStateService.SeatBookedPartyAsync`: the session is `Source = Reservation` with the booking's id,
@@ -168,10 +176,12 @@ the same indexes, and the loser re-reads and lands on the sitting that won.
 **Everything else is the scan's**, because it is the scan's code. A table out of service is 409 with the
 scan's sentence — and so is one taken off the floor plan with the booking still on it, which a scan
 could not even find, because this diner holds a booking for it and needs a waiter. A closing tab takes
-nobody new. An occupied table with a tab puts the booker on it as a pending guest, and one with no tab
-makes them its host. If a friend in the party scanned the table first, the booker lands pending on the
-friend's tab and the friend approves them, exactly as for a second scan — and the booking itself stays
-`Confirmed`, as it always has when a booked party scans rather than being seated by a waiter.
+nobody new. On the booking's own sitting with no tab yet, the booker becomes its host. On the booking's
+own sitting with a tab already there — a waiter seated the booking and a friend in the party scanned
+first — the booker joins **approved**, with no host tap, because it is their booking; the friend stays
+host, and the approval is written to the ledger as `ParticipantApproved` so the other phones' rosters
+move. A booker already on that tab — matched by device or by their diner account, so a second phone or
+a reinstalled app counts — gets that same participant back, approved if it was still pending.
 
 ## 3. Inviting others
 
