@@ -69,4 +69,28 @@
     <value>Откройте ссылку, чтобы задать новый пароль: {0}. Ссылка действительна {1} мин. Если вы не запрашивали сброс, просто проигнорируйте это сообщение.</value>
     <comment>{0} is the reset link, {1} is how many minutes it lasts.</comment>
   </data>
+  <data name="TelegramAskForContact" xml:space="preserve">
+    <value>Чтобы войти в Yalla, поделитесь своим номером телефона, нажав кнопку ниже. Yalla получает только номер, который Telegram подтвердил для этого аккаунта.</value>
+  </data>
+  <data name="TelegramShareContactButton" xml:space="preserve">
+    <value>Поделиться моим номером</value>
+  </data>
+  <data name="TelegramVerified" xml:space="preserve">
+    <value>Ваш номер подтверждён. Вернитесь в приложение Yalla - оно войдёт само.</value>
+  </data>
+  <data name="TelegramLinkExpired" xml:space="preserve">
+    <value>Срок действия ссылки истёк или она уже использована. Вернитесь в приложение Yalla и начните заново.</value>
+  </data>
+  <data name="TelegramContactMismatch" xml:space="preserve">
+    <value>Это не ваш собственный контакт. Нажмите кнопку ниже, чтобы поделиться номером, к которому привязан этот аккаунт Telegram.</value>
+  </data>
+  <data name="TelegramUnknownCommand" xml:space="preserve">
+    <value>Этот бот только подтверждает номера телефонов для Yalla. Откройте ссылку из приложения Yalla, чтобы начать.</value>
+  </data>
+  <data name="TelegramOpenApp" xml:space="preserve">
+    <value>Нажмите кнопку, чтобы вернуться в Yalla.</value>
+  </data>
+  <data name="TelegramOpenAppButton" xml:space="preserve">
+    <value>Открыть Yalla</value>
+  </data>
 </root>

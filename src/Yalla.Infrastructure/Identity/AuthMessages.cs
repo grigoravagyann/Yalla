@@ -65,6 +65,30 @@ internal static class AuthMessages
     public static string PasswordResetBody(string localeCode, string resetLink, int expiresInMinutes) =>
         Format(localeCode, "PasswordResetBody", resetLink, expiresInMinutes);
 
+    /// <summary>The bot's first reply on <c>/start</c>: what it is about to ask for and why.</summary>
+    public static string TelegramAskForContact(string localeCode) => Format(localeCode, "TelegramAskForContact");
+
+    /// <summary>The label of the one reply-keyboard button, which Telegram turns into a share-contact prompt.</summary>
+    public static string TelegramShareContactButton(string localeCode) => Format(localeCode, "TelegramShareContactButton");
+
+    /// <summary>The bot's reply once the contact verified the challenge: go back to the app.</summary>
+    public static string TelegramVerified(string localeCode) => Format(localeCode, "TelegramVerified");
+
+    /// <summary>The text above the button that reopens the app on the verified challenge.</summary>
+    public static string TelegramOpenApp(string localeCode) => Format(localeCode, "TelegramOpenApp");
+
+    /// <summary>The label of that inline button.</summary>
+    public static string TelegramOpenAppButton(string localeCode) => Format(localeCode, "TelegramOpenAppButton");
+
+    /// <summary>The one answer for an unknown, expired, spent or somebody else's link.</summary>
+    public static string TelegramLinkExpired(string localeCode) => Format(localeCode, "TelegramLinkExpired");
+
+    /// <summary>A contact card that is not the sender's own, or not a usable number.</summary>
+    public static string TelegramContactMismatch(string localeCode) => Format(localeCode, "TelegramContactMismatch");
+
+    /// <summary>Anything that is neither <c>/start</c> nor a contact.</summary>
+    public static string TelegramUnknownCommand(string localeCode) => Format(localeCode, "TelegramUnknownCommand");
+
     private static string Format(string localeCode, string key, params object[] arguments)
     {
         var culture = CultureInfo.GetCultureInfo(localeCode);

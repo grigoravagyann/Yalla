@@ -164,4 +164,7 @@ internal static class DatabaseIndexNames
     /// is answered as the success it would have been.
     /// </summary>
     public const string DinerFavoritePerDiner = "UX_DinerFavorites_DinerUserId_BranchId";
+
+    /// <summary>One nonce, one challenge: the hash in the deep link is looked up here on /start.</summary>
+    public const string TelegramVerificationNonce = "UX_TelegramVerifications_NonceHash";
 }

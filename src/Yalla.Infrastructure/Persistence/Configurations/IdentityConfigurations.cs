@@ -94,6 +94,37 @@ internal sealed class PhoneVerificationCodeConfiguration : EntityConfiguration<P
     }
 }
 
+internal sealed class TelegramVerificationConfiguration : EntityConfiguration<TelegramVerification>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<TelegramVerification> builder)
+    {
+        builder.ToTable("TelegramVerifications");
+
+        builder.Property(v => v.NonceHash)
+            .HasMaxLength(FieldLengths.TokenHash)
+            .IsRequired();
+
+        builder.Property(v => v.Status).IsRequired();
+        builder.Property(v => v.PhoneE164).HasMaxLength(FieldLengths.PhoneE164);
+
+        builder.Property(v => v.LocaleCode)
+            .HasMaxLength(FieldLengths.LocaleCode)
+            .IsRequired();
+
+        builder.Property(v => v.RequestedFromAddress).HasMaxLength(FieldLengths.ClientAddress);
+        builder.Property(v => v.ExpiresAtUtc).IsRequired();
+
+        // /start looks a challenge up by the hash of the nonce in the link. Unique: a nonce is 256
+        // random bits and names exactly one challenge, and the index is what makes that so.
+        builder.HasIndex(v => v.NonceHash)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.TelegramVerificationNonce);
+
+        // A contact message looks up the newest live challenge the sending Telegram account opened.
+        builder.HasIndex(v => new { v.TelegramUserId, v.Status, v.ExpiresAtUtc });
+    }
+}
+
 internal sealed class StaffDeviceConfiguration : EntityConfiguration<StaffDevice>
 {
     protected override void ConfigureEntity(EntityTypeBuilder<StaffDevice> builder)
