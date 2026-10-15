@@ -111,12 +111,14 @@ public interface IVerificationCodeSender
 }
 ```
 
-Whether production sends these over SMS or over a Telegram bot is an open commercial question - SMS
-to Armenian numbers is metered and a bot is free - and it is not a question that should have been
-allowed to block sign-in from being built. One implementation ships: a development sender that
-writes the code to the log and, in Development only, returns it in the response body so the flow is
-testable with no provider. The message text comes from localised resources (`hy`, `ru`, `en`), so
-whatever channel arrives later cannot invent its own wording.
+The question this interface was written to defer - SMS, which is metered to Armenian numbers, or a
+Telegram bot, which is free - now has a second answer beside it rather than instead of it. The SMS
+code path above is untouched and still has only the development sender, which writes the code to
+the log and, in Development only, returns it in the response body. The Telegram bot is a **second
+door**, not a second sender: it never sends a code at all, because Telegram already holds the
+verified number - see [Telegram verification](#telegram-verification). The message text for both
+comes from the same localised resources (`hy`, `ru`, `en`), so neither channel invents its own
+wording.
 
 The Development-only affordance is gated by the host from `IHostEnvironment`, not from
 configuration, so `Auth__ReturnVerificationCodeInResponse=true` in a production environment does
@@ -164,7 +166,7 @@ which one a diner came in by.
   and a displaced verifier sets a password through `PUT /api/diner/me/password` with no current
   one. An account whose number was already proved
   keeps its password and its sessions when it verifies again. The rule lives in
-  `DinerUser.ProveNumberByCode`, which also moves the account's session generation on: the access
+  `DinerUser.ProveNumber`, which also moves the account's session generation on: the access
   token the registrant still holds is refused on its very next request with **401
   `session-revoked`** - see [Ending a diner's sessions](#ending-a-diners-sessions).
 - **An unproved number cannot book.** Creating a booking (`POST /api/reservations`), extending its
@@ -228,7 +230,7 @@ The generation moves on - and every access token of the account ends - on exactl
 
 | Event | Where | Refresh tokens |
 |---|---|---|
-| The number's owner proves it and displaces a registrant | `DinerUser.ProveNumberByCode` | All revoked (`phone-proved-by-another`) |
+| The number's owner proves it and displaces a registrant | `DinerUser.ProveNumber` | All revoked (`phone-proved-by-another`) |
 | A password is set or changed | `DinerUser.SetPassword` | Every other sign-in's revoked (`password-changed`); the caller's chain, named by the token's `rch` claim, kept |
 | The account is deactivated | `DinerUser.SetActive(false)` | Kept; refresh refuses an inactive account, and `verify-code` and `login` both answer 401 `invalid-credentials` |
 | The account is deleted | `DinerUser.MarkDeleted` | All revoked (`account-deleted`) |
@@ -306,6 +308,93 @@ venue's record. A foreign key will not catch the omission, because the account r
 rather than gone. Favourites (`DinerFavorites`), the notifications feed (`DinerNotifications`) and
 review reports are in the first of the two - review reports above the reviews line, and including the
 reports filed against the diner's own reviews.
+
+### Telegram verification
+
+The second way to prove a number, for the people who would rather not wait for an SMS - and for
+a product whose SMS bill is a line item. **The SMS code path is untouched**; this sits beside it
+and ends in exactly the same place.
+
+**Flow.**
+
+1. `POST /api/auth/diner/telegram/start` `{ localeCode? }` → `200 { challengeId, deepLinkUrl,
+   expiresInSeconds, pollAfterMs }`. The app opens `deepLinkUrl`
+   (`https://t.me/{bot}?start={nonce}`), which starts the bot with a single-use nonce.
+2. The bot (`/start nonce`) binds the challenge to the Telegram account that opened it and shows
+   one button: *share my phone number*. Telegram answers that button with the account's own
+   contact card.
+3. The contact verifies the challenge. The bot says so, takes the keyboard away, and offers an
+   inline button `yalla://verify?tg={challengeId}` that reopens the app on this challenge.
+4. The app polls `POST /api/auth/diner/telegram/{challengeId}/claim` `{ localeCode? }` every
+   `pollAfterMs`: `200 { state: "pending" }` until the contact arrives, then once
+   `200 { state: "verified", signIn, phoneE164 }` where `signIn` is **exactly** `verify-code`'s
+   `DinerSignInResult` and `phoneE164` is the number Telegram handed over. After that the
+   challenge is spent.
+
+The claim runs the account path `verify-code` runs after its code check - one class,
+`DinerPhoneSignIn`, shared by both doors: find or create the `DinerUser` by number, refuse a
+deactivated one with `401 invalid-credentials`, prove the number (`DinerUser.ProveNumber`, with
+the same displacement rule for a registered number and the same *send the account's own bearer
+to keep its password* escape), mint the refresh chain and the access token. Nothing downstream
+can tell which door a diner came in by.
+
+**Security rules.**
+
+- The nonce is 256 random bits, base64url (43 characters, inside Telegram's 64-character
+  start-parameter limit), stored **only as a SHA-256 hash** with a unique index. A dump of
+  `TelegramVerifications` holds no usable link.
+- A challenge **binds to the first Telegram account that opens it**. The same account opening
+  the link again is fine; any other account gets *link expired* and can neither bind nor verify
+  it. A forwarded link is dead on arrival.
+- A contact verifies only when it is **the sender's own card**: Telegram's `contact.user_id`
+  must equal `message.from.id`. A forwarded card, or one for a number with no Telegram account,
+  answers *that is not your own contact card* and changes nothing. The number is normalised
+  through the same `PhoneNumber.Normalise` as every other number (Telegram sends it with or
+  without the plus).
+- Links last **five minutes**; a verified challenge stays claimable for **two more**, so a
+  contact that arrives at 4:58 is not verified and unclaimable in the same breath.
+- `claim` answers **410 `telegram-verification-expired`** for an unknown id, an expired or
+  spent challenge, and a challenge started under one diner's token and claimed under another's -
+  one answer for all of them. A claim before verification answers `pending` and reveals nothing.
+- The webhook requires `X-Telegram-Bot-Api-Secret-Token` to equal the configured secret,
+  compared in constant time; anything else is a bare 401 with no body. Once the header is right
+  it always answers 200 - a body it cannot read is logged and ignored - because Telegram retries
+  anything else for a day.
+- Rate limits: `start` shares `request-code`'s per-address policy; `claim` has its own
+  `auth-telegram-claim` (60 a minute per address, sized for one app polling every two seconds);
+  the webhook has `telegram-webhook` (600 a minute), a ceiling on the bot's whole traffic.
+- Logs carry challenge ids, Telegram user ids and outcomes. Never the number, never the token:
+  the Bot API puts the token in the URL path, and the client scrubs it from every exception and
+  log line, which a test asserts.
+
+**Configuration** (`Telegram` section; secrets via user secrets or `Telegram__*` variables):
+
+| Key | Meaning |
+|---|---|
+| `Enabled` | Off by default. **Off, the three routes are not mapped at all** - no `/api/telegram/webhook`, no `/api/auth/diner/telegram/*` - rather than routes that answer "not configured". |
+| `BotToken` | From @BotFather. SECRET. |
+| `BotUsername` | Without the `@`; goes into the deep link. |
+| `WebhookSecret` | What Telegram sends back on every webhook call. SECRET. Required in `Webhook` mode. |
+| `Mode` | `Webhook` (default) or `LongPolling` (Development only). |
+| `WebhookPublicUrl` | When set in `Webhook` mode, the host calls `setWebhook` with it and the secret at startup. Blank means somebody registered the webhook by hand. |
+| `ApiBaseUrl`, `ChallengeLifetime`, `PollAfterMs`, `LongPollTimeoutSeconds` | `https://api.telegram.org`, five minutes, 2000, 25. |
+
+Enabled without a token, a username or (in webhook mode) a secret fails startup with
+instructions, exactly as a missing `Jwt:SigningKey` does.
+
+**Local development: long polling.** A laptop has no public address for Telegram to call, so
+`Mode=LongPolling` has a hosted service ask Telegram for updates in a loop and feed them to the
+same `ITelegramUpdateHandler` the webhook uses. The host refuses it outside Development, whatever
+the setting says: two deployed instances polling one bot would each receive half the
+conversation. `appsettings.Development.json` does **not** switch the door on, because the test
+host reads that file with no token; switch it on in your own user secrets:
+
+```
+dotnet user-secrets set "Telegram:Enabled"      "true"            --project src/Yalla.Api
+dotnet user-secrets set "Telegram:BotToken"     "<from @BotFather>" --project src/Yalla.Api
+dotnet user-secrets set "Telegram:BotUsername"  "<name without @>"  --project src/Yalla.Api
+dotnet user-secrets set "Telegram:Mode"         "LongPolling"       --project src/Yalla.Api
+```
 
 ## 3. Staff — device-bound branch token plus a per-person PIN
 
@@ -653,5 +742,6 @@ stub on with seeding off reports no seeded staff member unless `DevActor:StaffMe
 
 ## Out of scope
 
-No SMS or email provider, no Telegram, no shared staff PINs, no biometric unlock, no social login,
-no admin panel UI, and nothing touching menu, orders or payments.
+No SMS or email provider, no shared staff PINs, no biometric unlock, no social login, no admin
+panel UI, and nothing touching menu, orders or payments. (The Telegram bot above is the one
+provider-shaped thing that exists, and it is a second door rather than an SMS provider.)
