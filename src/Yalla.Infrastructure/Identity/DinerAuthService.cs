@@ -29,7 +29,7 @@ internal sealed class DinerAuthService(
     PhoneCodeRateLimiter phoneLimiter,
     PasswordAttemptLimiter passwordLimiter,
     SecretHasher hasher,
-    ITokenAuthorityCheck authority,
+    DinerPhoneSignIn signIn,
     IOptions<AuthOptions> authOptions,
     ILogger<DinerAuthService> logger) : IDinerAuthService
 {
@@ -150,82 +150,11 @@ internal sealed class DinerAuthService(
 
         entity.Consume(nowUtc);
 
-        var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.PhoneE164 == phone, cancellationToken);
-
-        if (diner is { IsActive: false })
-        {
-            // Refused here with the password sign-in's answer for a deactivated account, rather than
-            // issued a token the authority check turns away on first use and a refresh token refresh
-            // would refuse. The code was right, so it is spent: saved before refusing, it cannot be
-            // presented again. (A deleted account has no number and is never found by one.)
-            await db.SaveChangesAsync(cancellationToken);
-
-            logger.LogWarning("Code sign-in refused for inactive diner {DinerUserId}.", diner.Id);
-
-            throw SignInRejected();
-        }
-
-        var isNewAccount = diner is null;
-
-        if (diner is null)
-        {
-            // First successful verification is the sign-up. There is no separate registration
-            // step, because a separate registration step is a step people abandon.
-            diner = new DinerUser(phone, locale);
-            db.DinerUsers.Add(diner);
-        }
-        else
-        {
-            // An account that registered with this number typed - or one this flow created - is
-            // signed in, not duplicated. The number is the account either way.
-            diner.SetLocale(locale);
-        }
-
-        // The one thing only this flow can say: a code sent to the number came back. A registered
-        // account's number is unverified until this line runs for it once. The first time, on an
-        // account that registered with a password, the password was the registrant's and not
-        // necessarily the number's owner's: it is cleared, and every session the registrant holds
-        // goes with it - unless the request came in holding this account's own token, which makes
-        // the registrant and the phone's holder the same person. Revoked before this sign-in's token
-        // is issued, so the new one survives.
-        var verifierIsAccountHolder = callerDinerUserId is { } caller && caller == diner.Id;
-
-        // Displacing also bumps the session generation, which is what ends the registrant's access
-        // tokens - the refresh tokens below are only half of "every session".
-        var displaced = diner.ProveNumberByCode(nowUtc, verifierIsAccountHolder);
-
-        if (displaced)
-        {
-            await refreshTokens.RevokeAllForSubjectAsync(
-                RefreshTokenSubject.Diner, diner.Id, "phone-proved-by-another", cancellationToken);
-
-            logger.LogWarning(
-                "Diner {DinerUserId}'s unverified number was proved by code; the registered password was cleared and its sessions revoked.",
-                diner.Id);
-        }
-
-        diner.RecordSignIn(nowUtc);
-
-        // Minted under the generation this save commits, so the owner's token is the one that works.
-        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        if (displaced)
-        {
-            // After the commit, not before: evicting first leaves a moment in which a request from
-            // the registrant re-reads the old generation and caches it for five seconds. The token
-            // above has not left this process yet, so nobody can present it before this line runs.
-            authority.InvalidateDiner(diner.Id);
-        }
-
-        logger.LogInformation(
-            "Diner {DinerUserId} signed in by phone verification. New account: {IsNewAccount}.",
-            diner.Id, isNewAccount);
-
-        return new DinerSignInResult(
-            accessToken, refreshToken, tokens.AccessTokenSeconds, diner.Id, isNewAccount);
+        // Everything after the credential is the same for both doors - find or create the account,
+        // refuse a deactivated one, prove the number, mint tokens - and lives in one place so the
+        // Telegram bot cannot drift from the code. It saves; the consumed code above goes with it.
+        return await signIn.SignInProvedNumberAsync(
+            phone, locale, callerDinerUserId, nowUtc, channel: "code", cancellationToken);
     }
 
     public async Task<DinerSignInResult> RegisterAsync(

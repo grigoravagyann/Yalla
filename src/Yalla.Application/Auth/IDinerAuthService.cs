@@ -76,7 +76,7 @@ public interface IDinerAuthService
     /// <remarks>
     /// On the first proof of a registered number, the registered password and every session are
     /// cleared unless <paramref name="callerDinerUserId"/> names that same account - see
-    /// <c>DinerUser.ProveNumberByCode</c>.
+    /// <c>DinerUser.ProveNumber</c>.
     /// </remarks>
     /// <param name="phoneE164">The number, in E.164.</param>
     /// <param name="code">The six digits.</param>

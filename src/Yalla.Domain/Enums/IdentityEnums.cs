@@ -51,3 +51,22 @@ public enum RefreshTokenSubject
     /// <summary>A <c>StaffMember</c> holding email-and-password credentials.</summary>
     VenueUser = 2,
 }
+
+/// <summary>
+/// Where one Telegram phone-verification challenge is in its life. Stored as the integer; never
+/// renumber.
+/// </summary>
+public enum TelegramVerificationStatus
+{
+    /// <summary>Issued; waiting for the bot to be handed the person's contact.</summary>
+    Pending = 1,
+
+    /// <summary>The bound Telegram user shared their own number. Claimable by the app.</summary>
+    Verified = 2,
+
+    /// <summary>Claimed: tokens were issued against it. Finished.</summary>
+    Consumed = 3,
+
+    /// <summary>Found past its deadline before it was consumed. Finished.</summary>
+    Expired = 4,
+}

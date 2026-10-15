@@ -55,6 +55,15 @@ public class PersistedEnumValueTests
     /// every existing staff row still means what it meant.
     /// </summary>
     [Fact]
+    public void Telegram_verification_status_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)TelegramVerificationStatus.Pending);
+        Assert.Equal(2, (int)TelegramVerificationStatus.Verified);
+        Assert.Equal(3, (int)TelegramVerificationStatus.Consumed);
+        Assert.Equal(4, (int)TelegramVerificationStatus.Expired);
+    }
+
+    [Fact]
     public void Staff_role_values_are_pinned_and_the_platform_tier_displaced_nobody()
     {
         Assert.Equal(0, (int)StaffRole.Unknown);
@@ -296,7 +305,8 @@ public class PersistedEnumValueTests
             nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
-            nameof(TableSessionSource), nameof(TableShape), nameof(TableStatus), nameof(VenueType),
+            nameof(TableSessionSource), nameof(TableShape), nameof(TableStatus), nameof(TelegramVerificationStatus),
+            nameof(VenueType),
         ];
 
         Assert.Equal(covered.OrderBy(n => n), declared);

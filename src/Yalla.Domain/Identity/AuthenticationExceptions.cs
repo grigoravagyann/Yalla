@@ -66,3 +66,18 @@ public sealed class VerificationCodeInvalidException(int attemptsRemaining, stri
     /// <summary>Tries left on the live code. Zero when there is none, or the last one was just spent.</summary>
     public int AttemptsRemaining { get; } = attemptsRemaining;
 }
+
+/// <summary>
+/// A Telegram verification challenge that cannot be claimed: unknown, past its deadline, or
+/// already claimed. HTTP 410.
+/// </summary>
+/// <remarks>
+/// One answer for all three on purpose. A challenge id is a capability the app was handed moments
+/// ago; whether a particular guid was ever issued, or was spent, is not something an anonymous
+/// caller polling with somebody else's id should learn. The app's response is the same in every
+/// case: start again.
+/// </remarks>
+public sealed class TelegramVerificationExpiredException()
+    : AuthenticationFailedException(
+        "telegram-verification-expired",
+        "That Telegram verification is no longer available. Start again from the app.");

@@ -183,7 +183,7 @@ public class DinerAccountRulesTests
     {
         var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
 
-        Assert.True(diner.ProveNumberByCode(Now));
+        Assert.True(diner.ProveNumber(Now));
 
         Assert.False(diner.HasPassword);
         Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
@@ -195,7 +195,7 @@ public class DinerAccountRulesTests
     {
         var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
 
-        Assert.False(diner.ProveNumberByCode(Now, verifierIsAccountHolder: true));
+        Assert.False(diner.ProveNumber(Now, verifierIsAccountHolder: true));
 
         Assert.True(diner.HasPassword);
         Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
@@ -205,10 +205,10 @@ public class DinerAccountRulesTests
     public void A_code_to_an_already_proved_number_keeps_the_password()
     {
         var diner = DinerUser.Register("+37411223344", "hy", "Ani", "ani", "ani@example.test", "hash");
-        diner.ProveNumberByCode(Now);
+        diner.ProveNumber(Now);
         diner.SetPassword("hash-set-after-proof");
 
-        Assert.False(diner.ProveNumberByCode(Now.AddDays(1)));
+        Assert.False(diner.ProveNumber(Now.AddDays(1)));
 
         Assert.True(diner.HasPassword);
         Assert.Equal(Now, diner.PhoneVerifiedAtUtc);
@@ -219,7 +219,7 @@ public class DinerAccountRulesTests
     {
         var diner = new DinerUser("+37411223344", "hy");
 
-        Assert.False(diner.ProveNumberByCode(Now));
+        Assert.False(diner.ProveNumber(Now));
         Assert.True(diner.IsPhoneVerified);
     }
 
