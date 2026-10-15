@@ -1,0 +1,34 @@
+# The one public entry point. {$DOMAIN} comes from compose.yaml, which takes it from .env.
+#
+# A bare hostname as the site address means automatic HTTPS: Caddy obtains and renews the
+# certificate itself (Let's Encrypt, falling back to ZeroSSL), keeps it in the caddy_data volume,
+# and answers plain HTTP on 80 with a redirect to 443. For that to work the A record for the
+# domain has to point at this host and 80/443 have to be open before the first `up` - see
+# README.md.
+#
+# Caddy's reverse_proxy adds X-Forwarded-For and X-Forwarded-Proto on its own; the API trusts
+# them from this network (ForwardedHeaders__KnownNetworks__0 in compose.yaml). Do not strip them
+# and do not add header_up lines that let a client's own X-Forwarded-* through.
+{$DOMAIN} {
+	encode gzip
+
+	# The API owns these three prefixes. /swagger is 404 from the API unless Swagger__Enabled is
+	# set, so routing it costs nothing; /health is the readiness probe. Everything else is the
+	# web image, which serves the SPA fallback and sends the Content-Security-Policy header
+	# itself - no security headers are added here, so there is exactly one place they live.
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle /swagger* {
+		reverse_proxy api:8080
+	}
+
+	handle /health {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+}

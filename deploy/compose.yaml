@@ -1,0 +1,159 @@
+# Yalla on one Linux host, one public hostname.
+#
+# Five containers, one of which exits on purpose:
+#
+#   caddy    the only thing listening on the host. Terminates TLS for ${DOMAIN} with a certificate
+#            it obtains itself, sends /api/*, /swagger* and /health to the API and everything else
+#            to the web image. Same origin for both, so no CORS configuration anywhere.
+#   web      the console's static build (built by the frontend repository; only referenced here).
+#   api      the ASP.NET Core API, built from src/Yalla.Api/Dockerfile. Reachable from caddy alone.
+#   migrate  runs the EF migration bundle shipped inside the api image, once, then exits 0. The API
+#            waits for that exit: outside Development it never migrates on start (Program.cs), so
+#            this is the deploy step that gives a fresh database its schema and an updated image
+#            its new columns before a single request is served.
+#   sql      SQL Server 2022 Express. Not published on a host port.
+#
+# Every value comes from .env in this folder - copy .env.example and fill it in. Compose reads
+# that file twice: once to interpolate ${...} in this file, and once as the api's env_file, where
+# ${DOMAIN} inside a value is expanded too (Compose 2.24 or later; `docker compose version`).
+# deploy.sh drives the whole thing; `docker compose up -d` on its own also works.
+
+name: yalla
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+    networks:
+      - yalla
+
+  web:
+    image: ghcr.io/grigoravagyann/yalla-web:${YALLA_VERSION:-latest}
+    restart: unless-stopped
+    networks:
+      - yalla
+
+  api:
+    image: ghcr.io/grigoravagyann/yalla-api:${YALLA_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+
+      # Without a known HTTPS port, the Production host's HTTPS redirection logs a warning and
+      # does nothing. Caddy owns 443, so that is where a stray plain-HTTP request should go.
+      ASPNETCORE_HTTPS_PORT: "443"
+
+      # Who may tell the API the caller's real address and scheme (README.md, "Behind a reverse
+      # proxy"). Caddy's container address is not stable - Docker hands it out at start - so the
+      # trusted set is the compose network's whole subnet, pinned below under `networks`. Every
+      # address in it is one of these five containers, and only caddy ever talks to the API.
+      # 127.0.0.1 as well, for the health check beneath: it runs inside the api container and
+      # has to present X-Forwarded-Proto: https or the Production host would redirect it to 443.
+      ForwardedHeaders__KnownNetworks__0: ${YALLA_SUBNET:-172.28.0.0/16}
+      ForwardedHeaders__KnownProxies__0: 127.0.0.1
+      ForwardedHeaders__ForwardLimit: "1"
+    volumes:
+      - photos:/app/.photos
+      - api_logs:/app/Logs
+    depends_on:
+      sql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health includes a database round-trip (HealthCheckExtensions.cs), so this is readiness,
+      # not liveness: a database outage shows here as `unhealthy`, which is the honest answer. The
+      # aspnet image carries bash and no curl, hence /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080
+          && printf 'GET /health HTTP/1.0\r\nHost: localhost\r\nX-Forwarded-Proto: https\r\n\r\n' >&3
+          && head -1 <&3 | grep -q ' 200 '
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Startup includes the platform-admin seed and the first database connection; a cold SQL
+      # Server next door makes that slow. Nothing is marked unhealthy inside this window.
+      start_period: 90s
+    networks:
+      - yalla
+
+  migrate:
+    image: ghcr.io/grigoravagyann/yalla-api:${YALLA_VERSION:-latest}
+    restart: "no"
+    env_file: .env
+    environment:
+      # YallaDbContextFactory reads this and nothing else: the bundle never boots the API, so none
+      # of the API's startup gates apply to it. Same database, same credentials as the API.
+      YALLA_MIGRATIONS_CONNECTION: ${ConnectionStrings__Yalla:?set ConnectionStrings__Yalla in .env}
+    entrypoint: ["/app/efbundle"]
+    command: ["--verbose"]
+    depends_on:
+      sql:
+        condition: service_healthy
+    networks:
+      - yalla
+
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Express
+      MSSQL_SA_PASSWORD: ${SQL_SA_PASSWORD:?set SQL_SA_PASSWORD in .env}
+      # Express caps a database at 10 GB and the engine at ~1.4 GB of buffer pool, which is far more
+      # than this schema needs. The container-level cap below is the one that protects the host:
+      # SQL Server grows into whatever it is given.
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    volumes:
+      - mssql_data:/var/opt/mssql
+      - backups:/var/opt/mssql/backups
+    healthcheck:
+      # The same probe .github/workflows/backend.yml uses: the image ships sqlcmd at this path, and
+      # -C trusts its self-signed certificate. A query, not a port check - SQL Server accepts TCP
+      # before it accepts logins.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+    networks:
+      - yalla
+
+networks:
+  yalla:
+    # Pinned so the API's ForwardedHeaders__KnownNetworks__0 above names a range that is actually
+    # this network. Change YALLA_SUBNET in .env if it collides with something on the host.
+    ipam:
+      config:
+        - subnet: ${YALLA_SUBNET:-172.28.0.0/16}
+
+volumes:
+  caddy_data:    # certificates and ACME account - losing it means re-issuing, nothing worse
+  caddy_config:
+  mssql_data:    # the database
+  backups:       # .bak files written by `deploy.sh backup`
+  photos:        # /app/.photos: every uploaded photo, content-addressed (README.md, "Photos")
+  api_logs:      # /app/Logs: Serilog's daily files; `deploy.sh logs` reads the console instead

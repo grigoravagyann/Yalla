@@ -20,6 +20,12 @@ COPY ["src/Yalla.Application/Yalla.Application.csproj", "src/Yalla.Application/"
 COPY ["src/Yalla.Domain/Yalla.Domain.csproj", "src/Yalla.Domain/"]
 RUN dotnet restore "src/Yalla.Api/Yalla.Api.csproj"
 
+# The EF tool is pinned by .config/dotnet-tools.json (dotnet-ef 9.0.9, rollForward: false), the
+# same file CI and verify.sh restore. Restored here, in the cached layer, so a source change does
+# not re-download it.
+COPY [".config/dotnet-tools.json", ".config/"]
+RUN dotnet tool restore
+
 COPY . .
 WORKDIR "/src/src/Yalla.Api"
 RUN dotnet build "./Yalla.Api.csproj" -c $BUILD_CONFIGURATION -o /app/build
@@ -28,9 +34,29 @@ FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
 RUN dotnet publish "./Yalla.Api.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
+# The migration bundle: one self-contained executable that applies every migration still pending
+# against the database it is pointed at, and nothing else. Outside Development the API never
+# migrates on start (Program.cs, "The way in to a fresh database"), so a deployment has to - and
+# this is what deploy/compose.yaml's `migrate` service runs, once, before the API starts.
+#
+# No --startup-project, as in verify.sh: YallaDbContextFactory exists so the tools never boot the
+# API. The bundle therefore also honours that factory's YALLA_MIGRATIONS_CONNECTION, which is how
+# the migrate service names the real database; `--connection` on the command line overrides it.
+# Self-contained, so the final image's runtime version is irrelevant to it.
+FROM build AS bundle
+ARG BUILD_CONFIGURATION=Release
+WORKDIR /src
+RUN dotnet tool run dotnet-ef migrations bundle \
+        --project src/Yalla.Infrastructure \
+        --configuration $BUILD_CONFIGURATION \
+        --self-contained -r linux-x64 \
+        --output /out/efbundle \
+    && /out/efbundle --help >/dev/null
+
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+COPY --from=bundle /out/efbundle /app/efbundle
 
 # The photo root and the Serilog file sink are both relative to the content root, and
 # LocalDiskPhotoStorage refuses to start when its root is not writable - deliberately, because a

@@ -66,3 +66,7 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# The deploy package is read on a Linux host by Caddy and Compose; keep it LF too.
+deploy/Caddyfile text eol=lf
+deploy/.env.example text eol=lf
