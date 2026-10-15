@@ -24,6 +24,14 @@ public sealed record VerifyDinerCodeRequest(
     [Required] string Code,
     string? LocaleCode = null);
 
+/// <summary>Starts a Telegram phone verification.</summary>
+/// <param name="LocaleCode">Language for the bot's messages and the account, if one is created. Falls back to <c>Accept-Language</c>, then Armenian.</param>
+public sealed record StartTelegramVerificationRequest(string? LocaleCode = null);
+
+/// <summary>Polls a Telegram phone verification.</summary>
+/// <param name="LocaleCode">Language to store against the account. Falls back to <c>Accept-Language</c>, then Armenian.</param>
+public sealed record ClaimTelegramVerificationRequest(string? LocaleCode = null);
+
 /// <summary>Body of <c>POST /api/auth/diner/register</c>.</summary>
 /// <remarks>
 /// The annotations here reach the schema and nothing else: this route sits outside the validation

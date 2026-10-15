@@ -53,6 +53,9 @@ public class EveryRouteIsAuthorizedTests
         ["POST /api/auth/venue/sign-out"] = "Revokes a refresh handle, which is the credential.",
         ["POST /api/auth/venue/request-password-reset"] = "Somebody who forgot their password has no token.",
         ["POST /api/auth/venue/reset-password"] = "The emailed reset token is the credential.",
+        ["POST /api/auth/diner/telegram/start"] = "Asking for a Telegram deep link is how a diner without a token starts proving a number.",
+        ["POST /api/auth/diner/telegram/{challengeId:guid}/claim"] = "Exchanges a challenge the bot verified for the first token; the challenge id is the credential.",
+        ["POST /api/telegram/webhook"] = "Telegram's servers call it; the X-Telegram-Bot-Api-Secret-Token header is the credential, checked in the handler.",
         ["GET /api/photos/{photoId:guid}/{variant}"] = "Photo bytes are linked from public pages and the app's image tags, which send no header.",
         ["* /health"] = "A liveness probe must not depend on a credential.",
         ["GET /api/branches/{branchId:guid}/menu"] = "The menu behind the table's QR code, read before anybody has scanned or signed in.",
@@ -176,7 +179,9 @@ public class EveryRouteIsAuthorizedTests
     /// <summary>Every route in the app's routing table, one row per HTTP method.</summary>
     private static List<RouteInfo> Routes()
     {
-        using var factory = new YallaApiFactory();
+        // With the Telegram door switched on, so its three routes are walked too: off, they are
+        // not mapped at all, and a check that never sees them cannot say they are guarded.
+        using var factory = new YallaApiFactory().WithTelegram();
         using var scope = factory.Services.CreateScope();
 
         var source = scope.ServiceProvider.GetRequiredService<EndpointDataSource>();

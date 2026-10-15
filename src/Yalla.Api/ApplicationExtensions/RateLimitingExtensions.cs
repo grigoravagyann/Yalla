@@ -44,6 +44,28 @@ public static class RateLimitingExtensions
     public const string PinPolicy = "auth-pin";
 
     /// <summary>
+    /// The Telegram claim poll, <c>POST /api/auth/diner/telegram/{challengeId}/claim</c>.
+    /// </summary>
+    /// <remarks>
+    /// The app polls it every couple of seconds for up to five minutes, so the general
+    /// <see cref="AuthPolicy"/> budget of ten a minute would refuse an honest poll on its
+    /// twenty-first second. Sixty a minute per address fits one app polling as told; it does not
+    /// fit somebody sweeping guids, which is what the 410-for-everything answer is also for.
+    /// </remarks>
+    public const string TelegramClaimPolicy = "auth-telegram-claim";
+
+    /// <summary>
+    /// Telegram's webhook, <c>POST /api/telegram/webhook</c>.
+    /// </summary>
+    /// <remarks>
+    /// Called by Telegram's servers, from a handful of addresses, for every message to the bot -
+    /// so this is a ceiling on the bot's whole traffic rather than a per-person budget. Generous,
+    /// because a 429 here makes Telegram retry, and finite, because the secret header is checked
+    /// inside the handler and a flood of wrong-secret calls should cost the handler nothing.
+    /// </remarks>
+    public const string TelegramWebhookPolicy = "telegram-webhook";
+
+    /// <summary>
     /// The availability query: anonymous, and the hottest endpoint in the product.
     /// </summary>
     /// <remarks>
@@ -186,6 +208,12 @@ public static class RateLimitingExtensions
         var codeRequestWindowSeconds = section.GetValue<int?>("CodeRequestWindowSeconds") ?? 300;
         var pinPermitLimit = section.GetValue<int?>("PinPermitLimit") ?? 10;
         var pinWindowSeconds = section.GetValue<int?>("PinWindowSeconds") ?? 60;
+
+        // The Telegram claim poll per address, and the webhook per address (Telegram's).
+        var telegramClaimPermitLimit = section.GetValue<int?>("TelegramClaimPermitLimit") ?? 60;
+        var telegramClaimWindowSeconds = section.GetValue<int?>("TelegramClaimWindowSeconds") ?? 60;
+        var telegramWebhookPermitLimit = section.GetValue<int?>("TelegramWebhookPermitLimit") ?? 600;
+        var telegramWebhookWindowSeconds = section.GetValue<int?>("TelegramWebhookWindowSeconds") ?? 60;
 
         // Thirty a minute per address is a person browsing; it is not a crawler walking the estate.
         var publicPermitLimit = section.GetValue<int?>("PublicPermitLimit") ?? 30;
@@ -355,6 +383,26 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = dinerWritePermitLimit,
                         Window = TimeSpan.FromSeconds(dinerWriteWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            options.AddPolicy(TelegramClaimPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = telegramClaimPermitLimit,
+                        Window = TimeSpan.FromSeconds(telegramClaimWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            options.AddPolicy(TelegramWebhookPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = telegramWebhookPermitLimit,
+                        Window = TimeSpan.FromSeconds(telegramWebhookWindowSeconds),
                         QueueLimit = 0,
                     }));
 

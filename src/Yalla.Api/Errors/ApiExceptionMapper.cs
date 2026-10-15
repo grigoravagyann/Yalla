@@ -270,6 +270,12 @@ internal static class ApiExceptionMapper
                 ["attemptsRemaining"] = e.AttemptsRemaining,
             }),
 
+        // A Telegram challenge the app can no longer claim. 410, not 401: nothing was presented
+        // wrongly, the thing polled for is gone, and the app starts a new one. Must stay ABOVE the
+        // general authentication arm it derives from.
+        TelegramVerificationExpiredException e => new MappedError(
+            StatusCodes.Status410Gone, ErrorCodes.TelegramVerificationExpired, e.Message, LogAsError: false),
+
         // Every other sign-in failure. The slug comes from the exception, which is deliberately
         // never specific enough to say whether an account exists - see AuthenticationFailedException.
         AuthenticationFailedException e => new MappedError(
