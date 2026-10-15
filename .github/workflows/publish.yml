@@ -16,6 +16,9 @@ on:
   push:
     branches: [master]
     tags: ['v*']
+  # Manual runs build and push a branch's image (tagged by sha only) so a
+  # deploy change can be proven in CI before it merges.
+  workflow_dispatch:
 
 concurrency:
   group: publish-${{ github.ref }}
