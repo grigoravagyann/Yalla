@@ -1,0 +1,20 @@
+# What `COPY . .` in src/Yalla.Api/Dockerfile must not pick up.
+#
+# bin/ and obj/ above all: a Windows checkout carries obj/project.assets.json files resolved
+# against the host's NuGet cache, and a Linux restore inside the image that finds them
+# builds against the wrong graph or fails outright. Everything else here is simply not an
+# input to the image - and the deploy folder holds the server's .env, which must never be
+# copied into a layer.
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+artifacts/
+deploy/
+docs/
+tests/
+*.md
+*.sh
+.env
+.env.*
