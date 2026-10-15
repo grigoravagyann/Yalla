@@ -323,8 +323,10 @@ and ends in exactly the same place.
 2. The bot (`/start nonce`) binds the challenge to the Telegram account that opened it and shows
    one button: *share my phone number*. Telegram answers that button with the account's own
    contact card.
-3. The contact verifies the challenge. The bot says so, takes the keyboard away, and offers an
-   inline button `yalla://verify?tg={challengeId}` that reopens the app on this challenge.
+3. The contact verifies the challenge. The bot says so - *go back to the Yalla app* - and takes
+   the keyboard away. (No button back into the app: Telegram's inline buttons accept only
+   http(s) and tg:// URLs and refused `yalla://`. An HTTPS universal link can be added once
+   yalla.am hosts the `.well-known` association files.)
 4. The app polls `POST /api/auth/diner/telegram/{challengeId}/claim` `{ localeCode? }` every
    `pollAfterMs`: `200 { state: "pending" }` until the contact arrives, then once
    `200 { state: "verified", signIn, phoneE164 }` where `signIn` is **exactly** `verify-code`'s

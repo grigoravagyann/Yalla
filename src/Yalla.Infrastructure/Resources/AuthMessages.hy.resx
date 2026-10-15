@@ -87,10 +87,4 @@
   <data name="TelegramUnknownCommand" xml:space="preserve">
     <value>Այս բոտը միայն հաստատում է հեռախոսահամարները Yalla-ի համար։ Սկսելու համար բացեք հղումը Yalla հավելվածից։</value>
   </data>
-  <data name="TelegramOpenApp" xml:space="preserve">
-    <value>Սեղմեք կոճակը՝ Yalla վերադառնալու համար։</value>
-  </data>
-  <data name="TelegramOpenAppButton" xml:space="preserve">
-    <value>Բացել Yalla-ն</value>
-  </data>
 </root>

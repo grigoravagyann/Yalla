@@ -87,10 +87,4 @@
   <data name="TelegramUnknownCommand" xml:space="preserve">
     <value>This bot only verifies phone numbers for Yalla. Open the link from the Yalla app to start.</value>
   </data>
-  <data name="TelegramOpenApp" xml:space="preserve">
-    <value>Tap the button to return to Yalla.</value>
-  </data>
-  <data name="TelegramOpenAppButton" xml:space="preserve">
-    <value>Open Yalla</value>
-  </data>
 </root>

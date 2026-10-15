@@ -87,10 +87,4 @@
   <data name="TelegramUnknownCommand" xml:space="preserve">
     <value>Этот бот только подтверждает номера телефонов для Yalla. Откройте ссылку из приложения Yalla, чтобы начать.</value>
   </data>
-  <data name="TelegramOpenApp" xml:space="preserve">
-    <value>Нажмите кнопку, чтобы вернуться в Yalla.</value>
-  </data>
-  <data name="TelegramOpenAppButton" xml:space="preserve">
-    <value>Открыть Yalla</value>
-  </data>
 </root>

@@ -116,11 +116,3 @@ public sealed record TelegramRequestContactKeyboard(string ButtonText) : Telegra
 
 /// <summary>Removes the reply keyboard once it has done its job.</summary>
 public sealed record TelegramRemoveKeyboard : TelegramReplyMarkup;
-
-/// <summary>
-/// A single inline button under the message that opens a link - the one that takes the person
-/// back into the app once their number is verified.
-/// </summary>
-/// <param name="ButtonText">The button's label, in the person's language.</param>
-/// <param name="Url">What it opens.</param>
-public sealed record TelegramInlineLinkKeyboard(string ButtonText, string Url) : TelegramReplyMarkup;

@@ -74,12 +74,6 @@ internal static class AuthMessages
     /// <summary>The bot's reply once the contact verified the challenge: go back to the app.</summary>
     public static string TelegramVerified(string localeCode) => Format(localeCode, "TelegramVerified");
 
-    /// <summary>The text above the button that reopens the app on the verified challenge.</summary>
-    public static string TelegramOpenApp(string localeCode) => Format(localeCode, "TelegramOpenApp");
-
-    /// <summary>The label of that inline button.</summary>
-    public static string TelegramOpenAppButton(string localeCode) => Format(localeCode, "TelegramOpenAppButton");
-
     /// <summary>The one answer for an unknown, expired, spent or somebody else's link.</summary>
     public static string TelegramLinkExpired(string localeCode) => Format(localeCode, "TelegramLinkExpired");
 

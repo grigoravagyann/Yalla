@@ -132,12 +132,10 @@ public class TelegramVerificationFlowTests(SqlServerFixture fixture)
         var contact = await TelegramTestHost.PostWebhookAsync(client, TelegramTestHost.ContactUpdate(Ani, Ani, phone[1..]));
         Assert.Equal(HttpStatusCode.OK, contact.StatusCode);
 
-        // Two replies: the keyboard taken away, then the button back into the app on this challenge.
-        Assert.Equal(AuthMessages.TelegramVerified("en"), bot.Sent[^2].Text);
-        Assert.IsType<TelegramRemoveKeyboard>(bot.Sent[^2].Markup);
-        var open = Assert.IsType<TelegramInlineLinkKeyboard>(bot.Last.Markup);
-        Assert.Equal($"yalla://verify?tg={challengeId}", open.Url);
-        Assert.Equal(AuthMessages.TelegramOpenAppButton("en"), open.ButtonText);
+        // One reply: the confirmation, keyboard taken away. It is the last thing the bot says.
+        Assert.Equal(2, bot.Sent.Count);
+        Assert.Equal(AuthMessages.TelegramVerified("en"), bot.Last.Text);
+        Assert.IsType<TelegramRemoveKeyboard>(bot.Last.Markup);
 
         // The app's next poll gets exactly what verify-code returns.
         var claimed = await TelegramTestHost.ClaimAsync(client, challengeId);

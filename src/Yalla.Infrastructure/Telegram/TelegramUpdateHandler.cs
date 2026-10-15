@@ -182,20 +182,13 @@ internal sealed class TelegramUpdateHandler(
 
         logger.LogInformation("Telegram challenge {ChallengeId} verified by user {TelegramUserId}.", challenge.Id, from.Id);
 
-        // Two replies, because Telegram allows one markup per message: the first takes the contact
-        // keyboard away, the second carries the button that opens the app on this challenge so it
-        // resumes polling even when the person came to Telegram from somewhere else.
+        // One reply, and no button back into the app. An inline-keyboard button with a
+        // yalla://verify?tg=... URL was tried and Telegram answered 400 "Unsupported URL protocol":
+        // inline buttons accept only http(s) and tg:// links. An HTTPS universal link that opens the
+        // app can take its place once yalla.am hosts the .well-known association files. Until then
+        // the text tells the person to go back to the app, which is already polling.
         await ReplyAsync(chatId, AuthMessages.TelegramVerified(challenge.LocaleCode), new TelegramRemoveKeyboard(), ct);
-
-        await ReplyAsync(
-            chatId,
-            AuthMessages.TelegramOpenApp(challenge.LocaleCode),
-            new TelegramInlineLinkKeyboard(AuthMessages.TelegramOpenAppButton(challenge.LocaleCode), AppLink(challenge.Id)),
-            ct);
     }
-
-    /// <summary>The app's deep link back into this challenge: <c>yalla://verify?tg={challengeId}</c>.</summary>
-    internal static string AppLink(Guid challengeId) => $"yalla://verify?tg={challengeId}";
 
     private Task ReplyAsync(long chatId, string text, TelegramReplyMarkup? markup, CancellationToken ct) =>
         bot.SendMessageAsync(chatId, text, markup, ct);

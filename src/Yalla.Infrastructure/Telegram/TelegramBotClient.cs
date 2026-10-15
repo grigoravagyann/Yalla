@@ -53,13 +53,6 @@ internal sealed class TelegramBotClient(
             case TelegramRemoveKeyboard:
                 payload["reply_markup"] = new { remove_keyboard = true };
                 break;
-
-            case TelegramInlineLinkKeyboard link:
-                payload["reply_markup"] = new
-                {
-                    inline_keyboard = new[] { new[] { new { text = link.ButtonText, url = link.Url } } },
-                };
-                break;
         }
 
         using var _ = await CallAsync("sendMessage", payload, ct);

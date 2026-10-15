@@ -36,6 +36,9 @@ public class TelegramStartupTests
             .With("Telegram:Enabled", "true")
             .With("Telegram:BotToken", "123:abc")
             .With("Telegram:BotUsername", "YallaTestBot")
+
+            // Pinned: a developer's user secrets may say LongPolling, which needs no secret.
+            .With("Telegram:Mode", "Webhook")
             .With("Telegram:WebhookSecret", "");
 
         Assert.Contains("Telegram:WebhookSecret", Flatten(Assert.ThrowsAny<Exception>(() => factory.Services)), StringComparison.Ordinal);

@@ -73,16 +73,12 @@ public class TelegramUpdateHandlerTests(SqlServerFixture fixture)
         Assert.Equal("+37411223344", stored.PhoneE164);
         Assert.Equal(Now, stored.VerifiedAtUtc);
 
-        // The keyboard is taken away with the confirmation, then a button reopens the app on this
-        // very challenge so it resumes polling wherever the person came from.
-        Assert.Equal(3, bot.Sent.Count);
-        Assert.Equal(AuthMessages.TelegramVerified("en"), bot.Sent[1].Text);
-        Assert.IsType<TelegramRemoveKeyboard>(bot.Sent[1].Markup);
-
-        var open = Assert.IsType<TelegramInlineLinkKeyboard>(bot.Sent[2].Markup);
-        Assert.Equal(AuthMessages.TelegramOpenApp("en"), bot.Sent[2].Text);
-        Assert.Equal(AuthMessages.TelegramOpenAppButton("en"), open.ButtonText);
-        Assert.Equal($"yalla://verify?tg={challengeId}", open.Url);
+        // One reply: the confirmation, which tells the person to go back to the app, with the
+        // contact keyboard taken away. No second message with an app link: Telegram refuses a
+        // yalla:// URL on an inline button (only http(s) and tg:// are accepted).
+        Assert.Equal(2, bot.Sent.Count);
+        Assert.Equal(AuthMessages.TelegramVerified("en"), bot.Last.Text);
+        Assert.IsType<TelegramRemoveKeyboard>(bot.Last.Markup);
     }
 
     [SkippableFact]

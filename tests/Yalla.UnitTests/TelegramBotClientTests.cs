@@ -66,12 +66,9 @@ public class TelegramBotClientTests
         using var plain = JsonDocument.Parse(handler.Requests[1].Body);
         Assert.False(plain.RootElement.TryGetProperty("reply_markup", out _));
 
-        await client.SendMessageAsync(42, "Back to the app", new TelegramInlineLinkKeyboard("Open Yalla", "yalla://verify?tg=abc"), CancellationToken.None);
-
-        using var inline = JsonDocument.Parse(handler.Requests[2].Body);
-        var button = inline.RootElement.GetProperty("reply_markup").GetProperty("inline_keyboard")[0][0];
-        Assert.Equal("Open Yalla", button.GetProperty("text").GetString());
-        Assert.Equal("yalla://verify?tg=abc", button.GetProperty("url").GetString());
+        // Exactly two markups exist. There is deliberately no inline-URL button: Telegram accepts
+        // only http(s) and tg:// there and refused the app's yalla:// link with a 400.
+        Assert.Equal(2, handler.Requests.Count);
     }
 
     [Fact]
