@@ -132,16 +132,16 @@ public class DinerSessionGenerationTests
 
         var honest = Registered("honest");
         Assert.Equal(0, honest.SessionGeneration);
-        Assert.False(honest.ProveNumberByCode(nowUtc, verifierIsAccountHolder: true));
+        Assert.False(honest.ProveNumber(nowUtc, verifierIsAccountHolder: true));
         Assert.Equal(0, honest.SessionGeneration);
 
         var squatted = Registered("squatted");
-        Assert.True(squatted.ProveNumberByCode(nowUtc));
+        Assert.True(squatted.ProveNumber(nowUtc));
         Assert.Equal(1, squatted.SessionGeneration);
         Assert.Null(squatted.PasswordHash);
 
         // Proving an already-proved number again ends nothing.
-        Assert.False(squatted.ProveNumberByCode(nowUtc));
+        Assert.False(squatted.ProveNumber(nowUtc));
         Assert.Equal(1, squatted.SessionGeneration);
     }
 

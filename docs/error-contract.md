@@ -248,6 +248,16 @@ mapping against right now, and this change was scoped to the filter. `time` is t
 be solved any other way: `00:00` is a legitimate booking time, so once it has bound to a
 non-nullable `TimeOnly` there is no value left that means "absent".
 
+### 410 `telegram-verification-expired`
+
+The one code that answers 410. `POST /api/auth/diner/telegram/{challengeId}/claim` says it for a
+challenge that is unknown, past its deadline, already claimed, or started under a different diner's
+token than the one claiming it - deliberately one answer for all four, because the id is a
+capability the app was handed moments ago and an anonymous poller with somebody else's id must not
+learn which of those it is. Not 401: nothing was presented wrongly; the thing polled for is gone.
+No `context`. The app's response is the same in every case: start again. See `docs/auth.md`,
+"Telegram verification".
+
 ### Which status, and why
 
 **422, collecting every violation** — the rule §2 already states. A refusal that can report all the

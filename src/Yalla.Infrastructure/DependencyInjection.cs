@@ -25,6 +25,8 @@ using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Media;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
+using Yalla.Application.Telegram;
+using Yalla.Infrastructure.Telegram;
 using Yalla.Infrastructure.Time;
 
 namespace Yalla.Infrastructure;
@@ -246,6 +248,9 @@ public static class DependencyInjection
         services.AddScoped<TokenIssuer>();
         services.AddScoped<RefreshTokenStore>();
 
+        // The account path both phone doors share - the code and the Telegram bot.
+        services.AddScoped<DinerPhoneSignIn>();
+
         services.AddScoped<IDinerAuthService, DinerAuthService>();
         services.AddScoped<IStaffAuthService, StaffAuthService>();
         services.AddScoped<IVenueUserAuthService, VenueUserAuthService>();
@@ -287,6 +292,98 @@ public static class DependencyInjection
         services.AddSingleton(new CredentialDeliveryReport(
             WritesCredentialsToLog: standInUsed && allowDevelopmentSecretsInResponses,
             DeliversNothing: standInUsed && !allowDevelopmentSecretsInResponses));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the Telegram verification bot: the options, the Bot API client, the update handler,
+    /// the start/claim service and the hosted service that registers the webhook or long-polls.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Always registers <see cref="TelegramOptions"/>, so the host can ask whether the door is on and
+    /// map its routes only then. Everything else is registered only when <c>Telegram:Enabled</c> is
+    /// true - and then the token, the bot username and (in webhook mode) the webhook secret must be
+    /// present, or startup fails here with instructions, exactly as a missing signing key does.
+    /// Running half-configured would mean a start endpoint that hands out links to a bot that cannot
+    /// answer.
+    /// </para>
+    /// <para>
+    /// <paramref name="isDevelopment"/> comes from the host, not from configuration: long polling is
+    /// a single-process, no-public-address mode, and two deployed instances polling the same bot
+    /// would each get half the conversation. It is refused anywhere else, whatever the setting says.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddTelegramVerification(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        bool isDevelopment)
+    {
+        var options = Bind<TelegramOptions>(configuration, TelegramOptions.SectionName);
+
+        services.AddSingleton(options);
+
+        if (!options.Enabled)
+        {
+            return services;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.BotToken))
+        {
+            throw new InvalidOperationException(
+                "Telegram:Enabled is true but Telegram:BotToken is missing. It is a secret and must never be "
+                + "committed: set it with `dotnet user-secrets set \"Telegram:BotToken\" \"<token from @BotFather>\" "
+                + "--project src/Yalla.Api` for local work, or as the Telegram__BotToken environment variable "
+                + "elsewhere. Or set Telegram:Enabled to false to leave the Telegram door unmapped.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.BotUsername) || options.BotUsername.StartsWith('@'))
+        {
+            throw new InvalidOperationException(
+                "Telegram:Enabled is true but Telegram:BotUsername is missing or starts with '@'. It is the "
+                + "bot's username without the '@', as @BotFather shows it, and goes into the deep link "
+                + "https://t.me/{username}?start=... (Telegram__BotUsername).");
+        }
+
+        if (options.IsLongPolling)
+        {
+            if (!isDevelopment)
+            {
+                throw new InvalidOperationException(
+                    "Telegram:Mode is LongPolling, which is only allowed in the Development environment: it is "
+                    + "one process polling api.telegram.org with no public address, and two deployed instances "
+                    + "would each receive half the conversation. Use Mode=Webhook with Telegram:WebhookSecret "
+                    + "and Telegram:WebhookPublicUrl.");
+            }
+        }
+        else if (!options.IsWebhook)
+        {
+            throw new InvalidOperationException(
+                $"Telegram:Mode is '{options.Mode}'. Use '{TelegramOptions.WebhookMode}' or, in Development only, "
+                + $"'{TelegramOptions.LongPollingMode}'.");
+        }
+        else if (string.IsNullOrWhiteSpace(options.WebhookSecret))
+        {
+            throw new InvalidOperationException(
+                "Telegram:Enabled is true in Webhook mode but Telegram:WebhookSecret is missing. It is the value "
+                + "Telegram sends as X-Telegram-Bot-Api-Secret-Token and the webhook refuses calls without it. "
+                + "It is a secret: set it with `dotnet user-secrets set \"Telegram:WebhookSecret\" \"<long random "
+                + "value>\" --project src/Yalla.Api` for local work, or as the Telegram__WebhookSecret environment "
+                + "variable elsewhere. `openssl rand -base64 48` produces a suitable value.");
+        }
+
+        if (options.ChallengeLifetime <= TimeSpan.Zero || options.PollAfterMs <= 0)
+        {
+            throw new InvalidOperationException(
+                "Telegram:ChallengeLifetime must be a positive duration and Telegram:PollAfterMs a positive number of milliseconds.");
+        }
+
+        // A typed client, like the Expo channel: one HttpClient per call, from the factory's pool.
+        services.AddHttpClient<ITelegramBotClient, TelegramBotClient>();
+        services.AddScoped<ITelegramUpdateHandler, TelegramUpdateHandler>();
+        services.AddScoped<ITelegramVerificationService, TelegramVerificationService>();
+        services.AddHostedService<TelegramHostedService>();
 
         return services;
     }

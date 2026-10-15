@@ -69,4 +69,22 @@
     <value>Open this link to choose a new password: {0}. It expires in {1} minutes. If you did not ask for this, ignore this message and nothing changes.</value>
     <comment>{0} is the reset link, {1} is how many minutes it lasts.</comment>
   </data>
+  <data name="TelegramAskForContact" xml:space="preserve">
+    <value>To sign in to Yalla, share your phone number with the tap of the button below. Yalla only receives the number Telegram has verified for this account.</value>
+  </data>
+  <data name="TelegramShareContactButton" xml:space="preserve">
+    <value>Share my phone number</value>
+  </data>
+  <data name="TelegramVerified" xml:space="preserve">
+    <value>Your number is verified. Go back to the Yalla app - it will sign you in on its own.</value>
+  </data>
+  <data name="TelegramLinkExpired" xml:space="preserve">
+    <value>That link has expired or was already used. Go back to the Yalla app and start again.</value>
+  </data>
+  <data name="TelegramContactMismatch" xml:space="preserve">
+    <value>That is not your own contact card. Tap the button below to share the number this Telegram account belongs to.</value>
+  </data>
+  <data name="TelegramUnknownCommand" xml:space="preserve">
+    <value>This bot only verifies phone numbers for Yalla. Open the link from the Yalla app to start.</value>
+  </data>
 </root>

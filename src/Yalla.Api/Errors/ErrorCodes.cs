@@ -324,6 +324,14 @@ public static class ErrorCodes
     /// </summary>
     public const string BookingsNotAccepted = "bookings-not-accepted";
 
+    /// <summary>
+    /// A Telegram verification challenge that cannot be claimed: unknown, past its deadline, already
+    /// claimed, or claimed under a different account than it was started under. HTTP 410, and one
+    /// answer for all four on purpose - the app's response is the same: start again. Minted by
+    /// <c>TelegramVerificationExpiredException</c>.
+    /// </summary>
+    public const string TelegramVerificationExpired = "telegram-verification-expired";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -386,6 +394,7 @@ public static class ErrorCodes
         CoverChanged => "Cover photo changed",
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
+        TelegramVerificationExpired => "Telegram verification no longer available",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

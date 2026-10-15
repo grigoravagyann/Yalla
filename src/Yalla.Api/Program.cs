@@ -45,6 +45,11 @@ builder.Services.AddAuthenticationServices(
 
 builder.AddYallaAuthentication();
 
+// The Telegram verification bot. Reads its token and webhook secret the same way the signing key is
+// read, and fails startup half-configured. Long polling - the laptop mode - is permitted by the host
+// from the environment, not by configuration, so a deployment cannot switch it on by mistake.
+builder.Services.AddTelegramVerification(configuration, isDevelopment: builder.Environment.IsDevelopment());
+
 // The first platform admin, from user secrets. In Development a missing email or password fails
 // startup here rather than silently creating a default account - except under the EF tooling,
 // which builds the host only to read the model and must not need a secret to do it.
@@ -169,6 +174,12 @@ app.MapYallaHealthChecks();
 // too: login for the uniform-401 reason above, register because its refusals are the domain's and
 // already name their field - and both carry the per-address limiter the code request does.
 app.MapAuthEndpoints();
+
+// The Telegram door: start and claim under /api/auth, and the bot's webhook. Mapped only when
+// Telegram:Enabled is true - off, the routes do not exist - and outside the validation group for
+// the same reasons as the rest of /api/auth. The webhook reads Telegram's own update body, which
+// no filter here should be validating.
+app.MapTelegramEndpoints();
 
 // Everything else, in one place rather than a filter line repeated in eleven map methods. An empty
 // prefix changes no route; what the group adds is the validation filter, so an endpoint added

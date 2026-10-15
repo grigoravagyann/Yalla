@@ -457,7 +457,9 @@ public class SwaggerExposureTests
 
     private static async Task<JsonDocument> GetDocumentAsync()
     {
-        await using var factory = new YallaApiFactory().WithSwagger(enabled: true);
+        // Telegram on: its routes are only mapped when the door is enabled, and the frontend
+        // generates its types from this document, so it has to describe the door too.
+        await using var factory = new YallaApiFactory().WithSwagger(enabled: true).WithTelegram();
         using var client = factory.CreateClient();
 
         var json = await client.GetStringAsync(DocumentPath);

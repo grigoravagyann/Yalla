@@ -69,4 +69,22 @@
     <value>Բացեք այս հղումը նոր գաղտնաբառ ընտրելու համար՝ {0}։ Հղումը վավեր է {1} րոպե։ Եթե դուք չեք պահանջել վերականգնում, պարզապես անտեսեք այս հաղորդագրությունը։</value>
     <comment>{0} is the reset link, {1} is how many minutes it lasts.</comment>
   </data>
+  <data name="TelegramAskForContact" xml:space="preserve">
+    <value>Yalla մուտք գործելու համար կիսվեք ձեր հեռախոսահամարով՝ սեղմելով ներքևի կոճակը։ Yalla-ն ստանում է միայն այն համարը, որը Telegram-ը հաստատել է այս հաշվի համար։</value>
+  </data>
+  <data name="TelegramShareContactButton" xml:space="preserve">
+    <value>Կիսվել իմ հեռախոսահամարով</value>
+  </data>
+  <data name="TelegramVerified" xml:space="preserve">
+    <value>Ձեր համարը հաստատված է։ Վերադարձեք Yalla հավելված՝ այն ինքնուրույն մուտք կգործի։</value>
+  </data>
+  <data name="TelegramLinkExpired" xml:space="preserve">
+    <value>Այս հղման ժամկետն անցել է կամ այն արդեն օգտագործվել է։ Վերադարձեք Yalla հավելված և սկսեք նորից։</value>
+  </data>
+  <data name="TelegramContactMismatch" xml:space="preserve">
+    <value>Սա ձեր սեփական կոնտակտը չէ։ Սեղմեք ներքևի կոճակը՝ այս Telegram հաշվին պատկանող համարով կիսվելու համար։</value>
+  </data>
+  <data name="TelegramUnknownCommand" xml:space="preserve">
+    <value>Այս բոտը միայն հաստատում է հեռախոսահամարները Yalla-ի համար։ Սկսելու համար բացեք հղումը Yalla հավելվածից։</value>
+  </data>
 </root>

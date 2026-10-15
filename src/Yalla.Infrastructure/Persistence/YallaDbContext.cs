@@ -95,6 +95,9 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<PhoneVerificationCode> PhoneVerificationCodes => Set<PhoneVerificationCode>();
 
+    /// <summary>Phone proofs in flight through the Telegram bot - see <see cref="TelegramVerification"/>.</summary>
+    public DbSet<TelegramVerification> TelegramVerifications => Set<TelegramVerification>();
+
     public DbSet<StaffDevice> StaffDevices => Set<StaffDevice>();
 
     public DbSet<StaffEnrolmentCode> StaffEnrolmentCodes => Set<StaffEnrolmentCode>();

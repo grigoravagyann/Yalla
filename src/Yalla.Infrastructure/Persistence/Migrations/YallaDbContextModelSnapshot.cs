@@ -622,6 +622,64 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("StaffSessions", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Identity.TelegramVerification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CallerDinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long?>("ChatId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("ConsumedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LocaleCode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("NonceHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("PhoneE164")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("RequestedFromAddress")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<long?>("TelegramUserId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("VerifiedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NonceHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TelegramVerifications_NonceHash");
+
+                    b.HasIndex("TelegramUserId", "Status", "ExpiresAtUtc");
+
+                    b.ToTable("TelegramVerifications", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Media.Photo", b =>
                 {
                     b.Property<Guid>("Id")

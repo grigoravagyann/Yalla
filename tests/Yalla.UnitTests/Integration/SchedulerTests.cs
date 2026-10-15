@@ -742,7 +742,7 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         var diner = new DinerUser($"+3749{unique}", accountLocale);
 
         // The code flow's account: the number came back with a code, so it may book.
-        diner.ProveNumberByCode(clock.UtcNow);
+        diner.ProveNumber(clock.UtcNow);
 
         db.DinerUsers.Add(diner);
         db.DinerDevices.Add(new DinerDevice(

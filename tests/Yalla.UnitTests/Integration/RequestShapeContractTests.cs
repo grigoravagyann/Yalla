@@ -249,7 +249,8 @@ public class RequestShapeContractTests
     /// </summary>
     private static IReadOnlyList<BodyEndpoint> RealEndpoints()
     {
-        using var factory = new YallaApiFactory();
+        // Telegram on, so the bodies the Telegram tests post resolve to the routes they target.
+        using var factory = new YallaApiFactory().WithTelegram();
 
         // Forces the host to build without needing a database: the routing table is available as
         // soon as the app is composed.

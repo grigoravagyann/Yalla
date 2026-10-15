@@ -473,7 +473,7 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
   `InvalidateDiner(id)` takes effect at once on the process that bumped the generation (called after
   the commit), and a token *newer* than the cached generation bypasses the cache.
 - **The generation is bumped by:** the number's owner proving it and displacing a registrant
-  (`DinerUser.ProveNumberByCode`); setting or changing a password; `SetActive(false)`;
+  (`DinerUser.ProveNumber`); setting or changing a password; `SetActive(false)`;
   `DELETE /api/diner/me`. A password rehash at sign-in does not bump it.
 - `PUT /api/diner/me/password` without a current password also compares the token's `sgen` with the
   stored row, past the cache. `DinerPhoneGate` (bookings, holds, tabs from a booking, reviews) also

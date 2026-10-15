@@ -86,7 +86,7 @@ public sealed class DinerUser : Entity
     /// </para>
     /// <para>
     /// Bumped by exactly four things: the number's owner proving it and displacing a registrant
-    /// (<see cref="ProveNumberByCode"/>), setting or changing the password
+    /// (<see cref="ProveNumber"/>), setting or changing the password
     /// (<see cref="SetPassword"/>), deactivation (<see cref="SetActive"/> with false) and deletion
     /// (<see cref="MarkDeleted"/>). It only ever goes up.
     /// </para>
@@ -246,13 +246,13 @@ public sealed class DinerUser : Entity
     /// stay too: they are not a way in without the password, and the verifier can change both.
     /// </para>
     /// </remarks>
-    /// <param name="atUtc">When the code came back.</param>
+    /// <param name="atUtc">When the proof arrived - the code came back, or the Telegram contact did.</param>
     /// <param name="verifierIsAccountHolder">
     /// True only when the verify request carried a valid diner token for this very account. Defaults
     /// to false, the displacing answer, so a caller that does not know cannot keep a squatter in.
     /// </param>
     /// <returns>True when a password was cleared and the account's sessions must be revoked.</returns>
-    public bool ProveNumberByCode(DateTime atUtc, bool verifierIsAccountHolder = false)
+    public bool ProveNumber(DateTime atUtc, bool verifierIsAccountHolder = false)
     {
         var verifiedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         var displacesRegistrant = PhoneVerifiedAtUtc is null && PasswordHash is not null && !verifierIsAccountHolder;

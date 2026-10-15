@@ -39,6 +39,20 @@ dotnet user-secrets set "PlatformAdmin:Email"     "you@yalla.app"             --
 dotnet user-secrets set "PlatformAdmin:Password"  "<long random value>"       --project src/Yalla.Api
 ```
 
+Optional, for the Telegram phone-verification door (off by default; off, its routes do not
+exist - see [`docs/auth.md`](docs/auth.md#telegram-verification)):
+
+```
+dotnet user-secrets set "Telegram:Enabled"      "true"              --project src/Yalla.Api
+dotnet user-secrets set "Telegram:BotToken"     "<from @BotFather>" --project src/Yalla.Api
+dotnet user-secrets set "Telegram:BotUsername"  "<name without @>"  --project src/Yalla.Api
+dotnet user-secrets set "Telegram:Mode"         "LongPolling"       --project src/Yalla.Api
+```
+
+Deployed environments use `Telegram__Enabled`, `Telegram__BotToken`, `Telegram__BotUsername`,
+`Telegram__WebhookSecret` and `Telegram__WebhookPublicUrl` instead, in `Webhook` mode;
+`LongPolling` is refused outside Development.
+
 Then:
 
 ```
