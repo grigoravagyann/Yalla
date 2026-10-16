@@ -107,7 +107,7 @@ public static class PlatformEndpoints
 
         group.MapPatch("/branches/{branchId:guid}", UpdateBranchAsync)
             .WithName("updateBranch")
-            .WithSummary("Name, address, coordinates, timezone, canvas size, active flag, tier")
+            .WithSummary("Name, address, coordinates, timezone, active flag, tier")
             .WithDescription(
                 "`subscriptionTier` is set here, per branch. Moving a branch to Free switches off "
                 + "tabs and ordering there; the tab endpoints answer `feature-not-enabled`. It is "

@@ -328,15 +328,6 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
 
-        // Pins placed on a cover the branch no longer has (K7). The key is always present - null
-        // means the branch has no cover now - because "absent" and "none" are different answers here.
-        Yalla.Application.BranchSettings.CoverChangedException e => new MappedError(
-            StatusCodes.Status409Conflict,
-            ErrorCodes.CoverChanged,
-            e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["currentCoverPhotoId"] = e.CurrentCoverPhotoId }),
-
         // A first review from a diner with no visit in the window (K8). Its own code rather than the
         // generic 403, because the app has something to say - "you can review a place after you have
         // been" - and the window rides along so it can say how long for.
@@ -405,7 +396,6 @@ internal static class ApiExceptionMapper
             Context: new Dictionary<string, object?>
             {
                 ["errors"] = e.Errors,
-                ["tablesOutsideCanvas"] = e.TablesOutsideCanvas,
                 ["duplicateLabels"] = e.DuplicateLabels,
             }),
 

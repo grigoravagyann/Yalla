@@ -375,8 +375,6 @@ internal sealed class PublicVenueQuery(
                 b.Latitude,
                 b.Longitude,
                 b.TimeZoneId,
-                b.FloorWidth,
-                b.FloorHeight,
                 VenueName = b.Venue.Name,
                 VenueSlug = b.Venue.Slug,
                 b.Venue.Type,
@@ -423,12 +421,28 @@ internal sealed class PublicVenueQuery(
             .Select(h => new OpeningHoursView(h.Day, h.OpensAt, h.ClosesAt, h.ClosesNextDay))
             .ToListAsync(cancellationToken);
 
-        var areas = await db.FloorAreas
+        var rooms = await db.FloorAreas
             .AsNoTracking()
             .Where(a => a.BranchId == branch.Id)
             .OrderBy(a => a.DisplayOrder)
-            .Select(a => new FloorAreaView(a.Id, a.Name, a.DisplayOrder))
+            .ThenBy(a => a.Name)
+            .Select(a => new { a.Id, a.Name, a.DisplayOrder })
             .ToListAsync(cancellationToken);
+
+        var roomPhotos = await db.FloorAreaPhotos
+            .AsNoTracking()
+            .Where(p => p.FloorArea.BranchId == branch.Id)
+            .OrderBy(p => p.Position)
+            .Select(p => new { p.FloorAreaId, p.Photo })
+            .ToListAsync(cancellationToken);
+
+        var areas = rooms
+            .Select(a => new FloorAreaView(
+                a.Id,
+                a.Name,
+                a.DisplayOrder,
+                [.. roomPhotos.Where(p => p.FloorAreaId == a.Id).Select(p => PhotoView.From(p.Photo))]))
+            .ToList();
 
         // Inactive tables are excluded, not flagged. The admin plan includes them so an editor can
         // show a table somebody just tried to delete; a diner has no use for a table that is not in
@@ -440,20 +454,23 @@ internal sealed class PublicVenueQuery(
             .Select(t => new PublicFloorTable(
                 t.Label,
                 t.Seats,
-                t.X,
-                t.Y,
-                t.Width,
-                t.Height,
-                t.RotationDegrees,
-                t.Shape,
                 t.FloorArea!.Name,
-                t.IsBookable,
+
+                // Offered to a diner only with a pin: a table nobody can tap on a room photo is not
+                // bookable from here, whatever the venue set - the booking service refuses it too.
+                // The pin counts only on a photo of the table's own room, as everywhere a diner books.
+                t.IsBookable
+                && t.PhotoId != null
+                && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId),
 
                 // IsFree, placeholder. Stitched on by the caller from a live read: the cached copy
                 // of this page must not carry a table's occupancy, or a shared link would freeze
                 // the room for five minutes. Positional because an expression tree cannot carry a
                 // named argument.
-                true))
+                true,
+                t.PhotoId,
+                t.PhotoX,
+                t.PhotoY))
             .ToListAsync(cancellationToken);
 
         var page = new PublicBranchPage(
@@ -474,7 +491,7 @@ internal sealed class PublicVenueQuery(
             // Every table the plan draws, bookable or not: the set the free count counts, so the
             // page's "x of y" is out of the room it shows.
             TableCount: tables.Count,
-            new PublicFloorPlan(branch.FloorWidth, branch.FloorHeight, areas, tables),
+            new PublicFloorPlan(areas, tables),
 
             // Placeholders. Both are read live by the caller and deliberately absent from the
             // cached plan, so a stale copy of either cannot be served even by accident.

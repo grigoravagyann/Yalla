@@ -129,10 +129,16 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
         };
 
         var encoded = new Dictionary<string, byte[]>(variants.Length);
+        var (width, height) = (0, 0);
 
         foreach (var (name, edge) in variants)
         {
-            encoded[name] = Encode(decoded, edge);
+            (encoded[name], var w, var h) = Encode(decoded, edge);
+
+            if (name == PhotoRules.FullName)
+            {
+                (width, height) = (w, h);
+            }
         }
 
         // The hash is of the processed bytes, not the upload. Two phones photographing the same dish
@@ -160,15 +166,13 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
             }
         }
 
-        var full = Decode(encoded[PhotoRules.FullName], "webp");
-
         return new StoredPhoto(
             hash,
             Key(ownerKey, hash, PhotoRules.ThumbnailName),
             Key(ownerKey, hash, PhotoRules.CardName),
             Key(ownerKey, hash, PhotoRules.FullName),
-            full.Width,
-            full.Height,
+            width,
+            height,
             encoded.Values.Sum(b => (long)b.Length),
             deduplicated);
     }
@@ -273,12 +277,21 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
     }
 
     /// <summary>
-    /// Decodes to pixels, which is also what removes every metadata block.
+    /// Decodes to upright pixels, which is also what removes every metadata block.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The dimension check reads the header first and never decodes an oversized image: a
     /// decompression bomb is a small file that expands to an enormous bitmap, so checking after
     /// decoding is checking after the damage.
+    /// </para>
+    /// <para>
+    /// The EXIF Orientation tag is applied here, because it is about to be thrown away with the rest
+    /// of the metadata. A phone held upright writes landscape pixels plus a tag saying "turn me";
+    /// drop the tag without turning and the photo is stored sideways with its width and height
+    /// swapped - and a room photo's table pins, which are fractions of the stored image, land in the
+    /// wrong places.
+    /// </para>
     /// </remarks>
     private static SKBitmap Decode(byte[] bytes, string format)
     {
@@ -291,27 +304,122 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
                 "That file looks like an image but could not be read. It may be truncated.", format);
         }
 
+        var origin = codec.EncodedOrigin;
         var info = codec.Info;
+        var (uprightWidth, uprightHeight) = SwapsAxes(origin) ? (info.Height, info.Width) : (info.Width, info.Height);
 
-        if (info.Width > PhotoRules.MaxSourceEdge || info.Height > PhotoRules.MaxSourceEdge)
+        if (uprightWidth > PhotoRules.MaxSourceEdge || uprightHeight > PhotoRules.MaxSourceEdge)
         {
             throw new UnsupportedImageException(
-                $"That image is {info.Width} by {info.Height} pixels, which is larger than this "
+                $"That image is {uprightWidth} by {uprightHeight} pixels, which is larger than this "
                 + $"system accepts ({PhotoRules.MaxSourceEdge} per edge).",
                 format);
         }
 
-        return SKBitmap.Decode(codec)
-               ?? throw new UnsupportedImageException(
-                   "That file looks like an image but could not be decoded.", format);
+        var decoded = SKBitmap.Decode(codec)
+                      ?? throw new UnsupportedImageException(
+                          "That file looks like an image but could not be decoded.", format);
+
+        if (origin is SKEncodedOrigin.TopLeft)
+        {
+            return decoded;
+        }
+
+        using (decoded)
+        {
+            return Orient(decoded, origin);
+        }
+    }
+
+    /// <summary>Whether the tag turns the image a quarter, so width and height trade places.</summary>
+    private static bool SwapsAxes(SKEncodedOrigin origin) =>
+        origin is SKEncodedOrigin.LeftTop or SKEncodedOrigin.RightTop
+            or SKEncodedOrigin.RightBottom or SKEncodedOrigin.LeftBottom;
+
+    /// <summary>
+    /// Draws <paramref name="source"/> into a new bitmap the way EXIF says it should be viewed.
+    /// </summary>
+    /// <remarks>
+    /// Each transform maps a stored pixel <c>(x, y)</c> of a <c>w</c> by <c>h</c> image onto the
+    /// upright canvas. Canvas calls compose right to left: the last call applies to the point first.
+    /// Only quarter turns and mirrors, so nearest sampling is exact and nothing is blurred.
+    /// </remarks>
+    private static SKBitmap Orient(SKBitmap source, SKEncodedOrigin origin)
+    {
+        float w = source.Width;
+        float h = source.Height;
+
+        var swaps = SwapsAxes(origin);
+        var alpha = source.AlphaType == SKAlphaType.Unpremul ? SKAlphaType.Premul : source.AlphaType;
+        var info = new SKImageInfo(
+            swaps ? source.Height : source.Width,
+            swaps ? source.Width : source.Height,
+            source.ColorType,
+            alpha,
+            source.ColorSpace);
+
+        var upright = new SKBitmap(info);
+
+        try
+        {
+            using var canvas = new SKCanvas(upright);
+
+            // A new bitmap's memory is not cleared, and a transparent PNG would draw over it.
+            canvas.Clear(SKColors.Transparent);
+
+            switch (origin)
+            {
+                case SKEncodedOrigin.TopRight: // 2: mirrored left-right. (w - x, y)
+                    canvas.Translate(w, 0);
+                    canvas.Scale(-1, 1);
+                    break;
+                case SKEncodedOrigin.BottomRight: // 3: half a turn. (w - x, h - y)
+                    canvas.Translate(w, h);
+                    canvas.RotateDegrees(180);
+                    break;
+                case SKEncodedOrigin.BottomLeft: // 4: mirrored top-bottom. (x, h - y)
+                    canvas.Translate(0, h);
+                    canvas.Scale(1, -1);
+                    break;
+                case SKEncodedOrigin.LeftTop: // 5: transposed. (y, x)
+                    canvas.RotateDegrees(90);
+                    canvas.Scale(1, -1);
+                    break;
+                case SKEncodedOrigin.RightTop: // 6: a quarter turn clockwise. (h - y, x)
+                    canvas.Translate(h, 0);
+                    canvas.RotateDegrees(90);
+                    break;
+                case SKEncodedOrigin.RightBottom: // 7: transversed. (h - y, w - x)
+                    canvas.Translate(h, w);
+                    canvas.RotateDegrees(270);
+                    canvas.Scale(1, -1);
+                    break;
+                case SKEncodedOrigin.LeftBottom: // 8: a quarter turn anticlockwise. (y, w - x)
+                    canvas.Translate(0, w);
+                    canvas.RotateDegrees(270);
+                    break;
+            }
+
+            using var image = SKImage.FromBitmap(source);
+            canvas.DrawImage(image, 0, 0, new SKSamplingOptions(SKFilterMode.Nearest));
+            canvas.Flush();
+
+            return upright;
+        }
+        catch
+        {
+            upright.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Scales the longest edge down to <paramref name="edge"/> and encodes WebP.</summary>
     /// <remarks>
     /// Never scales up. A small photo stays small rather than being blown up into a blurry "full"
-    /// variant that is larger on disk and worse to look at.
+    /// variant that is larger on disk and worse to look at. Returns the encoded size alongside the
+    /// bytes, so nothing has to decode its own output again to learn it.
     /// </remarks>
-    private static byte[] Encode(SKBitmap source, int edge)
+    private static (byte[] Bytes, int Width, int Height) Encode(SKBitmap source, int edge)
     {
         var longest = Math.Max(source.Width, source.Height);
         var scale = longest <= edge ? 1d : (double)edge / longest;
@@ -326,7 +434,7 @@ internal sealed class LocalDiskPhotoStorage : IPhotoStorage
         using var encoded = image.Encode(SKEncodedImageFormat.Webp, PhotoRules.Quality)
                             ?? throw new UnsupportedImageException("That image could not be re-encoded.");
 
-        return encoded.ToArray();
+        return (encoded.ToArray(), width, height);
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));

@@ -100,8 +100,20 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
         Assert.Equal(
-            new[] { "areas", "floorHeight", "floorWidth", "tables" },
+            new[] { "areas", "tables" },
             page.GetProperty("floorPlan").EnumerateObject()
+                .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        // A room carries its photos; a table carries its pin and no geometry - and nothing a stranger
+        // should not see.
+        Assert.Equal(
+            new[] { "displayOrder", "id", "name", "photos" },
+            page.GetProperty("floorPlan").GetProperty("areas")[0].EnumerateObject()
+                .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        Assert.Equal(
+            new[] { "areaName", "isBookable", "isFree", "label", "photoId", "photoX", "photoY", "seats" },
+            page.GetProperty("floorPlan").GetProperty("tables")[0].EnumerateObject()
                 .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }
 }

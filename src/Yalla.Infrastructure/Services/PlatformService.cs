@@ -373,11 +373,6 @@ internal sealed class PlatformService(
             branch.SetTimeZone(timeZone);
         }
 
-        if (command.FloorWidth is not null || command.FloorHeight is not null)
-        {
-            branch.ResizeFloor(command.FloorWidth ?? branch.FloorWidth, command.FloorHeight ?? branch.FloorHeight);
-        }
-
         if (command.IsActive is { } active)
         {
             branch.SetActive(active);
@@ -459,13 +454,10 @@ internal sealed class PlatformService(
         command.Latitude,
         command.Longitude,
         command.TimeZoneId,
-        command.FloorWidth,
-        command.FloorHeight,
         subscriptionTier: command.SubscriptionTier);
 
     private static BranchSnapshotShape BranchSnapshot(Branch b) => new(
-        b.Name, b.Slug, b.Address, b.Latitude, b.Longitude, b.TimeZoneId,
-        b.FloorWidth, b.FloorHeight, b.IsActive, b.SubscriptionTier);
+        b.Name, b.Slug, b.Address, b.Latitude, b.Longitude, b.TimeZoneId, b.IsActive, b.SubscriptionTier);
 
     private sealed record BranchSnapshotShape(
         string Name,
@@ -474,8 +466,6 @@ internal sealed class PlatformService(
         double Latitude,
         double Longitude,
         string TimeZoneId,
-        int FloorWidth,
-        int FloorHeight,
         bool IsActive,
         SubscriptionTier SubscriptionTier);
 
@@ -507,8 +497,6 @@ internal sealed class PlatformService(
             b.Latitude,
             b.Longitude,
             b.TimeZoneId,
-            b.FloorWidth,
-            b.FloorHeight,
             b.IsActive,
             b.SubscriptionTier,
             b.DiningTables.Count);

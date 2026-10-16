@@ -33,12 +33,6 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
         builder.Property(b => b.Longitude)
             .IsRequired();
 
-        builder.Property(b => b.FloorWidth)
-            .IsRequired();
-
-        builder.Property(b => b.FloorHeight)
-            .IsRequired();
-
         // Optimistic concurrency for the floor-plan editor (K6). Every existing plan starts at
         // revision 0; the replace bumps it and EF checks the original on the UPDATE.
         builder.Property(b => b.FloorPlanVersion)

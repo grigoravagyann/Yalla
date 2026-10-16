@@ -268,58 +268,76 @@ public static class OpeningHoursRules
         Minutes(block.ClosesAt) + (block.ClosesNextDay ? 24 * 60 : 0);
 }
 
-// ------------------------------------------------------------------ floor plan
+// ------------------------------------------------------------------ floor plan: rooms, photos, pins
 
-public sealed record FloorAreaView(Guid Id, string Name, int DisplayOrder);
+/// <summary>A room as the editor reads it, with its photos in the order a diner swipes them.</summary>
+/// <param name="Id">The room.</param>
+/// <param name="Name">Hall, Terrace, VIP.</param>
+/// <param name="DisplayOrder">Lowest first.</param>
+/// <param name="Photos">The room's photos, in order. Empty for a room nobody has photographed yet.</param>
+public sealed record FloorAreaView(Guid Id, string Name, int DisplayOrder, IReadOnlyList<Media.PhotoView> Photos);
 
+/// <summary>A table as the editor reads it.</summary>
+/// <param name="Id">The table.</param>
+/// <param name="Label">What is printed on it.</param>
+/// <param name="Seats">How many it seats.</param>
+/// <param name="FloorAreaId">Its room, or null.</param>
+/// <param name="IsBookable">False for tables that only ever take walk-ins.</param>
+/// <param name="IsActive">False for a table deactivated because it has history.</param>
+/// <param name="QrToken">The token behind the QR code on the table.</param>
+/// <param name="Status">Its physical state.</param>
+/// <param name="IsDeletable">Whether a delete would remove it rather than deactivate it.</param>
+/// <param name="PhotoId">The room photo it is pinned on, or null. Always one of its own room's photos.</param>
+/// <param name="PhotoX">Where the pin sits on that photo, 0 (left) to 1 (right); null with no pin.</param>
+/// <param name="PhotoY">0 (top) to 1 (bottom); null with no pin.</param>
 public sealed record FloorTableView(
     Guid Id,
     string Label,
     int Seats,
-    int X,
-    int Y,
-    int Width,
-    int Height,
-    double RotationDegrees,
-    TableShape Shape,
     Guid? FloorAreaId,
     bool IsBookable,
     bool IsActive,
     string QrToken,
     TableStatus Status,
     bool IsDeletable,
-    double? PhotoX = null,
-    double? PhotoY = null);
+    Guid? PhotoId,
+    double? PhotoX,
+    double? PhotoY);
 
 /// <summary>
-/// Canvas size, areas, and every table with its geometry.
+/// The rooms, their photos, and every table with its pin.
 /// </summary>
 /// <remarks>
 /// <b>Inactive tables are included</b>, flagged by <c>isActive</c>. The editor has to be able to
 /// show a table someone just tried to delete as deactivated; dropping it from the response would
 /// look like the delete succeeded, and the next save would recreate it under a new id and a new QR
-/// code. The diner-facing reads - availability and floor state - exclude them, which is the
+/// code. The diner-facing reads - availability and the public rooms - exclude them, which is the
 /// opposite requirement on the same flag and the reason both directions have a test.
 /// </remarks>
 /// <param name="BranchId">The branch.</param>
-/// <param name="FloorWidth">Canvas width.</param>
-/// <param name="FloorHeight">Canvas height.</param>
-/// <param name="Areas">The floor areas.</param>
-/// <param name="Tables">Every table, inactive ones included. <c>photoX</c>/<c>photoY</c> are read-only here.</param>
+/// <param name="Areas">The rooms, lowest <c>displayOrder</c> first, each with its photos.</param>
+/// <param name="Tables">Every table, inactive ones included.</param>
 /// <param name="Version">
 /// The plan's revision, opaque. Send it back as <c>expectedVersion</c> on the replace; a save against
 /// an older revision is refused with <c>floor-plan-changed</c>.
 /// </param>
 public sealed record FloorPlanView(
     Guid BranchId,
-    int FloorWidth,
-    int FloorHeight,
     IReadOnlyList<FloorAreaView> Areas,
     IReadOnlyList<FloorTableView> Tables,
     string Version);
 
-/// <summary>An area as the editor sends it. <c>Id</c> matches an existing area; null means new.</summary>
-public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
+/// <summary>A room as the editor sends it. <c>Id</c> matches an existing room; null means new.</summary>
+/// <param name="Id">The existing room this entry edits, or null for one matched by name or created.</param>
+/// <param name="Name">Unique within the branch, and required.</param>
+/// <param name="DisplayOrder">Lowest first.</param>
+/// <param name="PhotoIds">
+/// The room's photos, in the order a diner swipes them - the whole list, replacing what was there.
+/// At most <see cref="FloorAreaPhoto.MaxPhotos"/>, each a photo uploaded for <b>this</b> branch
+/// (another branch's is not found here, the gallery's answer), and each in at most one room. Null or
+/// absent means none. A photo dropped from every room takes the tables pinned on it off the photo.
+/// </param>
+public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder, IReadOnlyList<Guid>? PhotoIds = null);
 
 /// <summary>
 /// A table as the editor sends it. <c>Id</c> matches an existing table; null means new - unless a
@@ -329,45 +347,33 @@ public sealed record FloorAreaInput(Guid? Id, string Name, int DisplayOrder);
 /// <param name="Id">The existing table this entry edits, or null for one matched by label or created.</param>
 /// <param name="Label">What is printed on the table. Unique within the branch, and required.</param>
 /// <param name="Seats">How many people it seats.</param>
-/// <param name="X">Left edge on the canvas.</param>
-/// <param name="Y">Top edge on the canvas.</param>
-/// <param name="Width">Width on the canvas.</param>
-/// <param name="Height">Height on the canvas.</param>
-/// <param name="RotationDegrees">Clockwise rotation, 0 to 360.</param>
-/// <param name="Shape">1 Rectangle, 2 Round.</param>
-/// <param name="FloorAreaName">Names an area in the same plan, by name. Null for no area.</param>
+/// <param name="FloorAreaName">Names a room in the same plan, by name. Null for no room.</param>
 /// <param name="IsBookable">False for tables that only ever take walk-ins, e.g. bar stools.</param>
-/// <remarks>
-/// <b>No photo position (K6).</b> Where a table sits on the cover photo is saved through
-/// <c>PUT /api/branches/{branchId}/table-photo-positions</c>. It used to ride on this form, and a plan
-/// saved by an editor that did not know about pins took every pin off. <c>photoX</c>/<c>photoY</c> sent
-/// here are ignored; a kept table keeps its pin and a new table has none.
-/// </remarks>
+/// <param name="PhotoId">
+/// The photo the table is pinned on - one of <b>its own room's</b> <c>photoIds</c> in this plan - or
+/// null for no pin. Sent with <paramref name="PhotoX"/> and <paramref name="PhotoY"/>, or all three
+/// null. A diner is only offered a bookable table that has a pin.
+/// </param>
+/// <param name="PhotoX">Where the pin sits, 0 (left) to 1 (right).</param>
+/// <param name="PhotoY">Where the pin sits, 0 (top) to 1 (bottom).</param>
 public sealed record FloorTableInput(
     Guid? Id,
     string Label,
     int Seats,
-    int X,
-    int Y,
-    int Width,
-    int Height,
-    double RotationDegrees,
-    TableShape Shape,
     string? FloorAreaName = null,
-    bool IsBookable = true);
+    bool IsBookable = true,
+    Guid? PhotoId = null,
+    double? PhotoX = null,
+    double? PhotoY = null);
 
-/// <summary>The whole plan, replaced in one atomic call.</summary>
-/// <param name="FloorWidth">Canvas width.</param>
-/// <param name="FloorHeight">Canvas height.</param>
-/// <param name="Areas">Every area in the plan.</param>
-/// <param name="Tables">Every table in the plan.</param>
+/// <summary>The whole plan - rooms, their photos and every table's pin - replaced in one atomic call.</summary>
+/// <param name="Areas">Every room in the plan, each with its photos.</param>
+/// <param name="Tables">Every table in the plan, each with its pin or none.</param>
 /// <param name="ExpectedVersion">
 /// <b>Required.</b> The <c>version</c> the editor loaded. A plan changed since then is refused with
 /// <c>409 floor-plan-changed</c> and <c>context.currentVersion</c>, and nothing is written.
 /// </param>
 public sealed record ReplaceFloorPlanCommand(
-    int FloorWidth,
-    int FloorHeight,
     IReadOnlyList<FloorAreaInput> Areas,
     IReadOnlyList<FloorTableInput> Tables,
     string? ExpectedVersion = null);
@@ -383,49 +389,21 @@ public sealed class FloorPlanChangedException(string currentVersion)
     public string CurrentVersion { get; } = currentVersion;
 }
 
-// ------------------------------------------------------------------ table pins on the cover photo
-
-/// <summary>Where some tables sit on the branch's cover photo.</summary>
-/// <param name="CoverPhotoId">
-/// <b>Required.</b> The cover the positions were placed on. When it is no longer the branch's cover -
-/// or the branch has none - the save is refused with <c>409 cover-changed</c>.
-/// </param>
-/// <param name="Positions">
-/// <b>Required.</b> The tables to change; tables not listed keep their pins. Each table at most once.
-/// </param>
-public sealed record TablePhotoPositionsCommand(
-    Guid? CoverPhotoId,
-    IReadOnlyList<TablePhotoPositionInput>? Positions);
-
-/// <summary>One table's place on the cover photo.</summary>
-/// <param name="TableId">An active table of this branch.</param>
-/// <param name="PhotoX">0 (left) to 1 (right). Sent with <paramref name="PhotoY"/>; both null takes the table off the photo.</param>
-/// <param name="PhotoY">0 (top) to 1 (bottom).</param>
-public sealed record TablePhotoPositionInput(Guid TableId, double? PhotoX, double? PhotoY);
-
-/// <summary>Every active table's place on the cover photo, after the save.</summary>
-/// <param name="CoverPhotoId">The cover the positions refer to.</param>
-/// <param name="Tables">All active tables, by label; a table not on the photo has no position.</param>
-public sealed record TablePhotoPositionsView(Guid CoverPhotoId, IReadOnlyList<TablePhotoPositionView> Tables);
-
-/// <summary>One table's pin.</summary>
-public sealed record TablePhotoPositionView(Guid TableId, string Label, double? PhotoX, double? PhotoY);
-
 /// <summary>
-/// The pins were placed on a cover the branch no longer has. Answers 409 <c>cover-changed</c> with
-/// <c>context.currentCoverPhotoId</c> (null when the branch has no cover).
+/// The plan as applied, plus what the editor should know: warnings that did not stop it, and which
+/// omitted tables were deactivated rather than deleted because they have history.
 /// </summary>
-public sealed class CoverChangedException(Guid? currentCoverPhotoId)
-    : Exception("The branch's cover photo changed since you placed these tables. Place them on the new cover.")
-{
-    /// <summary>The cover now stored, or null.</summary>
-    public Guid? CurrentCoverPhotoId { get; } = currentCoverPhotoId;
-}
-
-/// <summary>
-/// The plan as applied, plus what the editor should know: overlaps (warnings, not errors), and
-/// which omitted tables were deactivated rather than deleted because they have history.
-/// </summary>
+/// <param name="Plan">The plan now stored.</param>
+/// <param name="Warnings">
+/// Things worth fixing that are not errors - today, a bookable table with no pin, which diners are
+/// not offered.
+/// </param>
+/// <param name="DeactivatedTables">
+/// Labels of tables this save took out of service: active before, left out, kept inactive because
+/// they have history. Not the tables already inactive - the editor leaves those out of every save,
+/// and reporting them each time would announce a change nobody made.
+/// </param>
+/// <param name="RemovedTables">Labels of omitted tables deleted outright.</param>
 public sealed record FloorPlanReplaceResult(
     FloorPlanView Plan,
     IReadOnlyList<string> Warnings,
@@ -441,39 +419,32 @@ public sealed record TableDeletionResult(Guid TableId, string Label, bool Delete
 public sealed record FloorPlanValidation(
     IReadOnlyList<string> Errors,
     IReadOnlyList<string> Warnings,
-    IReadOnlyList<string> TablesOutsideCanvas,
     IReadOnlyList<string> DuplicateLabels)
 {
     public bool IsValid => Errors.Count == 0;
 }
 
 /// <summary>
-/// The rules for a floor plan, as a pure function over the payload.
+/// The rules for a floor plan's tables that need nothing but the payload, as a pure function.
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
-/// <item><b>Labels unique</b> within the plan - an error naming the label.</item>
-/// <item><b>Every table inside the canvas</b> - an error naming the tables. A table drawn off the
-/// edge of the room is a table the diner app cannot show.</item>
-/// <item><b>Overlapping tables are a warning, not an error.</b> Real rooms have benches against
-/// tables and stools tucked under bars; the plan is a map, not a physics simulation.</item>
+/// <item><b>Every table labelled, labels unique</b> within the plan - errors naming the labels.</item>
+/// <item><b>A bookable table with no pin is a warning, not an error.</b> Staff still seat it; diners
+/// are not offered it, and the editor should say so rather than let the manager find out from an
+/// empty booking screen.</item>
 /// </list>
-/// Overlap is tested on axis-aligned bounds, ignoring rotation. It is a warning, so being
-/// approximate is fine.
+/// The rules that need the rooms - a pin on one of the table's own room's photos, a photo in one
+/// room, ten photos a room - are the service's, because they read what the plan replaces.
 /// </remarks>
 public static class FloorPlanRules
 {
-    public static FloorPlanValidation Validate(int floorWidth, int floorHeight, IReadOnlyList<FloorTableInput> tables)
+    public static FloorPlanValidation Validate(IReadOnlyList<FloorTableInput> tables)
     {
         ArgumentNullException.ThrowIfNull(tables);
 
         var errors = new List<string>();
         var warnings = new List<string>();
-
-        if (floorWidth <= 0 || floorHeight <= 0)
-        {
-            errors.Add("The canvas must have a positive width and height.");
-        }
 
         // Checked before anything dereferences a label: a table object with no "label" member
         // binds to null, and the service would otherwise fault on it rather than say what is wrong.
@@ -495,36 +466,19 @@ public static class FloorPlanRules
             errors.Add($"Table labels must be unique within a branch. Repeated: {string.Join(", ", duplicates)}.");
         }
 
-        var outside = tables
-            .Where(t => t.X < 0 || t.Y < 0 || t.X + t.Width > floorWidth || t.Y + t.Height > floorHeight)
-            .Select(t => t.Label)
+        var unpinned = tables
+            .Where(t => t.IsBookable && t.PhotoId is null && !string.IsNullOrWhiteSpace(t.Label))
+            .Select(t => t.Label.Trim())
             .ToList();
 
-        if (outside.Count > 0)
+        if (unpinned.Count > 0)
         {
-            errors.Add(
-                $"Every table must sit inside the {floorWidth}x{floorHeight} canvas. Outside it: {string.Join(", ", outside)}.");
+            warnings.Add(
+                $"Bookable table(s) {string.Join(", ", unpinned)} are not pinned on a room photo, so diners are not offered them.");
         }
 
-        for (var i = 0; i < tables.Count; i++)
-        {
-            for (var j = i + 1; j < tables.Count; j++)
-            {
-                if (Overlaps(tables[i], tables[j]))
-                {
-                    warnings.Add($"Tables {tables[i].Label} and {tables[j].Label} overlap.");
-                }
-            }
-        }
-
-        return new FloorPlanValidation(errors, warnings, outside, duplicates);
+        return new FloorPlanValidation(errors, warnings, duplicates);
     }
-
-    private static bool Overlaps(FloorTableInput a, FloorTableInput b) =>
-        a.X < b.X + b.Width
-        && b.X < a.X + a.Width
-        && a.Y < b.Y + b.Height
-        && b.Y < a.Y + a.Height;
 }
 
 // ------------------------------------------------------------------ the service
@@ -571,31 +525,29 @@ public interface IBranchSettingsService
 
     Task<FloorPlanView> GetFloorPlanAsync(Guid branchId, CancellationToken cancellationToken = default);
 
-    /// <summary>Replaces canvas, areas and tables in one atomic call. See <see cref="FloorPlanRules"/>.</summary>
-    /// <exception cref="Yalla.Domain.FieldValidationException"><c>ExpectedVersion</c> is missing.</exception>
+    /// <summary>
+    /// Replaces rooms, their photos and every table's pin in one atomic call. See
+    /// <see cref="FloorPlanRules"/> for the payload-only rules.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.FieldValidationException">
+    /// <c>ExpectedVersion</c> is missing; or a room has too many photos, a photo twice, or a photo
+    /// another room also has; or a pin is half sent, out of range, or on a photo that is not its own
+    /// room's.
+    /// </exception>
+    /// <exception cref="KeyNotFoundException">A room photo that was not uploaded for this branch.</exception>
     /// <exception cref="FloorPlanChangedException">The plan was saved since <c>ExpectedVersion</c>.</exception>
     Task<FloorPlanReplaceResult> ReplaceFloorPlanAsync(
         Guid branchId,
         ReplaceFloorPlanCommand command,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Places the listed tables on the cover photo, or takes them off. Only the listed tables change,
-    /// and only their photo position. Does not move the floor plan's version.
-    /// </summary>
-    /// <exception cref="Yalla.Domain.FieldValidationException">A half position, a value outside 0-1, a repeated table, or a missing field.</exception>
-    /// <exception cref="CoverChangedException"><c>CoverPhotoId</c> is not the branch's cover.</exception>
-    /// <exception cref="KeyNotFoundException">No such branch, or a table that is not active here.</exception>
-    Task<TablePhotoPositionsView> UpdateTablePhotoPositionsAsync(
-        Guid branchId,
-        TablePhotoPositionsCommand command,
-        CancellationToken cancellationToken = default);
-
     Task<FloorAreaView> CreateFloorAreaAsync(Guid branchId, FloorAreaCommand command, CancellationToken cancellationToken = default);
 
     Task<FloorAreaView> UpdateFloorAreaAsync(Guid branchId, Guid areaId, FloorAreaCommand command, CancellationToken cancellationToken = default);
 
-    /// <summary>Removes an area. Tables in it are left in place with no area.</summary>
+    /// <summary>
+    /// Removes a room and its photos. Tables in it stay, with no room and off their photos.
+    /// </summary>
     Task DeleteFloorAreaAsync(Guid branchId, Guid areaId, CancellationToken cancellationToken = default);
 
     /// <summary>

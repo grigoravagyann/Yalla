@@ -154,8 +154,8 @@ public static class ErrorCodes
     public const string VenueDeletionBlocked = "venue-deletion-blocked";
 
     /// <summary>
-    /// The floor plan cannot be applied: tables outside the canvas or repeated labels. HTTP 422,
-    /// with the offending tables in <c>context</c>.
+    /// The floor plan cannot be applied: missing or repeated table labels or room names, or a table
+    /// matched twice. HTTP 422, with every reason in <c>context.errors</c>.
     /// </summary>
     public const string FloorPlanInvalid = "floor-plan-invalid";
 
@@ -304,12 +304,6 @@ public static class ErrorCodes
     public const string FloorPlanChanged = "floor-plan-changed";
 
     /// <summary>
-    /// Table pins were placed on a cover photo the branch no longer has. HTTP 409, with
-    /// <c>context.currentCoverPhotoId</c> (null when there is no cover). Nothing was written.
-    /// </summary>
-    public const string CoverChanged = "cover-changed";
-
-    /// <summary>
     /// A first review of a branch from a diner with no visit there in the window (K8): no Seated or
     /// Completed booking and no place on one of its tabs in the last 180 days. HTTP 403, with
     /// <c>context.branchId</c> and <c>context.windowDays</c>. Revising a review the diner already has
@@ -398,7 +392,6 @@ public static class ErrorCodes
         UnsupportedImage => "Unsupported image",
         RelocationNotAllowed => "Relocation not allowed",
         FloorPlanChanged => "Floor plan changed",
-        CoverChanged => "Cover photo changed",
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
         TelegramVerificationExpired => "Telegram verification no longer available",

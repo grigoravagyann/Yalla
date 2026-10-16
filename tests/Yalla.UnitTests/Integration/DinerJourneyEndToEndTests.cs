@@ -143,19 +143,28 @@ public sealed class DinerJourneyEndToEndTests(SqlServerFixture fixture) : IDispo
                     longitude = 44.5136,
                 }));
 
-        await ExpectAsync(
-            HttpStatusCode.OK,
-            manager.PutAsJsonAsync(
-                $"/api/branches/{branch.BranchId}/table-photo-positions",
-                new
-                {
-                    coverPhotoId = cover,
-                    positions = new[]
-                    {
-                        new { tableId = branch.TableIds[0], photoX = 0.3, photoY = 0.6 },
-                        new { tableId = branch.TableIds[1], photoX = 0.7, photoY = 0.4 },
-                    },
-                }));
+        // The room gets a photo of its own, replacing the one it had, and two tables are pinned on it.
+        // The third is left on the old photo, which the save drops - so it comes off rather than
+        // refusing the plan, and diners are not offered it.
+        var hall = await UploadBranchPhotoAsync(manager, branch.BranchId, Png(60));
+        var loaded = await ReadAsync(manager, $"/api/branches/{branch.BranchId}/floor-plan");
+        var rooms = FloorPlanBody.From(loaded, loaded.GetProperty("version").GetString(), table =>
+        {
+            var pin = (Guid)table["id"]! == branch.TableIds[0] ? (0.3, 0.6)
+                : (Guid)table["id"]! == branch.TableIds[1] ? (0.7, 0.4)
+                : ((double, double)?)null;
+
+            if (pin is { } at)
+            {
+                table["photoId"] = hall;
+                table["photoX"] = at.Item1;
+                table["photoY"] = at.Item2;
+            }
+        });
+
+        ((List<Dictionary<string, object?>>)rooms["areas"]!)[0]["photoIds"] = new[] { hall };
+
+        await ExpectAsync(HttpStatusCode.OK, manager.PutAsJsonAsync($"/api/branches/{branch.BranchId}/floor-plan", rooms));
 
         // ------------------------------------------------------------ 2. anybody finds it
 
@@ -175,13 +184,19 @@ public sealed class DinerJourneyEndToEndTests(SqlServerFixture fixture) : IDispo
             [galleryFirst, gallerySecond],
             detail.GetProperty("gallery").EnumerateArray().Select(p => p.GetProperty("photoId").GetGuid()));
 
-        var markers = detail.GetProperty("tableMarkers").EnumerateArray().ToList();
+        var room = Assert.Single(detail.GetProperty("rooms").EnumerateArray());
+        var roomPhoto = Assert.Single(room.GetProperty("photos").EnumerateArray());
+        Assert.Equal(hall, roomPhoto.GetProperty("photo").GetProperty("photoId").GetGuid());
+
+        var markers = roomPhoto.GetProperty("tables").EnumerateArray().ToList();
         var firstMarker = Assert.Single(markers, m => m.GetProperty("tableId").GetGuid() == branch.TableIds[0]);
         Assert.Equal(0.3, firstMarker.GetProperty("photoX").GetDouble());
         Assert.Equal(2, markers.Count);
 
         // Every picture the app draws is really there, in every size it asks for.
-        foreach (var photo in detail.GetProperty("gallery").EnumerateArray().Prepend(card.GetProperty("coverPhoto")))
+        foreach (var photo in detail.GetProperty("gallery").EnumerateArray()
+                     .Prepend(roomPhoto.GetProperty("photo"))
+                     .Prepend(card.GetProperty("coverPhoto")))
         {
             foreach (var variant in new[] { "thumbnailUrl", "cardUrl", "fullUrl" })
             {

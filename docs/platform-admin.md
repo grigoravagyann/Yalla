@@ -80,7 +80,7 @@ a change that rolled back cannot either.
 | **Suspend** / reactivate | `POST .../suspend`, `.../reactivate` | What non-payment does. The venue disappears from diner browsing but keeps every row and stays visible to its owner. |
 | **Soft-delete** | `DELETE /api/platform/venues/{id}` | Never a hard delete. Refused, naming the blockers, while any tab is open or any confirmed booking is still in the future. |
 | Add a branch | `POST /api/platform/venues/{id}/branches` | |
-| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, canvas size, active flag, **subscription tier**. Refused for a branch of a deleted venue, and a downgrade to `Free` is refused while any tab is open (see below). |
+| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, active flag, **subscription tier**. Refused for a branch of a deleted venue, and a downgrade to `Free` is refused while any tab is open (see below). |
 
 An owner can do none of these. An owner configures the venue they have; the platform decides
 which venues exist and what each branch pays for.
@@ -196,20 +196,25 @@ their own branch alone.
 One address is one account across the whole system, so a duplicate email is refused with a message
 rather than a database error.
 
-## 4. The floor plan — and why a table is deactivated, not deleted
+## 4. The rooms editor — and why a table is deactivated, not deleted
 
 This is the tool the team uses during onboarding, so it is built to be used.
 
-`PUT /api/branches/{id}/floor-plan` **replaces the whole plan in one atomic call**: canvas size,
-areas and tables together, in one transaction. A floor plan editor sends the finished layout,
-not thirty individual table updates, and a partially applied plan is a broken room.
+`PUT /api/branches/{id}/floor-plan` **replaces the whole plan in one atomic call**: the rooms, each
+room's photos in order, and every table with its pin on one of its room's photos, in one
+transaction. The editor sends the finished layout, not thirty individual table updates, and a
+partially applied plan is a room whose pins point at pictures it no longer shows. There is no drawn
+canvas any more: a room is its photos (up to 10), and a table is a pin on one of them. The full
+contract is K13 in [diner-browse.md](diner-browse.md#k13-rooms-with-photos---implemented-rooms-phase-1-backend).
 
 | Rule | Outcome |
 | --- | --- |
 | Table labels unique per branch | **error**, naming the label — a clear message, not a raw constraint violation |
-| Every table inside the canvas | **error**, naming the offending tables |
-| Overlapping tables | **warning**, not an error. Real rooms have benches against tables and stools tucked under bars; the plan is a map, not a physics simulation |
-| Geometry changes | always safe, always allowed — moving table 7 across the room does not affect its bookings |
+| At most 10 photos a room; a photo in one room only; each photo this branch's | **422** naming `areas[i].photoIds…`, or **404** for another branch's photo |
+| A pin is a photo and both coordinates (0-1), on one of the table's own room's photos | **422** naming `tables[i].photoId`/`photoX`/`photoY` |
+| A photo dropped from every room | its tables come **off** the photo, with a warning - not an error |
+| A bookable table with no pin | **warning**: staff seat it, diners are not offered it |
+| Moving a pin or a table to another room | always safe, always allowed — it does not affect the table's bookings |
 | Tables match by `id`, then by `label` | an editor that lost the ids still edits the same tables, so their QR codes survive |
 | Two tables trading labels | **allowed** — renumbering a room is normal. The unique index is checked per statement, so the movers are parked on throwaway labels and renamed in a second pass, both inside one transaction |
 | A table with a party seated at it | **error** — it cannot be dropped from the plan. A floor view that stops showing an occupied table is the failure the state machine exists to prevent; free it first |
@@ -217,7 +222,8 @@ not thirty individual table updates, and a partially applied plan is a broken ro
 
 Areas can also be edited one at a time, which is what the editor's sidebar does:
 `POST /api/branches/{id}/floor-areas`, `PATCH .../floor-areas/{areaId}`, `DELETE .../floor-areas/{areaId}`.
-Deleting an area **keeps its tables** — they simply stop belonging to a zone.
+Deleting an area **keeps its tables** — they simply stop belonging to a room, and come off its
+photos, which go with it.
 
 ### Why deletion deactivates
 

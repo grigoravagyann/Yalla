@@ -23,8 +23,8 @@ just an owner staring at "something is wrong" over a form with fourteen inputs.
 
 ## 2. The shape
 
-Modelled on the floor plan's `tablesOutsideCanvas` / `duplicateLabels`, which already did this
-correctly.
+Modelled on the floor plan's `duplicateLabels` (and the `tablesOutsideCanvas` it had while there was
+a drawn canvas), which already did this correctly.
 
 `FieldValidationException` (domain) → **HTTP 422**, code `validation-failed`.
 
@@ -88,13 +88,14 @@ reported more than one problem out of six.
 | `PUT /api/branches/{branchId}/opening-hours` | `[n].opensAt`, `[n].closesAt` |
 | `PATCH /api/branches/{branchId}/menu/items/{itemId}` | `categoryId`, when it names a category on another branch |
 | `POST /api/venues/{venueId}/staff` and `PATCH .../staff/{staffMemberId}` | `branchId` — a branch manager (`role` 2) with no branch: *"A branch manager works at one branch. Choose it."*; a general manager (`role` 6) with one: *"A general manager runs every branch, so leave the branch empty."* Checked on the resulting role and branch together |
+| `POST /api/branches/{branchId}/floor-areas` and `PATCH .../floor-areas/{areaId}` | `name`, bound `conflict` — another room at the branch already has the name (trimmed, any case): *"Area names must be unique within a branch. Terrace is already used."* The rule the floor-plan PUT applies |
 | `PUT /api/diner/me/password` | `currentPassword` — needed and not sent: the account has a password and this sign-in did not prove the phone in the last ten minutes. *"Enter your current password, or sign in again with a code to set a new one."* A `currentPassword` that is sent and wrong stays **401 `invalid-credentials`**, as before |
 
 **Already correct, unchanged** — the shape the above was modelled on:
 
 | Endpoint | Context |
 | --- | --- |
-| `PUT /api/branches/{branchId}/floor-plan` | `tablesOutsideCanvas`, `duplicateLabels`, `errors` — `floor-plan-invalid` / 422 |
+| `PUT /api/branches/{branchId}/floor-plan` | `duplicateLabels`, `errors` — `floor-plan-invalid` / 422. The photo and pin rules (rooms with photos) answer `validation-failed` naming `areas[i].photoIds[j]` and `tables[i].photoId`/`photoX`/`photoY` |
 
 A plan that removes an area while a table still names it is refused the same way; the table and the
 area are named in `errors` as `label -> area`, and nothing is written. Moving the tables to no area in
@@ -112,7 +113,7 @@ change in one place gave `context.field` to every endpoint whose refusals come o
 including:
 
 - `POST/PATCH /api/platform/venues` and `/api/platform/branches` — `name`, `slug`, `address`,
-  `latitude`, `longitude`, `timeZoneId`, `floorWidth`, `floorHeight`
+  `latitude`, `longitude`, `timeZoneId`
 - `POST /api/branches/{branchId}/menu/categories/{categoryId}/items` and the item patch —
   `name`, `priceAmd`, `photoId`, `prepMinutes`, `ingredients`, `allergens`, `portionSize`,
   `description`, `displayOrder`

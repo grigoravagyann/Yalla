@@ -58,7 +58,7 @@ public class RequestShapeContractTests
         [new DeliberateKey(
             "PlatformEndpointTests.cs",
             "/api/platform/venues",
-            "address,floorHeight,floorWidth,timeZoneId")] =
+            "address,timeZoneId")] =
             "Asserts that the branch fields sent flat, rather than nested under firstBranch, are "
             + "refused. Sending the wrong shape is the whole point of that case.",
 

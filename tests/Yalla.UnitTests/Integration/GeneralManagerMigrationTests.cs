@@ -43,10 +43,18 @@ public sealed class GeneralManagerMigrationTests(SqlServerFixture fixture)
             {
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
 
+                // That schema still has the drawn floor plan's canvas, NOT NULL and with no default,
+                // and today's Branch no longer writes it (RoomsWithPhotos). A default stands in for the
+                // value the old code would have sent; no tables and no room photo, which that schema
+                // cannot hold either.
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorWidth DEFAULT 1000 FOR FloorWidth; "
+                    + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight;");
+
                 // The fixture branch's manager names the branch. A second person is made a branchless
                 // manager the only way today's entity allows - as somebody else, then rewritten - which
                 // is what the old code wrote for "manages every branch".
-                branch = await TestBranchBuilder.CreateAsync(db);
+                branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
 
                 var venueWide = new StaffMember(branch.VenueId, "Venue-Wide Manager", "+37455500100", StaffRole.Owner, "hash");
                 db.StaffMembers.Add(venueWide);

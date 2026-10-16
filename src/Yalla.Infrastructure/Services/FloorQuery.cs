@@ -59,8 +59,6 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
             BranchId = row.BranchId,
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
-            FloorWidth = row.FloorWidth,
-            FloorHeight = row.FloorHeight,
             AsOfUtc = atUtc,
             Tables = row.Tables
                 .Select(t => new TableFloorState
@@ -68,15 +66,12 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     TableId = t.TableId,
                     Label = t.Label,
                     Seats = t.Seats,
-                    X = t.X,
-                    Y = t.Y,
-                    Width = t.Width,
-                    Height = t.Height,
-                    RotationDegrees = t.RotationDegrees,
-                    Shape = t.Shape,
                     FloorAreaId = t.FloorAreaId,
                     FloorAreaName = t.FloorAreaName,
                     FloorAreaDisplayOrder = t.FloorAreaDisplayOrder ?? 0,
+                    PhotoId = t.PhotoId,
+                    PhotoX = t.PhotoX,
+                    PhotoY = t.PhotoY,
                     IsBookable = t.IsBookable,
                     PhysicalStatus = t.Status,
                     // Physical status only counts while the query is about now; beyond that the
@@ -176,8 +171,6 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 BranchId = b.Id,
                 BranchName = b.Name,
                 TimeZoneId = b.TimeZoneId,
-                FloorWidth = b.FloorWidth,
-                FloorHeight = b.FloorHeight,
                 BufferMinutes = b.ReservationPolicy.BufferMinutes,
 
                 // Needed to project the open sitting forward. Read per query rather than stored on
@@ -199,15 +192,12 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         TableId = t.Id,
                         Label = t.Label,
                         Seats = t.Seats,
-                        X = t.X,
-                        Y = t.Y,
-                        Width = t.Width,
-                        Height = t.Height,
-                        RotationDegrees = t.RotationDegrees,
-                        Shape = t.Shape,
                         FloorAreaId = t.FloorAreaId,
                         FloorAreaName = t.FloorArea == null ? null : t.FloorArea.Name,
                         FloorAreaDisplayOrder = t.FloorArea == null ? null : t.FloorArea.DisplayOrder,
+                        PhotoId = t.PhotoId,
+                        PhotoX = t.PhotoX,
+                        PhotoY = t.PhotoY,
                         IsBookable = t.IsBookable,
                         Status = t.Status,
 
@@ -274,10 +264,6 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 
         public string TimeZoneId { get; init; } = null!;
 
-        public int FloorWidth { get; init; }
-
-        public int FloorHeight { get; init; }
-
         public int BufferMinutes { get; init; }
 
         public int TurnTimeMinutes { get; init; }
@@ -295,23 +281,17 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 
         public int Seats { get; init; }
 
-        public int X { get; init; }
-
-        public int Y { get; init; }
-
-        public int Width { get; init; }
-
-        public int Height { get; init; }
-
-        public double RotationDegrees { get; init; }
-
-        public TableShape Shape { get; init; }
-
         public Guid? FloorAreaId { get; init; }
 
         public string? FloorAreaName { get; init; }
 
         public int? FloorAreaDisplayOrder { get; init; }
+
+        public Guid? PhotoId { get; init; }
+
+        public double? PhotoX { get; init; }
+
+        public double? PhotoY { get; init; }
 
         public bool IsBookable { get; init; }
 

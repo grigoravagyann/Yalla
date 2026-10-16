@@ -44,6 +44,16 @@ A committed copy is only as current as the last regeneration. **Regenerate whene
 touches a route, a request or a response,** and commit both files with the frontend change that uses
 them.
 
+Rooms with photos (K13 in [diner-browse.md](diner-browse.md)) is such a change, and a breaking one:
+`putTablePhotoPositions` and `getPublicTableMarkers` are gone, and with them `TablePhotoPositions*`,
+`PublicTableMarkers` and `CoverChangedProblem`; `getPublicBranchRooms` (`PublicBranchRooms`) is new;
+`FloorPlanView`, `FloorAreaView`, `FloorAreaInput`, `FloorTableView`, `FloorTableInput`,
+`ReplaceFloorPlanCommand`, `TableFloorState`, `BranchFloorState`, `TableAvailability`,
+`BranchAvailability`, `PublicFloorPlan`, `PublicFloorTable`, `PublicBranchDetail`, `BranchSummary` and
+the platform branch commands lost the canvas and table geometry and gained rooms' photos and tables'
+pins; `TableShape` is no longer in the document; and the floor-plan PUT's 422 is a `oneOf`
+`floor-plan-invalid` / `validation-failed`.
+
 ## The CI artifact
 
 `.github/workflows/backend.yml` uploads the document every backend build serves, as the artifact

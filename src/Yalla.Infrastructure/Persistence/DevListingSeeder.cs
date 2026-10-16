@@ -9,8 +9,8 @@ namespace Yalla.Infrastructure.Persistence;
 
 /// <summary>
 /// Makes the seeded demo branch look like a real listing in the diner app: cuisine, about, price
-/// level, website, a cover and gallery, tables placed on the cover, bookings open, and a handful of
-/// reviews.
+/// level, website, a cover and gallery, a photo for each room with its tables pinned on it, bookings
+/// open, and a handful of reviews.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,10 +22,10 @@ namespace Yalla.Infrastructure.Persistence;
 /// Idempotent and conservative: it only ever touches the branch the seeder owns (passed in, found by
 /// slug), fills listing fields only when all of them - amenities included - are still empty, adds the
 /// pictures only while the branch has no cover, opens bookings only while nobody has saved the
-/// reservation policy, places active tables on the cover only while no table has a photo position
-/// yet, and adds a review only for a dev reviewer who has none. A person's edits to the demo branch
-/// survive every restart; what it cannot tell from "never set" is a person emptying every listing
-/// field, clearing the cover, or taking every table off the photo, and those it fills again.
+/// reservation policy, gives the rooms their photos and pins the tables only while no room has a
+/// photo yet, and adds a review only for a dev reviewer who has none. A person's edits to the demo
+/// branch survive every restart; what it cannot tell from "never set" is a person emptying every
+/// listing field, clearing the cover, or removing every room photo, and those it fills again.
 /// </para>
 /// </remarks>
 internal sealed class DevListingSeeder(
@@ -50,6 +50,22 @@ internal sealed class DevListingSeeder(
     /// <summary>The embedded gallery pictures, in gallery order.</summary>
     internal static readonly string[] GalleryResources = ["Yalla.DevSeed.gallery-1.jpg", "Yalla.DevSeed.gallery-2.jpg"];
 
+    /// <summary>
+    /// Each seeded room's photo, and where on it each of the room's tables is pinned. The positions
+    /// are where <c>generate-images.cs</c> draws the tables, so the pins land on them.
+    /// </summary>
+    /// <remarks>
+    /// The room photo for Windows is the same picture as the cover: one photo row, which the cover and
+    /// the room both point at - the seed reuses a row by content hash exactly as an upload does. On the
+    /// terrace picture three tables are drawn; table 8, the long one, is pinned in the open space
+    /// between them so the demo still offers a table that needs approval.
+    /// </remarks>
+    internal static readonly (string Room, string Resource, (string Label, double X, double Y)[] Pins)[] RoomPhotos =
+    [
+        ("Windows", CoverResource, [("1", 0.200, 0.366), ("2", 0.312, 0.366), ("3", 0.424, 0.366), ("4", 0.536, 0.366)]),
+        ("Terrace", "Yalla.DevSeed.gallery-2.jpg", [("5", 0.173, 0.790), ("6", 0.500, 0.790), ("7", 0.827, 0.790), ("8", 0.500, 0.560)]),
+    ];
+
     private static readonly (int Rating, string Text)[] Reviews =
     [
         (5, "Lovely window seats and the coffee is excellent. Staff remembered our order."),
@@ -66,7 +82,7 @@ internal sealed class DevListingSeeder(
         FillListing(branch);
         await EnsurePicturesAsync(branch, cancellationToken);
         OpenForBookings(branch);
-        await PlaceTablesOnCoverAsync(branch, cancellationToken);
+        await PinTablesInRoomsAsync(branch, cancellationToken);
         await EnsureReviewsAsync(branch, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
@@ -207,44 +223,66 @@ internal sealed class DevListingSeeder(
     }
 
     /// <summary>
-    /// Maps each table's floor-plan position into the middle of the photo, so the pins keep the
-    /// room's layout without crowding the edges. The seeded cover is drawn to the same mapping.
+    /// Gives each seeded room its photo and pins the room's tables on it, so the diner app has rooms
+    /// to swipe and pins to tap.
     /// </summary>
-    private async Task PlaceTablesOnCoverAsync(Branch branch, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Once per branch: any room photo at all means somebody - this seed or a person - has already laid
+    /// the rooms out, and a manager's choices are never redone. A room or a table the seed does not
+    /// find by name or label, or one that is inactive, is skipped rather than recreated.
+    /// </remarks>
+    private async Task PinTablesInRoomsAsync(Branch branch, CancellationToken cancellationToken)
     {
-        if (branch.CoverPhotoId is null)
+        if (await db.FloorAreaPhotos.AnyAsync(p => p.FloorArea.BranchId == branch.Id, cancellationToken))
         {
             return;
         }
 
-        // Once per branch, not once per table. A table without a position is also what a manager
-        // leaves behind by taking it off the photo, so "place every unplaced table" would put it
-        // back on every restart. Any pin at all means somebody - this seed or a person - has
-        // already laid the photo out.
-        if (await db.DiningTables.AnyAsync(
-                t => t.BranchId == branch.Id && t.IsActive && t.PhotoX != null, cancellationToken))
+        var rooms = await db.FloorAreas.Where(a => a.BranchId == branch.Id).ToListAsync(cancellationToken);
+        var tables = await db.DiningTables.Where(t => t.BranchId == branch.Id && t.IsActive).ToListAsync(cancellationToken);
+
+        var plan = new List<(FloorArea Room, Photo Photo, (string Label, double X, double Y)[] Pins)>();
+
+        foreach (var (roomName, resource, pins) in RoomPhotos)
+        {
+            var room = rooms.FirstOrDefault(r => r.Name == roomName);
+
+            if (room is not null)
+            {
+                plan.Add((room, await StoreAsync(branch.Id, resource, cancellationToken), pins));
+            }
+        }
+
+        if (plan.Count == 0)
         {
             return;
         }
 
-        var tables = await db.DiningTables
-            .Where(t => t.BranchId == branch.Id && t.IsActive && t.PhotoX == null)
-            .ToListAsync(cancellationToken);
+        // The photo rows first, for the same reason as the cover: one SaveChanges inserting a photo
+        // and the rows that point at it is an order EF has to be told.
+        await db.SaveChangesAsync(cancellationToken);
 
-        foreach (var table in tables)
+        var pinned = 0;
+
+        foreach (var (room, photo, pins) in plan)
         {
-            var centreX = (table.X + (table.Width / 2d)) / branch.FloorWidth;
-            var centreY = (table.Y + (table.Height / 2d)) / branch.FloorHeight;
+            db.FloorAreaPhotos.Add(new FloorAreaPhoto(room.Id, photo.Id, position: 0));
 
-            table.PlaceOnPhoto(
-                Math.Round(0.1 + (0.8 * Math.Clamp(centreX, 0d, 1d)), 3),
-                Math.Round(0.25 + (0.6 * Math.Clamp(centreY, 0d, 1d)), 3));
+            foreach (var (label, x, y) in pins)
+            {
+                var table = tables.FirstOrDefault(t => t.Label == label && t.FloorAreaId == room.Id);
+
+                if (table is not null)
+                {
+                    table.PlaceOnPhoto(photo.Id, x, y);
+                    pinned++;
+                }
+            }
         }
 
-        if (tables.Count > 0)
-        {
-            logger.LogInformation("Placed {Count} development tables on the cover photo.", tables.Count);
-        }
+        logger.LogInformation(
+            "Gave {RoomCount} development room(s) a photo and pinned {TableCount} table(s) on them.",
+            plan.Count, pinned);
     }
 
     private async Task EnsureReviewsAsync(Branch branch, CancellationToken cancellationToken)

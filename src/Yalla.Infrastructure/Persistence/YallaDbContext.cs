@@ -36,6 +36,8 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<FloorArea> FloorAreas => Set<FloorArea>();
 
+    public DbSet<FloorAreaPhoto> FloorAreaPhotos => Set<FloorAreaPhoto>();
+
     public DbSet<DiningTable> DiningTables => Set<DiningTable>();
 
     public DbSet<BranchReview> BranchReviews => Set<BranchReview>();

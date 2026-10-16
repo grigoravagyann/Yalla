@@ -107,12 +107,12 @@ public static class RateLimitingExtensions
     public const string PublicBrowsePolicy = "public-browse";
 
     /// <summary>
-    /// The diner app's per-tap routes - a place's details, its reviews and its table markers: their
+    /// The diner app's per-tap routes - a place's details, its reviews and its rooms: their
     /// own budget per caller, instead of the page budget.
     /// </summary>
     /// <remarks>
     /// Same reason as <see cref="PublicBrowsePolicy"/>: every tap on a place in the app costs these,
-    /// the table view refetches its markers, and a carrier puts thousands of phones behind one
+    /// the room view refetches its pins, and a carrier puts thousands of phones behind one
     /// address. A budget of their own, rather than the browse list's, so pull-to-refresh on Explore
     /// does not spend the details screen. Each branch's chained ceiling still applies to them - they
     /// carry a branch id - which is what bounds a distributed walk of the estate.

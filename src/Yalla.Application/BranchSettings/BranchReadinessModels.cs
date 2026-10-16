@@ -24,7 +24,7 @@ namespace Yalla.Application.BranchSettings;
 /// rest of the checklist - the tier switch itself only enforces the menu, because a venue may want
 /// its tabs enabled before it has finished enrolling tablets.
 /// </param>
-/// <param name="FloorPlanDrawn">At least one active table exists on the branch's canvas.</param>
+/// <param name="FloorPlanDrawn">At least one active table exists at the branch.</param>
 /// <param name="TableCount">How many active tables there are.</param>
 /// <param name="TablesLabelled">
 /// Every active table carries a label. Labels are required by the entity and unique per branch, so

@@ -8,9 +8,10 @@ namespace Yalla.Application.Reservations;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the screen a diner picks a table on, so it carries the floor-plan geometry as well as
-/// the answer: the app draws the room and shades the tables it cannot offer, rather than showing a
-/// list of times.
+/// This is the screen a diner picks a table on, so it carries each table's pin - which room photo,
+/// and where on it - as well as the answer: the app draws the pins on the room's photos and shades
+/// the tables it cannot offer, rather than showing a list of times. Only pinned tables are here; a
+/// table with no pin has nowhere to be tapped, so it is not offered at all.
 /// </para>
 /// <para>
 /// Like the floor read model it carries <b>no guest names and no money</b>. It is anonymous -
@@ -25,10 +26,6 @@ public sealed record BranchAvailability
 
     /// <summary>IANA zone, so a client can render the UTC instants below in local time itself.</summary>
     public required string TimeZoneId { get; init; }
-
-    public required int FloorWidth { get; init; }
-
-    public required int FloorHeight { get; init; }
 
     /// <summary>The local date asked about, as the diner picked it.</summary>
     public required DateOnly LocalDate { get; init; }
@@ -147,18 +144,6 @@ public sealed record TableAvailability
 
     public required int Seats { get; init; }
 
-    public required int X { get; init; }
-
-    public required int Y { get; init; }
-
-    public required int Width { get; init; }
-
-    public required int Height { get; init; }
-
-    public required double RotationDegrees { get; init; }
-
-    public required TableShape Shape { get; init; }
-
     public Guid? FloorAreaId { get; init; }
 
     public string? FloorAreaName { get; init; }
@@ -170,11 +155,17 @@ public sealed record TableAvailability
     /// <summary>The stored physical state: what somebody did to this table.</summary>
     public required TableStatus PhysicalStatus { get; init; }
 
-    /// <summary>Where the table is on the branch's cover photo, 0-1 across; null when it is not placed there.</summary>
-    public double? PhotoX { get; init; }
+    /// <summary>
+    /// The room photo the table is pinned on. Never null here: a table with no pin is not offered to
+    /// diners, so availability leaves it out.
+    /// </summary>
+    public required Guid PhotoId { get; init; }
 
-    /// <summary>Where the table is on the branch's cover photo, 0-1 down; null when it is not placed there.</summary>
-    public double? PhotoY { get; init; }
+    /// <summary>Where the pin sits on <see cref="PhotoId"/>, 0-1 across.</summary>
+    public required double PhotoX { get; init; }
+
+    /// <summary>Where the pin sits on <see cref="PhotoId"/>, 0-1 down.</summary>
+    public required double PhotoY { get; init; }
 
     /// <summary>
     /// What to draw, derived for the <i>requested</i> instant rather than for now.

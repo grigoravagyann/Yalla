@@ -200,9 +200,9 @@ internal sealed class PhotoService(
     /// </summary>
     /// <remarks>
     /// Both halves matter: a photo attached the moment it was uploaded is old and in use, and one
-    /// uploaded a minute ago is unattached and still being worked on. Four things can reference a
-    /// photo - a dish, a venue's cover, its gallery, a diner's profile - and a fifth added without a
-    /// line here would be swept out from under whatever it was attached to.
+    /// uploaded a minute ago is unattached and still being worked on. Six things can reference a
+    /// photo - a dish, a venue's cover, its gallery, a room, a table's pin, a diner's profile - and a
+    /// seventh added without a line here would be swept out from under whatever it was attached to.
     /// </remarks>
     private IQueryable<Photo> Orphans(DateTime cutoff) =>
         db.Photos
@@ -210,6 +210,8 @@ internal sealed class PhotoService(
             .Where(p => !db.MenuItems.Any(i => i.PhotoId == p.Id))
             .Where(p => !db.Branches.Any(b => b.CoverPhotoId == p.Id))
             .Where(p => !db.BranchGalleryPhotos.Any(g => g.PhotoId == p.Id))
+            .Where(p => !db.FloorAreaPhotos.Any(r => r.PhotoId == p.Id))
+            .Where(p => !db.DiningTables.Any(t => t.PhotoId == p.Id))
             .Where(p => !db.DinerUsers.Any(d => d.PhotoId == p.Id));
 
     /// <summary>

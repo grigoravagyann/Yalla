@@ -102,17 +102,6 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
                 new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId = w.CoverPhotoId }),
             caller => Venue(caller, HttpStatusCode.OK)),
 
-        ["PUT /api/branches/{branchId}/table-photo-positions"] = new(
-            (w, c) => c.PutAsJsonAsync(
-                $"/api/branches/{w.Branch.BranchId}/table-photo-positions",
-                new
-                {
-                    coverPhotoId = w.CoverPhotoId,
-                    positions = new[] { new { tableId = w.Branch.FirstTableId, photoX = 0.5, photoY = 0.5 } },
-                }),
-            caller => Venue(caller, HttpStatusCode.OK),
-            SetCoverAsync),
-
         ["POST /api/branches/{branchId}/photos"] = new(
             (w, c) => UploadBranchPhotoAsync(c, w.Branch.BranchId),
             caller => Venue(caller, HttpStatusCode.Created)),
@@ -385,16 +374,6 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
     }
 
     // ------------------------------------------------------------ per-route preconditions
-
-    /// <summary>Pins are placed against the cover, so the branch needs one first.</summary>
-    private static async Task SetCoverAsync(SqlServerFixture fixture, World w)
-    {
-        var saved = await w.Clients[Caller.Owner].PutAsJsonAsync(
-            $"/api/branches/{w.Branch.BranchId}/public-profile",
-            new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId = w.CoverPhotoId });
-
-        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
-    }
 
     private static async Task SeedOwnReviewAsync(SqlServerFixture fixture, World w)
     {

@@ -110,8 +110,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 BranchId = b.Id,
                 BranchName = b.Name,
                 TimeZoneId = b.TimeZoneId,
-                FloorWidth = b.FloorWidth,
-                FloorHeight = b.FloorHeight,
                 Policy = b.ReservationPolicy,
 
                 // Only the weekdays the opening-hours rule can consult. Two sibling collections in
@@ -119,26 +117,31 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 // of every table row on the wire - and a branch is open seven days but a request
                 // asks about one of them and the evening before it.
                 OpeningHours = b.OpeningHours.Where(h => relevantDays.Contains(h.Day)).ToList(),
+                // Pinned tables only. A diner books by tapping a table's pin on a room photo, so a
+                // table with no pin has nowhere to be tapped and is not offered - however bookable
+                // it is. Staff still seat it; that is the floor read, not this one. And the pin must
+                // be on a photo of the table's own room: the rooms read draws a table on its room's
+                // photos, so a pin left on another room's picture is a pin nobody can see, and a
+                // table offered here that the room view never shows.
                 Tables = b.DiningTables
-                    .Where(t => t.IsActive)
+                    .Where(t => t.IsActive
+                                && t.PhotoId != null
+                                && t.PhotoX != null
+                                && t.PhotoY != null
+                                && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId))
                     .Select(t => new AvailabilityTableRow
                     {
                         TableId = t.Id,
                         Label = t.Label,
                         Seats = t.Seats,
-                        X = t.X,
-                        Y = t.Y,
-                        Width = t.Width,
-                        Height = t.Height,
-                        RotationDegrees = t.RotationDegrees,
-                        Shape = t.Shape,
                         FloorAreaId = t.FloorAreaId,
                         FloorAreaName = t.FloorArea == null ? null : t.FloorArea.Name,
                         FloorAreaDisplayOrder = t.FloorArea == null ? null : t.FloorArea.DisplayOrder,
                         IsBookable = t.IsBookable,
                         Status = t.Status,
-                        PhotoX = t.PhotoX,
-                        PhotoY = t.PhotoY,
+                        PhotoId = t.PhotoId!.Value,
+                        PhotoX = t.PhotoX!.Value,
+                        PhotoY = t.PhotoY!.Value,
 
                         // The open sitting, as a second left join beside the bookings one. This is
                         // what used to be missing: TableSession is the authoritative occupancy
@@ -271,8 +274,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             BranchId = row.BranchId,
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
-            FloorWidth = row.FloorWidth,
-            FloorHeight = row.FloorHeight,
             LocalDate = localDate,
             LocalTime = localTime,
             PartySize = request.PartySize,
@@ -348,17 +349,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             TableId = table.TableId,
             Label = table.Label,
             Seats = table.Seats,
-            X = table.X,
-            Y = table.Y,
-            Width = table.Width,
-            Height = table.Height,
-            RotationDegrees = table.RotationDegrees,
-            Shape = table.Shape,
             FloorAreaId = table.FloorAreaId,
             FloorAreaName = table.FloorAreaName,
             FloorAreaDisplayOrder = table.FloorAreaDisplayOrder ?? 0,
             IsBookable = table.IsBookable,
             PhysicalStatus = table.Status,
+            PhotoId = table.PhotoId,
             PhotoX = table.PhotoX,
             PhotoY = table.PhotoY,
 
@@ -396,7 +392,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
     /// <summary>
     /// The answer when the requested local time does not exist at all, so no slot can be computed.
-    /// Every table is still listed - the floor plan is still drawn - each labelled with the one
+    /// Every pinned table is still listed - the room's photos are still drawn - each labelled with the one
     /// reason.
     /// </summary>
     private static BranchAvailability EmptyAnswer(
@@ -412,8 +408,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             BranchId = row.BranchId,
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
-            FloorWidth = row.FloorWidth,
-            FloorHeight = row.FloorHeight,
             LocalDate = localDate,
             LocalTime = localTime,
             PartySize = request.PartySize,
@@ -433,17 +427,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                     TableId = t.TableId,
                     Label = t.Label,
                     Seats = t.Seats,
-                    X = t.X,
-                    Y = t.Y,
-                    Width = t.Width,
-                    Height = t.Height,
-                    RotationDegrees = t.RotationDegrees,
-                    Shape = t.Shape,
                     FloorAreaId = t.FloorAreaId,
                     FloorAreaName = t.FloorAreaName,
                     FloorAreaDisplayOrder = t.FloorAreaDisplayOrder ?? 0,
                     IsBookable = t.IsBookable,
                     PhysicalStatus = t.Status,
+                    PhotoId = t.PhotoId,
                     PhotoX = t.PhotoX,
                     PhotoY = t.PhotoY,
                     State = TableStateProjection.Derive(t.Status, null, nowUtc, row.Policy.BufferMinutes),
@@ -469,10 +458,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public string TimeZoneId { get; init; } = null!;
 
-        public int FloorWidth { get; init; }
-
-        public int FloorHeight { get; init; }
-
         /// <summary>The owned policy, carried whole so the rules get every threshold they need.</summary>
         public ReservationPolicy Policy { get; init; } = null!;
 
@@ -489,18 +474,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public int Seats { get; init; }
 
-        public int X { get; init; }
-
-        public int Y { get; init; }
-
-        public int Width { get; init; }
-
-        public int Height { get; init; }
-
-        public double RotationDegrees { get; init; }
-
-        public TableShape Shape { get; init; }
-
         public Guid? FloorAreaId { get; init; }
 
         public string? FloorAreaName { get; init; }
@@ -511,9 +484,11 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public TableStatus Status { get; init; }
 
-        public double? PhotoX { get; init; }
+        public Guid PhotoId { get; init; }
 
-        public double? PhotoY { get; init; }
+        public double PhotoX { get; init; }
+
+        public double PhotoY { get; init; }
 
         /// <summary>When the party currently at this table sat down. Null when nobody is at it.</summary>
         public DateTime? OpenSessionSeatedAtUtc { get; init; }

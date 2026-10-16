@@ -1,7 +1,7 @@
 # Diner browse, orders and account: the real-data contract
 
 What the diner app and the venue console read and write for Explore, search, the map, a place's
-details, its reviews, the photo table view, the Orders tab and the diner's own account - the shapes,
+details, its reviews, the rooms and their photos, the Orders tab and the diner's own account - the shapes,
 the rules behind every derived number, the rate limits, the migrations and the Development seed.
 
 It started as the hand-off contract for the frontend's move off mock data and now lives here, beside
@@ -26,12 +26,13 @@ as **in progress**: the route or field is not served yet.
 | K4 | Managers limited to their home branch | B2 | **Implemented** |
 | K5 | Listing PUT: relocation is owner or platform admin only | B2 | **Implemented** |
 | K6 | Floor plan `version` / `expectedVersion` | B2 | **Implemented** |
-| K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | **Implemented** |
+| K7 | `PUT /api/branches/{branchId}/table-photo-positions` | B2 | **Removed** - superseded by K13 |
 | K8 | Review integrity, plus venue moderation and diner reports (extension) | B3 | **Implemented** |
 | K9 | App booking gate and booking note | B3 | **Implemented** |
 | K10 | Proxy, photo sweep and Staging rate-limit configuration | B4 | **Implemented** |
 | K11 | Favourites synced to the account | B6 | **Implemented** |
 | K12 | Diner notifications feed | B6 | **Implemented** |
+| K13 | Rooms with photos: pins on room photos, `GET /api/public/branches/{branchId}/rooms` | Rooms phase 1 | **Implemented** (backend) |
 
 Backend migrations run one after another in that order (B1, B2, B3, B6), because the test fixture
 builds the schema with `MigrateAsync`.
@@ -110,7 +111,7 @@ live, per request).
   "acceptsWebBookings": false,
   "acceptsAppBookings": false,               // K9: acceptsWebBookings AND the reservation policy saved
   "recentReviews": [ /* PublicReviewView, the newest 3 published, by when written */ ],
-  "tableMarkers": [ /* PublicTableMarker */ ],
+  "rooms": [ /* PublicRoom - exactly what GET …/rooms serves */ ],
   "asOfUtc": "2026-09-14T10:00:00Z"
 }
 ```
@@ -146,25 +147,44 @@ up). Hidden reviews are absent, and are left out of `rating` and `reviewCount` t
 So `"Anahit Sargsyan"` → `"Anahit S."`, `"Անահիտ Սարգսյան"` → `"Անահիտ Ս."`, `"Narek"` → `"Narek"`,
 `"ani@example.test"` and `"+374 91 000 999"` → `"Yalla diner"`, and no display name → `"Yalla diner"`.
 
-### `GET /api/public/branches/{branchId}/table-markers` → `PublicTableMarkers`
+### `GET /api/public/branches/{branchId}/rooms` → `PublicBranchRooms`
 
-Live, not cached beyond the request. Only tables a manager placed on the cover photo appear.
+Live, not cached beyond the request (K13). Rooms lowest `displayOrder` first; each room's photos in the
+venue's order; on each photo the **active tables pinned there**, by label. A room with no photo is not
+listed. A table with no pin is on no photo - it is not offered to diners. Nor is one whose pin is on a
+photo that is not its own room's (a row written before the editor refused that): it is on no photo
+here, left out of availability, and refused at booking, like an unpinned one.
 
 ```json
 {
   "branchId": "guid",
-  "photo": { /* PhotoView: the cover the coordinates refer to; absent if no cover */ },
   "asOfUtc": "…",
-  "tables": [
-    { "tableId": "guid", "label": "5", "seats": 4, "isBookable": true, "state": 1, "photoX": 0.25, "photoY": 0.5 }
+  "rooms": [
+    {
+      "roomId": "guid", "name": "Terrace", "displayOrder": 1,
+      "photos": [
+        {
+          "photo": { /* PhotoView */ },
+          "tables": [
+            { "tableId": "guid", "label": "5", "seats": 4, "isBookable": true, "state": 1, "photoX": 0.25, "photoY": 0.5 }
+          ]
+        }
+      ]
+    }
   ]
 }
 ```
 
+`state`: 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService - what the floor derives now.
+`isBookable: false` is a walk-in-only table: shown, not booked. 404 for a branch that is not published.
+It replaces `GET …/table-markers`, which is gone.
+
 ### Existing public routes
 
-- `GET /api/public/branches/{branchId}/availability?partySize=&date=&time=` - every `tables[]` entry
-  also carries `photoX` / `photoY` (absent when not placed).
+- `GET /api/public/branches/{branchId}/availability?partySize=&date=&time=` - lists **pinned tables
+  only**, and every `tables[]` entry carries `photoId`, `photoX`, `photoY` (always present). The
+  floor-plan geometry (`x`, `y`, `width`, `height`, `rotationDegrees`, `shape`) and the branch's
+  `floorWidth`/`floorHeight` are gone (K13).
 - `GET /api/public/branches/{branchId}/menu` - `BranchMenuView`, complete items only.
 - `GET /api/public/venues` and `GET /api/public/branches/{venueSlug}/{branchSlug}` - unchanged; see
   [public-surface.md](public-surface.md).
@@ -313,15 +333,10 @@ bad field at once in `context.fields`.
 
 The cover stays on `PUT /api/branches/{id}/public-profile`.
 
-### `GET`/`PUT /api/branches/{branchId}/floor-plan` - `version`, and no pins
+### `GET`/`PUT /api/branches/{branchId}/floor-plan` - the rooms editor
 
-The read carries `version` and, on each table, the read-only `photoX`/`photoY`. The replace needs
-`expectedVersion` and ignores any `photoX`/`photoY` on a table (K6).
-
-### `PUT /api/branches/{branchId}/table-photo-positions` - the pins
-
-Where tables sit on the cover photo, fractions 0-1. Saving the public profile with a different cover, or
-none, takes every table off the photo in the same save. See K7.
+Rooms with their photos, and every table with its pin, replaced whole against `expectedVersion` (K6).
+See K13 for the shapes and rules. The cover on `public-profile` has nothing to do with pins.
 
 ### `GET /api/branches/{branchId}/reviews?page=&pageSize=&filter=` → `ModeratedReviewPage`
 ### `PUT /api/branches/{branchId}/reviews/{reviewId}/visibility` → `ModeratedReviewView`
@@ -380,7 +395,7 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | --- | --- | --- |
 | Every request | - | Global limiter: 300 per 60 s per caller |
 | `GET /api/public/branches`, `/api/public/branches/search`, `/api/public/venues` | `public-browse`: 120 per 60 s | One city-wide ceiling for the three: 6000 per 60 s |
-| `GET /api/public/branches/{branchId}`, `…/reviews`, `…/table-markers` | `public-place`: 120 per 60 s | Per-branch ceiling: 300 per 60 s, whoever asks |
+| `GET /api/public/branches/{branchId}`, `…/reviews`, `…/rooms` | `public-place`: 120 per 60 s | Per-branch ceiling: 300 per 60 s, whoever asks |
 | Other `/api/public` routes (branch page, menu, meta, availability, bookings) | see [public-surface.md](public-surface.md#rate-limits) | |
 | `GET /api/diner/branches/{id}/review`, `/api/diner/orders`, `/api/diner/me` reads and edits, `GET /api/diner/favorites`, `GET /api/diner/notifications`, `POST /api/diner/notifications/read` | none - the global limiter only | |
 | `POST`/`PUT /api/diner/branches/{id}/review`, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo`, `POST /api/branches/{id}/photos`, `PUT /api/diner/favorites`, `PUT`/`DELETE /api/diner/favorites/{branchId}` | `diner-write`: 10 per 60 s per caller, one budget shared by all of them (`RateLimiting:DinerWritePermitLimit`, `DinerWriteWindowSeconds`) | |
@@ -419,6 +434,7 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `20260914102955_DinerSessionGenerationAndDeletion` (K1, K2) | `DinerUsers.SessionGeneration int NOT NULL DEFAULT 0`; `DinerUsers.DeletedAtUtc datetime2 NULL`; `DinerUsers.PhoneE164` nullable, with `UX_DinerUsers_PhoneE164` filtered to `PhoneE164 IS NOT NULL` so a deleted account gives its number back |
 | `20260914110522_BranchFloorPlanVersion` (K6) | `Branches.FloorPlanVersion int NOT NULL DEFAULT 0`, an EF concurrency token |
 | `20260914145450_ReviewModerationReportsAndReservationNote` (K8, its extension, K9) | `BranchReviews.HiddenAtUtc datetime2 NULL`, `HiddenReason nvarchar(500) NULL`, `HiddenByStaffMemberId uniqueidentifier NULL`, `HiddenByPlatform bit NOT NULL DEFAULT 0`; the `(BranchId, UpdatedAtUtc)` index replaced by `(BranchId, CreatedAtUtc)`; table `BranchReviewReports` (`ReviewId` cascading from its review, `DinerUserId` Restrict, `Reason nvarchar(32)` held to the five slugs by `CK_BranchReviewReports_Reason`, `Note nvarchar(500)`; `UX_BranchReviewReports_ReviewId_DinerUserId`, `IX_BranchReviewReports_DinerUserId`); `Reservations.Note nvarchar(500) NULL` |
+| `20261016130309_RoomsWithPhotos` (K13) | table `FloorAreaPhotos` (`FloorAreaId` cascading from its room, `PhotoId` Restrict, `Position`; unique `(FloorAreaId, PhotoId)`, index `(FloorAreaId, Position)`); `DiningTables.PhotoId uniqueidentifier NULL` (Restrict to `Photos`); every existing `PhotoX`/`PhotoY` **cleared** - they were places on the cover; drops `DiningTables.X`, `Y`, `Width`, `Height`, `RotationDegrees`, `Shape` and `Branches.FloorWidth`, `FloorHeight`. Down restores those columns (canvas 1000x700, tables 80x80 rectangles at 0,0) and clears the pins |
 | `20260914154849_FavoritesAndNotifications` (K11, K12) | table `DinerFavorites` (`DinerUserId` cascading from the account, `BranchId` with no foreign key; `UX_DinerFavorites_DinerUserId_BranchId`); table `DinerNotifications` (`DinerUserId` cascading from the account, `Kind nvarchar(40)` held to the six kinds by `CK_DinerNotifications_Kind`, `ParamsJson nvarchar(2000)`, nullable `BranchId`, `ReservationId`, `TabId`, `OrderId` with no foreign keys, `ReadAtUtc`, `Sequence bigint IDENTITY`; indexes `(DinerUserId, CreatedAtUtc)`, the same filtered to `ReadAtUtc IS NULL`, `CreatedAtUtc`, and `ReservationId` filtered to non-null) |
 
 ---
@@ -447,25 +463,26 @@ Development - every start seeds, idempotently:
 - **Bookings open** (B4), only while nobody has saved the reservation policy: `acceptsWebBookings` on
   and the policy marked reviewed, so `acceptsAppBookings` is true (K9). Once a manager saves the policy,
   the booking switch is theirs, off included.
-- **Table pins** on the cover photo, mapped from each table's floor-plan position into the middle of
-  the picture - only when the branch has a cover and no active table has a pin yet, so a manager who
-  takes a table off the photo keeps it off. The seeded cover is drawn to the same mapping, so each pin
-  lands on its table.
+- **Room photos and pins** (K13), only while no room at the branch has a photo: Windows gets the cover
+  picture (the same photo row) with tables 1-4 pinned where they are drawn, Terrace gets `gallery-2.jpg`
+  with tables 5-7 pinned on its three tables and 8 between them. A manager who takes a table off a photo
+  keeps it off; one who removes every room photo gets the seed's back on the next start.
 
 `DevListingSeedTests` proves that a dropped database and an empty photo folder start with the demo
-branch in the browse list with a cover whose variants load, table markers on it, a gallery whose
-pictures load and app bookings open - without the test inserting a photo; that a second run adds
-nothing; that a manager's cover, amenities, saved policy and a table they took off the photo survive
-the next seed; that seeding runs with `DevActor:Enabled` off; and that nothing is seeded outside
+branch in the browse list with a cover whose variants load, both rooms on the public rooms read with
+every table pinned, a gallery whose pictures load and app bookings open - without the test inserting a
+photo; that a second run adds nothing; that a manager's cover, amenities, saved policy and a table they
+took off the photo survive the next seed; that seeding runs with `DevActor:Enabled` off; and that nothing is seeded outside
 Development.
 
 ---
 
-## Contract changes (K1-K12)
+## Contract changes (K1-K13)
 
 All errors use the existing problem shape. New error codes across the changes: `session-revoked`
-(401, K1), `relocation-not-allowed` (403, K5), `floor-plan-changed` (409, K6), `cover-changed` (409,
-K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
+(401, K1), `relocation-not-allowed` (403, K5), `floor-plan-changed` (409, K6), `review-needs-visit`
+(403, K8), `bookings-not-accepted` (409, K9). `cover-changed` (409, K7) was removed with its route by
+K13.
 
 ### K1. Revoking diner sessions - **implemented (B1)**
 
@@ -582,39 +599,95 @@ No shape change. It now deletes the Photo row and its files immediately
 
 - `GET /api/branches/{branchId}/floor-plan` adds `version: string`, opaque (today the decimal
   `Branches.FloorPlanVersion`, an int concurrency token; do not parse it).
-- **PUT body** adds a required `expectedVersion: string`. `tables[].photoX`/`photoY` are **removed**
-  from `FloorTableInput`: ignored if sent, never written; GET still returns them. New tables have no
-  pin; kept tables keep theirs.
+- **PUT body** adds a required `expectedVersion: string`. (Pins were taken off this form here and put
+  back on it by K13, where they belong to rooms rather than to the cover.)
 - **Errors:**
   - missing or blank `expectedVersion` → 422 naming it, bound `required`
   - stale or unreadable → 409 `floor-plan-changed` with `context.currentVersion`, nothing written
-- **Success:** 200 with the existing body; `plan.version` is the new revision. Only a successful
-  floor-plan PUT bumps the version; pin saves and cover changes do not.
-- The replace takes an update lock on the branch row (shared with K7 and the cover change) and compares
-  the version inside it. Another save holding that lock past 5 s answers 409 `concurrent-update` - reload
+- **Success:** 200 with the existing body; `plan.version` is the new revision. A successful
+  floor-plan PUT bumps the version, and so do `POST`, `PATCH` and `DELETE …/floor-areas` - each changes
+  the plan, and an editor that loaded it before must get 409 rather than resurrect a deleted room or
+  delete a new one. Reload the plan after any of them.
+- The replace takes an update lock on the branch row (shared with the room add, rename and delete)
+  and compares the version inside it. Another save holding that lock past 5 s answers 409 `concurrent-update` - reload
   and retry.
 
-### K7. `PUT /api/branches/{branchId}/table-photo-positions` - **implemented (B2, new route)**
+### K7. `PUT /api/branches/{branchId}/table-photo-positions` - **removed (K13)**
 
-- **Policy:** `ManagerOrAbove` + `BranchScoped` + the K4 guard.
-- **Body:** `{ "coverPhotoId": "uuid", "positions": [ { "tableId": "uuid", "photoX": 0.42, "photoY": 0.61 } ] }`.
-  Only the listed tables change; `photoX: null, photoY: null` takes a table off the photo. One
-  transaction holding an update lock on the Branch row.
-- **200:** `{ "coverPhotoId": "uuid", "tables": [ { "tableId", "label", "photoX"?, "photoY"? } ] }` for
-  all active tables, by label. A table not on the photo has no `photoX`/`photoY` (null fields are omitted).
-- **Errors (nothing written for any):**
-  - 409 `cover-changed` with `context.currentCoverPhotoId` - a uuid, or `null` (the key is always present)
-    - when `coverPhotoId` is not the branch's cover, including when it has none.
-  - 404 `not-found` for a `tableId` that is not an active table here.
-  - 422 `validation-failed` naming:
-    - `positions[i].photoX` or `positions[i].photoY` - bound `required` for one half, `range` outside 0..1
-    - `positions` - a table listed twice, bound `conflict`
-    - `coverPhotoId` or `positions` when missing, bound `required`
-    - `positions[i].tableId` when empty, bound `required`
-  - 403 `forbidden`.
-  - 409 `concurrent-update` when another save on the branch held the lock past 5 s.
-- Never changes label, seats, x/y, area or active state, and never moves the floor plan's `version`.
-- A cover change through `PUT /public-profile` takes the same lock and clears every pin in the same save.
+Pins on the cover photo had their own route and their own `409 cover-changed`. Rooms with photos (K13)
+replaced both: a pin is on a room photo and is saved with the rooms, so the route, its models and the
+error code are gone, and changing the cover no longer touches any table.
+
+### K13. Rooms with photos - **implemented (rooms phase 1, backend)**
+
+A room (`FloorArea`) has 0-10 ordered photos; a table is pinned on one of **its own room's** photos -
+`photoId` plus `photoX`/`photoY`, fractions 0-1 from the left and the top - or on none. The drawn floor
+plan is gone: no canvas, no table geometry, no `TableShape`.
+
+**`GET /api/branches/{branchId}/floor-plan`** → `FloorPlanView`
+`{ branchId, areas: [ { id, name, displayOrder, photos: [PhotoView] } ], tables: [ { id, label, seats,
+floorAreaId?, isBookable, isActive, qrToken, status, isDeletable, photoId?, photoX?, photoY? } ], version }`.
+Inactive tables included. Null fields are omitted.
+
+**`PUT /api/branches/{branchId}/floor-plan`** - body `ReplaceFloorPlanCommand`
+`{ areas: [ { id?, name, displayOrder, photoIds?: [uuid] } ], tables: [ { id?, label, seats,
+floorAreaName?, isBookable, photoId?, photoX?, photoY? } ], expectedVersion }`. Replace-whole: rooms,
+their photos (in the order sent; null or absent = none) and every pin. Kept: the branch lock, `version`
+/ `409 floor-plan-changed`, history-aware delete vs deactivate, staging labels, QR tokens never
+changed. 200 → `FloorPlanReplaceResult { plan, warnings, deactivatedTables, removedTables }`.
+`deactivatedTables` lists only tables **this save** took out of service (active before, inactive
+after); an inactive table the editor leaves out, as it always does, is not reported again.
+`removedTables` lists the rows this save deleted.
+
+| Rule | Answer (nothing written) |
+| --- | --- |
+| Missing/repeated table label, missing/repeated room name, unknown `floorAreaName`, table or room `id` sent by two entries, omitted occupied table, a label held by an inactive table or by one this save deactivates | 422 `floor-plan-invalid`, `context.errors[]`, `context.duplicateLabels[]` (`tablesOutsideCanvas` is gone) |
+| More than 10 photos in a room | 422 `validation-failed`, field `areas[i].photoIds`, bound `max`, `max` 10 |
+| A photo twice in one room, or in a second room | 422, field `areas[i].photoIds[j]`, bound `conflict` |
+| An empty photo id | 422, field `areas[i].photoIds[j]`, bound `required` |
+| A photo not uploaded for this branch | 404 `not-found` (the gallery's answer) |
+| A pin half sent (any of the three without the others) | 422, fields `tables[i].photoId` / `photoX` / `photoY`, bound `required` |
+| A coordinate outside 0-1 | 422, `tables[i].photoX` or `photoY`, bound `range` |
+| A pin on a photo that is not the table's room's (another room's, or the table has no room) - unless the photo was the table's room's before this save (below) | 422, `tables[i].photoId`, bound `conflict` |
+| `expectedVersion` missing / stale | 422 `expectedVersion` `required` / 409 `floor-plan-changed` |
+
+**Matching rooms:** every entry's `id` is matched to a stored room first; only then are names matched,
+and only against rooms no `id` claimed. So renaming Hall to Lounge and adding a new Hall in one save
+makes two rooms, in either order. An `id` this branch does not have is matched by name, else new.
+
+**Matching tables:** the same order - every entry's `id` first (active or inactive), then labels,
+and only against **active** tables no `id` claimed. Renumbering 5 to 13 and adding a new 5 in one save
+keeps 13's id, QR code and history and creates a new 5; swapping 5 and 13 still works (every renamed
+table is parked on a staging label first). A label is never matched to an inactive table: a new entry
+with an inactive table's label is 422 `floor-plan-invalid`, "Table 5 is out of service. Put it back
+instead of adding a new table with the same label." - putting it back means sending its `id`. Renaming
+another table onto it gets "Table 5 is out of service and keeps its label. Put it back, or give table
+13 another label."
+
+**Taken off, not refused:** a pin on a photo the save drops from every room comes off (the table is
+saved unpinned, and `warnings` says so); so does a pin on a photo the save **moves out of the table's
+room** - it was that room's before the save and is another room's after it - with its own warning
+("taken off photos this plan moved to another room"). Removing and moving a photo are the manager's
+decision about the rooms, and answer the same way. A bookable table with no pin is saved with a warning.
+Dropping a room takes its photos (cascade) and its tables' pins. **`DELETE …/floor-areas/{areaId}`**
+keeps the room's tables, with no room and no pin. `POST`/`PATCH …/floor-areas` answer `FloorAreaView`
+with `photos` (empty for a new room), and refuse a name another room at the branch has (trimmed, any
+case) with 422 `validation-failed`, field `name`, bound `conflict` - the rule the PUT applies.
+
+**The orphan sweep and a save:** the PUT holds (`UPDLOCK`) the photo rows it checked until it commits,
+so the sweep cannot delete a just-uploaded photo out from under it; a photo swept before the check is
+404 as above.
+
+**Diners are only offered pinned tables** - pinned on a photo of the table's own room; a pin on another
+room's photo counts as none. `GET /api/public/branches/{id}/rooms` (above),
+`GET /api/branches/{id}/availability` and its public twin list pinned tables only; a booking naming an
+unpinned table is refused like a walk-in-only one (422 `reservation-table-not-bookable`). The public branch page's
+`floorPlan` lists every active table, with `isBookable` false for an unpinned one. Staff are not
+limited: `GET /api/branches/{id}/tables/floor` lists every active table with `floorAreaId`,
+`floorAreaName`, `floorAreaDisplayOrder` and its pin (no geometry, no `floorWidth`/`floorHeight`).
+
+**Platform:** `floorWidth`/`floorHeight` are gone from create/update branch and from `BranchSummary`.
+Readiness rules are unchanged. The orphan photo sweep keeps photos a room shows or a table is pinned on.
 
 ### K8. Reviews - **implemented (B3)**
 
@@ -837,14 +910,16 @@ The specification as first written:
 | `about` | `detail.about` - absent → `''` |
 | `menu` | `GET /api/public/branches/{id}/menu` (`BranchMenuView`): categories → `section`, items → `{ name, price: priceAmd, description }` |
 | `reviews` | `detail.recentReviews[]` (or `/reviews?page=`): `authorName` → `author`, `rating`, `text` (absent → `''`), `updatedAtUtc` (or `createdAtUtc`) → `date` as `YYYY-MM-DD` |
-| `tables` | `detail.tableMarkers[]` or `GET …/table-markers` - see below |
+| `rooms` | `detail.rooms[]` or `GET …/rooms` - see below |
 
 Repository methods: `listNearby()` → `GET /api/public/branches?lat&lng`; `search(q, filter)` →
 `GET /api/public/branches/search?q&category` (`filter.type` → `category`; `filter.badge` filtered
 client-side on `badges`); `getById(id)` → `GET /api/public/branches/{id}` (404 → `null`) plus the menu;
-`tables(id)` → `GET /api/public/branches/{id}/table-markers`.
+`rooms(id)` → `GET /api/public/branches/{id}/rooms`.
 
 ### `TablePhotoMarker`
+
+One entry of `rooms[].photos[].tables[]`; the photo it is drawn on is that entry's `photo`.
 
 | App field | Source |
 | --- | --- |

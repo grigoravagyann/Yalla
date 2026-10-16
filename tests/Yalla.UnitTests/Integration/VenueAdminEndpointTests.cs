@@ -320,7 +320,8 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
     /// <summary>
     /// Removing an area from the plan never takes its tables with it. A plan that still files a
     /// table under the area it removes is refused naming both; one that moves the tables to no area
-    /// keeps every table - on the plan and on the floor a diner books from.
+    /// keeps every table - on the plan and on the staff floor - and takes them off the room's photo,
+    /// which went with the room.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -358,25 +359,21 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
         Assert.Equal(2, tables.Count);
 
         // Every area gone; the tables as loaded, filed under whichever area this save names.
+        // The pins as loaded, too - on the Windows photo, which leaves with the area.
         object Plan(string? areaName) => new
         {
             expectedVersion = version,
-            floorWidth = loaded.GetProperty("floorWidth").GetInt32(),
-            floorHeight = loaded.GetProperty("floorHeight").GetInt32(),
             areas = Array.Empty<object>(),
             tables = tables.Select(t => new
             {
                 id = t.GetProperty("id").GetGuid(),
                 label = t.GetProperty("label").GetString(),
                 seats = t.GetProperty("seats").GetInt32(),
-                x = t.GetProperty("x").GetInt32(),
-                y = t.GetProperty("y").GetInt32(),
-                width = t.GetProperty("width").GetInt32(),
-                height = t.GetProperty("height").GetInt32(),
-                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
-                shape = t.GetProperty("shape").GetInt32(),
                 floorAreaName = areaName,
                 isBookable = t.GetProperty("isBookable").GetBoolean(),
+                photoId = t.GetProperty("photoId").GetGuid(),
+                photoX = t.GetProperty("photoX").GetDouble(),
+                photoY = t.GetProperty("photoY").GetDouble(),
             }).ToArray(),
         };
 
@@ -415,12 +412,13 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
         {
             Assert.True(t.GetProperty("isActive").GetBoolean());
             Assert.False(t.TryGetProperty("floorAreaId", out _));
+
+            // The room's photo went with the room, so the pins on it came off rather than refusing the save.
+            Assert.False(t.TryGetProperty("photoId", out _));
         });
 
-        // And on the floor a stranger books from, which is what the diner preview draws.
-        using var anonymous = factory.CreateClient();
-        var floor = await anonymous.GetFromJsonAsync<JsonElement>(
-            $"/api/public/branches/{mine.BranchId}/availability?partySize=2");
+        // And on the staff floor, which seats a table whether or not it has a pin.
+        var floor = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/tables/floor");
 
         Assert.Equal(
             ["1", "2"],

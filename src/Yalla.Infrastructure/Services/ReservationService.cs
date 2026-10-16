@@ -155,7 +155,13 @@ internal sealed class ReservationService(
         var endUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
         var proposed = new BookedInterval(startUtc, endUtc);
 
-        Validate(command, table, branch, policy, zone, proposed, nowUtc);
+        // Pinned means on a photo of the table's own room, the rule availability and the rooms read
+        // apply: a pin left on another room's picture is not a table a diner could have tapped.
+        var pinned = table.PhotoId is { } photoId
+                     && table.FloorAreaId is { } roomId
+                     && await db.FloorAreaPhotos.AnyAsync(p => p.FloorAreaId == roomId && p.PhotoId == photoId, cancellationToken);
+
+        Validate(command, table, pinned, branch, policy, zone, proposed, nowUtc);
 
         var status = await DecideStatusAsync(command, policy, dinerUserId, nowUtc, cancellationToken);
 
@@ -621,6 +627,7 @@ internal sealed class ReservationService(
     private static void Validate(
         CreateReservationCommand command,
         DiningTable table,
+        bool pinned,
         Branch branch,
         ReservationPolicy policy,
         BranchZone zone,
@@ -652,8 +659,12 @@ internal sealed class ReservationService(
                 command.LocalDate, command.LocalTime, TimeOnly.FromDateTime(localEnd));
         }
 
+        // A table with no pin on one of its room's photos is not offered to diners - availability
+        // leaves it out - so a booking that names one anyway is refused as not bookable, the same
+        // answer a walk-in-only table gets. Every booking here is a diner's (RequireDiner above); staff seat such a table
+        // through the floor, not through this.
         var tableReason = ReservationRules.CheckTable(
-            table.Status, table.IsBookable, table.Seats, command.PartySize, policy);
+            table.Status, table.IsBookable && pinned, table.Seats, command.PartySize, policy);
 
         switch (tableReason)
         {

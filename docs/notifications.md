@@ -322,6 +322,14 @@ storage-agnostic — forward slashes, no drive letters, content-addressed — so
 copy of the tree and a configuration change. `GET /api/photos/{id}/{variant}` streams through the
 API today and would become a redirect to a CDN URL; that is the one endpoint that changes shape.
 
+**Photo orientation.** Decoding drops EXIF, so the Orientation tag a phone writes ("these landscape
+pixels are a portrait, turn them") is applied first: every variant is encoded from the upright
+bitmap, and the stored width and height are the upright ones. That matters most for room photos,
+whose table pins are fractions of the stored image. Photos stored before this change are **not**
+migrated - an upload of a tagged phone photo from then is on disk sideways, with width and height
+swapped. Re-uploading the original fixes it (the new bytes hash differently, so it is a new photo,
+and any pins on a room photo need placing again).
+
 **More than one process.** The lease already handles it. `UPDLOCK, READPAST` means two dispatchers
 divide a batch rather than duplicating it, and `LeaseSeconds` bounds how long a dead process strands
 a message. Nothing needs to become a singleton, and no distributed lock is required.

@@ -75,23 +75,47 @@ public static class BranchListingRules
     }
 
     /// <summary>
-    /// Where a table sits on the branch's hero photo, as fractions of its width and height.
+    /// Where a table's pin sits: which room photo, and where on it as fractions of its width and height.
     /// </summary>
     /// <remarks>
-    /// Both or neither: a table with one coordinate has no place on the photo, and a marker drawn at
-    /// the left edge because the other half was forgotten is a table the diner taps and cannot find.
+    /// All three or none: a pin with no photo has nowhere to be drawn, and a pin with one coordinate
+    /// would be drawn at the edge because the other half was forgotten - a table the diner taps and
+    /// cannot find. Whether the photo is one of the table's own room's is a question for the
+    /// floor-plan save, which can see the room; this is the part that needs nothing but the values.
     /// </remarks>
-    /// <exception cref="FieldValidationException">One without the other, or a value outside 0-1.</exception>
-    public static (double? X, double? Y) PhotoPosition(double? photoX, double? photoY, string label)
+    /// <param name="photoId">The room photo, or null.</param>
+    /// <param name="photoX">0 (left) to 1 (right), or null.</param>
+    /// <param name="photoY">0 (top) to 1 (bottom), or null.</param>
+    /// <param name="label">The table's label, for the message.</param>
+    /// <param name="fieldPrefix">
+    /// Prepended to each wire field name, e.g. <c>tables[3].</c>, so a violation names the row the
+    /// editor drew.
+    /// </param>
+    /// <exception cref="FieldValidationException">Some of the three without the others, or a value outside 0-1.</exception>
+    public static (Guid? PhotoId, double? X, double? Y) PhotoPosition(
+        Guid? photoId, double? photoX, double? photoY, string label, string fieldPrefix = "")
     {
         var violations = new List<FieldViolation>();
 
-        if (photoX.HasValue != photoY.HasValue)
+        if (photoId == Guid.Empty)
         {
-            violations.Add(new FieldViolation(
-                photoX.HasValue ? "photoY" : "photoX",
-                $"Table {label} needs both photo coordinates or neither.",
-                FieldBounds.Required));
+            photoId = null;
+        }
+
+        var sent = (photoId.HasValue ? 1 : 0) + (photoX.HasValue ? 1 : 0) + (photoY.HasValue ? 1 : 0);
+
+        if (sent is 1 or 2)
+        {
+            foreach (var (field, present) in new[] { ("photoId", photoId.HasValue), ("photoX", photoX.HasValue), ("photoY", photoY.HasValue) })
+            {
+                if (!present)
+                {
+                    violations.Add(new FieldViolation(
+                        fieldPrefix + field,
+                        $"Table {label} needs a photo and both coordinates to be pinned, or none of them.",
+                        FieldBounds.Required));
+                }
+            }
         }
 
         foreach (var (field, value) in new[] { ("photoX", photoX), ("photoY", photoY) })
@@ -99,13 +123,18 @@ public static class BranchListingRules
             if (value is { } v && (double.IsNaN(v) || v < 0d || v > 1d))
             {
                 violations.Add(new FieldViolation(
-                    field, $"Table {label}'s photo coordinates are fractions from 0 to 1.", FieldBounds.Range, 0d, 1d, v));
+                    fieldPrefix + field,
+                    $"Table {label}'s photo coordinates are fractions from 0 to 1.",
+                    FieldBounds.Range,
+                    0d,
+                    1d,
+                    v));
             }
         }
 
         return violations.Count > 0
             ? throw new FieldValidationException(violations)
-            : (photoX, photoY);
+            : (photoId, photoX, photoY);
     }
 
     /// <summary>Great-circle distance in kilometres, rounded to 0.1.</summary>

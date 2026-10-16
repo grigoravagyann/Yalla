@@ -842,11 +842,11 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// A place's details, reviews and table markers are on the app's per-tap budget, not the page
+    /// A place's details, reviews and rooms are on the app's per-tap budget, not the page
     /// budget - and that budget fires at its own threshold.
     /// </summary>
     [SkippableFact]
-    public async Task A_places_details_reviews_and_markers_have_a_budget_of_their_own()
+    public async Task A_places_details_reviews_and_rooms_have_a_budget_of_their_own()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -867,7 +867,7 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         [
             $"/api/public/branches/{world.BranchId}",
             $"/api/public/branches/{world.BranchId}/reviews",
-            $"/api/public/branches/{world.BranchId}/table-markers",
+            $"/api/public/branches/{world.BranchId}/rooms",
         ];
 
         var statuses = new List<HttpStatusCode>();
@@ -941,7 +941,7 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
 
     /// <summary>A one-seat stool at the bar, which only ever takes walk-ins.</summary>
     private static DiningTable Stool(Guid branchId, string label) =>
-        new(branchId, label, seats: 1, x: 700, y: 50, width: 40, height: 40, shape: TableShape.Round, isBookable: false);
+        new(branchId, label, seats: 1, isBookable: false);
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
 }

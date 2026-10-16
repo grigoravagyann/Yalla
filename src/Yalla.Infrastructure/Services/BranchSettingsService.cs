@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.BranchSettings;
+using Yalla.Application.Media;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -23,8 +24,8 @@ namespace Yalla.Infrastructure.Services;
 /// and are otherwise left exactly as they were.
 /// </para>
 /// <para>
-/// <b>The floor plan is replaced whole.</b> Canvas, areas and tables land in one transaction; a
-/// partially applied plan is a broken room. A table left out of the plan is deleted only if nothing
+/// <b>The floor plan is replaced whole.</b> Rooms, their photos and every table's pin land in one
+/// transaction; a partially applied plan is a room whose pins point at pictures it no longer shows. A table left out of the plan is deleted only if nothing
 /// ever happened at it - otherwise it is deactivated, because a reservation, session or tab that
 /// pointed at it must still resolve.
 /// </para>
@@ -38,11 +39,10 @@ namespace Yalla.Infrastructure.Services;
 /// with a home branch is confined to it even while their token still says otherwise.
 /// </para>
 /// <para>
-/// <b>Three writers that must not interleave.</b> The floor-plan replace (K6), the table pins (K7)
-/// and a cover change on the public profile all decide what a table's photo position means. Each
-/// takes an update lock on the branch row first and reads everything it decides on inside it, so
-/// a pin can never land on a cover that was just replaced, and a plan save can never undo a pin it
-/// did not know about.
+/// <b>One writer of pins.</b> A table's pin is a place on one of its room's photos, and the floor-plan
+/// replace is the only call that sets one. It takes an update lock on the branch row first and reads
+/// everything it decides on inside it; deleting a room, which takes pins off, takes the same lock.
+/// The branch's cover photo has nothing to do with pins and changes freely.
 /// </para>
 /// </remarks>
 internal sealed class BranchSettingsService(
@@ -74,10 +74,6 @@ internal sealed class BranchSettingsService(
 
         await branchGuard.RequireAtBranchAsync(branchId, "Save the public profile", cancellationToken);
 
-        // The cover decides what every pin means, so the pins it clears are read under the same lock
-        // the pin save takes - otherwise a pin placed in between would survive on the new picture.
-        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
-
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         // The photo id is caller-supplied and not secret - one venue's card URL names it. Checked
@@ -95,24 +91,11 @@ internal sealed class BranchSettingsService(
         branch.SetPhoneE164(command.PhoneE164);
         branch.SetAcceptsWebBookings(command.AcceptsWebBookings);
 
-        // A table's photoX/photoY are fractions of the picture it was placed on. On a new picture,
-        // or on none, they point at the wrong spot - so a different cover takes every table off the
-        // photo, in the same save. The form re-sends the same cover on every save, which keeps them.
-        if (branch.CoverPhotoId != command.CoverPhotoId)
-        {
-            var placed = await db.DiningTables
-                .Where(t => t.BranchId == branchId && (t.PhotoX != null || t.PhotoY != null))
-                .ToListAsync(cancellationToken);
-
-            foreach (var table in placed)
-            {
-                table.PlaceOnPhoto(null, null);
-            }
-        }
-
+        // The card's picture only. Tables are pinned on room photos, not on the cover, so changing it
+        // moves nothing else.
         branch.SetCoverPhoto(command.CoverPhotoId);
 
-        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
             "Branch {BranchId} public profile saved; web bookings {State}; cover photo {Cover}.",
@@ -134,7 +117,7 @@ internal sealed class BranchSettingsService(
         return new PublicProfileView(
             branch.PhoneE164,
             branch.AcceptsWebBookings,
-            cover is null ? null : Application.Media.PhotoView.From(cover));
+            cover is null ? null : PhotoView.From(cover));
     }
 
     // ------------------------------------------------------------ reservation policy
@@ -238,7 +221,7 @@ internal sealed class BranchSettingsService(
         return normalised;
     }
 
-    // ------------------------------------------------------------ floor plan
+    // ------------------------------------------------------------ floor plan: rooms, photos, pins
 
     public async Task<FloorPlanView> GetFloorPlanAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
@@ -252,16 +235,23 @@ internal sealed class BranchSettingsService(
         var branch = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.Id, b.FloorWidth, b.FloorHeight, b.FloorPlanVersion })
+            .Select(b => new { b.Id, b.FloorPlanVersion })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
-        var areas = await db.FloorAreas
+        var rooms = await db.FloorAreas
             .AsNoTracking()
             .Where(a => a.BranchId == branchId)
             .OrderBy(a => a.DisplayOrder)
-            .Select(a => new FloorAreaView(a.Id, a.Name, a.DisplayOrder))
+            .ThenBy(a => a.Name)
+            .Select(a => new { a.Id, a.Name, a.DisplayOrder })
             .ToListAsync(cancellationToken);
+
+        var photos = await RoomPhotosAsync(branchId, cancellationToken);
+
+        var areas = rooms
+            .Select(a => new FloorAreaView(a.Id, a.Name, a.DisplayOrder, photos.GetValueOrDefault(a.Id, [])))
+            .ToList();
 
         var tables = await db.DiningTables
             .AsNoTracking()
@@ -270,8 +260,23 @@ internal sealed class BranchSettingsService(
             .Select(TableProjection)
             .ToListAsync(cancellationToken);
 
-        return new FloorPlanView(
-            branch.Id, branch.FloorWidth, branch.FloorHeight, areas, tables, VersionOf(branch.FloorPlanVersion));
+        return new FloorPlanView(branch.Id, areas, tables, VersionOf(branch.FloorPlanVersion));
+    }
+
+    /// <summary>Every room's photos at this branch, each room's in its own order.</summary>
+    private async Task<Dictionary<Guid, IReadOnlyList<PhotoView>>> RoomPhotosAsync(
+        Guid branchId, CancellationToken cancellationToken)
+    {
+        var rows = await db.FloorAreaPhotos
+            .AsNoTracking()
+            .Where(p => p.FloorArea.BranchId == branchId)
+            .OrderBy(p => p.Position)
+            .Select(p => new { p.FloorAreaId, p.Photo })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(r => r.FloorAreaId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<PhotoView>)[.. g.Select(r => PhotoView.From(r.Photo))]);
     }
 
     public async Task<FloorPlanReplaceResult> ReplaceFloorPlanAsync(
@@ -295,9 +300,11 @@ internal sealed class BranchSettingsService(
         // step, so two editors who loaded the same revision cannot both save.
         await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
 
-        // Two collections on one root: split, so the areas do not multiply the tables on the wire.
+        // Two collections on one root, and the rooms' photos under one of them: split, so the areas
+        // and photos do not multiply the tables on the wire.
         var branch = await db.Branches
             .Include(b => b.FloorAreas)
+            .ThenInclude(a => a.Photos)
             .Include(b => b.DiningTables)
             .AsSplitQuery()
             .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
@@ -311,8 +318,9 @@ internal sealed class BranchSettingsService(
         var areasInput = command.Areas ?? [];
         var tablesInput = command.Tables ?? [];
 
-        // The pure rules first: unique labels, inside the canvas (errors); overlaps (warnings).
-        var validation = FloorPlanRules.Validate(command.FloorWidth, command.FloorHeight, tablesInput);
+        // The pure rules first: every table labelled, labels unique (errors); unpinned bookable
+        // tables (a warning).
+        var validation = FloorPlanRules.Validate(tablesInput);
 
         var errors = validation.Errors.ToList();
 
@@ -327,7 +335,7 @@ internal sealed class BranchSettingsService(
         // with a missing field answers "that field is missing" rather than faulting on it.
         if (errors.Count > 0)
         {
-            throw new FloorPlanInvalidException(errors, validation.TablesOutsideCanvas, validation.DuplicateLabels);
+            throw new FloorPlanInvalidException(errors, validation.DuplicateLabels);
         }
 
         var duplicateAreas = areasInput
@@ -342,8 +350,7 @@ internal sealed class BranchSettingsService(
         }
 
         var unknownAreas = tablesInput
-            .Where(t => t.FloorAreaName is not null
-                        && !areasInput.Any(a => string.Equals(a.Name.Trim(), t.FloorAreaName.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .Where(t => t.FloorAreaName is not null && AreaIndex(areasInput, t.FloorAreaName) < 0)
             .Select(t => $"{t.Label} -> {t.FloorAreaName}")
             .ToList();
 
@@ -352,14 +359,48 @@ internal sealed class BranchSettingsService(
             errors.Add($"Tables reference areas that are not in the plan: {string.Join(", ", unknownAreas)}.");
         }
 
-        // ---- areas
+        // Which stored room each entry is, decided once for the whole plan - so the photo and pin
+        // rules below and the writes after them agree on it.
+        var storedAreas = MatchAreas(areasInput, branch.FloorAreas, errors);
+
+        // Thrown here rather than with the rest below: the photo and pin rules that follow find a
+        // table's room by name, which only means something once the names are unique and known.
+        if (errors.Count > 0)
+        {
+            throw new FloorPlanInvalidException(errors, validation.DuplicateLabels);
+        }
+
+        // ---- photos and pins: every field-named rule, then whose photos they are.
+        var photoRoom = PlanRoomPhotos(areasInput);
+
+        var currentRoomPhotos = branch.FloorAreas
+            .SelectMany(a => a.Photos)
+            .Select(p => p.PhotoId)
+            .ToHashSet();
+
+        // What each room in the plan showed before this save: none for a new one.
+        var previousPhotos = storedAreas
+            .Select(a => (IReadOnlySet<Guid>)(a?.Photos.Select(p => p.PhotoId).ToHashSet() ?? []))
+            .ToList();
+
+        var pins = PlanPins(tablesInput, areasInput, photoRoom, previousPhotos, currentRoomPhotos);
+
+        // Refused the way the gallery refuses one: a photo uploaded for another branch is simply not
+        // found here. Pins need no check of their own - each was just held to its room's photos.
+        if (photoRoom.Count > 0 && await CountOurPhotosLockedAsync(branchId, [.. photoRoom.Keys], cancellationToken) != photoRoom.Count)
+        {
+            throw new KeyNotFoundException("A room photo was not found at this branch.");
+        }
+
+        // ---- areas, and their photos in order
         var areasByName = new Dictionary<string, FloorArea>(StringComparer.OrdinalIgnoreCase);
         var keptAreaIds = new HashSet<Guid>();
+        var photosByArea = new Dictionary<Guid, HashSet<Guid>>();
 
-        foreach (var input in areasInput)
+        for (var index = 0; index < areasInput.Count; index++)
         {
-            var area = (input.Id is { } id ? branch.FloorAreas.FirstOrDefault(a => a.Id == id) : null)
-                       ?? branch.FloorAreas.FirstOrDefault(a => string.Equals(a.Name, input.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+            var input = areasInput[index];
+            var area = storedAreas[index];
 
             if (area is null)
             {
@@ -374,60 +415,59 @@ internal sealed class BranchSettingsService(
 
             areasByName[area.Name] = area;
             keptAreaIds.Add(area.Id);
-        }
 
-        // ---- tables: match by id, then by label; anything else is new.
-        var existingTables = branch.DiningTables.ToList();
-        var matched = new HashSet<Guid>();
-        var newTables = new List<(FloorTableInput Input, DiningTable Table)>();
-        var updatedTables = new List<(FloorTableInput Input, DiningTable Table)>();
+            var wanted = input.PhotoIds ?? [];
+            photosByArea[area.Id] = [.. wanted];
 
-        foreach (var input in tablesInput)
-        {
-            var label = input.Label.Trim();
-
-            var table = (input.Id is { } id ? existingTables.FirstOrDefault(t => t.Id == id) : null)
-                        ?? existingTables.FirstOrDefault(t => string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
-
-            if (table is not null && !matched.Add(table.Id))
+            // Replace-whole, row by row: a photo the room keeps keeps its row and only moves; one it
+            // drops loses its row; a new one gets one. Moving a photo between rooms is a drop here and
+            // an add there - the unique index is per room, so the two never collide.
+            foreach (var dropped in area.Photos.Where(p => !wanted.Contains(p.PhotoId)).ToList())
             {
-                errors.Add($"Table {label} is matched by more than one entry in the plan.");
-                continue;
+                db.FloorAreaPhotos.Remove(dropped);
             }
 
-            if (table is null)
+            for (var position = 0; position < wanted.Count; position++)
             {
-                newTables.Add((input, null!));
+                var kept = area.Photos.FirstOrDefault(p => p.PhotoId == wanted[position]);
+
+                if (kept is null)
+                {
+                    db.FloorAreaPhotos.Add(new FloorAreaPhoto(area.Id, wanted[position], position));
+                }
+                else
+                {
+                    kept.MoveTo(position);
+                }
+            }
+        }
+
+        // ---- tables: by id for every entry, then by label among the active tables no id claimed.
+        var existingTables = branch.DiningTables.ToList();
+        var storedTables = MatchTables(tablesInput, existingTables, errors);
+        var matched = storedTables.OfType<DiningTable>().Select(t => t.Id).ToHashSet();
+        var newTables = new List<(int Index, FloorTableInput Input)>();
+        var updatedTables = new List<(int Index, FloorTableInput Input, DiningTable Table)>();
+
+        for (var index = 0; index < tablesInput.Count; index++)
+        {
+            if (storedTables[index] is { } table)
+            {
+                updatedTables.Add((index, tablesInput[index], table));
             }
             else
             {
-                updatedTables.Add((input, table));
+                newTables.Add((index, tablesInput[index]));
             }
         }
 
-        // ---- tables left out: history decides delete versus deactivate.
+        // ---- tables left out: history decides delete versus deactivate. The editor never sends an
+        // out-of-service table, so every save leaves those out too; they stay as they are.
         var omitted = existingTables.Where(t => !matched.Contains(t.Id)).ToList();
         var omittedIds = omitted.Select(t => t.Id).ToList();
         var used = omittedIds.Count == 0 ? [] : await TablesWithHistoryAsync(omittedIds, cancellationToken);
 
-        // A label about to be reused by a NEW table while a deactivated table keeps it would hit
-        // the unique index. Name it rather than let the index answer.
-        var retainedLabels = omitted
-            .Where(t => used.Contains(t.Id))
-            .Select(t => t.Label)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var clashing = newTables
-            .Where(n => retainedLabels.Contains(n.Input.Label.Trim()))
-            .Select(n => n.Input.Label.Trim())
-            .ToList();
-
-        if (clashing.Count > 0)
-        {
-            errors.Add(
-                $"Label(s) {string.Join(", ", clashing)} belong to tables with history that this plan omits. "
-                + "Those tables are deactivated, not deleted, and keep their labels - reuse them by keeping the table (with its id) instead.");
-        }
+        errors.AddRange(LabelsHeldByOmittedTables(tablesInput, storedTables, omitted, used));
 
         // A table with diners at it must not vanish from the plan. DeleteTableAsync already refuses
         // this one table at a time; a plan that leaves the table out is the same act, and a floor
@@ -448,7 +488,7 @@ internal sealed class BranchSettingsService(
         if (errors.Count > 0)
         {
             db.ChangeTracker.Clear();
-            throw new FloorPlanInvalidException(errors, validation.TablesOutsideCanvas, validation.DuplicateLabels);
+            throw new FloorPlanInvalidException(errors, validation.DuplicateLabels);
         }
 
         var deactivated = new List<string>();
@@ -458,6 +498,14 @@ internal sealed class BranchSettingsService(
         {
             if (used.Contains(table.Id))
             {
+                // Reported only when this save is the one that took it out of service: an
+                // out-of-service table is left out of every save, and listing it each time tells
+                // the manager something happened that did not.
+                if (table.IsActive)
+                {
+                    deactivated.Add(table.Label);
+                }
+
                 table.SetActive(false);
 
                 // Its area may be leaving with this plan; a deactivated table need not point at one.
@@ -466,7 +514,15 @@ internal sealed class BranchSettingsService(
                     table.AssignToArea(null);
                 }
 
-                deactivated.Add(table.Label);
+                // Nor at a photo its room no longer shows: the pin is a foreign key, and a stale one
+                // would keep a picture the venue removed from ever being swept.
+                if (table.PhotoId is { } photoId
+                    && (table.FloorAreaId is not { } roomId
+                        || !photosByArea.TryGetValue(roomId, out var roomPhotos)
+                        || !roomPhotos.Contains(photoId)))
+                {
+                    table.TakeOffPhoto();
+                }
             }
             else
             {
@@ -480,17 +536,17 @@ internal sealed class BranchSettingsService(
         // "table A becomes B" lands while the real B still holds the name. Park the movers on
         // throwaway labels, flush, then write the real ones. Both flushes are inside the branch
         // lock's transaction, so a plan still applies whole or not at all.
-        var currentLabels = existingTables.ToDictionary(t => t.Id, t => t.Label);
-
+        //
+        // Every renamed table is parked, not only one whose new label another table holds: renaming
+        // 5 to 13 and adding a new 5 frees a label that an insert in the same flush takes, and
+        // nothing here should rest on the order the provider writes an update and an insert in.
         var movers = updatedTables
-            .Where(u => !string.Equals(currentLabels[u.Table.Id], u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase))
-            .Where(u => existingTables.Any(other => other.Id != u.Table.Id
-                                                   && string.Equals(other.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .Where(u => !string.Equals(u.Table.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (movers.Count > 0)
         {
-            foreach (var (_, table) in movers)
+            foreach (var (_, _, table) in movers)
             {
                 table.Relabel(StagingLabel());
             }
@@ -498,53 +554,44 @@ internal sealed class BranchSettingsService(
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        foreach (var (input, table) in updatedTables)
+        foreach (var (index, input, table) in updatedTables)
         {
-            // Geometry, label, seats, area, bookability. Never the QR token, and never the photo
-            // position: pins are saved through the table-photo-positions route (K7), so a plan saved
-            // by an editor that knows nothing about them leaves them exactly where they were.
+            // Label, seats, room, bookability and pin. Never the QR token.
             table.Relabel(input.Label);
             table.SetSeats(input.Seats);
-            table.MoveTo(input.X, input.Y, input.RotationDegrees);
-            table.Resize(input.Width, input.Height);
-            table.SetShape(input.Shape);
             table.AssignToArea(AreaId(areasByName, input.FloorAreaName));
             table.SetBookable(input.IsBookable);
             table.SetActive(true);
+            table.PlaceOnPhoto(pins[index].PhotoId, pins[index].X, pins[index].Y);
         }
 
-        foreach (var (input, _) in newTables)
+        foreach (var (index, input) in newTables)
         {
-            // Created with no pin; the manager places it on the cover photo separately.
-            db.DiningTables.Add(new DiningTable(
+            var table = new DiningTable(
                 branch.Id,
                 input.Label,
                 input.Seats,
-                input.X,
-                input.Y,
-                input.Width,
-                input.Height,
-                input.Shape,
                 AreaId(areasByName, input.FloorAreaName),
-                input.RotationDegrees,
-                input.IsBookable));
+                input.IsBookable);
+
+            table.PlaceOnPhoto(pins[index].PhotoId, pins[index].X, pins[index].Y);
+            db.DiningTables.Add(table);
         }
 
-        // Areas the plan dropped. Any table still pointing at one is a deactivated table whose
-        // area we just cleared, so the delete is safe.
+        // Areas the plan dropped. Their photo rows go with them (cascade). Any table still pointing
+        // at one is a deactivated table whose area we just cleared, so the delete is safe.
         foreach (var area in branch.FloorAreas.Where(a => !keptAreaIds.Contains(a.Id)).ToList())
         {
             foreach (var straggler in existingTables.Where(t => t.FloorAreaId == area.Id))
             {
                 straggler.AssignToArea(null);
+                straggler.TakeOffPhoto();
             }
 
             db.FloorAreas.Remove(area);
         }
 
-        branch.ResizeFloor(command.FloorWidth, command.FloorHeight);
-
-        // The only place the version moves.
+        // With the room routes (add, rename, delete), the places the version moves.
         branch.BumpFloorPlanVersion();
 
         try
@@ -555,164 +602,443 @@ internal sealed class BranchSettingsService(
         {
             db.ChangeTracker.Clear();
             throw new FloorPlanInvalidException(
-                ["A table label in this plan is already used by another table in the branch."], [], []);
+                ["A table label in this plan is already used by another table in the branch."], []);
+        }
+
+        var warnings = validation.Warnings.ToList();
+
+        // Every pin the client sent that PlanPins took off rather than refused: on a photo the plan
+        // dropped from every room, or moved out of the table's room.
+        var unpinned = tablesInput
+            .Select((input, index) => (input, index))
+            .Where(x => x.input.PhotoId is not null && pins[x.index].PhotoId is null)
+            .ToList();
+
+        var unpinnedByRemoval = unpinned
+            .Where(x => !photoRoom.ContainsKey(x.input.PhotoId!.Value))
+            .Select(x => x.input.Label.Trim())
+            .ToList();
+
+        var unpinnedByMove = unpinned
+            .Where(x => photoRoom.ContainsKey(x.input.PhotoId!.Value))
+            .Select(x => x.input.Label.Trim())
+            .ToList();
+
+        if (unpinnedByRemoval.Count > 0)
+        {
+            warnings.Add(
+                $"Table(s) {string.Join(", ", unpinnedByRemoval)} were taken off photos this plan removed from every room.");
+        }
+
+        if (unpinnedByMove.Count > 0)
+        {
+            warnings.Add(
+                $"Table(s) {string.Join(", ", unpinnedByMove)} were taken off photos this plan moved to another room.");
         }
 
         logger.LogInformation(
-            "Floor plan on branch {BranchId} replaced at version {Version} by staff member {StaffMemberId}: {Updated} updated, {Added} added, {Deactivated} deactivated, {Removed} removed, {Warnings} warning(s).",
-            branch.Id, branch.FloorPlanVersion, actor.StaffMemberId, updatedTables.Count, newTables.Count, deactivated.Count, removed.Count, validation.Warnings.Count);
+            "Floor plan on branch {BranchId} replaced at version {Version} by staff member {StaffMemberId}: {Rooms} room(s) with {Photos} photo(s); {Updated} table(s) updated, {Added} added, {Deactivated} deactivated, {Removed} removed, {Warnings} warning(s).",
+            branch.Id, branch.FloorPlanVersion, actor.StaffMemberId, areasInput.Count, photoRoom.Count, updatedTables.Count, newTables.Count, deactivated.Count, removed.Count, warnings.Count);
 
         return new FloorPlanReplaceResult(
             await ReadFloorPlanAsync(branch.Id, cancellationToken),
-            validation.Warnings,
+            warnings,
             deactivated,
             removed);
     }
 
-    // ------------------------------------------------------------ table pins on the cover photo
-
-    public async Task<TablePhotoPositionsView> UpdateTablePhotoPositionsAsync(
-        Guid branchId,
-        TablePhotoPositionsCommand command,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(command);
-
-        var staffId = await branchGuard.RequireAtBranchAsync(
-            branchId, "Place tables on the cover photo", cancellationToken);
-
-        var positions = ValidatePositions(command);
-
-        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
-
-        var cover = await db.Branches
-            .AsNoTracking()
-            .Where(b => b.Id == branchId)
-            .Select(b => new { b.CoverPhotoId })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
-
-        // Positions are fractions of one picture. Placed on a cover that has since been replaced -
-        // or removed - they point at the wrong spot, so nothing is written and the editor is told
-        // which cover is current.
-        if (cover.CoverPhotoId is null || cover.CoverPhotoId != command.CoverPhotoId)
-        {
-            throw new CoverChangedException(cover.CoverPhotoId);
-        }
-
-        var tableIds = positions.Select(p => p.TableId).ToList();
-
-        var tables = await db.DiningTables
-            .Where(t => t.BranchId == branchId && t.IsActive && tableIds.Contains(t.Id))
-            .ToListAsync(cancellationToken);
-
-        if (tables.Count != tableIds.Count)
-        {
-            throw new KeyNotFoundException("A table in positions is not an active table at this branch.");
-        }
-
-        var byId = tables.ToDictionary(t => t.Id);
-
-        foreach (var position in positions)
-        {
-            // The photo position and nothing else: label, seats, geometry, area and state are the
-            // floor plan's, and a pin save must not be a second way to change them.
-            byId[position.TableId].PlaceOnPhoto(position.PhotoX, position.PhotoY);
-        }
-
-        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
-
-        logger.LogInformation(
-            "Table pins on branch {BranchId} saved by staff member {StaffMemberId}: {Count} table(s) listed.",
-            branchId, staffId, positions.Count);
-
-        var all = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.BranchId == branchId && t.IsActive)
-            .OrderBy(t => t.Label)
-            .Select(t => new TablePhotoPositionView(t.Id, t.Label, t.PhotoX, t.PhotoY))
-            .ToListAsync(cancellationToken);
-
-        return new TablePhotoPositionsView(cover.CoverPhotoId.Value, all);
-    }
-
     /// <summary>
-    /// Every shape problem in a pin save, named against the payload: <c>positions[2].photoY</c>.
+    /// Checks every room's photo list and says which room each photo is in.
     /// </summary>
-    /// <exception cref="FieldValidationException">One or more fields are missing, half-sent or out of range.</exception>
-    private static IReadOnlyList<TablePhotoPositionInput> ValidatePositions(TablePhotoPositionsCommand command)
+    /// <remarks>
+    /// <para>
+    /// At most <see cref="FloorAreaPhoto.MaxPhotos"/> a room, no photo twice, and <b>a photo in at
+    /// most one room</b>: a table is pinned on a photo, and a photo shown in two rooms would put the
+    /// same table in both. The plan is the whole branch, so checking it here is checking the branch.
+    /// </para>
+    /// <para>
+    /// Every problem at once, named against the payload - <c>areas[1].photoIds[3]</c> - so the editor
+    /// can mark the thumbnail rather than the whole form.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="FieldValidationException">One or more of the rules broken.</exception>
+    private static Dictionary<Guid, int> PlanRoomPhotos(IReadOnlyList<FloorAreaInput> areas)
     {
         var violations = new List<FieldViolation>();
+        var roomOf = new Dictionary<Guid, int>();
 
-        if (command.CoverPhotoId is null || command.CoverPhotoId == Guid.Empty)
+        for (var i = 0; i < areas.Count; i++)
         {
-            violations.Add(new FieldViolation(
-                "coverPhotoId", "Send the cover photo the tables were placed on.", FieldBounds.Required));
-        }
+            var photoIds = areas[i].PhotoIds ?? [];
 
-        if (command.Positions is null)
-        {
-            violations.Add(new FieldViolation("positions", "Send the tables to place.", FieldBounds.Required));
-
-            throw new FieldValidationException(violations);
-        }
-
-        for (var i = 0; i < command.Positions.Count; i++)
-        {
-            var position = command.Positions[i];
-
-            if (position is null)
-            {
-                violations.Add(new FieldViolation($"positions[{i}]", "A position cannot be empty.", FieldBounds.Required));
-                continue;
-            }
-
-            if (position.TableId == Guid.Empty)
+            if (photoIds.Count > FloorAreaPhoto.MaxPhotos)
             {
                 violations.Add(new FieldViolation(
-                    $"positions[{i}].tableId", "Name the table to place.", FieldBounds.Required));
+                    $"areas[{i}].photoIds",
+                    $"A room holds at most {FloorAreaPhoto.MaxPhotos} photos.",
+                    FieldBounds.Max,
+                    Max: FloorAreaPhoto.MaxPhotos,
+                    Value: photoIds.Count));
             }
 
-            if (position.PhotoX.HasValue != position.PhotoY.HasValue)
+            for (var j = 0; j < photoIds.Count; j++)
             {
-                violations.Add(new FieldViolation(
-                    $"positions[{i}].{(position.PhotoX.HasValue ? "photoY" : "photoX")}",
-                    "Send both photo coordinates to place a table, or both as null to take it off the photo.",
-                    FieldBounds.Required));
-            }
+                var photoId = photoIds[j];
+                var field = $"areas[{i}].photoIds[{j}]";
 
-            foreach (var (field, value) in new[] { ("photoX", position.PhotoX), ("photoY", position.PhotoY) })
-            {
-                if (value is { } v && (double.IsNaN(v) || v < 0d || v > 1d))
+                if (photoId == Guid.Empty)
+                {
+                    violations.Add(new FieldViolation(field, "Name the photo.", FieldBounds.Required));
+                }
+                else if (roomOf.TryGetValue(photoId, out var other))
                 {
                     violations.Add(new FieldViolation(
-                        $"positions[{i}].{field}",
-                        "Photo coordinates are fractions of the picture, from 0 to 1.",
-                        FieldBounds.Range,
-                        0d,
-                        1d,
-                        v));
+                        field,
+                        other == i
+                            ? "This photo is in the room more than once."
+                            : $"This photo is already in {areas[other].Name.Trim()}. A photo belongs to one room.",
+                        FieldBounds.Conflict,
+                        Value: photoId));
+                }
+                else
+                {
+                    roomOf[photoId] = i;
                 }
             }
         }
 
-        var repeated = command.Positions
-            .Where(p => p is not null && p.TableId != Guid.Empty)
-            .GroupBy(p => p.TableId)
-            .Any(g => g.Count() > 1);
+        return violations.Count > 0 ? throw new FieldValidationException(violations) : roomOf;
+    }
 
-        if (repeated)
+    /// <summary>
+    /// Every table's pin as it will be stored, checked against the rooms the plan sends.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A pin is a photo and both coordinates, or none of them, and its photo must be one of <b>the
+    /// table's own room's</b> - a pin on the terrace's picture for a table in the hall is a table the
+    /// diner finds in the wrong room.
+    /// </para>
+    /// <para>
+    /// <b>A pin the save's own photo changes invalidate is taken off, not refused</b>, with a warning:
+    /// on a photo this plan drops from every room, or on one it moves out of the table's room (the
+    /// photo was the room's before this save and is another room's after it). Removing or moving a
+    /// picture is the manager's decision about the rooms; an editor that still sends the pins it
+    /// loaded must not turn that into an error the manager cannot see the cause of - and removing and
+    /// moving must answer the same way, or the same intent is a warning one way and a 422 the other.
+    /// </para>
+    /// <para>
+    /// A pin on another room's photo that was <b>not</b> the table's room's before either is the
+    /// client placing it there, and is refused; so is a photo that was never one of this branch's
+    /// rooms.
+    /// </para>
+    /// <para>
+    /// <c>previousPhotos</c> is, per plan room by index, what its stored room showed before this save
+    /// (nothing for a new room).
+    /// </para>
+    /// </remarks>
+    /// <exception cref="FieldValidationException">A half pin, a coordinate outside 0-1, or a photo not the table's room's.</exception>
+    private static (Guid? PhotoId, double? X, double? Y)[] PlanPins(
+        IReadOnlyList<FloorTableInput> tables,
+        IReadOnlyList<FloorAreaInput> areas,
+        IReadOnlyDictionary<Guid, int> photoRoom,
+        IReadOnlyList<IReadOnlySet<Guid>> previousPhotos,
+        IReadOnlySet<Guid> currentRoomPhotos)
+    {
+        var violations = new List<FieldViolation>();
+        var pins = new (Guid? PhotoId, double? X, double? Y)[tables.Count];
+
+        for (var i = 0; i < tables.Count; i++)
         {
-            violations.Add(new FieldViolation(
-                "positions", "Each table can appear in positions only once.", FieldBounds.Conflict));
+            var table = tables[i];
+            var label = table.Label.Trim();
+
+            (Guid? PhotoId, double? X, double? Y) pin;
+
+            try
+            {
+                pin = BranchListingRules.PhotoPosition(table.PhotoId, table.PhotoX, table.PhotoY, label, $"tables[{i}].");
+            }
+            catch (FieldValidationException ex)
+            {
+                violations.AddRange(ex.Violations);
+                continue;
+            }
+
+            if (pin.PhotoId is not { } photoId)
+            {
+                pins[i] = (null, null, null);
+                continue;
+            }
+
+            var room = table.FloorAreaName is null ? -1 : AreaIndex(areas, table.FloorAreaName);
+
+            if (photoRoom.TryGetValue(photoId, out var photoIn))
+            {
+                if (photoIn == room)
+                {
+                    pins[i] = pin;
+                }
+                else if (room >= 0 && previousPhotos[room].Contains(photoId))
+                {
+                    // The photo was this table's room's and the save moved it away.
+                    pins[i] = (null, null, null);
+                }
+                else
+                {
+                    violations.Add(new FieldViolation(
+                        $"tables[{i}].photoId",
+                        room < 0
+                            ? $"Table {label} is in no room, so it cannot be pinned on {areas[photoIn].Name.Trim()}'s photo."
+                            : $"Table {label} is in {areas[room].Name.Trim()}; this photo is {areas[photoIn].Name.Trim()}'s. Pin a table on one of its own room's photos.",
+                        FieldBounds.Conflict,
+                        Value: photoId));
+                }
+            }
+            else if (currentRoomPhotos.Contains(photoId))
+            {
+                pins[i] = (null, null, null);
+            }
+            else
+            {
+                violations.Add(new FieldViolation(
+                    $"tables[{i}].photoId",
+                    $"Table {label} is pinned on a photo that is not one of its room's photos.",
+                    FieldBounds.Conflict,
+                    Value: photoId));
+            }
         }
 
-        if (violations.Count > 0)
+        return violations.Count > 0 ? throw new FieldValidationException(violations) : pins;
+    }
+
+    /// <summary>
+    /// How many of these photos are this branch's, holding each one found until the save commits.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The hold is for the orphan sweep. A photo just uploaded and not yet in any room is an orphan
+    /// to it, and if the sweep deleted the row between this check and the save, the save's insert of
+    /// the room's photo row would fail on the foreign key - a 500 for a plan that was valid when it
+    /// was checked. <c>UPDLOCK</c> is held to the end of the transaction (the branch lock's), so the
+    /// sweep's delete waits for the save; by then the room shows the photo, and the sweep's own
+    /// foreign-key handling keeps it. A sweep that got there first leaves a row this count does not
+    /// find: 404, as for any photo that is not here.
+    /// </para>
+    /// <para>
+    /// One parameter per id rather than a JSON list, so each id is a seek on the primary key and only
+    /// those rows are held. <c>UPDLOCK</c> does not block readers.
+    /// </para>
+    /// </remarks>
+    private async Task<int> CountOurPhotosLockedAsync(Guid branchId, IReadOnlyList<Guid> photoIds, CancellationToken cancellationToken)
+    {
+        var parameters = photoIds
+            .Select((id, i) => new SqlParameter($"@photo{i}", id))
+            .ToList();
+
+        var sql =
+            "SELECT [Id] AS [Value] FROM [Photos] WITH (UPDLOCK, ROWLOCK) "
+            + $"WHERE [BranchId] = @branchId AND [Id] IN ({string.Join(", ", parameters.Select(p => p.ParameterName))})";
+
+        parameters.Add(new SqlParameter("@branchId", branchId));
+
+        var found = await db.Database
+            .SqlQueryRaw<Guid>(sql, [.. parameters])
+            .ToListAsync(cancellationToken);
+
+        return found.Count;
+    }
+
+    /// <summary>Which area in the plan a table's <c>floorAreaName</c> names, or -1.</summary>
+    private static int AreaIndex(IReadOnlyList<FloorAreaInput> areas, string areaName)
+    {
+        for (var i = 0; i < areas.Count; i++)
         {
-            throw new FieldValidationException(violations);
+            if (string.Equals(areas[i].Name?.Trim(), areaName.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
         }
 
-        return command.Positions;
+        return -1;
+    }
+
+    /// <summary>
+    /// The stored room each entry in the plan is, or null for a new one: by id first, for every
+    /// entry, and only then by name among the rooms no id claimed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The order is the point. Matching entry by entry, id-then-name, let a name reach a room before
+    /// its own id did: rename Hall to Lounge and add a new Hall in one save, the new Hall listed
+    /// first, and the new Hall took the stored room by name, Lounge took it again by id, the new
+    /// room was never created and its photos and pins landed on a room that did not show them.
+    /// </para>
+    /// <para>
+    /// A name that matches only a room an id claimed is a new room - the entry holding that id
+    /// renamed it, since two entries cannot share a name. An id claimed by two entries has no honest
+    /// reading, and is refused naming both, the way a table matched twice is.
+    /// </para>
+    /// </remarks>
+    private static FloorArea?[] MatchAreas(
+        IReadOnlyList<FloorAreaInput> areas,
+        IReadOnlyCollection<FloorArea> stored,
+        List<string> errors)
+    {
+        var matched = new FloorArea?[areas.Count];
+        var claimedBy = new Dictionary<Guid, int>();
+
+        for (var i = 0; i < areas.Count; i++)
+        {
+            if (areas[i].Id is not { } id || stored.FirstOrDefault(a => a.Id == id) is not { } area)
+            {
+                continue;
+            }
+
+            if (claimedBy.TryGetValue(area.Id, out var first))
+            {
+                errors.Add(
+                    $"Room {area.Name} is matched by more than one entry in the plan: "
+                    + $"{areas[first].Name.Trim()} and {areas[i].Name.Trim()}.");
+                continue;
+            }
+
+            claimedBy[area.Id] = i;
+            matched[i] = area;
+        }
+
+        for (var i = 0; i < areas.Count; i++)
+        {
+            if (matched[i] is not null || (areas[i].Id is { } id && claimedBy.ContainsKey(id)))
+            {
+                continue;
+            }
+
+            var name = areas[i].Name.Trim();
+            var area = stored.FirstOrDefault(a => !claimedBy.ContainsKey(a.Id)
+                                                  && string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+
+            if (area is not null)
+            {
+                claimedBy[area.Id] = i;
+                matched[i] = area;
+            }
+        }
+
+        return matched;
+    }
+
+    /// <summary>
+    /// The stored table each entry in the plan is, or null for a new one: by id first, for every
+    /// entry, and only then by label among the <b>active</b> tables no id claimed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same order as <see cref="MatchAreas"/>, for the same reason. Matched entry by entry,
+    /// renumbering table 5 to 13 and adding a new table 5 in one save let the new 5 reach the stored
+    /// table 5 by label before 13 reached it by id, and the save was refused as one table matched
+    /// twice. A label that matches only a table an id claimed is a new table.
+    /// </para>
+    /// <para>
+    /// Out-of-service tables are never matched by label. The editor does not send them, so a label
+    /// that equals one is a manager adding a table, and matching it would bring the old one back -
+    /// its printed QR code working again, its history attached to a table the manager thinks is new.
+    /// Putting a table back is its own act, and it sends the table's id; an id still matches any
+    /// table, active or not. <see cref="LabelsHeldByOmittedTables"/> refuses the label instead.
+    /// </para>
+    /// <para>An id sent by two entries has no honest reading, and is refused naming both.</para>
+    /// </remarks>
+    private static DiningTable?[] MatchTables(
+        IReadOnlyList<FloorTableInput> tables,
+        IReadOnlyCollection<DiningTable> stored,
+        List<string> errors)
+    {
+        var matched = new DiningTable?[tables.Count];
+        var claimedBy = new Dictionary<Guid, int>();
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            if (tables[i].Id is not { } id || stored.FirstOrDefault(t => t.Id == id) is not { } table)
+            {
+                continue;
+            }
+
+            if (claimedBy.TryGetValue(table.Id, out var first))
+            {
+                errors.Add(
+                    $"Table {table.Label} is matched by more than one entry in the plan: "
+                    + $"{tables[first].Label.Trim()} and {tables[i].Label.Trim()}.");
+                continue;
+            }
+
+            claimedBy[table.Id] = i;
+            matched[i] = table;
+        }
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            if (matched[i] is not null || (tables[i].Id is { } id && claimedBy.ContainsKey(id)))
+            {
+                continue;
+            }
+
+            var label = tables[i].Label.Trim();
+            var table = stored.FirstOrDefault(t => t.IsActive
+                                                   && !claimedBy.ContainsKey(t.Id)
+                                                   && string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
+
+            if (table is not null)
+            {
+                claimedBy[table.Id] = i;
+                matched[i] = table;
+            }
+        }
+
+        return matched;
+    }
+
+    /// <summary>
+    /// Entries that take the label of a table this save leaves out but that keeps its label: one
+    /// already out of service, or one with history that this save deactivates.
+    /// </summary>
+    /// <remarks>
+    /// The unique index on (branch, label) would refuse these anyway, with a message that names
+    /// neither table. Named here, the manager is told which table holds the label and what to do:
+    /// put an out-of-service table back (by id, which <see cref="MatchTables"/> honours) rather than
+    /// add a stranger under its number.
+    /// </remarks>
+    private static List<string> LabelsHeldByOmittedTables(
+        IReadOnlyList<FloorTableInput> tables,
+        IReadOnlyList<DiningTable?> storedTables,
+        IReadOnlyList<DiningTable> omitted,
+        IReadOnlySet<Guid> used)
+    {
+        var errors = new List<string>();
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            var label = tables[i].Label.Trim();
+            var holder = omitted.FirstOrDefault(t => (!t.IsActive || used.Contains(t.Id))
+                                                     && string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
+
+            if (holder is null)
+            {
+                continue;
+            }
+
+            errors.Add((holder.IsActive, storedTables[i]) switch
+            {
+                (false, null) =>
+                    $"Table {holder.Label} is out of service. Put it back instead of adding a new table with the same label.",
+                (false, { } renamed) =>
+                    $"Table {holder.Label} is out of service and keeps its label. Put it back, or give table {renamed.Label} another label.",
+                (true, _) =>
+                    $"Table {holder.Label} has history, so leaving it out of the plan takes it out of service with its label. "
+                    + "Keep it in the plan, or give the other table another label.",
+            });
+        }
+
+        return errors;
     }
 
     // ------------------------------------------------------------ areas and tables
@@ -726,13 +1052,21 @@ internal sealed class BranchSettingsService(
 
         await branchGuard.RequireAtBranchAsync(branchId, "Add a floor area", cancellationToken);
 
+        // The plan's lock and the plan's version: a room added here is a change to the plan, and an
+        // editor that loaded it before must hear 409 rather than save over it and delete the room.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
+
+        await RequireUnusedAreaNameAsync(branchId, command.Name, null, cancellationToken);
 
         var area = new FloorArea(branch.Id, command.Name, command.DisplayOrder);
         db.FloorAreas.Add(area);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
-        return new FloorAreaView(area.Id, area.Name, area.DisplayOrder);
+        // A new room has no photos; they are added through the floor-plan save.
+        return new FloorAreaView(area.Id, area.Name, area.DisplayOrder, []);
     }
 
     public async Task<FloorAreaView> UpdateFloorAreaAsync(
@@ -745,33 +1079,94 @@ internal sealed class BranchSettingsService(
 
         await branchGuard.RequireAtBranchAsync(branchId, "Edit a floor area", cancellationToken);
 
+        // As for an added room: a stale editor's save would undo the rename, so it moves the version.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
+        await RequireUnusedAreaNameAsync(branchId, command.Name, area.Id, cancellationToken);
+
         area.Rename(command.Name);
         area.SetDisplayOrder(command.DisplayOrder);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
-        return new FloorAreaView(area.Id, area.Name, area.DisplayOrder);
+        var photos = await db.FloorAreaPhotos
+            .AsNoTracking()
+            .Where(p => p.FloorAreaId == area.Id)
+            .OrderBy(p => p.Position)
+            .Select(p => p.Photo)
+            .ToListAsync(cancellationToken);
+
+        return new FloorAreaView(area.Id, area.Name, area.DisplayOrder, [.. photos.Select(PhotoView.From)]);
+    }
+
+    /// <summary>
+    /// Refuses a room name another room at the branch already has, ignoring case and spaces at the
+    /// ends - the rule the plan save applies to the whole plan.
+    /// </summary>
+    /// <remarks>
+    /// Without it these routes made the very plan the save refuses: two rooms called Terrace, and an
+    /// editor that loads them, sends them back, and is told its names repeat with no way to see why
+    /// it is stuck. Checked inside the branch lock, so two adds cannot both pass it. A blank name is
+    /// left to the room's own guard.
+    /// </remarks>
+    /// <exception cref="FieldValidationException">The name is taken: field <c>name</c>, bound <c>conflict</c>.</exception>
+    private async Task RequireUnusedAreaNameAsync(Guid branchId, string? name, Guid? exceptAreaId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        var trimmed = name.Trim();
+
+        var names = await db.FloorAreas
+            .AsNoTracking()
+            .Where(a => a.BranchId == branchId && a.Id != exceptAreaId)
+            .Select(a => a.Name)
+            .ToListAsync(cancellationToken);
+
+        if (names.Any(n => string.Equals(n.Trim(), trimmed, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "name",
+                $"Area names must be unique within a branch. {trimmed} is already used.",
+                FieldBounds.Conflict,
+                Value: trimmed));
+        }
     }
 
     public async Task DeleteFloorAreaAsync(Guid branchId, Guid areaId, CancellationToken cancellationToken = default)
     {
         await branchGuard.RequireAtBranchAsync(branchId, "Remove a floor area", cancellationToken);
 
+        // The same lock as the plan save: this changes pins, and a save validating pins against the
+        // room's photos must not interleave with the room going. And the same version: an editor that
+        // loaded the plan with this room in it would otherwise save it back, photos and pins and all.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
-        // Tables stay; they just stop belonging to a zone.
+        // Tables stay; they just stop belonging to a room - and come off its photos, which go with
+        // it (cascade). A pin on a picture no room shows is a table nobody can find.
         var tables = await db.DiningTables.Where(t => t.FloorAreaId == area.Id).ToListAsync(cancellationToken);
 
         foreach (var table in tables)
         {
             table.AssignToArea(null);
+            table.TakeOffPhoto();
         }
 
         db.FloorAreas.Remove(area);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
     }
 
     public async Task<TableDeletionResult> DeleteTableAsync(
@@ -858,8 +1253,8 @@ internal sealed class BranchSettingsService(
     private const string SetLockTimeout = "SET LOCK_TIMEOUT 5000;";
 
     /// <summary>
-    /// Opens a transaction and takes an update lock on the branch row, for the writers that decide
-    /// what a table's photo position means: the plan replace, the pin save, the cover change.
+    /// Opens a transaction and takes an update lock on the branch row, for the writers that change
+    /// the plan and move its version: the plan replace and the room add, rename and delete.
     /// </summary>
     /// <remarks>
     /// <c>UPDLOCK</c> serialises those writers against each other without blocking readers, and
@@ -1025,12 +1420,12 @@ internal sealed class BranchSettingsService(
     /// </remarks>
     private System.Linq.Expressions.Expression<Func<DiningTable, FloorTableView>> TableProjection =>
         t => new FloorTableView(
-            t.Id, t.Label, t.Seats, t.X, t.Y, t.Width, t.Height, t.RotationDegrees, t.Shape,
-            t.FloorAreaId, t.IsBookable, t.IsActive, t.QrToken, t.Status,
+            t.Id, t.Label, t.Seats, t.FloorAreaId, t.IsBookable, t.IsActive, t.QrToken, t.Status,
             !db.Reservations.Any(r => r.DiningTableId == t.Id)
             && !db.TableSessions.Any(ts => ts.DiningTableId == t.Id)
             && !db.Tabs.Any(tb => tb.DiningTableId == t.Id)
             && !db.TableStateChanges.Any(c => c.DiningTableId == t.Id),
+            t.PhotoId,
             t.PhotoX,
             t.PhotoY);
 }

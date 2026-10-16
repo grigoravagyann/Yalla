@@ -180,7 +180,7 @@ public sealed class VenueLifecycleTests(SqlServerFixture fixture)
 
         await Assert.ThrowsAsync<DomainStateException>(
             () => service.AddBranchAsync(branch.VenueId, new CreateBranchCommand(
-                "Second", "second-" + Guid.NewGuid().ToString("N")[..8], "1 Test Street", 40.18, 44.51, "Asia/Yerevan", 800, 600)));
+                "Second", "second-" + Guid.NewGuid().ToString("N")[..8], "1 Test Street", 40.18, 44.51, "Asia/Yerevan")));
 
         await using var verify = fixture.CreateContext(clock);
         var venue = await verify.Venues.AsNoTracking().FirstAsync(v => v.Id == branch.VenueId);

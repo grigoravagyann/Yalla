@@ -70,7 +70,10 @@ public sealed record PublicBranchListing(
 /// saved by somebody at the venue (K9). False means hide the booking button.
 /// </param>
 /// <param name="RecentReviews">The newest three published reviews, by when they were first written. The rest are paged on the reviews route.</param>
-/// <param name="TableMarkers">Tables placed on the cover photo, with their live state.</param>
+/// <param name="Rooms">
+/// The rooms a diner picks from, each with its photos and the live pins on them - the same payload as
+/// <c>GET /api/public/branches/{id}/rooms</c>.
+/// </param>
 /// <param name="AsOfUtc">When the live half was read.</param>
 public sealed record PublicBranchDetail(
     PublicBranchListing Listing,
@@ -84,7 +87,7 @@ public sealed record PublicBranchDetail(
     bool AcceptsWebBookings,
     bool AcceptsAppBookings,
     IReadOnlyList<PublicReviewView> RecentReviews,
-    IReadOnlyList<PublicTableMarker> TableMarkers,
+    IReadOnlyList<PublicRoom> Rooms,
     DateTime AsOfUtc);
 
 /// <summary>One published review.</summary>
@@ -117,13 +120,13 @@ public sealed record PublicReviewPage(
     IReadOnlyList<PublicReviewView> Reviews);
 
 /// <summary>
-/// One table drawn on the branch's cover photo.
+/// One table's pin on a room photo, with its live state.
 /// </summary>
-/// <param name="TableId">The floor-plan table id the booking flow takes.</param>
+/// <param name="TableId">The table id the booking flow takes.</param>
 /// <param name="Label">What is printed on it.</param>
 /// <param name="Seats">How many it seats. There is no minimum party size in the model.</param>
-/// <param name="IsBookable">False for walk-in-only seats.</param>
-/// <param name="State">1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService - as the floor plan derives it now.</param>
+/// <param name="IsBookable">False for walk-in-only seats, which are pinned so a diner can see them but not booked.</param>
+/// <param name="State">1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService - as the floor derives it now.</param>
 /// <param name="PhotoX">0-1 across the photo.</param>
 /// <param name="PhotoY">0-1 down the photo.</param>
 public sealed record PublicTableMarker(
@@ -135,12 +138,26 @@ public sealed record PublicTableMarker(
     double PhotoX,
     double PhotoY);
 
-/// <summary>The live markers, and the photo they are drawn on.</summary>
-public sealed record PublicTableMarkers(
+/// <summary>One photo of a room, and the tables pinned on it.</summary>
+/// <param name="Photo">The picture.</param>
+/// <param name="Tables">The active tables pinned on it, by label.</param>
+public sealed record PublicRoomPhoto(PhotoView Photo, IReadOnlyList<PublicTableMarker> Tables);
+
+/// <summary>A room a diner can pick: its photos in order, each with its live pins.</summary>
+/// <param name="RoomId">The room.</param>
+/// <param name="Name">Hall, Terrace, VIP.</param>
+/// <param name="DisplayOrder">Lowest first.</param>
+/// <param name="Photos">Its photos, in the order the venue chose. Never empty: a room with no photo is not listed.</param>
+public sealed record PublicRoom(Guid RoomId, string Name, int DisplayOrder, IReadOnlyList<PublicRoomPhoto> Photos);
+
+/// <summary>The rooms of one branch, with every pin's live state.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="AsOfUtc">When the states were derived.</param>
+/// <param name="Rooms">The rooms that have at least one photo, lowest <c>displayOrder</c> first.</param>
+public sealed record PublicBranchRooms(
     Guid BranchId,
-    PhotoView? Photo,
     DateTime AsOfUtc,
-    IReadOnlyList<PublicTableMarker> Tables);
+    IReadOnlyList<PublicRoom> Rooms);
 
 /// <summary>What Explore, search and the map ask for.</summary>
 /// <param name="Query">Contains-match on venue name, branch name, cuisine and address, case-insensitive. Blank means everything.</param>
@@ -154,7 +171,7 @@ public sealed record BranchSearchRequest(
     double? Longitude = null);
 
 /// <summary>
-/// The diner app's browse reads: list, search, details, reviews, table markers.
+/// The diner app's browse reads: list, search, details, reviews, rooms.
 /// </summary>
 /// <remarks>
 /// The same published-branch rule as <see cref="IPublicVenueQuery"/>: a branch that is inactive, or
@@ -189,6 +206,10 @@ public interface IPublicListingQuery
     /// <exception cref="KeyNotFoundException">No such published branch.</exception>
     Task<PublicReviewPage> GetReviewsAsync(Guid branchId, int page, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The branch's rooms, each room's photos in order, and on each photo the active tables pinned
+    /// there with the state the floor derives now.
+    /// </summary>
     /// <exception cref="KeyNotFoundException">No such published branch.</exception>
-    Task<PublicTableMarkers> GetTableMarkersAsync(Guid branchId, CancellationToken cancellationToken = default);
+    Task<PublicBranchRooms> GetRoomsAsync(Guid branchId, CancellationToken cancellationToken = default);
 }

@@ -200,13 +200,10 @@ public class PersistedEnumValueTests
     }
 
     [Fact]
-    public void Venue_and_table_shape_values_are_pinned_to_what_is_stored()
+    public void Venue_type_and_tier_values_are_pinned_to_what_is_stored()
     {
         Assert.Equal(1, (int)VenueType.Cafe);
         Assert.Equal(2, (int)VenueType.Restaurant);
-
-        Assert.Equal(1, (int)TableShape.Rectangle);
-        Assert.Equal(2, (int)TableShape.Round);
 
         Assert.Equal(1, (int)SubscriptionTier.Free);
         Assert.Equal(2, (int)SubscriptionTier.Paid);
@@ -316,7 +313,7 @@ public class PersistedEnumValueTests
             nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
-            nameof(TableSessionSource), nameof(TableShape), nameof(TableStatus), nameof(TelegramVerificationStatus),
+            nameof(TableSessionSource), nameof(TableStatus), nameof(TelegramVerificationStatus),
             nameof(VenueType),
         ];
 

@@ -5,7 +5,7 @@ using Yalla.Domain.Enums;
 namespace Yalla.Domain.Venues;
 
 /// <summary>
-/// One table on a branch's floor plan, positioned so the diner app can draw the room from above.
+/// One table in a branch, optionally pinned on one of its room's photos so a diner can tap it.
 /// </summary>
 /// <remarks>
 /// Named <c>DiningTable</c> rather than <c>Table</c> because <c>Table</c> collides with too much
@@ -26,21 +26,6 @@ public sealed class DiningTable : Entity
     public string Label { get; private set; } = null!;
 
     public int Seats { get; private set; }
-
-    /// <summary>Left edge on the floor-plan canvas, in the same design units as <c>Branch.FloorWidth</c>.</summary>
-    public int X { get; private set; }
-
-    /// <summary>Top edge on the floor-plan canvas, in the same design units as <c>Branch.FloorHeight</c>.</summary>
-    public int Y { get; private set; }
-
-    public int Width { get; private set; }
-
-    public int Height { get; private set; }
-
-    /// <summary>Clockwise rotation of the table on the canvas, 0 to 360 degrees.</summary>
-    public double RotationDegrees { get; private set; }
-
-    public TableShape Shape { get; private set; }
 
     /// <summary>False for tables that only ever take walk-ins, e.g. bar stools.</summary>
     public bool IsBookable { get; private set; }
@@ -83,13 +68,7 @@ public sealed class DiningTable : Entity
         Guid branchId,
         string label,
         int seats,
-        int x,
-        int y,
-        int width,
-        int height,
-        TableShape shape,
         Guid? floorAreaId = null,
-        double rotationDegrees = 0d,
         bool isBookable = true,
         string? qrToken = null)
         : base(Guid.CreateVersion7())
@@ -98,12 +77,6 @@ public sealed class DiningTable : Entity
         FloorAreaId = floorAreaId;
         Label = Guard.NotBlank(label, nameof(label), FieldLengths.TableLabel);
         Seats = Guard.Positive(seats, nameof(seats));
-        X = Guard.NotNegative(x, nameof(x));
-        Y = Guard.NotNegative(y, nameof(y));
-        Width = Guard.Positive(width, nameof(width));
-        Height = Guard.Positive(height, nameof(height));
-        RotationDegrees = NormaliseRotation(rotationDegrees);
-        Shape = Guard.Defined(shape, nameof(shape));
         IsBookable = isBookable;
         IsActive = true;
         QrToken = qrToken is null
@@ -219,40 +192,48 @@ public sealed class DiningTable : Entity
     public void Relabel(string label) =>
         Label = Guard.NotBlank(label, nameof(label), FieldLengths.TableLabel);
 
-    public void MoveTo(int x, int y, double rotationDegrees)
-    {
-        X = Guard.NotNegative(x, nameof(x));
-        Y = Guard.NotNegative(y, nameof(y));
-        RotationDegrees = NormaliseRotation(rotationDegrees);
-    }
+    /// <summary>
+    /// The room photo this table is pinned on, or null when it is on none. Always one of its own
+    /// room's photos - see <c>FloorAreaPhoto</c> - which the floor-plan save checks.
+    /// </summary>
+    /// <remarks>
+    /// A diner books by tapping a pin, so a table with no pin is not offered to diners at all,
+    /// however bookable it is. Staff still seat it: the pin is how a stranger finds the table, not
+    /// whether it exists.
+    /// </remarks>
+    public Guid? PhotoId { get; private set; }
 
-    public void Resize(int width, int height)
-    {
-        Width = Guard.Positive(width, nameof(width));
-        Height = Guard.Positive(height, nameof(height));
-    }
+    public Media.Photo? Photo { get; private set; }
 
     /// <summary>
-    /// Where the table is on the branch's cover photo, as a fraction of its width (0 left, 1 right).
-    /// Null when the table is not in that picture.
+    /// Where the pin sits on <see cref="PhotoId"/>, as a fraction of the photo's width (0 left,
+    /// 1 right). Null exactly when <see cref="PhotoId"/> is.
     /// </summary>
+    /// <remarks>
+    /// A fraction rather than pixels so the pin stays on the table at whatever size the phone draws
+    /// the picture.
+    /// </remarks>
     public double? PhotoX { get; private set; }
 
     /// <summary>As <see cref="PhotoX"/>, down the photo's height (0 top, 1 bottom).</summary>
     public double? PhotoY { get; private set; }
 
-    /// <summary>Puts the table on the cover photo, or takes it off with two nulls.</summary>
-    /// <exception cref="FieldValidationException">One coordinate without the other, or outside 0-1.</exception>
-    public void PlaceOnPhoto(double? photoX, double? photoY) =>
-        (PhotoX, PhotoY) = BranchListingRules.PhotoPosition(photoX, photoY, Label);
+    /// <summary>Pins the table on a room photo, or takes it off with three nulls.</summary>
+    /// <exception cref="FieldValidationException">Some of the three without the others, or a coordinate outside 0-1.</exception>
+    public void PlaceOnPhoto(Guid? photoId, double? photoX, double? photoY) =>
+        (PhotoId, PhotoX, PhotoY) = BranchListingRules.PhotoPosition(photoId, photoX, photoY, Label);
+
+    /// <summary>
+    /// Takes the table off its photo. Used when the photo leaves the room, or the room goes: a pin
+    /// on a picture the room no longer shows is a table a diner cannot find.
+    /// </summary>
+    public void TakeOffPhoto() => (PhotoId, PhotoX, PhotoY) = (null, null, null);
 
     public void SetSeats(int seats) => Seats = Guard.Positive(seats, nameof(seats));
 
-    public void SetShape(TableShape shape) => Shape = Guard.Defined(shape, nameof(shape));
-
     /// <summary>
     /// Replaces the QR token. <b>Never called from an edit.</b> The code printed on the physical
-    /// table must keep working when the table is renamed, moved or resized, so this is a separate,
+    /// table must keep working when the table is renamed, re-pinned or moved to another room, so this is a separate,
     /// deliberate, audited action for the one case where the code is compromised.
     /// </summary>
     public void RegenerateQrToken() => QrToken = GenerateQrToken();
@@ -262,10 +243,4 @@ public sealed class DiningTable : Entity
     public void SetBookable(bool isBookable) => IsBookable = isBookable;
 
     public void SetActive(bool isActive) => IsActive = isActive;
-
-    private static double NormaliseRotation(double rotationDegrees) =>
-        double.IsNaN(rotationDegrees) || rotationDegrees < 0d || rotationDegrees > 360d
-            ? throw new ArgumentOutOfRangeException(
-                nameof(rotationDegrees), rotationDegrees, "Rotation must be between 0 and 360 degrees.")
-            : rotationDegrees;
 }

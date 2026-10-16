@@ -259,102 +259,88 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         Assert.Contains("phone-not-verified", await refused.Content.ReadAsStringAsync());
     }
 
-    // ------------------------------------------------------------ table markers
+    // ------------------------------------------------------------ rooms and pins
 
     [SkippableFact]
-    public async Task A_table_placed_on_the_cover_photo_is_served_as_a_live_marker_and_in_availability()
+    public async Task A_table_pinned_on_a_room_photo_is_served_on_the_rooms_read_the_details_and_availability_and_a_cover_change_moves_no_pin()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
         AuthBranch mine;
-        await using (var db = fixture.CreateContext(factory.Clock))
-        {
-            mine = await AuthTestData.CreateBranchAsync(db);
-        }
-
-        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
-        // The positions are fractions of the cover photo, so there has to be one - and a second, to
-        // change it to later.
-        Guid cover;
         Guid newCover;
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            cover = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
+            mine = await AuthTestData.CreateBranchAsync(db);
             newCover = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
         }
 
-        var profile = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/public-profile");
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        var planUrl = $"/api/branches/{mine.BranchId}/floor-plan";
 
-        // The public-profile form as the console sends it: phone and switch as they are, and the cover.
-        Task<HttpResponseMessage> SaveCoverAsync(Guid? photoId) =>
-            manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/public-profile", new
-            {
-                phoneE164 = profile.TryGetProperty("phoneE164", out var phone) ? phone.GetString() : null,
-                acceptsWebBookings = profile.GetProperty("acceptsWebBookings").GetBoolean(),
-                coverPhotoId = photoId,
-            });
-
-        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(cover)).StatusCode);
-
-        var plan = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/floor-plan");
+        var plan = await manager.GetFromJsonAsync<JsonElement>(planUrl);
         var firstId = plan.GetProperty("tables")[0].GetProperty("id").GetGuid();
+        var roomPhoto = plan.GetProperty("areas")[0].GetProperty("photos")[0].GetProperty("photoId").GetGuid();
 
-        // Pins have their own route (K7), saved against the cover they were placed on.
-        Task<HttpResponseMessage> PlaceFirstAsync(Guid coverPhotoId, double? photoX, double? photoY) =>
-            manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/table-photo-positions", new
+        // The first table's pin moved across the room's photo, through the rooms editor.
+        Task<HttpResponseMessage> PinFirstAsync(JsonElement loaded, double? photoX, double? photoY) =>
+            manager.PutAsJsonAsync(planUrl, FloorPlanBody.From(loaded, loaded.GetProperty("version").GetString(), table =>
             {
-                coverPhotoId,
-                positions = new[] { new { tableId = firstId, photoX, photoY } },
-            });
+                if ((Guid)table["id"]! == firstId)
+                {
+                    table["photoX"] = photoX;
+                    table["photoY"] = photoY;
+                }
+            }));
 
-        var saved = await PlaceFirstAsync(cover, 0.25, 0.5);
-        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PinFirstAsync(plan, 0.25, 0.5)).StatusCode);
 
         using var anyone = factory.CreateClient();
-        var markers = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}/table-markers");
-        var marker = Assert.Single(markers.GetProperty("tables").EnumerateArray());
-        Assert.Equal(firstId, marker.GetProperty("tableId").GetGuid());
-        Assert.Equal(0.25, marker.GetProperty("photoX").GetDouble());
-        Assert.Equal(0.5, marker.GetProperty("photoY").GetDouble());
-        Assert.Equal(1, marker.GetProperty("state").GetInt32());
+        var roomsUrl = $"/api/public/branches/{mine.BranchId}/rooms";
+
+        var rooms = await anyone.GetFromJsonAsync<JsonElement>(roomsUrl);
+        var room = Assert.Single(rooms.GetProperty("rooms").EnumerateArray());
+        Assert.Equal("Windows", room.GetProperty("name").GetString());
+
+        var photo = Assert.Single(room.GetProperty("photos").EnumerateArray());
+        Assert.Equal(roomPhoto, photo.GetProperty("photo").GetProperty("photoId").GetGuid());
+        Assert.Equal(2, photo.GetProperty("tables").GetArrayLength());
+
+        var pin = photo.GetProperty("tables").EnumerateArray().Single(t => t.GetProperty("tableId").GetGuid() == firstId);
+        Assert.Equal(0.25, pin.GetProperty("photoX").GetDouble());
+        Assert.Equal(0.5, pin.GetProperty("photoY").GetDouble());
+        Assert.Equal(1, pin.GetProperty("state").GetInt32());
 
         var availability = await anyone.GetFromJsonAsync<JsonElement>(
             $"/api/public/branches/{mine.BranchId}/availability?partySize=2");
         var placed = availability.GetProperty("tables").EnumerateArray()
             .Single(t => t.GetProperty("tableId").GetGuid() == firstId);
+        Assert.Equal(roomPhoto, placed.GetProperty("photoId").GetGuid());
         Assert.Equal(0.25, placed.GetProperty("photoX").GetDouble());
 
-        // One coordinate without the other is refused, naming the field.
-        var half = await PlaceFirstAsync(cover, 0.4, null);
+        // One coordinate without the other is refused, naming the row and the field.
+        var current = await manager.GetFromJsonAsync<JsonElement>(planUrl);
+        var half = await PinFirstAsync(current, 0.4, null);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, half.StatusCode);
+        Assert.Contains(
+            (await half.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("context").GetProperty("fields").EnumerateArray(),
+            f => f.GetProperty("field").GetString() == "tables[0].photoY");
 
-        var markersUrl = $"/api/public/branches/{mine.BranchId}/table-markers";
-
-        // Saving the profile with the same cover - the form re-sends it on every save - keeps the pin.
-        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(cover)).StatusCode);
-        Assert.Single((await anyone.GetFromJsonAsync<JsonElement>(markersUrl)).GetProperty("tables").EnumerateArray());
-
-        // A different picture: the pin described the old one, so it comes off, in the database too.
-        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(newCover)).StatusCode);
-        var moved = await anyone.GetFromJsonAsync<JsonElement>(markersUrl);
-        Assert.Equal(newCover, moved.GetProperty("photo").GetProperty("photoId").GetGuid());
-        Assert.Empty(moved.GetProperty("tables").EnumerateArray());
-        Assert.Empty((await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}"))
-            .GetProperty("tableMarkers").EnumerateArray());
-
-        await using (var db = fixture.CreateContext(factory.Clock))
+        // The cover is the card's picture, not a room's: changing it moves no pin.
+        var profile = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/public-profile");
+        Assert.Equal(HttpStatusCode.OK, (await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/public-profile", new
         {
-            Assert.False(await db.DiningTables.AnyAsync(t => t.BranchId == mine.BranchId && t.PhotoX != null));
-        }
+            phoneE164 = profile.TryGetProperty("phoneE164", out var phone) ? phone.GetString() : null,
+            acceptsWebBookings = profile.GetProperty("acceptsWebBookings").GetBoolean(),
+            coverPhotoId = newCover,
+        })).StatusCode);
 
-        // No cover at all: no markers, and no pin can be placed on a picture that is gone.
-        Assert.Equal(HttpStatusCode.OK, (await SaveCoverAsync(null)).StatusCode);
-        Assert.Equal(HttpStatusCode.Conflict, (await PlaceFirstAsync(newCover, 0.3, 0.6)).StatusCode);
+        var after = await anyone.GetFromJsonAsync<JsonElement>(roomsUrl);
+        Assert.Equal(rooms.GetProperty("rooms").GetRawText(), after.GetProperty("rooms").GetRawText());
 
-        var uncovered = await anyone.GetFromJsonAsync<JsonElement>(markersUrl);
-        Assert.False(uncovered.TryGetProperty("photo", out var photo) && photo.ValueKind != JsonValueKind.Null);
-        Assert.Empty(uncovered.GetProperty("tables").EnumerateArray());
+        // The details screen carries the same rooms.
+        var detail = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}");
+        Assert.Equal(after.GetProperty("rooms").GetRawText(), detail.GetProperty("rooms").GetRawText());
     }
 
     // ------------------------------------------------------------ orders

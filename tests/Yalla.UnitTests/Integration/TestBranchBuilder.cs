@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Media;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
@@ -50,6 +51,8 @@ internal static class TestBranchBuilder
         ReservationPolicy? policy = null,
         IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null,
         SubscriptionTier subscriptionTier = SubscriptionTier.Paid,
+        bool pinTables = true,
+        bool roomPhoto = true,
         CancellationToken cancellationToken = default)
     {
         var unique = Guid.NewGuid().ToString("N")[..12];
@@ -65,8 +68,6 @@ internal static class TestBranchBuilder
             latitude: 40.18,
             longitude: 44.51,
             timeZoneId: timeZoneId,
-            floorWidth: 1000,
-            floorHeight: 700,
             reservationPolicy: policy,
             subscriptionTier: subscriptionTier);
 
@@ -89,18 +90,32 @@ internal static class TestBranchBuilder
         var area = new FloorArea(branch.Id, "Windows", 0);
         db.FloorAreas.Add(area);
 
+        // One photo of the room, every table pinned on it - because a diner is only offered a table
+        // with a pin, and most tests book. A test about unpinned tables asks for pinTables: false; a
+        // test writing against a schema from before rooms had photos asks for roomPhoto: false.
+        var photo = roomPhoto ? RoomPhoto(branch.Id) : null;
+
+        if (photo is not null)
+        {
+            db.Photos.Add(photo);
+            db.FloorAreaPhotos.Add(new FloorAreaPhoto(area.Id, photo.Id, 0));
+        }
+
         var tables = Enumerable.Range(1, tableCount)
             .Select(i => new DiningTable(
                 branch.Id,
                 label: i.ToString(),
                 seats: seatsPerTable,
-                x: 50 * i,
-                y: 100,
-                width: 90,
-                height: 90,
-                shape: TableShape.Round,
                 floorAreaId: area.Id))
             .ToList();
+
+        if (pinTables && photo is not null)
+        {
+            for (var i = 0; i < tables.Count; i++)
+            {
+                tables[i].PlaceOnPhoto(photo.Id, PinX(i), 0.5);
+            }
+        }
 
         db.DiningTables.AddRange(tables);
 
@@ -120,24 +135,53 @@ internal static class TestBranchBuilder
         string label,
         int seats,
         bool isBookable = true,
+        bool pinned = true,
         CancellationToken cancellationToken = default)
     {
+        // In the branch's first room, pinned on its first photo unless asked otherwise - the same
+        // place every built table is, so a diner is offered it.
+        var roomPhoto = await db.FloorAreaPhotos
+            .Where(p => p.FloorArea.BranchId == branch.BranchId)
+            .OrderBy(p => p.FloorArea.DisplayOrder)
+            .ThenBy(p => p.Position)
+            .Select(p => new { p.FloorAreaId, p.PhotoId })
+            .FirstOrDefaultAsync(cancellationToken);
+
         var table = new DiningTable(
             branch.BranchId,
             label: label,
             seats: seats,
-            x: 500,
-            y: 400,
-            width: 120,
-            height: 120,
-            shape: TableShape.Rectangle,
+            floorAreaId: roomPhoto?.FloorAreaId,
             isBookable: isBookable);
+
+        if (pinned && roomPhoto is not null)
+        {
+            table.PlaceOnPhoto(roomPhoto.PhotoId, 0.9, 0.8);
+        }
 
         db.DiningTables.Add(table);
         await db.SaveChangesAsync(cancellationToken);
 
         return table;
     }
+
+    /// <summary>
+    /// A photo row a room can show, without going through an upload. Externally hosted, so it needs
+    /// no bytes on disk - these tests are about rooms and pins, not image processing.
+    /// </summary>
+    public static Photo RoomPhoto(Guid branchId)
+    {
+        var unique = Guid.NewGuid().ToString("N");
+
+        return Photo.ExternallyHosted(
+            branchId,
+            $"https://cdn.example.test/room-{unique}.jpg",
+            unique + unique,
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+    }
+
+    /// <summary>Spreads pins across the photo so no two sit on top of each other.</summary>
+    private static double PinX(int index) => Math.Round(0.05 + ((index % 10) * 0.09), 2);
 
     /// <summary>Adds a confirmed booking on a table, so the reservation overlay has something to find.</summary>
     public static async Task<Reservation> AddConfirmedReservationAsync(

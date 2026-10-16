@@ -23,13 +23,6 @@ public enum SubscriptionTier
     Paid = 2,
 }
 
-/// <summary>Footprint of a table on the floor plan.</summary>
-public enum TableShape
-{
-    Rectangle = 1,
-    Round = 2,
-}
-
 /// <summary>
 /// The <b>physical</b> state of a table: what somebody did to it.
 /// </summary>

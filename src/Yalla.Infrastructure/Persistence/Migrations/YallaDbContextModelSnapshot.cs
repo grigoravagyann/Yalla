@@ -1687,17 +1687,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
-                    b.Property<int>("FloorHeight")
-                        .HasColumnType("int");
-
                     b.Property<int>("FloorPlanVersion")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(0);
-
-                    b.Property<int>("FloorWidth")
-                        .HasColumnType("int");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
@@ -1894,9 +1888,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("FloorAreaId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int>("Height")
-                        .HasColumnType("int");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
@@ -1907,6 +1898,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid?>("PhotoId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<double?>("PhotoX")
                         .HasColumnType("float");
@@ -1920,9 +1914,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(64)")
                         .UseCollation("Latin1_General_100_BIN2");
 
-                    b.Property<double>("RotationDegrees")
-                        .HasColumnType("float");
-
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -1932,24 +1923,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("Seats")
                         .HasColumnType("int");
 
-                    b.Property<int>("Shape")
-                        .HasColumnType("int");
-
                     b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Width")
-                        .HasColumnType("int");
-
-                    b.Property<int>("X")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Y")
                         .HasColumnType("int");
 
                     b.HasKey("Id");
 
                     b.HasIndex("FloorAreaId");
+
+                    b.HasIndex("PhotoId");
 
                     b.HasIndex("QrToken")
                         .IsUnique();
@@ -1986,6 +1967,35 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("BranchId", "DisplayOrder");
 
                     b.ToTable("FloorAreas", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.FloorAreaPhoto", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("FloorAreaId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("PhotoId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PhotoId");
+
+                    b.HasIndex("FloorAreaId", "PhotoId")
+                        .IsUnique();
+
+                    b.HasIndex("FloorAreaId", "Position");
+
+                    b.ToTable("FloorAreaPhotos", (string)null);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.OpeningHours", b =>
@@ -2654,9 +2664,16 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasForeignKey("FloorAreaId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("Yalla.Domain.Media.Photo", "Photo")
+                        .WithMany()
+                        .HasForeignKey("PhotoId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("Branch");
 
                     b.Navigation("FloorArea");
+
+                    b.Navigation("Photo");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.FloorArea", b =>
@@ -2668,6 +2685,25 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Branch");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.FloorAreaPhoto", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.FloorArea", "FloorArea")
+                        .WithMany("Photos")
+                        .HasForeignKey("FloorAreaId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Media.Photo", "Photo")
+                        .WithMany()
+                        .HasForeignKey("PhotoId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("FloorArea");
+
+                    b.Navigation("Photo");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.OpeningHours", b =>
@@ -2721,6 +2757,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("Yalla.Domain.Venues.FloorArea", b =>
                 {
                     b.Navigation("DiningTables");
+
+                    b.Navigation("Photos");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.Venue", b =>

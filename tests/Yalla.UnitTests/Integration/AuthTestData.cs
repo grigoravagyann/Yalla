@@ -182,8 +182,6 @@ internal static class AuthTestData
             latitude: 40.19,
             longitude: 44.52,
             timeZoneId: timeZoneId,
-            floorWidth: 1000,
-            floorHeight: 700,
             subscriptionTier: SubscriptionTier.Paid);
 
         branch.SetActive(isActive);
@@ -191,8 +189,7 @@ internal static class AuthTestData
 
         for (var i = 1; i <= tableCount; i++)
         {
-            db.DiningTables.Add(new DiningTable(
-                branch.Id, label: i.ToString(), seats: 4, x: 50 * i, y: 100, width: 90, height: 90, shape: TableShape.Round));
+            db.DiningTables.Add(new DiningTable(branch.Id, label: i.ToString(), seats: 4));
         }
 
         await db.SaveChangesAsync(cancellationToken);

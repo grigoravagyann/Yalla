@@ -194,14 +194,10 @@ public sealed class ReviewNeedsVisitException(Guid branchId, int windowDays)
 /// </summary>
 public sealed class FloorPlanInvalidException(
     IReadOnlyList<string> errors,
-    IReadOnlyList<string> tablesOutsideCanvas,
     IReadOnlyList<string> duplicateLabels)
     : ArgumentException(string.Join(" ", errors))
 {
     public IReadOnlyList<string> Errors { get; } = errors;
-
-    /// <summary>Labels of tables that do not sit inside the canvas.</summary>
-    public IReadOnlyList<string> TablesOutsideCanvas { get; } = tablesOutsideCanvas;
 
     /// <summary>Labels used more than once in the plan.</summary>
     public IReadOnlyList<string> DuplicateLabels { get; } = duplicateLabels;

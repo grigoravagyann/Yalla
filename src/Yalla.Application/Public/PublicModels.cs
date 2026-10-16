@@ -86,7 +86,7 @@ public sealed record PublicBranchCard(
 /// denominator.
 /// </param>
 /// <param name="FloorPlan">
-/// The room, in diner shape: the canvas, the areas and the tables with their geometry and whether
+/// The rooms, in diner shape: each room with its photos, and the tables with their pins and whether
 /// each is free. <b>No QR tokens and no staff state</b> - see <see cref="PublicFloorTable"/>.
 /// </param>
 /// <param name="PhoneE164">
@@ -178,15 +178,15 @@ public sealed record PublicReservationPolicy(
     int MinLeadMinutes,
     int CancellationDeadlineMinutes);
 
-/// <summary>The room as a diner sees it: a canvas, areas, and tables.</summary>
+/// <summary>The rooms as a diner sees them: each with its photos, and every table with its pin.</summary>
+/// <param name="Areas">The rooms, lowest <c>displayOrder</c> first, each with its photos in order.</param>
+/// <param name="Tables">Every active table, pinned or not, so the page's free count is out of the whole branch.</param>
 public sealed record PublicFloorPlan(
-    int FloorWidth,
-    int FloorHeight,
     IReadOnlyList<FloorAreaView> Areas,
     IReadOnlyList<PublicFloorTable> Tables);
 
 /// <summary>
-/// One table on the public floor plan.
+/// One table on the public page.
 /// </summary>
 /// <remarks>
 /// <b>Not <c>FloorTableView</c>, and that is the whole point.</b> The admin shape carries the
@@ -197,27 +197,24 @@ public sealed record PublicFloorPlan(
 /// </remarks>
 /// <param name="Label">What is printed on it.</param>
 /// <param name="Seats">How many it seats.</param>
-/// <param name="X">Left edge on the canvas.</param>
-/// <param name="Y">Top edge on the canvas.</param>
-/// <param name="Width">Width on the canvas.</param>
-/// <param name="Height">Height on the canvas.</param>
-/// <param name="RotationDegrees">Clockwise rotation.</param>
-/// <param name="Shape">1 Rectangle, 2 Round.</param>
-/// <param name="AreaName">Which area it is in, by name. Null for none.</param>
-/// <param name="IsBookable">False for the bar stools that only ever take walk-ins.</param>
+/// <param name="AreaName">Which room it is in, by name. Null for none.</param>
+/// <param name="IsBookable">
+/// Whether a diner can book it: bookable <b>and</b> pinned on a room photo. A table with no pin is
+/// not offered to diners, so it reads false here however the venue set it.
+/// </param>
 /// <param name="IsFree">Whether anybody is sitting at it right now.</param>
+/// <param name="PhotoId">The room photo it is pinned on, or null.</param>
+/// <param name="PhotoX">Where the pin sits on that photo, 0-1 across; null with no pin.</param>
+/// <param name="PhotoY">0-1 down; null with no pin.</param>
 public sealed record PublicFloorTable(
     string Label,
     int Seats,
-    int X,
-    int Y,
-    int Width,
-    int Height,
-    double RotationDegrees,
-    TableShape Shape,
     string? AreaName,
     bool IsBookable,
-    bool IsFree);
+    bool IsFree,
+    Guid? PhotoId,
+    double? PhotoX,
+    double? PhotoY);
 
 /// <summary>
 /// What a link to this branch should look like when it is pasted into WhatsApp or Telegram.
