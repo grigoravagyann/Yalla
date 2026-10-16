@@ -1,4 +1,4 @@
-# Diner browse, orders and account: the real-data contract
+﻿# Diner browse, orders and account: the real-data contract
 
 What the diner app and the venue console read and write for Explore, search, the map, a place's
 details, its reviews, the photo table view, the Orders tab and the diner's own account - the shapes,
@@ -228,8 +228,13 @@ the host** (`CanSeeTableTotal`). A guest the host hid the total from, a guest st
 and a guest removed from the tab get none of the table's orders, on the list or by id. Their own
 orders (1 and 2) they still see.
 
-**The status filter.** `status=active` is kitchen New, InKitchen and Ready; `status=history` is Served
-and Voided; absent or blank is both; anything else is 400.
+**The status filter.** `status=active` is kitchen New, InKitchen and Ready **on a tab that is still
+Open or Closing**; `status=history` is Served and Voided, **plus every order on a Closed or Abandoned
+tab** whatever the kitchen rail says; absent or blank is both; anything else is 400. Settling the bill
+ends the orders on it: most kitchens never tap "served" (the waiter carries the plate), and until
+the tab had a say a paid-for order sat under Active for good (QA 2026-10-16, D-M4). The order's own
+`status` and `kitchenStatus` are unchanged by this - a closed tab's order still reads `ready` if that
+is where the rail left it; only which list it is on moves.
 
 ```json
 {

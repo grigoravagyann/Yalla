@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Diners;
@@ -45,12 +45,17 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             return [];
         }
 
+        // Active is "still on the kitchen rail, on a tab that is still open". A settled or written-off
+        // tab ends every order on it whatever the rail says: most kitchens never tap "served" (the
+        // waiter carries the plate), and without the tab's say the order sat under Active for good.
         orders = filter switch
         {
             DinerOrderStatuses.ActiveFilter => orders.Where(o =>
-                o.Status == TabOrderStatus.New || o.Status == TabOrderStatus.InKitchen || o.Status == TabOrderStatus.Ready),
+                (o.Status == TabOrderStatus.New || o.Status == TabOrderStatus.InKitchen || o.Status == TabOrderStatus.Ready)
+                && (o.Tab.Status == TabStatus.Open || o.Tab.Status == TabStatus.Closing)),
             DinerOrderStatuses.HistoryFilter => orders.Where(o =>
-                o.Status == TabOrderStatus.Served || o.Status == TabOrderStatus.Voided),
+                o.Status == TabOrderStatus.Served || o.Status == TabOrderStatus.Voided
+                || o.Tab.Status == TabStatus.Closed || o.Tab.Status == TabStatus.Abandoned),
             _ => orders,
         };
 
