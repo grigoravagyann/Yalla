@@ -1,4 +1,4 @@
-# The public surface
+﻿# The public surface
 
 What a link anybody can open publishes, what it deliberately does not, and how somebody with no
 app manages the booking they made on it.
@@ -325,6 +325,12 @@ Notes for a mapper:
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.
 - `isFree` on a table and `freeTableCount` are true as of `asOfUtc`, not as of render time.
+- `freeTableCount` is **counted off the plan the page draws**: the cached plan's tables, less the
+  ones a live read says are taken. It is not the estate-wide free count the browse cards carry. The
+  plan is held for minutes and the live read for seconds, so a table a manager adds in between used
+  to be counted free before it was drawn - "9 tables free" over a room of 8 (QA 2026-10-16, P-L5).
+  Now a new table reaches the number and the room together, when the plan refreshes; a card on the
+  browse list may show it up to five minutes sooner, because a card draws no room.
 - `tableCount` counts **every active table**, bookable or walk-in only, and so does
   `freeTableCount`: the count is exactly the tables drawn with `isFree: true`, out of the tables
   drawn. It once read "3 of 2 free", when the denominator took bookable tables only. Narrowing the
