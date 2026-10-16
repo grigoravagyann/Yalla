@@ -160,13 +160,21 @@ internal sealed class PublicVenueQuery(
         // and a suspension inside those minutes has to take effect now.
         var live = await LiveBranchAsync(plan.BranchId, cancellationToken);
 
-        var free = await FreeTableCountsAsync([plan.BranchId], cancellationToken);
         var occupied = await OccupiedTableLabelsAsync(plan.BranchId, cancellationToken);
         var openNow = await OpenNowAsync([plan.BranchId], cancellationToken);
 
+        // Counted off the plan this page draws, less the tables a live read says are taken - not
+        // from FreeTableCountsAsync, which reads every active table in the database. The plan is
+        // held for minutes and that count for seconds, so a table added in between was "free"
+        // before it was drawn: "9 tables free" over a room of 8. Here the count can only move with
+        // the plan, and the browse cards keep the live count because they draw no room.
+        var tables = plan.Page.FloorPlan.Tables
+            .Select(t => t with { IsFree = !occupied.Contains(t.Label) })
+            .ToList();
+
         return plan.Page with
         {
-            FreeTableCount = free.GetValueOrDefault(plan.BranchId),
+            FreeTableCount = tables.Count(t => t.IsFree),
             IsOpenNow = openNow.Contains(plan.BranchId),
 
             // Stamped from the server clock, beside the reads it describes. This is what lets the
@@ -179,13 +187,7 @@ internal sealed class PublicVenueQuery(
             PhoneE164 = live.PhoneE164,
             AcceptsWebBookings = live.AcceptsWebBookings,
             AcceptsAppBookings = live.AcceptsAppBookings,
-            FloorPlan = plan.Page.FloorPlan with
-            {
-                Tables =
-                [
-                    .. plan.Page.FloorPlan.Tables.Select(t => t with { IsFree = !occupied.Contains(t.Label) }),
-                ],
-            },
+            FloorPlan = plan.Page.FloorPlan with { Tables = tables },
         };
     }
 

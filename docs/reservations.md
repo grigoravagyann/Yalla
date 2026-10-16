@@ -381,6 +381,21 @@ The day an interval belongs to is not always the day it starts on. A branch open
 Friday block running into Saturday morning, so a **22:30 Friday sitting ending 00:30 is inside
 Friday's hours**. The rule therefore examines the local day *and the one before it*.
 
+**A block opening and closing at the same minute is refused**, not read as a 24-hour day:
+`PUT .../opening-hours` answers 422 `validation-failed` naming `[n].closesAt` (bound `conflict`) and
+writes nothing. `closesNextDay` is derived, there is no 24-hour flag, and a branch that never shuts
+says 00:00-23:59. Pinned through the pipeline by
+`VenueAdminEndpointTests.Opening_hours_that_open_and_close_at_the_same_minute_are_refused_naming_the_row`
+(QA 2026-10-16, parity P1 - the console's mock saved 09:00-09:00 as "next day").
+
+**There is no slot list.** The time a diner picks is the client's control; every availability read
+answers the one time it was asked about, and outside the hours it says `unavailableReason`
+`OutsideOpeningHours` on the branch and on every table, and a booking for that time is
+`reservation-outside-opening-hours`. A picker offering 03:00 is a client that has not read `hours`.
+Pinned on the public route, with web bookings on, by
+`PublicBookingTests.Outside_opening_hours_the_public_page_offers_no_table_and_a_web_booking_is_refused`
+(QA 2026-10-16, parity P5; the switch-off half is `A_web_booking_is_refused_while_the_branch_has_not_switched_them_on`).
+
 ### Time zones
 
 The diner picks a local date and time; the branch has an IANA `TimeZoneId`. `BranchZone` is the only

@@ -94,6 +94,13 @@ reported more than one problem out of six.
 | --- | --- |
 | `PUT /api/branches/{branchId}/floor-plan` | `tablesOutsideCanvas`, `duplicateLabels`, `errors` — `floor-plan-invalid` / 422 |
 
+A plan that removes an area while a table still names it is refused the same way; the table and the
+area are named in `errors` as `label -> area`, and nothing is written. Moving the tables to no area in
+the same save is accepted and keeps every table - removing an area never removes a table, through the
+plan or through `DELETE .../floor-areas/{id}`. Pinned by
+`VenueAdminEndpointTests.Dropping_an_area_from_the_plan_keeps_its_tables_and_a_table_still_filed_under_it_is_refused_by_name`
+(QA 2026-10-16, parity P2).
+
 **The sweep: `context.field` on every remaining argument refusal.**
 
 Every `Guard` call and every entity constructor in the domain already passes `nameof(theParameter)`,

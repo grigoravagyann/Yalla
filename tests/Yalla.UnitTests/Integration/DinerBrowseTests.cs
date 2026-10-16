@@ -359,6 +359,72 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ orders
 
+    /// <summary>
+    /// Once the tab is settled, its orders are history, whatever the kitchen rail says.
+    /// </summary>
+    /// <remarks>
+    /// The Active filter was the kitchen status alone - New, InKitchen, Ready - and a kitchen that
+    /// never taps "served" (most do not; the waiter carries the plate) left a paid-for order under
+    /// Active for good. A diner who had paid and left saw it "confirmed" the next morning (QA
+    /// 2026-10-16, D-M4). A closed or written-off tab now moves everything on it to history.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_settled_tab_moves_its_orders_to_history_even_when_the_kitchen_never_marked_them_served()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var ani = await SignInDinerAsync(factory);
+
+        Guid orderId;
+        Guid tabId;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var now = factory.Clock.UtcNow;
+            var mine = await AuthTestData.CreateBranchAsync(db);
+            var menu = await TestMenuBuilder.CreateAsync(db, mine.BranchId);
+            var tab = await AuthTestData.CreateOpenTabAsync(db, mine, mine.FirstTableId, now);
+
+            var participant = TabParticipant.Guest(tab.TabId, "Ani", $"device-{Guid.NewGuid():N}", now, false, ani.DinerUserId);
+            participant.Approve(now);
+            db.TabParticipants.Add(participant);
+
+            var order = TabOrder.PlacedByDiner(tab.TabId, participant.Id, now);
+            order.AddLine(menu.Coffee, "Flat white", TestMenu.CoffeeAmd, 1);
+            db.TabOrders.Add(order);
+
+            await db.SaveChangesAsync();
+            orderId = order.Id;
+            tabId = tab.TabId;
+        }
+
+        using var diner = factory.CreateClientWithToken(ani.AccessToken);
+
+        // Still being made: active.
+        Assert.Equal(
+            [orderId],
+            (await diner.GetFromJsonAsync<JsonElement>("/api/diner/orders?status=active"))
+                .EnumerateArray().Select(o => o.GetProperty("orderId").GetGuid()));
+
+        // The bill is settled and the tab closed; the order is still "New" on the kitchen rail.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var tab = await db.Tabs.FirstAsync(t => t.Id == tabId);
+            tab.Close(factory.Clock.UtcNow);
+            await db.SaveChangesAsync();
+        }
+
+        var active = await diner.GetFromJsonAsync<JsonElement>("/api/diner/orders?status=active");
+        Assert.Equal(0, active.GetArrayLength());
+
+        var history = await diner.GetFromJsonAsync<JsonElement>("/api/diner/orders?status=history");
+        Assert.Equal([orderId], history.EnumerateArray().Select(o => o.GetProperty("orderId").GetGuid()));
+
+        // Unfiltered and by id, it is still theirs.
+        Assert.Equal(1, (await diner.GetFromJsonAsync<JsonElement>("/api/diner/orders")).GetArrayLength());
+        Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/diner/orders/{orderId}")).StatusCode);
+    }
+
     [SkippableFact]
     public async Task A_diner_sees_their_own_and_their_tables_orders_with_the_kitchen_timeline_and_nobody_elses()
     {

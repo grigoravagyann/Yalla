@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Yalla.Application.Menus;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -546,6 +548,59 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
         Assert.Equal(
             freeCount,
             Assert.Single(card.Value.GetProperty("branches").EnumerateArray()).GetProperty("freeTableCount").GetInt32());
+    }
+
+    /// <summary>
+    /// The free count is counted off the plan the page draws, so the two cannot disagree while the
+    /// plan is cached.
+    /// </summary>
+    /// <remarks>
+    /// The plan is held for five minutes and the free count was a separate fifteen-second read of
+    /// every active table. A table added in between was counted free before it was drawn, and the
+    /// page said "9 tables free" over a room of 8 (QA 2026-10-16, P-L5). Now the count is the cached
+    /// plan's tables less the ones a live read says are taken: a new table joins both numbers at
+    /// once, when the plan refreshes.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_free_count_is_counted_off_the_cached_plan_so_a_new_table_cannot_be_free_before_it_is_drawn()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var url = $"/api/public/branches/{world.VenueSlug}/{world.BranchSlug}";
+
+        // First read: the plan is now cached for StableFor.
+        var before = await ReadAsync(anonymous, url);
+        var drawnBefore = before.GetProperty("tableCount").GetInt32();
+        Assert.Equal(drawnBefore, before.GetProperty("freeTableCount").GetInt32());
+
+        // A manager adds a stool while the plan is cached.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            db.DiningTables.Add(Stool(world.BranchId, "Bar 9"));
+            await db.SaveChangesAsync();
+        }
+
+        // Past the live window, inside the stable one: the live reads expire, the plan does not.
+        // The cache runs on the real clock, so the window is ended by hand rather than waited out.
+        var cache = factory.Services.GetRequiredService<IMemoryCache>();
+        cache.Remove($"public:free:{world.BranchId}");
+        cache.Remove($"public:occupied:{world.BranchId}");
+
+        var after = await ReadAsync(anonymous, url);
+        var tableCount = after.GetProperty("tableCount").GetInt32();
+        var freeCount = after.GetProperty("freeTableCount").GetInt32();
+        var drawnFree = after.GetProperty("floorPlan").GetProperty("tables").EnumerateArray()
+            .Count(t => t.GetProperty("isFree").GetBoolean());
+
+        Assert.Equal(drawnBefore, tableCount);
+        Assert.True(
+            freeCount <= tableCount,
+            $"The page says {freeCount} of {tableCount} free: the count reached a table the plan has not drawn yet.");
+        Assert.Equal(drawnFree, freeCount);
     }
 
     /// <summary>

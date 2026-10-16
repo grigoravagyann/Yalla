@@ -264,7 +264,168 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
         Assert.True(hours[1].GetProperty("closesNextDay").GetBoolean());
     }
 
+    /// <summary>
+    /// A day that opens and closes at the same minute is refused on the wire, naming the row's
+    /// <c>closesAt</c>, and nothing is stored. There is no 24-hour flag: <c>closesNextDay</c> is
+    /// derived, and a branch that never shuts says 00:00-23:59.
+    /// </summary>
+    /// <remarks>
+    /// QA 2026-10-16, parity P1: the console's mock saved Monday 09:00-09:00 as
+    /// "09:00 - 09:00 (next day)". The real server never did; this pins it through the pipeline the
+    /// console talks to, beside the service-level
+    /// <c>BranchSettingsServiceTests.A_block_that_opens_and_closes_at_the_same_minute_is_refused_by_its_own_name</c>.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Opening_hours_that_open_and_close_at_the_same_minute_are_refused_naming_the_row()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        var route = $"/api/branches/{mine.BranchId}/opening-hours";
+
+        var before = await (await manager.GetAsync(route)).Content.ReadFromJsonAsync<JsonElement>();
+
+        var refused = await manager.PutAsJsonAsync(route, new[]
+        {
+            new { day = DayOfWeek.Sunday, opensAt = "10:00:00", closesAt = "18:00:00" },
+            new { day = DayOfWeek.Monday, opensAt = "09:00:00", closesAt = "09:00:00" },
+        });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
+
+        var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("validation-failed", problem.GetProperty("code").GetString());
+        Assert.Equal("[1].closesAt", problem.GetProperty("context").GetProperty("field").GetString());
+
+        var field = problem.GetProperty("context").GetProperty("fields").EnumerateArray().Single();
+        Assert.Equal("conflict", field.GetProperty("bound").GetString());
+        Assert.Contains("00:00 to 23:59", problem.GetProperty("detail").GetString());
+
+        // The whole week is refused, not the one row: the Sunday block was not written either.
+        var after = await (await manager.GetAsync(route)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(before.GetRawText(), after.GetRawText());
+    }
+
     // ------------------------------------------------------------ floor areas and the QR code
+
+    /// <summary>
+    /// Removing an area from the plan never takes its tables with it. A plan that still files a
+    /// table under the area it removes is refused naming both; one that moves the tables to no area
+    /// keeps every table - on the plan and on the floor a diner books from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// QA 2026-10-16, parity P2: the console's mock dropped tables from the diner preview after an
+    /// area was deleted. The server's rule is the one <c>DELETE .../floor-areas/{id}</c> already
+    /// documents - "its tables stay, with no area" - and it holds for the whole-plan save too.
+    /// </para>
+    /// <para>
+    /// Not refused when the tables are moved off in the same save. That payload is identical to
+    /// "I moved every table to no area, then removed the empty area", so refusing it would make
+    /// removing a used area a two-save job and protect nothing: no table is lost either way.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Dropping_an_area_from_the_plan_keeps_its_tables_and_a_table_still_filed_under_it_is_refused_by_name()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+        var route = $"/api/branches/{mine.BranchId}/floor-plan";
+
+        var loaded = await (await manager.GetAsync(route)).Content.ReadFromJsonAsync<JsonElement>();
+        var version = loaded.GetProperty("version").GetString();
+        var tables = loaded.GetProperty("tables").EnumerateArray().ToList();
+
+        Assert.Equal("Windows", loaded.GetProperty("areas").EnumerateArray().Single().GetProperty("name").GetString());
+        Assert.Equal(2, tables.Count);
+
+        // Every area gone; the tables as loaded, filed under whichever area this save names.
+        object Plan(string? areaName) => new
+        {
+            expectedVersion = version,
+            floorWidth = loaded.GetProperty("floorWidth").GetInt32(),
+            floorHeight = loaded.GetProperty("floorHeight").GetInt32(),
+            areas = Array.Empty<object>(),
+            tables = tables.Select(t => new
+            {
+                id = t.GetProperty("id").GetGuid(),
+                label = t.GetProperty("label").GetString(),
+                seats = t.GetProperty("seats").GetInt32(),
+                x = t.GetProperty("x").GetInt32(),
+                y = t.GetProperty("y").GetInt32(),
+                width = t.GetProperty("width").GetInt32(),
+                height = t.GetProperty("height").GetInt32(),
+                rotationDegrees = t.GetProperty("rotationDegrees").GetDouble(),
+                shape = t.GetProperty("shape").GetInt32(),
+                floorAreaName = areaName,
+                isBookable = t.GetProperty("isBookable").GetBoolean(),
+            }).ToArray(),
+        };
+
+        // The area leaves while two tables still say they are in it: refused, naming each one.
+        var stale = await manager.PutAsJsonAsync(route, Plan("Windows"));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, stale.StatusCode);
+
+        var problem = await stale.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("floor-plan-invalid", problem.GetProperty("code").GetString());
+
+        var errors = string.Join(" ", problem.GetProperty("context").GetProperty("errors").EnumerateArray()
+            .Select(e => e.GetString()));
+
+        Assert.Contains("1 -> Windows", errors);
+        Assert.Contains("2 -> Windows", errors);
+
+        // Nothing was written: same revision, area still there.
+        var unchanged = await (await manager.GetAsync(route)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(version, unchanged.GetProperty("version").GetString());
+        Assert.Single(unchanged.GetProperty("areas").EnumerateArray());
+
+        // The tables moved to no area in the same save: the area goes, every table stays.
+        var moved = await manager.PutAsJsonAsync(route, Plan(null));
+
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+
+        var result = await moved.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(result.GetProperty("removedTables").EnumerateArray());
+        Assert.Empty(result.GetProperty("deactivatedTables").EnumerateArray());
+        Assert.Empty(result.GetProperty("plan").GetProperty("areas").EnumerateArray());
+
+        var kept = result.GetProperty("plan").GetProperty("tables").EnumerateArray().ToList();
+        Assert.Equal(2, kept.Count);
+        Assert.All(kept, t =>
+        {
+            Assert.True(t.GetProperty("isActive").GetBoolean());
+            Assert.False(t.TryGetProperty("floorAreaId", out _));
+        });
+
+        // And on the floor a stranger books from, which is what the diner preview draws.
+        using var anonymous = factory.CreateClient();
+        var floor = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/public/branches/{mine.BranchId}/availability?partySize=2");
+
+        Assert.Equal(
+            ["1", "2"],
+            floor.GetProperty("tables").EnumerateArray().Select(t => t.GetProperty("label").GetString()).Order());
+    }
 
     [SkippableFact]
     public async Task Floor_areas_and_qr_regeneration_are_reachable_scoped_and_audited()

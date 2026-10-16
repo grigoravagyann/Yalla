@@ -254,7 +254,20 @@ The view also names where the tab is - `venueName` and `branchName` beside `tabl
 | Reassign the host | `POST .../reassign-host` | **Staff**, `WaiterOrAbove` + `BranchScoped` | The host left early or their phone died; otherwise the tab is stuck with nobody able to approve or change the split. The new host must be approved; they gain sight of the total and the right to pay. The old host stays as a guest with their flags unchanged. |
 | Set the settlement mode | `POST .../settlement-mode` | Host | Chosen at open; changeable **until the first payment lands** (reserved or succeeded), then locked and `SettlementModeLockedAtUtc` stamped. After that, 409. |
 | Mark closing | `POST .../closing` | **Staff** | The bill has been asked for. No new participants, no new orders, every live invitation revoked. |
+| Settle the last of the bill | `POST .../payments/cash` | **Staff** | Closes the tab and its sitting (`tableSessionClosed: true`) and **leaves the table Occupied**: the party usually sits on, and only a waiter freeing the table completes it (`TabPaymentService.CloseSessionAsync`). Not a bug when the floor still shows the table taken ten minutes after a settlement - QA 2026-10-16, D-M4. |
 | Everyone on the tab | `GET /api/tabs/{tabId}` for an approved participant; `GET .../participants` for staff | Host, approved guests, staff | "Aram, Nare, +1 guest" — so the host can remove someone and staff can see how many phones are on the table. Staff are not participants and the host's visibility flags do not apply to them. |
+
+### Ordering after closing time
+
+**The tab decides, not the clock.** An order on an `Open` tab is accepted whatever the branch's
+opening hours say right now: a tab exists because somebody scanned the code at the table, so the
+party is physically there, and "last orders" is the floor's call - *Mark closing* refuses every
+further order with 409 `tab-not-accepting-orders`. A clock gate would refuse a real table over hours
+an owner mistyped (the public page's "Closed today" at 01:21 on a branch open until 01:00 was one),
+with the kitchen still working. Pinned by
+`OrderingTests.A_seated_party_keeps_ordering_after_closing_time_because_the_tab_decides_not_the_clock`
+(QA 2026-10-16, parity P3). Opening hours gate what they are for: `isOpenNow` on the public page and
+booking slots.
 
 ## 6. Authorization, by surface
 
