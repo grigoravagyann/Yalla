@@ -334,6 +334,9 @@ internal sealed class PublicVenueQuery(
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
+    /// <param name="PhoneE164">The branch's phone.</param>
+    /// <param name="AcceptsWebBookings">Bookings switched on.</param>
+    /// <param name="AcceptsAppBookings">Switched on, with a reviewed reservation policy.</param>
     /// <param name="FloorPlanVersion">The plan revision now: a cached plan from another one is redrawn.</param>
     private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings, int FloorPlanVersion);
 
@@ -375,7 +378,10 @@ internal sealed class PublicVenueQuery(
 
     // ------------------------------------------------------------ the pieces
 
+    /// <summary>The cached half of the branch page, and the plan revision it was drawn from.</summary>
+    /// <param name="BranchId">The branch the slugs resolved to.</param>
     /// <param name="FloorPlanVersion">The plan revision the rooms, photos and pins were read at.</param>
+    /// <param name="Page">The page, with its live fields as placeholders.</param>
     private sealed record BranchPlan(Guid BranchId, int FloorPlanVersion, PublicBranchPage Page);
 
     private async Task<BranchPlan?> LoadBranchPlanAsync(

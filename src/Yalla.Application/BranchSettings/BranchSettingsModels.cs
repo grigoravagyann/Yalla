@@ -413,6 +413,11 @@ public sealed record FloorPlanReplaceResult(
 public sealed record FloorAreaCommand(string Name, int DisplayOrder);
 
 /// <summary>What deleting a table did: removed outright, or deactivated because it has history.</summary>
+/// <param name="TableId">The table.</param>
+/// <param name="Label">Its label.</param>
+/// <param name="Deleted">Removed outright: it had never been used.</param>
+/// <param name="Deactivated">Kept and switched off: it has reservations, seatings or tabs.</param>
+/// <param name="Message">Which of the two happened, for the manager.</param>
 /// <param name="FloorPlanVersion">
 /// The plan's version after the delete. Either outcome changes the plan and moves it, so an editor
 /// that loaded the plan before is refused rather than saving the table back; the editor that made
