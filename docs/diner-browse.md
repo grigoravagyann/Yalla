@@ -151,7 +151,9 @@ So `"Anahit Sargsyan"` → `"Anahit S."`, `"Անահիտ Սարգսյան"` → 
 
 Live, not cached beyond the request (K13). Rooms lowest `displayOrder` first; each room's photos in the
 venue's order; on each photo the **active tables pinned there**, by label. A room with no photo is not
-listed. A table with no pin is on no photo - it is not offered to diners.
+listed. A table with no pin is on no photo - it is not offered to diners. Nor is one whose pin is on a
+photo that is not its own room's (a row written before the editor refused that): it is on no photo
+here, left out of availability, and refused at booking, like an unpinned one.
 
 ```json
 {
@@ -602,10 +604,12 @@ No shape change. It now deletes the Photo row and its files immediately
 - **Errors:**
   - missing or blank `expectedVersion` → 422 naming it, bound `required`
   - stale or unreadable → 409 `floor-plan-changed` with `context.currentVersion`, nothing written
-- **Success:** 200 with the existing body; `plan.version` is the new revision. Only a successful
-  floor-plan PUT bumps the version.
-- The replace takes an update lock on the branch row (shared with the room delete) and compares
-  the version inside it. Another save holding that lock past 5 s answers 409 `concurrent-update` - reload
+- **Success:** 200 with the existing body; `plan.version` is the new revision. A successful
+  floor-plan PUT bumps the version, and so do `POST`, `PATCH` and `DELETE …/floor-areas` - each changes
+  the plan, and an editor that loaded it before must get 409 rather than resurrect a deleted room or
+  delete a new one. Reload the plan after any of them.
+- The replace takes an update lock on the branch row (shared with the room add, rename and delete)
+  and compares the version inside it. Another save holding that lock past 5 s answers 409 `concurrent-update` - reload
   and retry.
 
 ### K7. `PUT /api/branches/{branchId}/table-photo-positions` - **removed (K13)**
@@ -635,23 +639,36 @@ deactivatedTables, removedTables }`.
 
 | Rule | Answer (nothing written) |
 | --- | --- |
-| Missing/repeated table label, missing/repeated room name, unknown `floorAreaName`, table matched twice, omitted occupied table, label clash with a deactivated table | 422 `floor-plan-invalid`, `context.errors[]`, `context.duplicateLabels[]` (`tablesOutsideCanvas` is gone) |
+| Missing/repeated table label, missing/repeated room name, unknown `floorAreaName`, table matched twice, room `id` sent by two entries, omitted occupied table, label clash with a deactivated table | 422 `floor-plan-invalid`, `context.errors[]`, `context.duplicateLabels[]` (`tablesOutsideCanvas` is gone) |
 | More than 10 photos in a room | 422 `validation-failed`, field `areas[i].photoIds`, bound `max`, `max` 10 |
 | A photo twice in one room, or in a second room | 422, field `areas[i].photoIds[j]`, bound `conflict` |
 | An empty photo id | 422, field `areas[i].photoIds[j]`, bound `required` |
 | A photo not uploaded for this branch | 404 `not-found` (the gallery's answer) |
 | A pin half sent (any of the three without the others) | 422, fields `tables[i].photoId` / `photoX` / `photoY`, bound `required` |
 | A coordinate outside 0-1 | 422, `tables[i].photoX` or `photoY`, bound `range` |
-| A pin on a photo that is not the table's room's (another room's, or the table has no room) | 422, `tables[i].photoId`, bound `conflict` |
+| A pin on a photo that is not the table's room's (another room's, or the table has no room) - unless the photo was the table's room's before this save (below) | 422, `tables[i].photoId`, bound `conflict` |
 | `expectedVersion` missing / stale | 422 `expectedVersion` `required` / 409 `floor-plan-changed` |
 
-**Taken off, not refused:** a pin on a photo the save drops from every room comes off (the table is
-saved unpinned, and `warnings` says so); a bookable table with no pin is saved with a warning. Dropping
-a room takes its photos (cascade) and its tables' pins. **`DELETE …/floor-areas/{areaId}`** keeps the
-room's tables, with no room and no pin. `POST`/`PATCH …/floor-areas` answer `FloorAreaView` with
-`photos` (empty for a new room).
+**Matching rooms:** every entry's `id` is matched to a stored room first; only then are names matched,
+and only against rooms no `id` claimed. So renaming Hall to Lounge and adding a new Hall in one save
+makes two rooms, in either order. An `id` this branch does not have is matched by name, else new.
 
-**Diners are only offered pinned tables.** `GET /api/public/branches/{id}/rooms` (above),
+**Taken off, not refused:** a pin on a photo the save drops from every room comes off (the table is
+saved unpinned, and `warnings` says so); so does a pin on a photo the save **moves out of the table's
+room** - it was that room's before the save and is another room's after it - with its own warning
+("taken off photos this plan moved to another room"). Removing and moving a photo are the manager's
+decision about the rooms, and answer the same way. A bookable table with no pin is saved with a warning.
+Dropping a room takes its photos (cascade) and its tables' pins. **`DELETE …/floor-areas/{areaId}`**
+keeps the room's tables, with no room and no pin. `POST`/`PATCH …/floor-areas` answer `FloorAreaView`
+with `photos` (empty for a new room), and refuse a name another room at the branch has (trimmed, any
+case) with 422 `validation-failed`, field `name`, bound `conflict` - the rule the PUT applies.
+
+**The orphan sweep and a save:** the PUT holds (`UPDLOCK`) the photo rows it checked until it commits,
+so the sweep cannot delete a just-uploaded photo out from under it; a photo swept before the check is
+404 as above.
+
+**Diners are only offered pinned tables** - pinned on a photo of the table's own room; a pin on another
+room's photo counts as none. `GET /api/public/branches/{id}/rooms` (above),
 `GET /api/branches/{id}/availability` and its public twin list pinned tables only; a booking naming an
 unpinned table is refused like a walk-in-only one (422 `reservation-table-not-bookable`). The public branch page's
 `floorPlan` lists every active table, with `isBookable` false for an unpinned one. Staff are not

@@ -69,7 +69,8 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
   active tables a manager pinned there - `photoX`/`photoY` as fractions of that photo - with the derived
   `state` the staff floor shows. A room with no photo is not listed. **A table with no pin is not on
   any photo and is not offered to diners**: availability leaves it out and a booking naming it is
-  refused as not bookable. Pins are set through the rooms editor (`PUT /api/branches/{id}/floor-plan`).
+  refused as not bookable. A pin counts only on a photo of the table's own room; one on another room's
+  photo is treated as no pin, everywhere a diner looks or books. Pins are set through the rooms editor (`PUT /api/branches/{id}/floor-plan`).
   The cover photo is the card's picture only; changing it moves no pin.
 - **Caching**: the list and search hold the estate and every live number for fifteen seconds; the id
   routes check their branch live, so a suspended venue is a 404 at once. The reviews route and the
@@ -342,7 +343,8 @@ Notes for a mapper:
 - There is no `qrToken` on a public table and there never will be: it is the credential that opens
   a tab.
 - A table's pin - `photoId`, `photoX`, `photoY` - is absent when it has none, and `isBookable` is false
-  for such a table whatever the venue set: a diner is only offered a table pinned on a room photo.
+  for such a table whatever the venue set: a diner is only offered a table pinned on one of its own
+  room's photos.
   Every active table is still listed, pinned or not, so the counts above stay out of the whole branch.
 - There is no drawn floor plan any more - no canvas, no `x`/`y`/`width`/`height`/`rotationDegrees`/
   `shape`. A room is its photos and the pins on them.
