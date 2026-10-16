@@ -257,6 +257,56 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Created, fromAppNow.StatusCode);
     }
 
+    /// <summary>
+    /// With web bookings on, the public page's availability read still offers no table at an hour
+    /// the branch is shut, and a booking for that hour is refused by name.
+    /// </summary>
+    /// <remarks>
+    /// QA 2026-10-16, parity P5: the console's mock offered 00:00-23:30 and booked any of them. The
+    /// server has no slot list to get wrong - the time picker is the client's - and answers each
+    /// requested time against the opening hours. The builder's branch opens 10:00-23:00 every day.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Outside_opening_hours_the_public_page_offers_no_table_and_a_web_booking_is_refused()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var world = await ArrangeAsync(factory);
+        await SetWebBookingsAsync(factory, world, accepts: true);
+
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
+        var date = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone)).AddDays(2);
+
+        using var anonymous = factory.CreateClient();
+        var route = $"/api/public/branches/{world.BranchId}/availability?partySize=2&date={date:yyyy-MM-dd}";
+
+        var shut = await ReadAsync(anonymous, $"{route}&time=03:00");
+
+        Assert.Equal(
+            (int)ReservationRejectionReason.OutsideOpeningHours,
+            shut.GetProperty("unavailableReason").GetInt32());
+        Assert.NotEmpty(shut.GetProperty("tables").EnumerateArray());
+        Assert.All(shut.GetProperty("tables").EnumerateArray(), t => Assert.False(t.GetProperty("isAvailable").GetBoolean()));
+
+        // The same evening is offered, so the refusal above is the hours and not the branch.
+        var open = await ReadAsync(anonymous, $"{route}&time=18:00");
+
+        Assert.False(open.TryGetProperty("unavailableReason", out _));
+        Assert.Contains(open.GetProperty("tables").EnumerateArray(), t => t.GetProperty("isAvailable").GetBoolean());
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var booked = await diner.PostAsJsonAsync(
+            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.Web, time: "03:00"));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, booked.StatusCode);
+        Assert.Equal(
+            "reservation-outside-opening-hours",
+            (await booked.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
     // ------------------------------------------------------------ 5. the token is hashed
 
     /// <summary>
@@ -756,7 +806,8 @@ public class PublicBookingTests(SqlServerFixture fixture)
         YallaApiFactory factory,
         AuthBranch branch,
         ReservationChannel channel,
-        Guid? tableId = null)
+        Guid? tableId = null,
+        string time = "18:00")
     {
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
         var localNow = TimeZoneInfo.ConvertTimeFromUtc(
@@ -767,7 +818,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
             branchId = branch.BranchId,
             tableId = tableId ?? branch.FirstTableId,
             date = DateOnly.FromDateTime(localNow).AddDays(2).ToString("yyyy-MM-dd"),
-            time = "18:00",
+            time,
             partySize = 2,
             guestName = "Ani Test",
             guestPhone = "+37411223344",
