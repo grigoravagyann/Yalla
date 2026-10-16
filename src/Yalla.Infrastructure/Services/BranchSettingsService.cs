@@ -387,15 +387,9 @@ internal sealed class BranchSettingsService(
 
         // Refused the way the gallery refuses one: a photo uploaded for another branch is simply not
         // found here. Pins need no check of their own - each was just held to its room's photos.
-        if (photoRoom.Count > 0)
+        if (photoRoom.Count > 0 && await CountOurPhotosLockedAsync(branchId, [.. photoRoom.Keys], cancellationToken) != photoRoom.Count)
         {
-            var planned = photoRoom.Keys.ToList();
-            var ours = await db.Photos.CountAsync(p => planned.Contains(p.Id) && p.BranchId == branchId, cancellationToken);
-
-            if (ours != planned.Count)
-            {
-                throw new KeyNotFoundException("A room photo was not found at this branch.");
-            }
+            throw new KeyNotFoundException("A room photo was not found at this branch.");
         }
 
         // ---- areas, and their photos in order
@@ -834,6 +828,43 @@ internal sealed class BranchSettingsService(
         }
 
         return violations.Count > 0 ? throw new FieldValidationException(violations) : pins;
+    }
+
+    /// <summary>
+    /// How many of these photos are this branch's, holding each one found until the save commits.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The hold is for the orphan sweep. A photo just uploaded and not yet in any room is an orphan
+    /// to it, and if the sweep deleted the row between this check and the save, the save's insert of
+    /// the room's photo row would fail on the foreign key - a 500 for a plan that was valid when it
+    /// was checked. <c>UPDLOCK</c> is held to the end of the transaction (the branch lock's), so the
+    /// sweep's delete waits for the save; by then the room shows the photo, and the sweep's own
+    /// foreign-key handling keeps it. A sweep that got there first leaves a row this count does not
+    /// find: 404, as for any photo that is not here.
+    /// </para>
+    /// <para>
+    /// One parameter per id rather than a JSON list, so each id is a seek on the primary key and only
+    /// those rows are held. <c>UPDLOCK</c> does not block readers.
+    /// </para>
+    /// </remarks>
+    private async Task<int> CountOurPhotosLockedAsync(Guid branchId, IReadOnlyList<Guid> photoIds, CancellationToken cancellationToken)
+    {
+        var parameters = photoIds
+            .Select((id, i) => new SqlParameter($"@photo{i}", id))
+            .ToList();
+
+        var sql =
+            "SELECT [Id] AS [Value] FROM [Photos] WITH (UPDLOCK, ROWLOCK) "
+            + $"WHERE [BranchId] = @branchId AND [Id] IN ({string.Join(", ", parameters.Select(p => p.ParameterName))})";
+
+        parameters.Add(new SqlParameter("@branchId", branchId));
+
+        var found = await db.Database
+            .SqlQueryRaw<Guid>(sql, [.. parameters])
+            .ToListAsync(cancellationToken);
+
+        return found.Count;
     }
 
     /// <summary>Which area in the plan a table's <c>floorAreaName</c> names, or -1.</summary>

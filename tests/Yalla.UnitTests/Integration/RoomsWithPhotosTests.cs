@@ -1,4 +1,7 @@
+using System.Data.Common;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -560,6 +563,44 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ the sweep racing a save
 
+    /// <summary>
+    /// The orphan sweep reaches a photo the save has just found to be this branch's, but has not yet
+    /// put in a room. The save must keep it: the photo row is held from the check to the commit, so
+    /// the sweep waits, and is refused by the foreign key once the room shows it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_photo_the_sweep_reaches_mid_save_is_kept_and_shown()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await CreateBranchAsync(clock);
+        Guid second;
+
+        await using (var seed = fixture.CreateContext(clock))
+        {
+            second = await TestMenuBuilder.AddPhotoAsync(seed, branch.BranchId);
+        }
+
+        var loaded = await GetPlanAsync(clock, branch);
+        var sweep = new SweepAfterOwnershipCheck(fixture, clock, second);
+
+        await using var db = fixture.CreateContext(clock, sweep);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var areas = Areas(loaded);
+        areas[0] = areas[0] with { PhotoIds = [.. areas[0].PhotoIds!, second] };
+
+        var saved = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(areas, Tables(loaded), loaded.Version));
+
+        Assert.True(sweep.Ran);
+        Assert.True(sweep.Blocked);
+        Assert.Contains(second, saved.Plan.Areas[0].Photos.Select(p => p.PhotoId));
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.True(await verify.Photos.AnyAsync(p => p.Id == second));
+    }
+
     // ------------------------------------------------------------ helpers
 
     private async Task<TestBranch> CreateBranchAsync(TestClock clock)
@@ -619,6 +660,40 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
             t.PhotoX,
             t.PhotoY)),
     ];
+
+    /// <summary>
+    /// Plays the orphan sweep in the instant after the save's ownership check reads the photo rows:
+    /// deletes the photo from another connection, giving up after a second if the row is held.
+    /// </summary>
+    private sealed class SweepAfterOwnershipCheck(SqlServerFixture fixture, TestClock clock, Guid photoId) : DbCommandInterceptor
+    {
+        public bool Ran { get; private set; }
+
+        public bool Blocked { get; private set; }
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command, CommandExecutedEventData eventData, DbDataReader result, CancellationToken cancellationToken = default)
+        {
+            if (!Ran && command.CommandText.Contains("FROM [Photos]", StringComparison.Ordinal))
+            {
+                Ran = true;
+
+                await using var sweeper = fixture.CreateContext(clock);
+
+                try
+                {
+                    await sweeper.Database.ExecuteSqlRawAsync(
+                        "SET LOCK_TIMEOUT 1000; DELETE FROM [Photos] WHERE [Id] = {0};", [photoId], cancellationToken);
+                }
+                catch (SqlException ex) when (ex.Number == 1222)
+                {
+                    Blocked = true;
+                }
+            }
+
+            return result;
+        }
+    }
 
     private sealed class CapturingLogger : ILogger<PhotoService>
     {
