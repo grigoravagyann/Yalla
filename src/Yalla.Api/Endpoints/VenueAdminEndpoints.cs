@@ -291,10 +291,13 @@ public static class VenueAdminEndpoints
             .WithDescription(
                 "A table with any reservation, session or tab is **deactivated**, not deleted - "
                 + "deleting it would orphan financial and occupancy records. The response says which "
-                + "happened. Only a table that has never been used is removed outright.")
+                + "happened. Only a table that has never been used is removed outright.\n\n"
+                + "Either outcome changes the floor plan and moves its version: `floorPlanVersion` is the "
+                + "new one. A floor-plan save still carrying the version loaded before the delete is "
+                + "refused 409 `floor-plan-changed`, rather than saving the table back as a new one.")
             .Produces<TableDeletionResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such table at this branch.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "A party is seated at the table.");
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "A party is seated at the table, or another floor-plan save held the plan too long.");
 
         // Addressed by table, so BranchScoped resolves the branch from the table.
         app.MapPost("/api/tables/{tableId:guid}/regenerate-qr", RegenerateQrAsync)

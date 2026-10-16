@@ -1176,6 +1176,13 @@ internal sealed class BranchSettingsService(
     {
         await branchGuard.RequireAtBranchAsync(branchId, "Delete a table", cancellationToken);
 
+        // The plan's lock and the plan's version, as for the room routes: either outcome takes the
+        // table off the plan, and an editor that loaded the plan before would otherwise save it
+        // back - the version still matching - as a new table with a new id and a new QR code.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
         var table = await db.DiningTables.FirstOrDefaultAsync(t => t.Id == tableId && t.BranchId == branchId, cancellationToken)
                     ?? throw new KeyNotFoundException($"Table {tableId} was not found at this branch.");
 
@@ -1189,7 +1196,8 @@ internal sealed class BranchSettingsService(
         if (used.Contains(table.Id))
         {
             table.SetActive(false);
-            await db.SaveChangesAsync(cancellationToken);
+            branch.BumpFloorPlanVersion();
+            await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
             return new TableDeletionResult(
                 table.Id,
@@ -1197,14 +1205,17 @@ internal sealed class BranchSettingsService(
                 Deleted: false,
                 Deactivated: true,
                 $"Table {table.Label} has reservations, seatings or tabs in its history, so it was deactivated rather than deleted. "
-                + "Its records are kept; it no longer appears on the floor plan or takes bookings.");
+                + "Its records are kept; it no longer appears on the floor plan or takes bookings.",
+                VersionOf(branch.FloorPlanVersion));
         }
 
         db.DiningTables.Remove(table);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
         return new TableDeletionResult(
-            table.Id, table.Label, Deleted: true, Deactivated: false, $"Table {table.Label} was never used and has been removed.");
+            table.Id, table.Label, Deleted: true, Deactivated: false, $"Table {table.Label} was never used and has been removed.",
+            VersionOf(branch.FloorPlanVersion));
     }
 
     public async Task<FloorTableView> RegenerateQrTokenAsync(Guid tableId, CancellationToken cancellationToken = default)
@@ -1254,7 +1265,8 @@ internal sealed class BranchSettingsService(
 
     /// <summary>
     /// Opens a transaction and takes an update lock on the branch row, for the writers that change
-    /// the plan and move its version: the plan replace and the room add, rename and delete.
+    /// the plan and move its version: the plan replace, the room add, rename and delete, and the
+    /// table delete.
     /// </summary>
     /// <remarks>
     /// <c>UPDLOCK</c> serialises those writers against each other without blocking readers, and

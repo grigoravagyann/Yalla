@@ -413,7 +413,18 @@ public sealed record FloorPlanReplaceResult(
 public sealed record FloorAreaCommand(string Name, int DisplayOrder);
 
 /// <summary>What deleting a table did: removed outright, or deactivated because it has history.</summary>
-public sealed record TableDeletionResult(Guid TableId, string Label, bool Deleted, bool Deactivated, string Message);
+/// <param name="FloorPlanVersion">
+/// The plan's version after the delete. Either outcome changes the plan and moves it, so an editor
+/// that loaded the plan before is refused rather than saving the table back; the editor that made
+/// the delete adopts this to keep its own draft current.
+/// </param>
+public sealed record TableDeletionResult(
+    Guid TableId,
+    string Label,
+    bool Deleted,
+    bool Deactivated,
+    string Message,
+    string FloorPlanVersion);
 
 /// <summary>The outcome of checking a plan: hard errors, and the soft warnings that do not stop it.</summary>
 public sealed record FloorPlanValidation(

@@ -528,6 +528,49 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
         await AssertStaleAsync(clock, branch, loaded);
     }
 
+    /// <summary>
+    /// Deleting a table through its own route changes the plan too. A console tab that loaded the
+    /// plan before saved it back with the version still matching and re-created the table under a
+    /// new id and a new QR code (QA 2026-10-16). Both outcomes move the version: the real delete and
+    /// the deactivation of a table with history.
+    /// </summary>
+    [SkippableFact]
+    public async Task Deleting_or_deactivating_a_table_moves_the_version_so_a_stale_save_is_refused()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await CreateBranchAsync(clock);
+
+        // Never used: deleted outright.
+        var loaded = await GetPlanAsync(clock, branch);
+        var deleted = await WithServiceAsync(clock, branch, s => s.DeleteTableAsync(branch.BranchId, branch.TableIds[1]));
+        Assert.True(deleted.Deleted);
+        await AssertStaleAsync(clock, branch, loaded);
+
+        var afterDelete = await GetPlanAsync(clock, branch);
+        Assert.NotEqual(loaded.Version, afterDelete.Version);
+        Assert.Equal(afterDelete.Version, deleted.FloorPlanVersion);
+
+        // With history - a seating, freed again - deactivated rather than deleted.
+        await using (var seat = fixture.CreateContext(clock))
+        {
+            var machine = fixture.CreateService(seat, clock, TestActor.Waiter(branch.WaiterId));
+            await machine.SeatWalkInAsync(new Yalla.Application.Tables.SeatWalkInCommand(
+                branch.BranchId, branch.FirstTableId, 2, Guid.CreateVersion7()));
+            await machine.FreeTableAsync(new Yalla.Application.Tables.TableStateCommand(
+                branch.BranchId, branch.FirstTableId, Guid.CreateVersion7()));
+        }
+
+        loaded = await GetPlanAsync(clock, branch);
+        var deactivated = await WithServiceAsync(clock, branch, s => s.DeleteTableAsync(branch.BranchId, branch.FirstTableId));
+        Assert.True(deactivated.Deactivated);
+        await AssertStaleAsync(clock, branch, loaded);
+
+        var afterDeactivate = await GetPlanAsync(clock, branch);
+        Assert.Equal(afterDeactivate.Version, deactivated.FloorPlanVersion);
+    }
+
     /// <summary>The whole-plan save refuses a repeated room name; the single-room routes must too.</summary>
     [SkippableFact]
     public async Task Adding_or_renaming_a_room_to_a_name_already_used_is_refused()
