@@ -491,6 +491,16 @@ internal sealed class BranchSettingsService(
             throw new FloorPlanInvalidException(errors, validation.DuplicateLabels);
         }
 
+        // A table somebody has booked is not left out either: deactivating it would strand the
+        // booking on a table the floor no longer shows. Its own 409, after the plan's own errors,
+        // naming the tables and the bookings so the manager knows what to move.
+        var usedIds = omitted.Where(t => used.Contains(t.Id)).Select(t => t.Id).ToList();
+
+        if (usedIds.Count > 0)
+        {
+            await RefuseUpcomingBookingsAsync(usedIds, cancellationToken);
+        }
+
         var deactivated = new List<string>();
         var removed = new List<string>();
 
@@ -1195,6 +1205,10 @@ internal sealed class BranchSettingsService(
 
         if (used.Contains(table.Id))
         {
+            // History earns deactivation, but not while a booking is still to come: the booking
+            // would be left on a table nobody can see. Move or cancel it first.
+            await RefuseUpcomingBookingsAsync([table.Id], cancellationToken);
+
             table.SetActive(false);
             branch.BumpFloorPlanVersion();
             await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
@@ -1393,6 +1407,39 @@ internal sealed class BranchSettingsService(
     /// deleting the table would fail in the database with a constraint error nobody can act on
     /// instead of quietly deactivating it here.
     /// </remarks>
+    /// <summary>
+    /// Refuses when any of these tables holds a booking still to come: Confirmed or PendingApproval
+    /// and not yet ended. Past, cancelled and completed bookings are history and do not count.
+    /// </summary>
+    /// <remarks>
+    /// "Not yet ended" rather than "not yet started": a Confirmed booking whose party is late is still
+    /// on its table, and deleting the table under it is the same stranding.
+    /// </remarks>
+    /// <exception cref="TableHasFutureBookingsException">Naming every such table and booking.</exception>
+    private async Task RefuseUpcomingBookingsAsync(IReadOnlyList<Guid> tableIds, CancellationToken cancellationToken)
+    {
+        var nowUtc = clock.UtcNow;
+
+        var upcoming = await db.Reservations
+            .AsNoTracking()
+            .Where(r => tableIds.Contains(r.DiningTableId)
+                        && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.PendingApproval)
+                        && r.EndUtc > nowUtc)
+            .Select(r => new { r.Code, r.DiningTable.Label })
+            .ToListAsync(cancellationToken);
+
+        if (upcoming.Count == 0)
+        {
+            return;
+        }
+
+        db.ChangeTracker.Clear();
+
+        throw new TableHasFutureBookingsException(
+            [.. upcoming.Select(u => u.Label).Distinct().Order(StringComparer.Ordinal)],
+            [.. upcoming.Select(u => u.Code).Order(StringComparer.Ordinal)]);
+    }
+
     private async Task<HashSet<Guid>> TablesWithHistoryAsync(IReadOnlyList<Guid> tableIds, CancellationToken cancellationToken)
     {
         var reserved = db.Reservations.Where(r => tableIds.Contains(r.DiningTableId)).Select(r => r.DiningTableId);

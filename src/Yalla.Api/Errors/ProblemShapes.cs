@@ -270,6 +270,17 @@ public sealed record FloorPlanChangedProblem : ProblemShape
     public required FloorPlanChangedContext Context { get; init; }
 }
 
+/// <summary>The tables a delete or a plan save would have taken away, and the bookings that hold them.</summary>
+/// <param name="Tables">The labels of the tables refused, in label order.</param>
+/// <param name="Bookings">The codes of the upcoming bookings on them, in code order.</param>
+public sealed record TableHasFutureBookingsContext(IReadOnlyList<string> Tables, IReadOnlyList<string> Bookings);
+
+/// <summary><c>table-has-future-bookings</c>, 409. Move or cancel the bookings first. Nothing was written.</summary>
+public sealed record TableHasFutureBookingsProblem : ProblemShape
+{
+    public required TableHasFutureBookingsContext Context { get; init; }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reservations and sign-in
 // ---------------------------------------------------------------------------------------------

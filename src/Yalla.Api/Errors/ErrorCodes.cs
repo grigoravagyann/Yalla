@@ -304,6 +304,14 @@ public static class ErrorCodes
     public const string FloorPlanChanged = "floor-plan-changed";
 
     /// <summary>
+    /// A table with a booking still to come - Confirmed or PendingApproval, not yet ended - cannot be
+    /// deleted, nor left out of a floor-plan save. HTTP 409, with <c>context.tables</c> (labels) and
+    /// <c>context.bookings</c> (booking codes). Move or cancel the bookings, then try again. Nothing
+    /// was written.
+    /// </summary>
+    public const string TableHasFutureBookings = "table-has-future-bookings";
+
+    /// <summary>
     /// A first review of a branch from a diner with no visit there in the window (K8): no Seated or
     /// Completed booking and no place on one of its tabs in the last 180 days. HTTP 403, with
     /// <c>context.branchId</c> and <c>context.windowDays</c>. Revising a review the diner already has
@@ -392,6 +400,7 @@ public static class ErrorCodes
         UnsupportedImage => "Unsupported image",
         RelocationNotAllowed => "Relocation not allowed",
         FloorPlanChanged => "Floor plan changed",
+        TableHasFutureBookings => "Table has upcoming bookings",
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
         TelegramVerificationExpired => "Telegram verification no longer available",

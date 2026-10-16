@@ -328,6 +328,19 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
 
+        // A table that is booked and not yet sat at cannot go: deactivating it would strand the
+        // booking. The tables and the booking codes ride along so the console can say what to move.
+        Yalla.Application.BranchSettings.TableHasFutureBookingsException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableHasFutureBookings,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tables"] = e.Tables,
+                ["bookings"] = e.Bookings,
+            }),
+
         // A first review from a diner with no visit in the window (K8). Its own code rather than the
         // generic 403, because the app has something to say - "you can review a place after you have
         // been" - and the window rides along so it can say how long for.

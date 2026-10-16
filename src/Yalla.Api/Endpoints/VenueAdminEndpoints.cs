@@ -254,7 +254,9 @@ public static class VenueAdminEndpoints
                 + "such a photo is saved with no pin rather than refused.\n"
                 + "- A bookable table with no pin is saved, with a warning: diners are not offered it.\n"
                 + "- A table omitted from the plan is deleted only if it has never been used. One with any "
-                + "reservation, session or tab is **deactivated** instead, and `deactivatedTables` says so.\n"
+                + "reservation, session or tab is **deactivated** instead, and `deactivatedTables` says so. "
+                + "One with a booking still to come (Confirmed or PendingApproval, not yet ended) is refused: "
+                + "`409 table-has-future-bookings` naming `context.tables` and `context.bookings`, nothing written.\n"
                 + "- **`expectedVersion` is required**: the `version` the editor loaded. A plan saved by "
                 + "somebody else since then is `409 floor-plan-changed` with `context.currentVersion`, and "
                 + "nothing is written. Missing, it is `422` naming `expectedVersion`. A successful save "
@@ -265,6 +267,10 @@ public static class VenueAdminEndpoints
                 StatusCodes.Status409Conflict,
                 "`floor-plan-changed`: saved by somebody else since `expectedVersion`. `concurrent-update` "
                 + "(no context) when another save on this branch held on for too long - reload and retry.")
+            .ProducesProblem<TableHasFutureBookingsProblem>(
+                StatusCodes.Status409Conflict,
+                "`table-has-future-bookings`: a table left out of the plan has a booking still to come. "
+                + "Move or cancel the bookings in `context.bookings`, or keep the tables.")
             .ProducesProblem<FloorPlanRejectedProblem>(StatusCodes.Status422UnprocessableEntity, FloorPlan422)
             .ProducesProblem<ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, FloorPlan422);
 
@@ -291,13 +297,19 @@ public static class VenueAdminEndpoints
             .WithDescription(
                 "A table with any reservation, session or tab is **deactivated**, not deleted - "
                 + "deleting it would orphan financial and occupancy records. The response says which "
-                + "happened. Only a table that has never been used is removed outright.\n\n"
+                + "happened. Only a table that has never been used is removed outright. A table with a "
+                + "booking still to come (Confirmed or PendingApproval, not yet ended) is neither: it is "
+                + "refused `409 table-has-future-bookings` with `context.tables` and `context.bookings`.\n\n"
                 + "Either outcome changes the floor plan and moves its version: `floorPlanVersion` is the "
                 + "new one. A floor-plan save still carrying the version loaded before the delete is "
                 + "refused 409 `floor-plan-changed`, rather than saving the table back as a new one.")
             .Produces<TableDeletionResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such table at this branch.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "A party is seated at the table, or another floor-plan save held the plan too long.");
+            .ProducesProblem<TableHasFutureBookingsProblem>(
+                StatusCodes.Status409Conflict,
+                "`table-has-future-bookings`: the table has a booking still to come - move or cancel the "
+                + "bookings in `context.bookings` first. Also 409 (no context): a party is seated at the "
+                + "table, or another floor-plan save held the plan too long.");
 
         // Addressed by table, so BranchScoped resolves the branch from the table.
         app.MapPost("/api/tables/{tableId:guid}/regenerate-qr", RegenerateQrAsync)
