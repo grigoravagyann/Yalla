@@ -82,8 +82,11 @@ internal sealed class StaffManagementService(
         // tablet in the venue, which is further than the manager who made them reaches.
         RequireReach(acting, command.BranchId, $"Creating a {command.Role} at another branch");
 
+        var pin = ValidPin(command.Pin);
         var staff = new StaffMember(
-            venueId, command.FullName, command.Phone, command.Role, hasher.Hash(ValidPin(command.Pin)), command.BranchId);
+            venueId, command.FullName, command.Phone, command.Role, hasher.Hash(pin), command.BranchId);
+
+        await RequirePinFreeAsync(venueId, command.BranchId, staff.Id, pin, cancellationToken);
 
         if (command.Email is not null || command.Password is not null)
         {
@@ -224,7 +227,10 @@ internal sealed class StaffManagementService(
             RequireReach(acting, staff.BranchId, $"Resetting a {staff.Role}'s PIN at another branch");
         }
 
-        staff.SetPinHash(hasher.Hash(ValidPin(pin)));
+        var validPin = ValidPin(pin);
+        await RequirePinFreeAsync(venueId, staff.BranchId, staff.Id, validPin, cancellationToken);
+
+        staff.SetPinHash(hasher.Hash(validPin));
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("PIN reset for staff member {StaffMemberId} by {ActorId}.", staff.Id, acting.Id);
@@ -382,6 +388,63 @@ internal sealed class StaffManagementService(
         if (acting.BranchId is not { } home || branchId != home)
         {
             throw new StaffPermissionException(operation, acting.Role, StaffRole.GeneralManager);
+        }
+    }
+
+    /// <summary>
+    /// Refuses <paramref name="pin"/> when anybody else who signs in on the same tablet already taps it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The roster rule is <c>StaffAuthService.SignsInOn</c>'s, seen from the person's side. Somebody at a
+    /// branch shares that branch's tablets with its own people and with everyone venue-wide; somebody
+    /// venue-wide (no branch on their row) is on every tablet of the venue, so shares one with
+    /// everybody. Active people only, and never the person themselves.
+    /// </para>
+    /// <para>
+    /// PINs are salted hashes, so there is nothing to look up: the candidate is verified against each
+    /// hash on the roster. A roster is a few dozen people, and this runs when a PIN is set, not on
+    /// every sign-in. A hash that is not one this system wrote (the <c>no-pin</c> marker, a fixture's
+    /// placeholder) simply does not match.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="PinTakenException">Somebody else on the same tablet uses it.</exception>
+    private async Task RequirePinFreeAsync(
+        Guid venueId,
+        Guid? branchId,
+        Guid staffMemberId,
+        string pin,
+        CancellationToken cancellationToken)
+    {
+        var sharingATablet = db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.VenueId == venueId && s.IsActive && s.Id != staffMemberId && s.PinHash != StaffMember.NoPin);
+
+        if (branchId is { } branch)
+        {
+            sharingATablet = sharingATablet.Where(s => s.BranchId == null || s.BranchId == branch);
+        }
+
+        var hashes = await sharingATablet.Select(s => s.PinHash).ToListAsync(cancellationToken);
+
+        foreach (var hash in hashes)
+        {
+            if (PinMatches(hash, pin))
+            {
+                throw new PinTakenException();
+            }
+        }
+    }
+
+    private bool PinMatches(string hash, string pin)
+    {
+        try
+        {
+            return hasher.Verify(hash, pin).Matches;
+        }
+        catch (FormatException)
+        {
+            return false;
         }
     }
 

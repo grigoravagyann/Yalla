@@ -332,6 +332,13 @@ public static class ErrorCodes
     /// </summary>
     public const string TelegramVerificationExpired = "telegram-verification-expired";
 
+    /// <summary>
+    /// The PIN being set is already used by somebody else who signs in on the same tablet: the
+    /// branch's own people and the venue-wide ones, or for a venue-wide person the whole venue. HTTP
+    /// 409, with <c>context.field = "pin"</c>. Minted by <c>PinTakenException</c>.
+    /// </summary>
+    public const string PinTaken = "pin-taken";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -395,6 +402,7 @@ public static class ErrorCodes
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
         TelegramVerificationExpired => "Telegram verification no longer available",
+        PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a
