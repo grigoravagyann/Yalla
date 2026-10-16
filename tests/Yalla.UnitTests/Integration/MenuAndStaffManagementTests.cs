@@ -324,7 +324,10 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         await db.SaveChangesAsync();
 
         var asOwner = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
-        var manager = await asOwner.CreateAsync(branch.VenueId, Staff("Second Manager", StaffRole.Manager, branch.BranchId));
+        // Its own PIN: the waiter above already taps 4321 on this branch's tablet, and a PIN is
+        // unique on its tablet.
+        var manager = await asOwner.CreateAsync(
+            branch.VenueId, Staff("Second Manager", StaffRole.Manager, branch.BranchId) with { Pin = "4323" });
         Assert.Equal(StaffRole.Manager, manager.Role);
 
         var coOwner = await asOwner.CreateAsync(branch.VenueId, Staff("Co-owner", StaffRole.Owner) with
