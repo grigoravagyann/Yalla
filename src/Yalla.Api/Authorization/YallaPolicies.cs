@@ -27,7 +27,7 @@ public static class YallaPolicies
     /// </remarks>
     public const string TabParticipantMutating = "TabParticipantMutating";
 
-    /// <summary>A live staff session whose role is Waiter, Manager, Owner or PlatformAdmin.</summary>
+    /// <summary>A live staff session whose role is Waiter, Manager, GeneralManager, Owner or PlatformAdmin.</summary>
     public const string WaiterOrAbove = "WaiterOrAbove";
 
     /// <summary>
@@ -41,7 +41,10 @@ public static class YallaPolicies
     /// </remarks>
     public const string KitchenOrAbove = "KitchenOrAbove";
 
-    /// <summary>A live staff or admin-panel session whose role is Manager, Owner or PlatformAdmin.</summary>
+    /// <summary>
+    /// A live staff or admin-panel session whose role is Manager (a branch manager), GeneralManager,
+    /// Owner or PlatformAdmin. Says nothing about which branch: pair it with a scope policy.
+    /// </summary>
     public const string ManagerOrAbove = "ManagerOrAbove";
 
     /// <summary>The people who run Yalla. Nobody at any venue passes this.</summary>
@@ -50,7 +53,7 @@ public static class YallaPolicies
     /// <summary>The token's <c>branchId</c> claim matches the branch in the route.</summary>
     public const string BranchScoped = "BranchScoped";
 
-    /// <summary>An owner or manager acting inside their own venue.</summary>
+    /// <summary>An owner, general manager or branch manager acting inside their own venue.</summary>
     public const string VenueScoped = "VenueScoped";
 
     /// <summary>

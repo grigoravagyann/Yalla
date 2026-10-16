@@ -470,8 +470,13 @@ internal sealed class StaffAuthService(
             return false;
         }
 
+        // Only somebody this branch's tablets would lock out: at this branch, or venue-wide. Anyone
+        // else's lockout is a sibling branch's business, and its own manager clears it there.
         var staff = await db.StaffMembers.FirstOrDefaultAsync(
-            s => s.Id == staffMemberId && s.VenueId == venueId, cancellationToken);
+            s => s.Id == staffMemberId
+                 && s.VenueId == venueId
+                 && (s.BranchId == null || s.BranchId == branchId),
+            cancellationToken);
 
         if (staff is null)
         {

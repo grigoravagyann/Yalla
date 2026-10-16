@@ -9,7 +9,8 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The venue a signed-in owner or manager works in, with the branches their own row covers.
+/// The venue a signed-in owner, general manager or branch manager works in, with the branches their
+/// own row covers.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -18,10 +19,11 @@ namespace Yalla.Infrastructure.Services;
 /// owner's names none, so a decision made from the claim is the decision the console got wrong.
 /// </para>
 /// <para>
-/// A manager whose row names a branch is shown that branch and no other. <b>This is an enforcement
-/// rule, not only a view rule (K4)</b>: <c>BranchScoped</c> refuses such a manager on every other
-/// branch from their token, and <c>IStaffBranchGuard</c> refuses them again from the stored row. So
-/// what this lists and what the server allows are the same set, in both directions.
+/// A branch manager is shown their own branch and no other. <b>This is an enforcement rule, not only
+/// a view rule (K4)</b>: <c>BranchScoped</c> refuses them on every other branch from their token,
+/// and <c>IStaffBranchGuard</c> refuses them again from the stored row. So what this lists and what
+/// the server allows are the same set, in both directions. An owner and a general manager are shown
+/// every branch.
 /// </para>
 /// <para>
 /// Ordering: active first, then by name. The id tiebreak after that only makes the list stable;
@@ -46,10 +48,11 @@ internal sealed class ManagedVenueQuery(YallaDbContext db, ICurrentActor actor) 
 
         var branches = db.Branches.AsNoTracking().Where(b => b.VenueId == venueId);
 
-        // The one narrowing: a manager whose row names a branch. Owners, venue-wide managers and
-        // the platform tier cover the whole venue. The same rule the branch routes enforce (K4).
-        if (acting.Role == StaffRole.Manager && acting.BranchId is { } home)
+        // The one narrowing: a branch manager. Owners, general managers and the platform tier cover
+        // the whole venue. The same rule the branch routes enforce (K4).
+        if (!acting.IsPlatformAdmin && !StaffRoleRules.CoversWholeVenue(acting.Role))
         {
+            var home = acting.BranchId;
             branches = branches.Where(b => b.Id == home);
         }
 
@@ -94,7 +97,7 @@ internal sealed class ManagedVenueQuery(YallaDbContext db, ICurrentActor actor) 
             return acting;
         }
 
-        if (acting.VenueId != venueId || acting.Role is not (StaffRole.Owner or StaffRole.Manager))
+        if (acting.VenueId != venueId || !StaffRoleRules.ManagesAtVenue(acting.Role))
         {
             throw new StaffPermissionException(Operation, acting.Role, StaffRole.Manager);
         }

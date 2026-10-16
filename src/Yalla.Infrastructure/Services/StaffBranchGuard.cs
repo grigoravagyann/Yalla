@@ -34,9 +34,9 @@ namespace Yalla.Infrastructure.Services;
 /// here. Where the policy does apply, this runs underneath it as the second line.
 /// </para>
 /// <para>
-/// The widening is for the accounts whose job is every branch: an owner passes for any branch of
-/// their own venue, and so does a manager whose stored row names <b>no</b> branch. A manager whose
-/// row names a home branch is confined to it (K4) - the same rule <c>BranchScopedHandler</c> applies
+/// The widening is for the accounts whose job is every branch: an owner or a general manager passes
+/// for any branch of their own venue. A branch manager is confined to the branch their stored row
+/// names, and passes nowhere if it names none - the same rule <c>BranchScopedHandler</c> applies
 /// from the token, applied again here from the stored row, so a reassignment takes effect before
 /// the token expires. A waiter is confined to the one branch their tablet is enrolled at, and a
 /// platform admin belongs to no venue and passes for all of them.
@@ -54,7 +54,8 @@ internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor) :
         // route policy should already have refused is refused again rather than trusted.
         if (actor.Type != ActorType.Staff
             || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+            || actor.Role is not { } tokenRole
+            || !(tokenRole == StaffRole.PlatformAdmin || StaffRoleRules.ManagesAtVenue(tokenRole)))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }
@@ -78,7 +79,7 @@ internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor) :
 
         // The stored role, not the token's: a manager demoted to waiter keeps a manager token until
         // it expires, and must not keep a manager's reach with it.
-        if (staff.Role is not (StaffRole.Owner or StaffRole.Manager))
+        if (!StaffRoleRules.ManagesAtVenue(staff.Role))
         {
             throw new StaffPermissionException(operation, staff.Role, StaffRole.Manager);
         }
@@ -98,12 +99,11 @@ internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor) :
     }
 
     /// <summary>
-    /// Whether an owner or manager of the branch's own venue covers it: an owner always, a manager
-    /// only with no home branch or at it.
+    /// Whether somebody of the branch's own venue covers it: an owner or general manager always, a
+    /// branch manager only at their own branch, anybody else only where their row says.
     /// </summary>
     private static bool Covers(StaffRole role, Guid? homeBranchId, Guid branchId) =>
-        role == StaffRole.Owner
-        || (role == StaffRole.Manager && (homeBranchId is null || homeBranchId == branchId));
+        StaffRoleRules.CoversWholeVenue(role) || homeBranchId == branchId;
 
     /// <summary>
     /// Refuses the caller unless <paramref name="branchId"/> is a branch they may act on.
@@ -179,15 +179,16 @@ internal sealed class StaffBranchGuard(YallaDbContext db, ICurrentActor actor) :
 /// or deactivated is refused at once rather than when their token expires.
 /// </para>
 /// <para>
-/// <b>The rule (K4).</b> A platform admin passes for every branch. An owner passes for every branch
-/// of their own venue. A manager passes for every branch of their own venue when their row names no
-/// branch, and only for that branch when it names one. Everyone else is refused.
+/// <b>The rule (K4).</b> A platform admin passes for every branch. An owner or a general manager
+/// passes for every branch of their own venue. A branch manager passes for the branch their row
+/// names and no other. Everyone else is refused.
 /// </para>
 /// </remarks>
 internal interface IStaffBranchGuard
 {
     /// <summary>
-    /// Refuses the caller unless they are an active owner, manager or platform admin who covers
+    /// Refuses the caller unless they are an active owner, general manager, branch manager or
+    /// platform admin who covers
     /// <paramref name="branchId"/>.
     /// </summary>
     /// <param name="branchId">The branch being read or changed.</param>
@@ -195,8 +196,8 @@ internal interface IStaffBranchGuard
     /// <param name="cancellationToken">Cancellation.</param>
     /// <returns>The acting staff member's id.</returns>
     /// <exception cref="StaffPermissionException">
-    /// Not a staff member, below manager, deactivated, or an owner or manager for whom this branch is
-    /// not one they cover. Answers 403 <c>forbidden</c>.
+    /// Not a staff member, below manager, deactivated, or a branch manager for whom this branch is not
+    /// their own. Answers 403 <c>forbidden</c>.
     /// </exception>
     Task<Guid> RequireAtBranchAsync(Guid branchId, string operation, CancellationToken cancellationToken = default);
 }

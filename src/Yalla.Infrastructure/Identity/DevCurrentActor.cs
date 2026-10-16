@@ -43,7 +43,7 @@ public sealed class DevCurrentActor(IOptions<DevActorOptions> options, DevSeedRe
     /// </summary>
     private Guid? SeededStaffForRole() => Options.Role switch
     {
-        StaffRole.Manager or StaffRole.Owner => seed.ManagerId ?? seed.WaiterId,
+        StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner => seed.ManagerId ?? seed.WaiterId,
         _ => seed.WaiterId,
     };
 }

@@ -229,17 +229,21 @@ public static class AuthenticationExtensions
             .AddPolicy(YallaPolicies.WaiterOrAbove, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new StaffRoleRequirement(
-                    new HashSet<StaffRole> { StaffRole.Waiter, StaffRole.Manager, StaffRole.Owner, StaffRole.PlatformAdmin })))
+                    new HashSet<StaffRole> { StaffRole.Waiter, StaffRole.Manager, StaffRole.GeneralManager, StaffRole.Owner, StaffRole.PlatformAdmin })))
 
             .AddPolicy(YallaPolicies.KitchenOrAbove, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new StaffRoleRequirement(
-                    new HashSet<StaffRole> { StaffRole.Kitchen, StaffRole.Waiter, StaffRole.Manager, StaffRole.Owner, StaffRole.PlatformAdmin })))
+                    new HashSet<StaffRole>
+                    {
+                        StaffRole.Kitchen, StaffRole.Waiter, StaffRole.Manager, StaffRole.GeneralManager,
+                        StaffRole.Owner, StaffRole.PlatformAdmin,
+                    })))
 
             .AddPolicy(YallaPolicies.ManagerOrAbove, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new StaffRoleRequirement(
-                    new HashSet<StaffRole> { StaffRole.Manager, StaffRole.Owner, StaffRole.PlatformAdmin })))
+                    new HashSet<StaffRole> { StaffRole.Manager, StaffRole.GeneralManager, StaffRole.Owner, StaffRole.PlatformAdmin })))
 
             .AddPolicy(YallaPolicies.PlatformAdminOnly, policy => policy
                 .RequireAuthenticatedUser()

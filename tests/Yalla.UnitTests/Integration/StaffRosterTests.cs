@@ -139,6 +139,73 @@ public class StaffRosterTests(SqlServerFixture fixture)
             device.Headers.WwwAuthenticate.ToString(), roster.Headers.WwwAuthenticate.ToString());
     }
 
+    /// <summary>
+    /// A general manager runs every branch, so every branch tablet in the venue lists them and takes
+    /// their PIN. A branch manager is on their own branch's tablet and nobody else's.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_general_manager_signs_in_on_every_branch_tablet_and_a_branch_manager_on_their_own()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch home;
+        Guid siblingBranchId;
+        PanelAccount generalManager;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            home = await AuthTestData.CreateBranchAsync(db);
+            siblingBranchId = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan");
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, home.VenueId, pin: "2580");
+        }
+
+        var generalToken = await AuthTestData.SignInAsync(factory, generalManager);
+        var tablets = new Dictionary<string, string>
+        {
+            ["home"] = await StaffAuthTests.EnrolDeviceAsync(factory, home),
+            ["sibling"] = await EnrolWithAsync(factory, generalToken, siblingBranchId),
+        };
+
+        foreach (var (where, deviceToken) in tablets)
+        {
+            using var tablet = factory.CreateClientWithToken(deviceToken);
+
+            var roster = (await tablet.GetFromJsonAsync<JsonElement>("/api/auth/staff/roster"))
+                .EnumerateArray().Select(p => p.GetProperty("staffMemberId").GetGuid()).ToList();
+
+            Assert.Contains(generalManager.StaffMemberId, roster);
+            Assert.Equal(where == "home", roster.Contains(home.ManagerId));
+
+            var gmPin = await tablet.PostAsJsonAsync(
+                "/api/auth/staff/pin", new { staffMemberId = generalManager.StaffMemberId, pin = "2580" });
+            Assert.True(gmPin.IsSuccessStatusCode, $"The general manager's PIN on the {where} tablet answered {(int)gmPin.StatusCode}.");
+            Assert.Equal(
+                (int)StaffRole.GeneralManager,
+                (await gmPin.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("role").GetInt32());
+
+            var managerPin = await tablet.PostAsJsonAsync(
+                "/api/auth/staff/pin", new { staffMemberId = home.ManagerId, pin = "9182" });
+            Assert.Equal(where == "home" ? HttpStatusCode.OK : HttpStatusCode.Unauthorized, managerPin.StatusCode);
+        }
+    }
+
+    private static async Task<string> EnrolWithAsync(YallaApiFactory factory, string panelToken, Guid branchId)
+    {
+        using var panel = factory.CreateClientWithToken(panelToken);
+        var created = await panel.PostAsJsonAsync($"/api/branches/{branchId}/devices/enrolment-codes", new { });
+        created.EnsureSuccessStatusCode();
+
+        var code = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString();
+
+        using var tablet = factory.CreateClient();
+        var enrolled = await tablet.PostAsJsonAsync(
+            "/api/auth/staff/enrol", new { code, deviceId = $"browser-{Guid.NewGuid():N}", deviceName = "Sibling tablet" });
+        enrolled.EnsureSuccessStatusCode();
+
+        return (await enrolled.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("deviceToken").GetString()!;
+    }
+
     private sealed record SeededRoster(
         AuthBranch Branch,
         Guid VenueWideId,

@@ -123,7 +123,10 @@ public interface IStaffAuthService
     /// Clears a PIN lockout. The manager path that matters: a waiter locked out mid-service
     /// cannot be made to wait out a timer.
     /// </summary>
-    /// <returns>False when there is no such staff member in this branch's venue.</returns>
+    /// <returns>
+    /// False when nobody by that id signs in on this branch's tablets - somebody at this branch, or
+    /// venue-wide. A branch manager reaches their own branch's people, not a sibling branch's.
+    /// </returns>
     Task<bool> ClearPinLockoutAsync(
         Guid branchId,
         Guid staffMemberId,

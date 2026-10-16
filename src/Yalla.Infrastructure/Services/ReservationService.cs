@@ -1103,7 +1103,8 @@ internal sealed class ReservationService(
     {
         if (actor.Type != ActorType.Staff
             || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Waiter or StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+            || actor.Role is not (StaffRole.Waiter or StaffRole.Manager or StaffRole.GeneralManager
+                or StaffRole.Owner or StaffRole.PlatformAdmin))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
         }
@@ -1124,9 +1125,10 @@ internal sealed class ReservationService(
             return staffId;
         }
 
-        // An owner or manager is venue-scoped rather than branch-scoped, which is the point of that
-        // account. A waiter is confined to the branch they are enrolled at.
-        if (staff.Role is StaffRole.Owner or StaffRole.Manager
+        // An owner or general manager is venue-scoped rather than branch-scoped, which is the point
+        // of those accounts. A branch manager and a waiter are confined to their own branch, which
+        // the line above has already admitted.
+        if (StaffRoleRules.CoversWholeVenue(staff.Role)
             && staff.VenueId is { } venueId
             && await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
         {
