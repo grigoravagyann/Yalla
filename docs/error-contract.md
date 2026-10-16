@@ -280,6 +280,19 @@ and your own current PIN is no clash. A conflict rather than a 422: the PIN is w
 somebody else's. PINs are hashed, so the check verifies the candidate against each roster hash;
 duplicates already in the data are left alone. Minted by `PinTakenException`.
 
+### 409 `table-has-future-bookings`
+
+`DELETE /api/branches/{branchId}/tables/{tableId}`, and `PUT /api/branches/{branchId}/floor-plan`
+when the plan leaves out a table, while that table holds a booking still to come: Confirmed or
+PendingApproval and not yet ended. Deactivating it - what history otherwise earns a table - would
+strand the booking on a table the floor no longer shows. `context.tables` lists the labels (label
+order), `context.bookings` the booking codes (code order); the sentence is *"Table 5 has upcoming
+bookings (K7Q2LM). Move or cancel them first."*, or *"Tables 5, 7 have ..."* for several. Nothing
+is written. On the plan save it comes after `floor-plan-invalid`: a plan with errors of its own
+answers those first. Past, cancelled, completed and no-show bookings are history and still mean
+deactivation. A conflict rather than a 422: the request is well formed; the bookings are in the
+way. Minted by `TableHasFutureBookingsException`.
+
 ### Which status, and why
 
 **422, collecting every violation** — the rule §2 already states. A refusal that can report all the

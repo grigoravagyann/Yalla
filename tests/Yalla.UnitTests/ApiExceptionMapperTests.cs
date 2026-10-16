@@ -291,4 +291,23 @@ public class ApiExceptionMapperTests
         Assert.False(mapped.LogAsError);
         Assert.Equal("Bookings not accepted", ErrorCodes.TitleFor(mapped.Code));
     }
+
+    /// <summary>
+    /// Deleting a table, or leaving it out of the plan, while a booking is still to come is its own
+    /// 409, naming the tables and the booking codes so the console can say what to move.
+    /// </summary>
+    [Fact]
+    public void A_table_with_upcoming_bookings_becomes_a_409_table_has_future_bookings_naming_them()
+    {
+        var mapped = ApiExceptionMapper.Map(
+            new Yalla.Application.BranchSettings.TableHasFutureBookingsException(["5"], ["K7Q2LM"]));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("table-has-future-bookings", mapped.Code);
+        Assert.Equal("Table 5 has upcoming bookings (K7Q2LM). Move or cancel them first.", mapped.Message);
+        Assert.Equal(new[] { "5" }, (IEnumerable<string>)mapped.Context!["tables"]!);
+        Assert.Equal(new[] { "K7Q2LM" }, (IEnumerable<string>)mapped.Context["bookings"]!);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Table has upcoming bookings", ErrorCodes.TitleFor(mapped.Code));
+    }
 }

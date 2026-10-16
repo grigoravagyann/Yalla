@@ -390,6 +390,30 @@ public sealed class FloorPlanChangedException(string currentVersion)
 }
 
 /// <summary>
+/// A table that somebody has booked and not yet sat down at cannot be deleted or left out of the
+/// plan. Answers 409 <c>table-has-future-bookings</c> with <c>context.tables</c> and
+/// <c>context.bookings</c>. Nothing is written.
+/// </summary>
+/// <remarks>
+/// Deactivating it instead - what history otherwise earns a table - would leave a confirmed booking
+/// on a table the floor no longer shows. A booking counts while it is Confirmed or PendingApproval
+/// and has not ended; past, cancelled and completed ones are history, as before.
+/// </remarks>
+public sealed class TableHasFutureBookingsException(IReadOnlyList<string> tables, IReadOnlyList<string> bookings)
+    : Exception(Describe(tables, bookings))
+{
+    /// <summary>The labels of the tables refused, in label order.</summary>
+    public IReadOnlyList<string> Tables { get; } = tables;
+
+    /// <summary>The codes of the bookings that hold them, in code order.</summary>
+    public IReadOnlyList<string> Bookings { get; } = bookings;
+
+    private static string Describe(IReadOnlyList<string> tables, IReadOnlyList<string> bookings) =>
+        (tables.Count == 1 ? $"Table {tables[0]} has" : $"Tables {string.Join(", ", tables)} have")
+        + $" upcoming bookings ({string.Join(", ", bookings)}). Move or cancel them first.";
+}
+
+/// <summary>
 /// The plan as applied, plus what the editor should know: warnings that did not stop it, and which
 /// omitted tables were deactivated rather than deleted because they have history.
 /// </summary>
@@ -413,7 +437,23 @@ public sealed record FloorPlanReplaceResult(
 public sealed record FloorAreaCommand(string Name, int DisplayOrder);
 
 /// <summary>What deleting a table did: removed outright, or deactivated because it has history.</summary>
-public sealed record TableDeletionResult(Guid TableId, string Label, bool Deleted, bool Deactivated, string Message);
+/// <param name="TableId">The table.</param>
+/// <param name="Label">Its label.</param>
+/// <param name="Deleted">Removed outright: it had never been used.</param>
+/// <param name="Deactivated">Kept and switched off: it has reservations, seatings or tabs.</param>
+/// <param name="Message">Which of the two happened, for the manager.</param>
+/// <param name="FloorPlanVersion">
+/// The plan's version after the delete. Either outcome changes the plan and moves it, so an editor
+/// that loaded the plan before is refused rather than saving the table back; the editor that made
+/// the delete adopts this to keep its own draft current.
+/// </param>
+public sealed record TableDeletionResult(
+    Guid TableId,
+    string Label,
+    bool Deleted,
+    bool Deactivated,
+    string Message,
+    string FloorPlanVersion);
 
 /// <summary>The outcome of checking a plan: hard errors, and the soft warnings that do not stop it.</summary>
 public sealed record FloorPlanValidation(
