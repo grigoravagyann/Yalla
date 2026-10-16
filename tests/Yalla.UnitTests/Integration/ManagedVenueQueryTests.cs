@@ -77,15 +77,15 @@ public sealed class ManagedVenueQueryTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_manager_with_no_branch_covers_every_branch()
+    public async Task A_general_manager_covers_every_branch()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         await using var db = fixture.CreateContext(new TestClock(Now));
         var (venue, first, second) = await SeedVenueAsync(db);
-        var manager = await AuthTestData.SeedManagerAsync(db, venue);
+        var generalManager = await AuthTestData.SeedGeneralManagerAsync(db, venue);
 
-        var view = await Query(db, TestActor.Manager(manager.StaffMemberId)).GetAsync(venue);
+        var view = await Query(db, TestActor.GeneralManager(generalManager.StaffMemberId)).GetAsync(venue);
 
         Assert.Equal(new HashSet<Guid> { first, second }, view.Branches.Select(b => b.BranchId).ToHashSet());
     }

@@ -11,7 +11,10 @@ namespace Yalla.Domain.Staff;
 /// <remarks>
 /// <para>
 /// A null <see cref="BranchId"/> means the person works across every branch of the venue, which
-/// is the normal case for an owner and a common one for a manager.
+/// is the normal case for an owner and the <b>only</b> case for a general manager. A branch manager
+/// (<see cref="StaffRole.Manager"/>) is the opposite: their row always names their one branch. Both
+/// are invariants of this class, refused with a <see cref="FieldValidationException"/> on
+/// <c>branchId</c>, and backed by a check constraint on the table.
 /// </para>
 /// <para>
 /// A null <see cref="VenueId"/> is allowed for exactly one role. A platform admin is not staff of
@@ -157,24 +160,12 @@ public sealed class StaffMember : Entity
 
     /// <summary>
     /// Changes the role. Refused when the new role would break the scope rule: a venue's staff
-    /// member cannot become a platform admin, and a platform admin cannot be given a venue role.
+    /// member cannot become a platform admin, a platform admin cannot be given a venue role, and
+    /// the branch must suit the role (see <see cref="Reassign"/>).
     /// </summary>
-    public void SetRole(StaffRole role)
-    {
-        var previous = Role;
-        Role = RequireRealRole(role, nameof(role));
+    public void SetRole(StaffRole role) => Reassign(role, BranchId);
 
-        try
-        {
-            EnforceScopeInvariant();
-        }
-        catch
-        {
-            Role = previous;
-            throw;
-        }
-    }
-
+    /// <summary>Moves the person to a branch, or to none. Refused when the branch does not suit the role.</summary>
     public void AssignToBranch(Guid? branchId)
     {
         if (IsPlatformAdmin && branchId is not null)
@@ -182,7 +173,35 @@ public sealed class StaffMember : Entity
             throw new ArgumentException("A platform admin belongs to no branch.", nameof(branchId));
         }
 
+        Reassign(Role, branchId);
+    }
+
+    /// <summary>
+    /// Changes the role and the branch together, checking the pair rather than each half.
+    /// </summary>
+    /// <remarks>
+    /// Promoting a branch manager to general manager means clearing their branch in the same
+    /// breath; doing it as two calls would refuse whichever came first, because each half on its own
+    /// is a row that must not exist. Nothing changes when the pair is refused.
+    /// </remarks>
+    /// <exception cref="FieldValidationException">
+    /// A branch manager with no branch, or a general manager with one. <c>field</c> is <c>branchId</c>.
+    /// </exception>
+    public void Reassign(StaffRole role, Guid? branchId)
+    {
+        var (previousRole, previousBranch) = (Role, BranchId);
+        Role = RequireRealRole(role, nameof(role));
         BranchId = branchId;
+
+        try
+        {
+            EnforceScopeInvariant();
+        }
+        catch
+        {
+            (Role, BranchId) = (previousRole, previousBranch);
+            throw;
+        }
     }
 
     public void Rename(string fullName) =>
@@ -288,5 +307,24 @@ public sealed class StaffMember : Entity
             throw new ArgumentException(
                 $"A {Role} must belong to a venue. Only a platform admin has none.", nameof(VenueId));
         }
+
+        if (Role == StaffRole.Manager && BranchId is null)
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "branchId", BranchManagerNeedsBranch, FieldBounds.Required));
+        }
+
+        if (Role == StaffRole.GeneralManager && BranchId is not null)
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "branchId", GeneralManagerHasNoBranch, FieldBounds.Conflict));
+        }
     }
+
+    /// <summary>The refusal for a branch manager with no branch. Wire text; the console shows it.</summary>
+    public const string BranchManagerNeedsBranch = "A branch manager works at one branch. Choose it.";
+
+    /// <summary>The refusal for a general manager given a branch. Wire text; the console shows it.</summary>
+    public const string GeneralManagerHasNoBranch =
+        "A general manager runs every branch, so leave the branch empty.";
 }

@@ -243,7 +243,8 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
 
         await using var phoneB = fixture.CreateContext(clock, race);
         var set = await Record.ExceptionAsync(() => Profile(phoneB, clock, dinerUserId).SetPasswordAsync(
-            currentPassword: null, "khachapuri-2026", tokenSessionGeneration: 0, tokenRefreshChainId: null));
+            currentPassword: null, "khachapuri-2026", tokenSessionGeneration: 0, tokenRefreshChainId: null,
+            tokenPhoneProvedAtUtc: null));
 
         Assert.True(race.Fired, "The deletion never ran mid-request, so this proves nothing.");
         await deletion.FinishedAsync();

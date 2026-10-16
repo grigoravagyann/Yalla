@@ -193,7 +193,18 @@ which one a diner came in by.
   created sets its first password with no current one: the bearer token is the proof, and there is
   nothing to compare against anyway - which is why that token's session generation is compared with
   the row once more here, past the token check's cache. One that has a password must send it, and a
-  wrong one is 401 `invalid-credentials`. **Setting or changing it ends every access token the
+  wrong one is 401 `invalid-credentials` - **unless this sign-in proved the phone in the last ten
+  minutes.** A diner who forgot their password signs in again with a code (`verify-code`) or the
+  Telegram claim, and those two sign-ins - and only they, through `DinerPhoneSignIn` - stamp the
+  access token with **`phone_proved_at`** (Unix seconds). For ten minutes after that instant
+  (`DinerProfileService.PhoneProofWindow`, read off the injected clock) `currentPassword` may be left
+  out; the session generation is compared with the row as for a first password. The stamp is on the
+  access token rather than a column on the refresh session, on purpose: a refresh proves nothing about
+  the phone and does not re-mint it, so the window cannot be stretched by refreshing, and nothing is
+  stored. Left out with no recent proof - a password sign-in, a refreshed token, a proof gone stale -
+  is **422 `validation-failed`** on `currentPassword`: *"Enter your current password, or sign in again
+  with a code to set a new one."* (Before, leaving it out was the same 401 as a wrong one; the app
+  never sent that shape, and a wrong one is still the 401 it maps.) **Setting or changing it ends every access token the
   account holds, the caller's included, and revokes the refresh tokens of every other sign-in**
   (reason `password-changed`). The sign-in the caller's token names in its `rch` claim keeps its
   refresh token, so the app that made the change refreshes and carries on.
@@ -457,7 +468,59 @@ faster. It also destroys the only thing that answers *"who gave away my reserved
 the reason the audit log exists at all. Every `TableStateChange` written after a real sign-in
 carries the `staffMemberId` of the person whose PIN was tapped.
 
+**And a PIN is unique on its tablet.** Setting one - creating somebody with a PIN, or resetting it -
+is refused with **409 `pin-taken`** (`context.field = "pin"`) when anybody else who signs in on the
+same tablet already uses it: for somebody at a branch, everyone active at that branch plus the
+venue-wide people (owner, general manager, branchless staff); for somebody venue-wide, every active
+person in the venue. PINs are hashed, so the check verifies the candidate against each of those hashes
+(a roster is a few dozen people at most). Deactivated people do not count, your own current PIN is no
+clash, and duplicates already in the data are left alone. Moving a person to another branch does not
+re-check their PIN; two PINs set at the same instant are not serialised against each other.
+
 ## 4. Venue owner and manager — email and password
+
+### The roles, and who reaches which branch
+
+| Role | Wire value | Branch on the row | Reaches |
+|---|---|---|---|
+| `Owner` | 1 | normally none | every branch of the venue |
+| `GeneralManager` | 6 | **always none** | every branch of the venue |
+| `Manager` (a **branch manager**) | 2 | **always one** | that branch only |
+| `Waiter`, `Kitchen` | 3, 4 | one, or none | the tablet's branch |
+| `PlatformAdmin` | 5 | none, and no venue | everything |
+
+Rank is `PlatformAdmin > Owner > GeneralManager > Manager > Waiter, Kitchen`, declared in
+`StaffRoleRules.Seniority` rather than read off the numbers (6 sorts after Kitchen by value).
+
+- **Who adds and changes whom.** An owner: co-owners, general managers, branch managers, waiters,
+  kitchen. A general manager: branch managers, waiters and kitchen at any branch of the venue - never
+  an owner or another general manager, whether adding, editing, deactivating, re-PINning or issuing a
+  sign-in. A branch manager: waiters and kitchen **at their own branch**, and nobody they would put
+  anywhere else (another branch, or no branch - a branchless waiter is on every tablet). Refused with
+  403 `forbidden`; `context.requiredRole` is 6 when the refusal is reach rather than rank. A sign-in
+  is issued only by somebody strictly above, so a general manager issues for branch managers and an
+  owner for general managers. Owner, general manager and branch manager may hold an email and
+  password; waiters and kitchen may not.
+- **The branch suits the role.** A branch manager without a branch, at creation or after any role or
+  branch change, is 422 `validation-failed` with `context.field = "branchId"` and *"A branch manager
+  works at one branch. Choose it."*; a general manager with one is the same 422 with *"A general
+  manager runs every branch, so leave the branch empty."* Promotion from branch manager to general
+  manager therefore sends `role: 6, setBranch: true, branchId: null` in one `PATCH`. The entity
+  enforces it (`StaffMember.Reassign`) and so does the table (`CK_StaffMembers_RoleBranch`).
+- **The migration.** `GeneralManagerRole` turned every manager whose row named no branch - the
+  venue-wide manager of the old rules - into a general manager, then added the constraint. Every
+  manager with a branch stayed a branch manager. Down reverses both.
+- **Server-side confinement.** `BranchScoped` passes an owner or general manager on any branch of
+  their venue and a branch manager only on the branch their token names; `IStaffBranchGuard` decides
+  the same from the stored row; the managed-venue read lists the same set; the staff list shows a
+  branch manager their own branch's people; a report rollup across the venue is owner, general
+  manager or platform admin. Tokens follow the row: a general manager's names no branch, a branch
+  manager's names theirs.
+- **Tablets.** A general manager, like an owner, is on the roster of every branch tablet of the venue
+  and may PIN-sign there; that session is confined to the tablet's branch like anybody's. A branch
+  manager is on their own branch's tablet only.
+
+### Email and password
 
 Conventional, and conventional is right here: this is a desktop browser session holding prices,
 refunds and staff accounts, used from a chair rather than from a tray. The cost of typing an email
@@ -663,11 +726,11 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `TabParticipantCanOrder` | The above, plus the participant's `CanOrder` flag |
 | `TabParticipantMutating` | The above, and the tab is genuinely open - the receipt grace allows reading a closed tab, never adding to it |
 | `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
-| `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager or Owner |
+| `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager, GeneralManager or Owner |
 | `KitchenOrAbove` | As `WaiterOrAbove`, and the Kitchen role too. Only the kitchen queue and the order rail carry it; on the rail the service then limits Kitchen to `InKitchen -> Ready`. The floor, tabs and service requests stay `WaiterOrAbove` |
-| `ManagerOrAbove` | Role is Manager or Owner |
+| `ManagerOrAbove` | Role is Manager (a branch manager), GeneralManager or Owner. Says nothing about which branch - always paired with a scope policy |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
-| `VenueScoped` | An owner or manager acting inside their own venue |
+| `VenueScoped` | An owner, general manager or branch manager acting inside their own venue; the services narrow a branch manager to their branch |
 | `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number. The token must also belong to a live session - an active, undeleted account on the token's `sgen` - which is checked on token validation, before the policy runs |
 
 Two of these are the real security of this system, and both have tests:
@@ -693,20 +756,22 @@ Two of these are the real security of this system, and both have tests:
 
   The approval queue those two act on, `GET /api/branches/{branchId}/reservations?status=1`, is
   addressed by branch and carries `ManagerOrAbove` and `BranchScoped` - and then the same service
-  check as approve and reject, because `BranchScoped` widens a manager with a home branch to the
-  whole venue (below). So a manager lists exactly the bookings they may decide: their home branch
-  only if their record names one, every branch of their venue if it names none, anything for a
-  platform admin. Sorted by local date and start time, capped at 200 rows with no paging.
+  check as approve and reject, from the stored row. So a manager lists exactly the bookings they
+  may decide: a branch manager their own branch, an owner or general manager every branch of their
+  venue, a platform admin anything. Sorted by local date and start time, capped at 200 rows with no paging.
   `BranchReservationListTests` proves a manager of a sibling branch, another venue's manager, a
   waiter and an anonymous caller are refused.
 - **A tab participant token must not touch any other tab.** Two adjacent tables must not be able to
   order on each other's bill.
 
-`BranchScoped` widens in exactly one direction: an owner or manager signed in to the admin panel is
-venue-scoped rather than branch-scoped - managing every branch is the point of that account - so
-when their token carries no matching branch claim, the handler asks whether the branch belongs to
-their venue. A staff session with a branch claim is still confined to it, and a venue user is still
-confined to their own venue.
+`BranchScoped` widens in exactly one direction: an owner or general manager signed in to the admin
+panel is venue-scoped rather than branch-scoped - managing every branch is the point of those
+accounts - so when their token carries no matching branch claim, the handler asks whether the branch
+belongs to their venue. **A branch manager is not widened**: they pass on the branch their token
+names and nowhere else, and a branch manager's token with no branch claim passes nowhere. A staff
+session with a branch claim is still confined to it, and a venue user is still confined to their own
+venue. `BranchScopeEnforcementTests` walks floor plan, menu, staff and reports for both kinds of
+manager on both branches.
 
 `VenueScoped` guards the venue read `GET /api/venues/{venueId}/manage` and the staff routes under
 `/api/venues/{venueId}/staff`, which are addressed by venue because staff belong to one rather
@@ -716,14 +781,11 @@ proves a manager of the neighbouring venue is refused.
 The venue read is what the console opens a venue with, and **which branches it lists is decided
 from the caller's stored staff row, never from the token** - a token names at most one branch and
 an owner's names none, which is the shape the console once mistook for "no branch". An owner
-covers every branch, with or without a home branch; a manager whose row names no branch covers
-every branch; a manager whose row names a branch is listed that branch only; a platform admin is
-listed everything. The query checks the row itself, so it refuses a neighbour and a deactivated
-account even if the policy were lost from the route (`ManagedVenueQueryTests`). Note that the
-branch manager's narrowing is **in the console only**: `BranchScoped` still widens their token to
-the whole venue on the server, as above, and whether that should change is a decision not taken
-here. What is guaranteed is the safe direction - the console never lists a branch the server
-would refuse.
+covers every branch, with or without a home branch; a general manager covers every branch; a branch
+manager is listed their own branch only; a platform admin is listed everything. The query checks the
+row itself, so it refuses a neighbour and a deactivated account even if the policy were lost from
+the route (`ManagedVenueQueryTests`). What it lists and what the server allows are the same set in
+both directions: `BranchScoped` and `IStaffBranchGuard` confine a branch manager to the branch listed.
 
 `TabParticipantCanOrder` is defined and carries no endpoint yet - it has nothing to guard until
 ordering exists - and is covered by `PolicyHandlerTests` rather than shipped unexercised.

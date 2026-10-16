@@ -733,7 +733,7 @@ internal sealed class TabOrderService(
 
         // A decision about money rather than about the floor, so it needs the role that answers
         // for the takings at the end of the evening.
-        if (actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+        if (actor.Role is not (StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner or StaffRole.PlatformAdmin))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }

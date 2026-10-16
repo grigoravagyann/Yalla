@@ -100,17 +100,54 @@ internal sealed class DinerProfileService(
         return ToView(diner);
     }
 
+    /// <summary>
+    /// How long after a phone proof the sign-in it minted may set a new password without the old one.
+    /// </summary>
+    /// <remarks>
+    /// Long enough to open the profile and type a password; short enough that a phone left unlocked
+    /// on a table an hour after its owner signed in is back to needing the current one.
+    /// </remarks>
+    public static readonly TimeSpan PhoneProofWindow = TimeSpan.FromMinutes(10);
+
+    /// <summary>The refusal when the current password is needed and was not sent. Wire text.</summary>
+    public const string CurrentPasswordNeeded =
+        "Enter your current password, or sign in again with a code to set a new one.";
+
     public async Task SetPasswordAsync(
         string? currentPassword,
         string newPassword,
         int tokenSessionGeneration,
         Guid? tokenRefreshChainId,
+        DateTime? tokenPhoneProvedAtUtc,
         CancellationToken cancellationToken = default)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var diner = await RequireLiveDinerAsync(cancellationToken);
+        var nowUtc = clock.UtcNow;
 
-        if (diner.HasPassword)
+        if (diner.HasPassword && string.IsNullOrEmpty(currentPassword))
+        {
+            // Forgot it. A sign-in that proved the phone a moment ago is the same proof the code
+            // sign-in itself rests on, so it may set a new one - from a session that is still live,
+            // read from the row, for the reason the first-password branch below gives.
+            var provedRecently = tokenPhoneProvedAtUtc is { } proved
+                                 && proved <= nowUtc.AddMinutes(1)
+                                 && nowUtc - proved <= PhoneProofWindow;
+
+            if (!provedRecently)
+            {
+                throw new FieldValidationException(new FieldViolation(
+                    "currentPassword", CurrentPasswordNeeded, FieldBounds.Required));
+            }
+
+            if (tokenSessionGeneration != diner.SessionGeneration)
+            {
+                throw SessionRevoked();
+            }
+
+            logger.LogInformation("Diner {DinerUserId} is setting a new password on a fresh phone proof.", diner.Id);
+        }
+        else if (diner.HasPassword)
         {
             // Proving the current one is what stops a phone left unlocked on a table from
             // becoming a changed password.

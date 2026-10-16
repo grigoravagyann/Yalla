@@ -59,7 +59,7 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
             theirs = await AuthTestData.CreateBranchAsync(db);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
             owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
-            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
+            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, mine.BranchId, canSignIn: false)).StaffMemberId;
         }
 
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
@@ -139,7 +139,7 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         {
             mine = await AuthTestData.CreateBranchAsync(db);
             owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
-            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
+            secondManagerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, mine.BranchId, canSignIn: false)).StaffMemberId;
         }
 
         using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
@@ -224,7 +224,7 @@ public class StaffSignInEndpointTests(SqlServerFixture fixture)
         {
             mine = await AuthTestData.CreateBranchAsync(db);
             owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
-            newcomerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, canSignIn: false)).StaffMemberId;
+            newcomerId = (await AuthTestData.SeedManagerAsync(db, mine.VenueId, mine.BranchId, canSignIn: false)).StaffMemberId;
         }
 
         using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));

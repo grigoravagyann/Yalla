@@ -32,7 +32,8 @@ public sealed class StaffBranchScopeException : Exception
     /// </param>
     public StaffBranchScopeException(string subject)
         : base($"That {subject} belongs to another branch. Staff act on the branch they are "
-               + "enrolled at, and an owner or manager on the branches of their own venue.") =>
+               + "enrolled at, a branch manager on their own branch, and an owner or general "
+               + "manager on every branch of their venue.") =>
         Subject = subject;
 
     /// <summary>What was addressed. Carried so the error envelope can name it.</summary>

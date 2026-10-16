@@ -235,14 +235,66 @@ public class PolicyHandlerTests
         Assert.False(context.HasSucceeded);
     }
 
+    /// <summary>
+    /// A general manager's token names no branch, and that reads as every branch of their venue -
+    /// what a branchless manager's token used to mean before the role existed.
+    /// </summary>
     [Fact]
-    public async Task BranchScoped_still_admits_a_manager_for_a_branch_of_their_own_venue()
+    public async Task BranchScoped_admits_a_general_manager_on_any_branch_of_their_own_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.GeneralManager, tokenVenueId: VenueId, tokenBranchId: null,
+            routeBranchId: BranchId, branchVenueId: VenueId);
+
+        Assert.True(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task BranchScoped_refuses_a_general_manager_for_a_branch_outside_their_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.GeneralManager, tokenVenueId: VenueId, tokenBranchId: null,
+            routeBranchId: Guid.CreateVersion7(), branchVenueId: Guid.CreateVersion7());
+
+        Assert.False(context.HasSucceeded);
+    }
+
+    /// <summary>
+    /// A branch manager passes on the branch their claim names and nowhere else. A token with no
+    /// claim - which no sign-in mints for them any more - is not read as "every branch".
+    /// </summary>
+    [Fact]
+    public async Task BranchScoped_refuses_a_branch_manager_whose_token_names_no_branch_even_inside_their_venue()
     {
         var context = await EvaluateBranchAsync(
             role: StaffRole.Manager, tokenVenueId: VenueId, tokenBranchId: null,
             routeBranchId: BranchId, branchVenueId: VenueId);
 
-        Assert.True(context.HasSucceeded);
+        Assert.False(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task BranchScoped_refuses_a_branch_manager_on_a_sibling_branch_of_their_venue()
+    {
+        var context = await EvaluateBranchAsync(
+            role: StaffRole.Manager, tokenVenueId: VenueId, tokenBranchId: Guid.CreateVersion7(),
+            routeBranchId: BranchId, branchVenueId: VenueId);
+
+        Assert.False(context.HasSucceeded);
+    }
+
+    [Fact]
+    public async Task VenueScoped_admits_a_general_manager_in_their_own_venue_and_refuses_them_elsewhere()
+    {
+        var mine = await EvaluateVenueAsync(
+            role: StaffRole.GeneralManager, tokenVenueId: VenueId, routeVenueId: VenueId);
+
+        Assert.True(mine.HasSucceeded);
+
+        var theirs = await EvaluateVenueAsync(
+            role: StaffRole.GeneralManager, tokenVenueId: VenueId, routeVenueId: Guid.CreateVersion7());
+
+        Assert.False(theirs.HasSucceeded);
     }
 
     /// <summary>
@@ -306,6 +358,7 @@ public class PolicyHandlerTests
     [Theory]
     [InlineData(StaffRole.Waiter)]
     [InlineData(StaffRole.Manager)]
+    [InlineData(StaffRole.GeneralManager)]
     public async Task BranchScoped_admits_any_role_on_the_branch_its_own_claim_names(StaffRole role)
     {
         var context = await EvaluateBranchAsync(

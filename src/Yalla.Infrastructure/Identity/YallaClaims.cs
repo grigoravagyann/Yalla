@@ -77,6 +77,30 @@ public static class YallaClaims
     public const string RefreshChainId = "rch";
 
     /// <summary>
+    /// When the diner's phone was proved for <i>this</i> sign-in, as Unix seconds. Present only on an
+    /// access token minted by a phone proof - <c>verify-code</c> or the Telegram claim - and never
+    /// re-minted on refresh.
+    /// </summary>
+    /// <remarks>
+    /// What lets a diner who forgot their password set a new one without it: holding a phone that
+    /// just received the code is the same proof the code sign-in itself rests on. It lives on the
+    /// access token, not the row or the refresh chain, so it cannot outlast the sign-in that earned it
+    /// and a refresh - which proves nothing about the phone - does not carry it forward. The window
+    /// it opens is <c>DinerProfileService.PhoneProofWindow</c>.
+    /// </remarks>
+    public const string PhoneProvedAt = "phone_proved_at";
+
+    /// <summary>
+    /// Reads <see cref="PhoneProvedAt"/> off a diner token as UTC, or null when it is absent or not a
+    /// number this system wrote.
+    /// </summary>
+    public static DateTime? ReadPhoneProvedAtUtc(ClaimsPrincipal? principal) =>
+        long.TryParse(principal?.FindFirst(PhoneProvedAt)?.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+        && seconds > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime
+            : null;
+
+    /// <summary>
     /// Reads <see cref="RefreshChainId"/> off a diner token, or null when the token has none (minted
     /// before the claim existed) or it is not a GUID.
     /// </summary>

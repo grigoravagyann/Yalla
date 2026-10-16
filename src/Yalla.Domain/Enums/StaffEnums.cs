@@ -23,6 +23,16 @@ public enum StaffRole
     Unknown = 0,
 
     Owner = 1,
+
+    /// <summary>
+    /// A <b>branch manager</b>: runs one branch, and only that one. Their row always names it.
+    /// </summary>
+    /// <remarks>
+    /// The member is still called <c>Manager</c> and is still 2, because 2 is what is on disk and on
+    /// the wire. What changed is the meaning: until <c>GeneralManager</c> existed, a manager whose
+    /// row named no branch covered the whole venue. Those rows became general managers in the
+    /// migration that added the role, and a manager with no branch is now refused outright.
+    /// </remarks>
     Manager = 2,
     Waiter = 3,
     Kitchen = 4,
@@ -37,6 +47,16 @@ public enum StaffRole
     /// default and the remap was free while nothing had shipped. It will never be free again.
     /// </remarks>
     PlatformAdmin = 5,
+
+    /// <summary>
+    /// A <b>general manager</b>: runs every branch of their venue, below the owner and above every
+    /// branch manager. Their row names no branch - venue-wide is the point of the role.
+    /// </summary>
+    /// <remarks>
+    /// Added after <c>PlatformAdmin</c> took 5, so it is 6 and the numbers say nothing about rank -
+    /// which is why <c>StaffRoleRules.Seniority</c> is a declared map and not an ordinal compare.
+    /// </remarks>
+    GeneralManager = 6,
 }
 
 /// <summary>Who caused a logged change.</summary>

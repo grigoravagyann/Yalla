@@ -623,13 +623,13 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         }
 
         // A rollup crosses branches, so the branch-scoped policy at the endpoint no longer covers
-        // it: a manager scoped to one branch would otherwise widen their own reach by setting a
-        // query parameter. An owner is venue-scoped by construction and a platform admin passes
-        // every scope check by role, so those two are the whole answer.
-        if (actor.Role is not (StaffRole.Owner or StaffRole.PlatformAdmin))
+        // it: a branch manager would otherwise widen their own reach by setting a query parameter.
+        // An owner and a general manager are venue-scoped by construction and a platform admin
+        // passes every scope check by role, so those three are the whole answer.
+        if (actor.Role is not (StaffRole.Owner or StaffRole.GeneralManager or StaffRole.PlatformAdmin))
         {
             throw new Domain.Staff.StaffPermissionException(
-                "Reporting across a venue's branches", actor.Role, StaffRole.Owner);
+                "Reporting across a venue's branches", actor.Role, StaffRole.GeneralManager);
         }
 
         var siblings = await db.Branches

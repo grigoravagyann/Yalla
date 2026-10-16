@@ -623,6 +623,15 @@ internal static class ApiExceptionMapper
                 ? new Dictionary<string, object?> { ["detectedFormat"] = format }
                 : null),
 
+        // Somebody on the same tablet already taps that PIN. Its own code so the staff form can put
+        // the sentence under the PIN input. Must stay ABOVE DomainStateException, which it derives from.
+        PinTakenException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PinTaken,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["field"] = e.Field }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 

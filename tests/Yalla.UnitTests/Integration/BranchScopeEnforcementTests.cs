@@ -151,6 +151,138 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
         Assert.Equal(HttpStatusCode.Forbidden, (await session.GetAsync($"/api/branches/{venue.OtherBranchId}/listing")).StatusCode);
     }
 
+    /// <summary>
+    /// The authorization matrix for the two kinds of manager, over the surfaces the console has:
+    /// floor plan, menu, staff and reports. A branch manager is refused (403) on the sibling branch
+    /// and admitted at home; a general manager is admitted on both.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_branch_manager_is_refused_a_sibling_branchs_floor_plan_menu_staff_and_reports_and_a_general_manager_is_not()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var venue = await SeedAsync(factory);
+
+        Guid homeWaiter = venue.Home.WaiterId;
+        Guid otherWaiter;
+        PanelAccount generalManager;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var waiter = new Yalla.Domain.Staff.StaffMember(
+                venue.Home.VenueId, "Sibling Waiter", "+37455500001", Yalla.Domain.Enums.StaffRole.Waiter, "hash",
+                venue.OtherBranchId);
+            db.StaffMembers.Add(waiter);
+            await db.SaveChangesAsync();
+            otherWaiter = waiter.Id;
+
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, venue.Home.VenueId);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, venue.Home));
+        using var general = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, generalManager));
+
+        var pins = new Queue<string>(["2468", "1357", "8642", "7531", "3690", "9630", "1470", "2580", "3691", "4826"]);
+
+        async Task<List<(string Route, HttpStatusCode Status)>> SurfacesAsync(HttpClient client, Guid branchId, Guid waiterId)
+        {
+            var window = "from=2026-10-01&to=2026-10-02";
+            var staff = $"/api/venues/{venue.Home.VenueId}/staff";
+
+            return
+            [
+                ("GET floor-plan", (await client.GetAsync($"/api/branches/{branchId}/floor-plan")).StatusCode),
+                ("GET menu/manage", (await client.GetAsync($"/api/branches/{branchId}/menu/manage")).StatusCode),
+                ("GET reports/revenue", (await client.GetAsync($"/api/branches/{branchId}/reports/revenue?{window}")).StatusCode),
+                ("PATCH staff (a waiter there)", (await client.PatchAsJsonAsync($"{staff}/{waiterId}", new { fullName = "Renamed" })).StatusCode),
+                ("POST staff pin (a waiter there)", (await client.PostAsJsonAsync($"{staff}/{waiterId}/pin", new { pin = pins.Dequeue() })).StatusCode),
+                ("POST staff (a waiter for there)", (await client.PostAsJsonAsync(staff, new
+                {
+                    fullName = "New Waiter",
+                    phone = $"+374{Random.Shared.Next(10_000_000, 99_999_999)}",
+                    role = Yalla.Domain.Enums.StaffRole.Waiter,
+                    pin = pins.Dequeue(),
+                    branchId,
+                })).StatusCode),
+            ];
+        }
+
+        foreach (var (route, status) in await SurfacesAsync(manager, venue.OtherBranchId, otherWaiter))
+        {
+            Assert.True(status == HttpStatusCode.Forbidden, $"Branch manager, sibling branch: {route} answered {(int)status}, not 403.");
+        }
+
+        foreach (var (route, status) in await SurfacesAsync(manager, venue.Home.BranchId, homeWaiter))
+        {
+            Assert.True(status is HttpStatusCode.OK or HttpStatusCode.Created, $"Branch manager, own branch: {route} answered {(int)status}.");
+        }
+
+        foreach (var (branchId, waiterId) in new[] { (venue.Home.BranchId, homeWaiter), (venue.OtherBranchId, otherWaiter) })
+        {
+            foreach (var (route, status) in await SurfacesAsync(general, branchId, waiterId))
+            {
+                Assert.True(status is HttpStatusCode.OK or HttpStatusCode.Created, $"General manager on {branchId}: {route} answered {(int)status}.");
+            }
+        }
+
+        // A rollup crosses branches: the general manager's job, not the branch manager's.
+        var rollup = $"/api/branches/{venue.Home.BranchId}/reports/revenue?from=2026-10-01&to=2026-10-02&rollUpVenue=true";
+        Assert.Equal(HttpStatusCode.Forbidden, (await manager.GetAsync(rollup)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await general.GetAsync(rollup)).StatusCode);
+
+        // The staff list is the same reach: the branch manager sees their own branch's people only.
+        var listed = (await manager.GetFromJsonAsync<JsonElement>($"/api/venues/{venue.Home.VenueId}/staff"))
+            .EnumerateArray().Select(p => p.GetProperty("id").GetGuid()).ToHashSet();
+        Assert.Contains(homeWaiter, listed);
+        Assert.Contains(venue.Home.ManagerId, listed);
+        Assert.DoesNotContain(otherWaiter, listed);
+        Assert.DoesNotContain(generalManager.StaffMemberId, listed);
+        Assert.DoesNotContain(venue.Owner.StaffMemberId, listed);
+
+        var everyone = (await general.GetFromJsonAsync<JsonElement>($"/api/venues/{venue.Home.VenueId}/staff"))
+            .EnumerateArray().Select(p => p.GetProperty("id").GetGuid()).ToHashSet();
+        Assert.Contains(otherWaiter, everyone);
+        Assert.Contains(venue.Owner.StaffMemberId, everyone);
+
+        // And the managed-venue read offers each exactly what the routes above allowed.
+        var managed = await manager.GetFromJsonAsync<JsonElement>($"/api/venues/{venue.Home.VenueId}/manage");
+        Assert.Equal([venue.Home.BranchId], managed.GetProperty("branches").EnumerateArray().Select(b => b.GetProperty("branchId").GetGuid()).ToArray());
+
+        var managedByGeneral = await general.GetFromJsonAsync<JsonElement>($"/api/venues/{venue.Home.VenueId}/manage");
+        Assert.Equal(
+            new HashSet<Guid> { venue.Home.BranchId, venue.OtherBranchId },
+            managedByGeneral.GetProperty("branches").EnumerateArray().Select(b => b.GetProperty("branchId").GetGuid()).ToHashSet());
+    }
+
+    /// <summary>The general manager on every branch route this file already walks, on both branches.</summary>
+    [SkippableFact]
+    public async Task A_general_manager_is_admitted_on_every_branch_route_of_both_branches()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var venue = await SeedAsync(factory);
+
+        PanelAccount generalManager;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, venue.Home.VenueId);
+        }
+
+        using var general = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, generalManager));
+
+        foreach (var (branchId, cover) in new[] { (venue.Home.BranchId, venue.HomeCover), (venue.OtherBranchId, venue.OtherCover) })
+        {
+            foreach (var (route, status) in await EveryBranchRouteAsync(general, branchId, cover))
+            {
+                Assert.True(
+                    status is HttpStatusCode.OK or HttpStatusCode.Created,
+                    $"{route} for the general manager on branch {branchId} answered {(int)status}.");
+            }
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
     private sealed record SeededVenue(

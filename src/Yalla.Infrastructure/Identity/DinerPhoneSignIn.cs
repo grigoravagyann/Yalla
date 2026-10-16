@@ -110,7 +110,10 @@ internal sealed class DinerPhoneSignIn(
 
         // Minted under the generation this save commits, so the owner's token is the one that works.
         var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.Diner, diner.Id);
-        var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, refreshEntity.ChainId);
+        // Stamped with the proof's time: for the next few minutes this sign-in may set a new password
+        // without the old one, which is how a diner who forgot it gets back in (YallaClaims.PhoneProvedAt).
+        var (accessToken, _) = tokens.IssueDinerToken(
+            diner.Id, diner.SessionGeneration, refreshEntity.ChainId, phoneProvedAtUtc: nowUtc);
 
         await db.SaveChangesAsync(cancellationToken);
 

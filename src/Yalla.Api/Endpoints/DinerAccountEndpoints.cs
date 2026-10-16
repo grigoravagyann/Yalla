@@ -25,7 +25,8 @@ public sealed record UpdateDinerProfileRequest(
 
 /// <summary>Body of <c>PUT /api/diner/me/password</c>.</summary>
 /// <param name="CurrentPassword">
-/// Required when the account has a password; ignored when it has none yet. The profile's
+/// Required when the account has a password, unless this sign-in proved the phone (a code or the
+/// Telegram bot) in the last ten minutes; ignored when it has none yet. The profile's
 /// <c>hasPassword</c> says which.
 /// </param>
 /// <param name="NewPassword">8-128 characters, and not the username or the email. No composition rules.</param>
@@ -117,6 +118,10 @@ public static class DinerAccountEndpoints
                 "An account the code flow created has no password and sets one without "
                 + "`currentPassword` - the bearer token is the proof. An account that has one must "
                 + "send it, and a wrong one is `401 invalid-credentials`.\n\n"
+                + "**Forgot it?** Sign in again with a code (`verify-code`) or the Telegram bot: for ten "
+                + "minutes after that sign-in, `currentPassword` may be left out. Past that, or from a "
+                + "password sign-in or a refreshed token, leaving it out is `422 validation-failed` with "
+                + "`context.field` = `currentPassword`.\n\n"
                 + "The new password is under the same rule as registration: 8-128 characters, and "
                 + "not the username or the email.\n\n"
                 + "**Every access token the account holds ends, this one included**: the next call with "
@@ -129,8 +134,12 @@ public static class DinerAccountEndpoints
                 "The new password breaks the rule. `context.field` is `newPassword`.")
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized,
-                "`invalid-credentials`: the current password is wrong or was needed and not sent. "
-                + "`session-revoked`: the token's session has ended. Or no diner token.");
+                "`invalid-credentials`: the current password was sent and is wrong. "
+                + "`session-revoked`: the token's session has ended. Or no diner token.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`currentPassword` was needed and not sent: the account has a password and this sign-in "
+                + "did not prove the phone in the last ten minutes. `context.field` is `currentPassword`.");
 
         app.MapDelete("/api/diner/me", DeleteAccountAsync)
             .WithTags(EndpointConventions.DinerTag)
@@ -233,6 +242,7 @@ public static class DinerAccountEndpoints
             request.NewPassword,
             generation,
             YallaClaims.ReadRefreshChainId(http.User),
+            YallaClaims.ReadPhoneProvedAtUtc(http.User),
             cancellationToken);
 
         return Results.NoContent();

@@ -881,12 +881,12 @@ internal sealed class TableStateService(
         _ => (ActorType.System, null),
     };
 
-    /// <summary>Managers and owners. Waiters and kitchen staff do not move money.</summary>
+    /// <summary>Branch managers, general managers and owners. Waiters and kitchen staff do not move money.</summary>
     private void RequireManager(string operation)
     {
         RequireStaff(operation);
 
-        if (actor.Role is not (StaffRole.Manager or StaffRole.Owner))
+        if (actor.Role is not (StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }

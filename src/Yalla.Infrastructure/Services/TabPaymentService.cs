@@ -301,7 +301,7 @@ internal sealed class TabPaymentService(
     {
         var staffId = RequireStaff(operation);
 
-        if (actor.Role is not (StaffRole.Manager or StaffRole.Owner or StaffRole.PlatformAdmin))
+        if (actor.Role is not (StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner or StaffRole.PlatformAdmin))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }

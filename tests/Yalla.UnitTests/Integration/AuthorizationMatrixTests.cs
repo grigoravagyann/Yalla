@@ -26,7 +26,7 @@ namespace Yalla.UnitTests.Integration;
 /// <para>
 /// The venue rows: anonymous 401; a tab participant, a diner, a waiter's and a cook's tablet session,
 /// another venue's manager, and a manager of this venue whose home branch is the sibling all 403; the
-/// branch's own manager, the owner and a platform admin admitted. The platform rows admit only the
+/// branch's own manager, the venue's general manager, the owner and a platform admin admitted. The platform rows admit only the
 /// platform admin. The diner rows admit only the diner.
 /// </para>
 /// </remarks>
@@ -54,6 +54,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
         OtherVenueManager,
         SiblingBranchManager,
         BranchManager,
+        GeneralManager,
         Owner,
         PlatformAdmin,
     }
@@ -209,7 +210,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
     private static HttpStatusCode Venue(Caller caller, HttpStatusCode admitted) => caller switch
     {
         Caller.Anonymous => HttpStatusCode.Unauthorized,
-        Caller.BranchManager or Caller.Owner or Caller.PlatformAdmin => admitted,
+        Caller.BranchManager or Caller.GeneralManager or Caller.Owner or Caller.PlatformAdmin => admitted,
         _ => HttpStatusCode.Forbidden,
     };
 
@@ -324,6 +325,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
         AuthBranch otherVenue;
         PanelAccount owner;
         PanelAccount siblingManager;
+        PanelAccount generalManager;
         PlatformAdminAccount admin;
         AuthTab tab;
         Guid cookId;
@@ -342,6 +344,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
 
             owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId);
             siblingManager = await AuthTestData.SeedManagerAsync(db, branch.VenueId, siblingBranchId);
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, branch.VenueId);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
             cookId = await AuthTestData.SeedKitchenAsync(db, branch);
 
@@ -364,6 +367,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             [Caller.OtherVenueManager] = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, otherVenue)),
             [Caller.SiblingBranchManager] = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, siblingManager)),
             [Caller.BranchManager] = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch)),
+            [Caller.GeneralManager] = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, generalManager)),
             [Caller.Owner] = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner)),
             [Caller.PlatformAdmin] = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin)),
         };

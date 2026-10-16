@@ -582,6 +582,8 @@ public sealed class TestActor(
 
     public static TestActor Owner(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Owner);
 
+    public static TestActor GeneralManager(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.GeneralManager);
+
     public static TestActor PlatformAdmin(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.PlatformAdmin);
 
     /// <summary>

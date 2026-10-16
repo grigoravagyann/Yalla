@@ -1135,7 +1135,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("VenueId", "IsActive");
 
-                    b.ToTable("StaffMembers", (string)null);
+                    b.ToTable("StaffMembers", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_StaffMembers_RoleBranch", "([Role] <> 2 OR [BranchId] IS NOT NULL) AND ([Role] <> 6 OR [BranchId] IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Yalla.Domain.Tabs.Payment", b =>
