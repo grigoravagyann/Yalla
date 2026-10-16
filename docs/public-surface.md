@@ -1,4 +1,4 @@
-﻿# The public surface
+# The public surface
 
 What a link anybody can open publishes, what it deliberately does not, and how somebody with no
 app manages the booking they made on it.

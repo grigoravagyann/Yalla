@@ -1,4 +1,4 @@
-﻿# Tabs — opening by scan, joining, and who may see what
+# Tabs — opening by scan, joining, and who may see what
 
 A tab is the running bill for one seating. This document is the decision table for what a QR scan
 does, the permission rules between the people on a tab, and the argument for why none of those

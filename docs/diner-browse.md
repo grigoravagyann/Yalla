@@ -1,4 +1,4 @@
-﻿# Diner browse, orders and account: the real-data contract
+# Diner browse, orders and account: the real-data contract
 
 What the diner app and the venue console read and write for Explore, search, the map, a place's
 details, its reviews, the photo table view, the Orders tab and the diner's own account - the shapes,
