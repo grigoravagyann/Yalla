@@ -16,6 +16,12 @@ namespace Yalla.Infrastructure.Services;
 /// Staff accounts within a venue, with the role-escalation guards enforced from the acting staff
 /// member's stored row rather than from the token alone.
 /// </summary>
+/// <remarks>
+/// Two checks on every write, both from stored rows: <b>rank</b> (<see cref="StaffRoleRules"/>) and
+/// <b>reach</b>. An owner, a general manager and a platform admin reach every branch of the venue; a
+/// branch manager reaches their own branch's people and nobody else's, and may only put the people
+/// they create there. See <see cref="RequireReach"/>.
+/// </remarks>
 internal sealed class StaffManagementService(
     YallaDbContext db,
     IClock clock,
@@ -28,17 +34,28 @@ internal sealed class StaffManagementService(
 
     public async Task<IReadOnlyList<StaffMemberView>> ListAsync(Guid venueId, CancellationToken cancellationToken = default)
     {
-        await RequireActorInVenueAsync("List staff", venueId, cancellationToken);
+        var acting = await RequireActorInVenueAsync("List staff", venueId, cancellationToken);
         var nowUtc = clock.UtcNow;
 
-        var rows = await db.StaffMembers
+        var query = db.StaffMembers
             .AsNoTracking()
-            .Where(s => s.VenueId == venueId)
-            .OrderBy(s => s.Role)
-            .ThenBy(s => s.FullName)
-            .ToListAsync(cancellationToken);
+            .Where(s => s.VenueId == venueId);
 
-        return rows.Select(s => ToView(s, nowUtc)).ToList();
+        // A branch manager sees their own branch's people - the same reach they have to change them.
+        // Everyone venue-wide sees the venue.
+        if (!ReachesWholeVenue(acting))
+        {
+            query = query.Where(s => s.BranchId == acting.BranchId);
+        }
+
+        var rows = await query.ToListAsync(cancellationToken);
+
+        // Seniority, not the stored number: GeneralManager is 6 and sorts after Kitchen by value.
+        return rows
+            .OrderBy(s => StaffRoleRules.RankOf(s.Role))
+            .ThenBy(s => s.FullName, StringComparer.CurrentCulture)
+            .Select(s => ToView(s, nowUtc))
+            .ToList();
     }
 
     public async Task<StaffMemberView> CreateAsync(
@@ -60,6 +77,10 @@ internal sealed class StaffManagementService(
         {
             throw new KeyNotFoundException($"Branch {branchId} does not belong to this venue.");
         }
+
+        // A branch manager adds people to their own branch. A branchless waiter would be on every
+        // tablet in the venue, which is further than the manager who made them reaches.
+        RequireReach(acting, command.BranchId, $"Creating a {command.Role} at another branch");
 
         var staff = new StaffMember(
             venueId, command.FullName, command.Phone, command.Role, hasher.Hash(ValidPin(command.Pin)), command.BranchId);
@@ -103,6 +124,14 @@ internal sealed class StaffManagementService(
             throw new StaffPermissionException($"Editing a {staff.Role}", acting.Role, RequiredRoleFor(staff.Role));
         }
 
+        if (staff.Id != acting.Id)
+        {
+            RequireReach(acting, staff.BranchId, $"Editing a {staff.Role} at another branch");
+        }
+
+        var newRole = staff.Role;
+        var newBranchId = staff.BranchId;
+
         if (command.Role is { } role && role != staff.Role)
         {
             // Nobody changes their own role, whatever rank they hold.
@@ -116,7 +145,7 @@ internal sealed class StaffManagementService(
                 throw new StaffPermissionException($"Promoting to {role}", acting.Role, RequiredRoleFor(role));
             }
 
-            staff.SetRole(role);
+            newRole = role;
         }
 
         if (command.FullName is { } name)
@@ -146,7 +175,19 @@ internal sealed class StaffManagementService(
                 throw new KeyNotFoundException($"Branch {branchId} does not belong to this venue.");
             }
 
-            staff.AssignToBranch(command.BranchId);
+            if (staff.Id != acting.Id)
+            {
+                RequireReach(acting, command.BranchId, $"Moving a {staff.Role} to another branch");
+            }
+
+            newBranchId = command.BranchId;
+        }
+
+        // The role and the branch as one pair: promoting a branch manager to general manager clears
+        // their branch in the same request, and checking either half alone would refuse it.
+        if (newRole != staff.Role || newBranchId != staff.BranchId)
+        {
+            staff.Reassign(newRole, newBranchId);
         }
 
         if (command.IsActive is { } active)
@@ -176,6 +217,11 @@ internal sealed class StaffManagementService(
         if (staff.Id != acting.Id && !StaffRoleRules.MayManage(acting.Role, staff.Role))
         {
             throw new StaffPermissionException($"Resetting a {staff.Role}'s PIN", acting.Role, RequiredRoleFor(staff.Role));
+        }
+
+        if (staff.Id != acting.Id)
+        {
+            RequireReach(acting, staff.BranchId, $"Resetting a {staff.Role}'s PIN at another branch");
         }
 
         staff.SetPinHash(hasher.Hash(ValidPin(pin)));
@@ -228,6 +274,8 @@ internal sealed class StaffManagementService(
             throw new StaffPermissionException(
                 $"Issuing a sign-in for a {staff.Role}", acting.Role, StaffRole.PlatformAdmin);
         }
+
+        RequireReach(acting, staff.BranchId, $"Issuing a sign-in for a {staff.Role} at another branch");
 
         if (!staff.IsActive)
         {
@@ -301,12 +349,40 @@ internal sealed class StaffManagementService(
             return acting;
         }
 
-        if (acting.VenueId != venueId || acting.Role is not (StaffRole.Owner or StaffRole.Manager))
+        if (acting.VenueId != venueId || !StaffRoleRules.ManagesAtVenue(acting.Role))
         {
             throw new StaffPermissionException(operation, acting.Role, StaffRole.Manager);
         }
 
         return acting;
+    }
+
+    /// <summary>Whether the acting row reaches every branch: the platform tier, an owner, a general manager.</summary>
+    private static bool ReachesWholeVenue(StaffMember acting) =>
+        acting.IsPlatformAdmin || StaffRoleRules.CoversWholeVenue(acting.Role);
+
+    /// <summary>
+    /// Refuses a branch manager acting on somebody - or putting somebody - anywhere but their own
+    /// branch. Venue-wide callers pass.
+    /// </summary>
+    /// <param name="acting">The caller's stored row.</param>
+    /// <param name="branchId">The branch the person is at, or is being put at. Null is venue-wide.</param>
+    /// <param name="operation">What is being attempted, for the 403.</param>
+    /// <exception cref="StaffPermissionException">
+    /// A branch manager and a different branch, or none. Names <c>GeneralManager</c> as the role that
+    /// would reach it.
+    /// </exception>
+    private static void RequireReach(StaffMember acting, Guid? branchId, string operation)
+    {
+        if (ReachesWholeVenue(acting))
+        {
+            return;
+        }
+
+        if (acting.BranchId is not { } home || branchId != home)
+        {
+            throw new StaffPermissionException(operation, acting.Role, StaffRole.GeneralManager);
+        }
     }
 
     private async Task<StaffMember> LoadStaffAsync(Guid venueId, Guid staffMemberId, CancellationToken cancellationToken) =>
@@ -348,7 +424,7 @@ internal sealed class StaffManagementService(
     /// </remarks>
     private static void RequireCanHoldPassword(StaffRole target, StaffRole actorRole)
     {
-        if (target is not (StaffRole.Owner or StaffRole.Manager))
+        if (!StaffRoleRules.ManagesAtVenue(target))
         {
             // Not a StaffPermissionException: nothing about the caller's rank would help, and
             // saying "requires the Manager role; the caller is a PlatformAdmin" to a platform admin
@@ -357,15 +433,16 @@ internal sealed class StaffManagementService(
 
             throw new DomainStateException(
                 $"A {target} signs in by tapping a PIN on a tablet a manager enrolled, so they cannot "
-                + "have an email and password. Only an owner or a manager uses the admin panel. "
-                + "Create them without credentials, or give them the Manager role.");
+                + "have an email and password. Only an owner, a general manager or a branch manager "
+                + "uses the admin panel. Create them without credentials, or make them a manager.");
         }
     }
 
     /// <summary>The lowest rank that may assign or manage <paramref name="target"/>, for the error message.</summary>
     private static StaffRole RequiredRoleFor(StaffRole target) => target switch
     {
-        StaffRole.Owner or StaffRole.Manager => StaffRole.Owner,
+        StaffRole.Owner or StaffRole.GeneralManager => StaffRole.Owner,
+        StaffRole.Manager => StaffRole.GeneralManager,
         StaffRole.PlatformAdmin => StaffRole.PlatformAdmin,
         _ => StaffRole.Manager,
     };

@@ -126,8 +126,8 @@ public class BranchReservationListTests(SqlServerFixture fixture)
             // service, the same check approve and reject make.
             managerElsewhere = await AuthTestData.SeedManagerAsync(db, branch.VenueId, branchId: branchB);
 
-            // A manager whose record names no branch covers every branch of the venue.
-            managerEverywhere = await AuthTestData.SeedManagerAsync(db, branch.VenueId, branchId: null);
+            // A general manager covers every branch of the venue.
+            managerEverywhere = await AuthTestData.SeedGeneralManagerAsync(db, branch.VenueId);
         }
 
         using var elsewhere = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, managerElsewhere));

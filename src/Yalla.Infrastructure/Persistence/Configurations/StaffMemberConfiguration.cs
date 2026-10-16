@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 
 namespace Yalla.Infrastructure.Persistence.Configurations;
@@ -9,7 +10,14 @@ internal sealed class StaffMemberConfiguration : EntityConfiguration<StaffMember
 {
     protected override void ConfigureEntity(EntityTypeBuilder<StaffMember> builder)
     {
-        builder.ToTable("StaffMembers");
+        // The branch suits the role: a branch manager names their branch, a general manager names
+        // none. The entity refuses both with a 422 on branchId; this is the floor under it, for a
+        // write that does not go through the entity. The migration that added it moved every
+        // branchless manager to GeneralManager first, so no existing row breaks it.
+        builder.ToTable("StaffMembers", table => table.HasCheckConstraint(
+            "CK_StaffMembers_RoleBranch",
+            $"([Role] <> {(int)StaffRole.Manager} OR [BranchId] IS NOT NULL) "
+            + $"AND ([Role] <> {(int)StaffRole.GeneralManager} OR [BranchId] IS NULL)"));
 
         builder.Property(s => s.FullName)
             .HasMaxLength(FieldLengths.PersonName)
@@ -53,7 +61,8 @@ internal sealed class StaffMemberConfiguration : EntityConfiguration<StaffMember
             .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
-        // Null means every branch of the venue, which is the normal case for an owner.
+        // Null means every branch of the venue: always for a general manager, normally for an owner,
+        // never for a branch manager.
         builder.HasOne(s => s.Branch)
             .WithMany()
             .HasForeignKey(s => s.BranchId)

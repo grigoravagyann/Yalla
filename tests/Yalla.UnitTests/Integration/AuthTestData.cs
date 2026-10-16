@@ -109,30 +109,56 @@ internal static class AuthTestData
     }
 
     /// <summary>
-    /// A second manager of the venue, at a branch or across all of them. With
-    /// <paramref name="canSignIn"/> false they have a PIN and nothing else - the console's own
-    /// creation, as shipped - which the sign-in issue tests rely on.
+    /// A second branch manager of the venue, at <paramref name="branchId"/> - a branch manager always
+    /// names one. With <paramref name="canSignIn"/> false they have a PIN and nothing else - the
+    /// console's own creation, as shipped - which the sign-in issue tests rely on.
     /// </summary>
     public static async Task<PanelAccount> SeedManagerAsync(
         YallaDbContext db,
         Guid venueId,
-        Guid? branchId = null,
+        Guid branchId,
         bool canSignIn = true,
-        CancellationToken cancellationToken = default)
-    {
-        var email = $"manager-{Guid.NewGuid():N}@example.test";
+        CancellationToken cancellationToken = default) =>
+        await SeedPanelStaffAsync(db, venueId, branchId, StaffRole.Manager, "Second Manager", canSignIn, cancellationToken);
 
-        var manager = new StaffMember(venueId, "Second Manager", Phone(), StaffRole.Manager, "hash", branchId);
+    /// <summary>
+    /// A general manager: runs every branch of the venue, so their row names none and their token
+    /// carries no branch claim.
+    /// </summary>
+    public static async Task<PanelAccount> SeedGeneralManagerAsync(
+        YallaDbContext db,
+        Guid venueId,
+        bool canSignIn = true,
+        string pin = "hash",
+        CancellationToken cancellationToken = default) =>
+        await SeedPanelStaffAsync(
+            db, venueId, branchId: null, StaffRole.GeneralManager, "General Manager", canSignIn, cancellationToken, pin);
+
+    private static async Task<PanelAccount> SeedPanelStaffAsync(
+        YallaDbContext db,
+        Guid venueId,
+        Guid? branchId,
+        StaffRole role,
+        string name,
+        bool canSignIn,
+        CancellationToken cancellationToken,
+        string pin = "hash")
+    {
+        var email = $"{role.ToString().ToLowerInvariant()}-{Guid.NewGuid():N}@example.test";
+        var hasher = new SecretHasher();
+
+        // "hash" is the fixtures' placeholder for "no PIN anybody will type"; anything else is hashed.
+        var staff = new StaffMember(venueId, name, Phone(), role, pin == "hash" ? "hash" : hasher.Hash(pin), branchId);
 
         if (canSignIn)
         {
-            manager.SetPasswordCredentials(email, new SecretHasher().Hash(ManagerPassword));
+            staff.SetPasswordCredentials(email, hasher.Hash(ManagerPassword));
         }
 
-        db.StaffMembers.Add(manager);
+        db.StaffMembers.Add(staff);
         await db.SaveChangesAsync(cancellationToken);
 
-        return new PanelAccount(manager.Id, venueId, branchId, email, ManagerPassword);
+        return new PanelAccount(staff.Id, venueId, branchId, email, ManagerPassword);
     }
 
     /// <summary>Another branch of an existing venue, with its own time zone and no staff of its own.</summary>

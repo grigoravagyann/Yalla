@@ -67,9 +67,9 @@ public static class VenueAdminEndpoints
             .WithDescription(
                 "The read the console opens a venue with. **Which branches come back is decided "
                 + "from the caller's own staff record, not from the token**: an owner covers every "
-                + "branch of the venue, whether or not their record names a home branch; a manager "
-                + "whose record names no branch covers every branch; a manager whose record names a "
-                + "branch is given that branch only; a platform admin is given everything.\n\n"
+                + "branch of the venue, whether or not their record names a home branch; a general "
+                + "manager covers every branch; a branch manager is given their own branch only - the "
+                + "only one the server lets them act on; a platform admin is given everything.\n\n"
                 + "Branches are listed active first, then by name. An inactive branch is listed and "
                 + "flagged rather than hidden.\n\n"
                 + "This is not `GET /api/platform/venues/{id}`, which is the platform tier's and "
@@ -565,27 +565,54 @@ public static class VenueAdminEndpoints
         group.MapGet("/", ListStaffAsync)
             .WithName("listStaff")
             .WithSummary("Everyone who works for the venue")
+            .WithDescription(
+                "Most senior first, then by name. An owner, general manager or platform admin sees the "
+                + "whole venue; a branch manager sees the people at their own branch.")
             .Produces<IReadOnlyList<StaffMemberView>>();
 
         group.MapPost("/", CreateStaffAsync)
             .WithName("createStaff")
             .WithSummary("Add a staff member, with a PIN")
             .WithDescription(
-                "A manager may create waiters and kitchen staff; an owner or platform admin may create "
-                + "managers and owners. Nobody creates a role above their own.\n\n"
+                "Roles: 1 Owner, 6 GeneralManager, 2 Manager (a branch manager), 3 Waiter, 4 Kitchen. "
+                + "A branch manager may create waiters and kitchen staff at their own branch; a general "
+                + "manager may create branch managers, waiters and kitchen at any branch; an owner or "
+                + "platform admin may also create general managers and owners. Nobody creates a role "
+                + "above their own.\n\n"
+                + "**The branch suits the role**: a branch manager needs `branchId`, a general manager "
+                + "must not have one - otherwise `422 validation-failed` with `context.field` = "
+                + "`branchId`.\n\n"
                 + "A manager or owner gets their admin-panel sign-in through `issueStaffSignIn` after "
                 + "they exist: it stores the address and returns a link they choose their own password "
                 + "by. Sending `email` and `password` here still works, and is the one path where the "
                 + "caller types a password for somebody else.")
             .Produces<StaffMemberView>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The role asked for is above what the caller may assign.");
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "The role asked for is above what the caller may assign, or a branch manager is putting "
+                + "somebody at another branch or at none.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "A branch manager with no `branchId`, or a general manager with one. `context.field` is `branchId`.");
 
         group.MapPatch("/{staffMemberId:guid}", UpdateStaffAsync)
             .WithName("updateStaff")
             .WithSummary("Edit a staff member")
-            .WithDescription("Nobody may change their own role or deactivate their own account. Set `setBranch` to apply `branchId`, including null for venue-wide.")
+            .WithDescription(
+                "Nobody may change their own role or deactivate their own account. Set `setBranch` to "
+                + "apply `branchId`, including null for venue-wide.\n\n"
+                + "The role and the branch are checked as a pair: promoting a branch manager to general "
+                + "manager is `role: 6, setBranch: true, branchId: null` in one request, and the reverse "
+                + "names the branch. A branch manager edits only their own branch's people and cannot "
+                + "move anybody elsewhere.")
             .Produces<StaffMemberView>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Changing your own role, or editing someone you could not have created.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Changing your own role, editing someone you could not have created, or a branch manager "
+                + "reaching past their branch.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "The resulting role and branch do not fit: a branch manager with none, or a general manager with one.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such staff member in this venue.");
 
         group.MapPost("/{staffMemberId:guid}/pin", SetPinAsync)
@@ -598,7 +625,7 @@ public static class VenueAdminEndpoints
         // minute per caller is plenty for a person and not much for a script.
         group.MapPost("/{staffMemberId:guid}/sign-in", IssueSignInAsync)
             .WithName("issueStaffSignIn")
-            .WithSummary("Give a manager or owner their admin-panel sign-in")
+            .WithSummary("Give an owner, general manager or branch manager their admin-panel sign-in")
             .WithDescription(
                 "Stores the address and returns a link the person opens to choose their own password. "
                 + "Nobody types a password for somebody else: the reset endpoint that consumes the link is "
@@ -607,8 +634,9 @@ public static class VenueAdminEndpoints
                 + "hash and never logs it, so a lost link is replaced by issuing another. It is good for "
                 + "24 hours and exactly one use. Issuing a new link retires any earlier unused one; two "
                 + "links issued at the same instant can both be live until one is used.\n\n"
-                + "Only somebody the caller strictly outranks: an owner issues for managers, a platform "
-                + "admin for owners and managers, and nobody for a peer or for themselves. A person who "
+                + "Only somebody the caller strictly outranks: a general manager issues for branch "
+                + "managers, an owner for general and branch managers, a platform admin for owners as "
+                + "well, and nobody for a peer or for themselves. A person who "
                 + "already has a password keeps it - and their open sessions - until the link is used, "
                 + "when both are replaced. Their sign-in address changes to the one given as soon as this "
                 + "answers.\n\n"

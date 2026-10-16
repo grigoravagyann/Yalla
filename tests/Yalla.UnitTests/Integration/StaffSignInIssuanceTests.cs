@@ -203,7 +203,7 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
 
         // Somebody else's live link, held across the re-issue: "every unused link for them" has
         // to mean theirs, or one owner sending a new link would lock out the rest of the venue.
-        var bystander = await asOwner.CreateAsync(branch.VenueId, Staff("Bystander", StaffRole.Manager));
+        var bystander = await asOwner.CreateAsync(branch.VenueId, Staff("Bystander", StaffRole.Manager, branch.BranchId));
         var bystandersLink = await asOwner.IssueSignInAsync(branch.VenueId, bystander.Id, new IssueSignInCommand(Address("bystander")));
 
         // The address moved the moment the owner submitted; the password did not.
@@ -293,7 +293,7 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         var asOwner = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
         var asManager = fixture.CreateStaffManagementService(db, clock, TestActor.Manager(branch.ManagerId));
 
-        var secondManager = await asOwner.CreateAsync(branch.VenueId, Staff("Second Manager", StaffRole.Manager));
+        var secondManager = await asOwner.CreateAsync(branch.VenueId, Staff("Second Manager", StaffRole.Manager, branch.BranchId));
 
         var peerOwner = await Assert.ThrowsAsync<StaffPermissionException>(
             () => asOwner.IssueSignInAsync(branch.VenueId, coOwner.Id, new IssueSignInCommand(Address("peer"))));
@@ -371,7 +371,7 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         var owner = await SeedOwnerAsync(db, mine.VenueId);
         var asOwner = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
 
-        var newcomer = await asOwner.CreateAsync(mine.VenueId, Staff("Newcomer", StaffRole.Manager));
+        var newcomer = await asOwner.CreateAsync(mine.VenueId, Staff("Newcomer", StaffRole.Manager, mine.BranchId));
 
         var taken = await Assert.ThrowsAsync<DomainStateException>(
             () => asOwner.IssueSignInAsync(mine.VenueId, newcomer.Id, new IssueSignInCommand(mine.ManagerEmail)));
@@ -402,11 +402,12 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
         return owner;
     }
 
-    private static CreateStaffCommand Staff(string name, StaffRole role) => new(
+    private static CreateStaffCommand Staff(string name, StaffRole role, Guid? branchId = null) => new(
         FullName: name,
         Phone: $"+374{Random.Shared.Next(10_000_000, 99_999_999)}",
         Role: role,
-        Pin: "4321");
+        Pin: "4321",
+        BranchId: branchId);
 
     private static string Address(string part) => $"{part}-{Guid.NewGuid():N}@example.test";
 

@@ -26,6 +26,7 @@ public class PlatformAdminRulesTests
 
     [Theory]
     [InlineData(StaffRole.Owner)]
+    [InlineData(StaffRole.GeneralManager)]
     [InlineData(StaffRole.Manager)]
     [InlineData(StaffRole.Waiter)]
     [InlineData(StaffRole.Kitchen)]
@@ -52,7 +53,8 @@ public class PlatformAdminRulesTests
     [Fact]
     public void A_venue_staff_member_cannot_be_promoted_to_platform_admin_and_the_role_is_left_as_it_was()
     {
-        var manager = new StaffMember(Guid.CreateVersion7(), "Nune", "+37400000003", StaffRole.Manager, "hash");
+        var manager = new StaffMember(
+            Guid.CreateVersion7(), "Nune", "+37400000003", StaffRole.Manager, "hash", Guid.CreateVersion7());
 
         Assert.Throws<ArgumentException>(() => manager.SetRole(StaffRole.PlatformAdmin));
         Assert.Equal(StaffRole.Manager, manager.Role);
@@ -76,7 +78,16 @@ public class PlatformAdminRulesTests
     [InlineData(StaffRole.Manager, StaffRole.Manager, false)]
     [InlineData(StaffRole.Manager, StaffRole.Owner, false)]
     [InlineData(StaffRole.Owner, StaffRole.Manager, true)]
+    [InlineData(StaffRole.Owner, StaffRole.GeneralManager, true)]
     [InlineData(StaffRole.Owner, StaffRole.Owner, true)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.Manager, true)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.Waiter, true)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.Kitchen, true)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.GeneralManager, false)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.Owner, false)]
+    [InlineData(StaffRole.GeneralManager, StaffRole.PlatformAdmin, false)]
+    [InlineData(StaffRole.Manager, StaffRole.GeneralManager, false)]
+    [InlineData(StaffRole.PlatformAdmin, StaffRole.GeneralManager, true)]
     [InlineData(StaffRole.Owner, StaffRole.PlatformAdmin, false)]
     [InlineData(StaffRole.PlatformAdmin, StaffRole.Owner, true)]
     [InlineData(StaffRole.PlatformAdmin, StaffRole.PlatformAdmin, false)]

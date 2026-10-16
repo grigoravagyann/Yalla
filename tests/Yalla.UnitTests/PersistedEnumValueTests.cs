@@ -72,6 +72,10 @@ public class PersistedEnumValueTests
         Assert.Equal(3, (int)StaffRole.Waiter);
         Assert.Equal(4, (int)StaffRole.Kitchen);
         Assert.Equal(5, (int)StaffRole.PlatformAdmin);
+
+        // Added after the platform tier took 5. Manager keeps 2 and now means a branch manager: the
+        // rows that meant "venue-wide manager" were moved to 6 by the migration, not renumbered.
+        Assert.Equal(6, (int)StaffRole.GeneralManager);
     }
 
     // ------------------------------------------------------------ 11 and 12. zero grants nothing
@@ -146,8 +150,15 @@ public class PersistedEnumValueTests
     public void Seniority_is_declared_rather_than_inferred_from_the_stored_numbers()
     {
         Assert.True(StaffRoleRules.Outranks(StaffRole.PlatformAdmin, StaffRole.Owner));
+        Assert.True(StaffRoleRules.Outranks(StaffRole.Owner, StaffRole.GeneralManager));
+        Assert.True(StaffRoleRules.Outranks(StaffRole.GeneralManager, StaffRole.Manager));
         Assert.True(StaffRoleRules.Outranks(StaffRole.Owner, StaffRole.Manager));
         Assert.True(StaffRoleRules.Outranks(StaffRole.Manager, StaffRole.Waiter));
+        Assert.False(StaffRoleRules.Outranks(StaffRole.GeneralManager, StaffRole.GeneralManager));
+
+        // GeneralManager is 6 - the highest stored number of any venue role - and outranks Manager
+        // at 2. Another reason the order is declared rather than read off the enum.
+        Assert.True((int)StaffRole.GeneralManager > (int)StaffRole.Kitchen);
         Assert.False(StaffRoleRules.Outranks(StaffRole.Waiter, StaffRole.Manager));
         Assert.False(StaffRoleRules.Outranks(StaffRole.Owner, StaffRole.Owner));
 

@@ -93,7 +93,7 @@ public sealed record DeviceEnrolmentResult(
 /// <param name="ExpiresInSeconds">Lifetime of <paramref name="AccessToken"/>.</param>
 /// <param name="StaffMemberId">Who is acting. This is the id that lands in the audit log.</param>
 /// <param name="FullName">Shown on the tablet so the waiter can see whose session is open.</param>
-/// <param name="Role">Coarse permission level: 1 Owner, 2 Manager, 3 Waiter, 4 Kitchen.</param>
+/// <param name="Role">Coarse permission level: 1 Owner, 6 GeneralManager, 2 Manager (a branch manager), 3 Waiter, 4 Kitchen.</param>
 /// <param name="BranchId">The branch this session may act on, and only this one.</param>
 public sealed record StaffSessionResult(
     string AccessToken,
@@ -110,7 +110,7 @@ public sealed record StaffSessionResult(
 /// <param name="ExpiresInSeconds">Lifetime of <paramref name="AccessToken"/>.</param>
 /// <param name="StaffMemberId">Who signed in.</param>
 /// <param name="FullName">Display name for the panel.</param>
-/// <param name="Role">Coarse permission level: 1 Owner, 2 Manager, 3 Waiter, 4 Kitchen.</param>
+/// <param name="Role">Coarse permission level: 1 Owner, 6 GeneralManager, 2 Manager (a branch manager), 3 Waiter, 4 Kitchen.</param>
 /// <param name="VenueId">The venue this account administers. Null for a platform admin, who administers all of them.</param>
 public sealed record VenueUserSignInResult(
     string AccessToken,

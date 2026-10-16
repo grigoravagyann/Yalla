@@ -324,11 +324,12 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         await db.SaveChangesAsync();
 
         var asOwner = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
-        var manager = await asOwner.CreateAsync(branch.VenueId, Staff("Second Manager", StaffRole.Manager));
+        var manager = await asOwner.CreateAsync(branch.VenueId, Staff("Second Manager", StaffRole.Manager, branch.BranchId));
         Assert.Equal(StaffRole.Manager, manager.Role);
 
         var coOwner = await asOwner.CreateAsync(branch.VenueId, Staff("Co-owner", StaffRole.Owner) with
         {
+            Pin = "4322",
             Email = $"co-{Guid.NewGuid():N}@example.test",
             Password = "a-perfectly-long-password",
         });
@@ -420,18 +421,23 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         await Assert.ThrowsAsync<StaffPermissionException>(
             () => asManager.UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(SetBranch: true, BranchId: null)));
 
-        // An owner may do it for them, and the manager may still edit their own other fields.
+        // An owner may do it for them - which now means making them a general manager, the role
+        // whose job is every branch - and the manager may still edit their own other fields first.
         var owner = new StaffMember(branch.VenueId, "Founder", "+37499000002", StaffRole.Owner, "hash");
         db.StaffMembers.Add(owner);
         await db.SaveChangesAsync();
 
-        var widened = await fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id))
-            .UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(SetBranch: true, BranchId: null));
-
-        Assert.Null(widened.BranchId);
-
         var renamed = await asManager.UpdateAsync(branch.VenueId, branch.ManagerId, new UpdateStaffCommand(FullName: "Still Me"));
         Assert.Equal("Still Me", renamed.FullName);
+
+        var widened = await fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id))
+            .UpdateAsync(
+                branch.VenueId,
+                branch.ManagerId,
+                new UpdateStaffCommand(Role: StaffRole.GeneralManager, SetBranch: true, BranchId: null));
+
+        Assert.Null(widened.BranchId);
+        Assert.Equal(StaffRole.GeneralManager, widened.Role);
     }
 
     /// <summary>One address, one account - and the collision is an answer, not a fault.</summary>
@@ -451,10 +457,15 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         var service = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(owner.Id));
         var email = $"taken-{Guid.NewGuid():N}@example.test";
 
-        var first = Staff("First Manager", StaffRole.Manager) with { Email = email, Password = "a-perfectly-long-password" };
+        var first = Staff("First Manager", StaffRole.Manager, branch.BranchId) with { Email = email, Password = "a-perfectly-long-password" };
         await service.CreateAsync(branch.VenueId, first);
 
-        var clash = Staff("Second Manager", StaffRole.Manager) with { Email = email, Password = "a-perfectly-long-password" };
+        var clash = Staff("Second Manager", StaffRole.Manager, branch.BranchId) with
+        {
+            Pin = "4322",
+            Email = email,
+            Password = "a-perfectly-long-password",
+        };
 
         var refused = await Assert.ThrowsAsync<DomainStateException>(() => service.CreateAsync(branch.VenueId, clash));
 

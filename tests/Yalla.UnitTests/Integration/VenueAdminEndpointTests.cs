@@ -571,8 +571,8 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
 
     /// <summary>
     /// <b>B1.</b> The one read the console opens a venue with. Coverage comes from the caller's
-    /// own staff row: an owner and a venue-wide manager see every branch, a manager with a home
-    /// branch sees that branch only, the platform admin sees everything - and the platform's own
+    /// own staff row: an owner and a general manager see every branch, a branch manager sees their
+    /// own branch only, the platform admin sees everything - and the platform's own
     /// venue read stays closed to all of them.
     /// </summary>
     [SkippableFact]
@@ -594,7 +594,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             theirs = await AuthTestData.CreateBranchAsync(db);
             secondBranchId = await AuthTestData.AddBranchAsync(db, mine.VenueId, "Europe/London", tableCount: 1);
             owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
-            venueWideManager = await AuthTestData.SeedManagerAsync(db, mine.VenueId);
+            venueWideManager = await AuthTestData.SeedGeneralManagerAsync(db, mine.VenueId);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
         }
 
@@ -700,7 +700,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
     /// <summary>
     /// <b>B3.</b> The list is never wider than what the server allows: every branch the read
     /// offers a caller answers 200 on a per-branch read for that caller. For the owner and the
-    /// venue-wide manager it is also never narrower than the venue.
+    /// general manager it is also never narrower than the venue.
     /// </summary>
     [SkippableFact]
     public async Task Every_branch_the_managed_venue_read_offers_answers_a_branch_read_for_the_same_caller()
@@ -720,7 +720,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
             _ = await AuthTestData.CreateBranchAsync(db);
             secondBranchId = await AuthTestData.AddBranchAsync(db, mine.VenueId, "Europe/London");
             owner = await AuthTestData.SeedOwnerAsync(db, mine.VenueId);
-            venueWideManager = await AuthTestData.SeedManagerAsync(db, mine.VenueId);
+            venueWideManager = await AuthTestData.SeedGeneralManagerAsync(db, mine.VenueId);
         }
 
         using var ownerClient = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
