@@ -37,6 +37,10 @@ internal sealed class PublicVenueQuery(
     IMenuQuery menu) : IPublicVenueQuery
 {
     /// <summary>How long a menu, a set of hours or a floor plan is held. They barely move.</summary>
+    /// <remarks>
+    /// The floor plan is held this long only while its version stands: the branch page compares it
+    /// on every read and redraws a plan the console has since saved.
+    /// </remarks>
     public static readonly TimeSpan StableFor = TimeSpan.FromMinutes(5);
 
     /// <summary>
@@ -159,6 +163,24 @@ internal sealed class PublicVenueQuery(
         // only built for a published branch, but it outlives the moment it was built by minutes -
         // and a suspension inside those minutes has to take effect now.
         var live = await LiveBranchAsync(plan.BranchId, cancellationToken);
+
+        // The rooms, their photos and the pins on them are the venue's floor plan, and every write
+        // to it moves the version. A plan cached at another version is redrawn now rather than when
+        // the window ends: a photo added in the console turned up mid-booking minutes later (QA
+        // 2026-10-16). The check rides on the live read above, so it costs no query of its own.
+        if (live.FloorPlanVersion != plan.FloorPlanVersion)
+        {
+            var fresh = await LoadBranchPlanAsync(venueSlug, branchSlug, cancellationToken);
+
+            if (fresh is null || fresh.BranchId != plan.BranchId)
+            {
+                cache.Remove(key);
+                throw new KeyNotFoundException($"No branch is published at {venueSlug}/{branchSlug}.");
+            }
+
+            plan = fresh;
+            cache.Set(key, plan, StableFor);
+        }
 
         var occupied = await OccupiedTableLabelsAsync(plan.BranchId, cancellationToken);
         var openNow = await OpenNowAsync([plan.BranchId], cancellationToken);
@@ -304,14 +326,16 @@ internal sealed class PublicVenueQuery(
 
                 // K9: switched on, and a policy somebody at the venue has saved. Live for the same
                 // reason as the switch itself - the reservation service refuses on it live.
-                b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null))
+                b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
+                b.FloorPlanVersion))
             .FirstOrDefaultAsync(cancellationToken);
 
         return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
-    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings);
+    /// <param name="FloorPlanVersion">The plan revision now: a cached plan from another one is redrawn.</param>
+    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings, int FloorPlanVersion);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.
@@ -351,7 +375,8 @@ internal sealed class PublicVenueQuery(
 
     // ------------------------------------------------------------ the pieces
 
-    private sealed record BranchPlan(Guid BranchId, PublicBranchPage Page);
+    /// <param name="FloorPlanVersion">The plan revision the rooms, photos and pins were read at.</param>
+    private sealed record BranchPlan(Guid BranchId, int FloorPlanVersion, PublicBranchPage Page);
 
     private async Task<BranchPlan?> LoadBranchPlanAsync(
         string venueSlug,
@@ -375,6 +400,7 @@ internal sealed class PublicVenueQuery(
                 b.Latitude,
                 b.Longitude,
                 b.TimeZoneId,
+                b.FloorPlanVersion,
                 VenueName = b.Venue.Name,
                 VenueSlug = b.Venue.Slug,
                 b.Venue.Type,
@@ -508,7 +534,7 @@ internal sealed class PublicVenueQuery(
             AsOfUtc: default,
             CoverPhoto: cover);
 
-        return new BranchPlan(branch.Id, page);
+        return new BranchPlan(branch.Id, branch.FloorPlanVersion, page);
     }
 
     /// <summary>

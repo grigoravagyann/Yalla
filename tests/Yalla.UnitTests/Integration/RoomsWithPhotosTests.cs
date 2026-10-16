@@ -390,6 +390,80 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
                 ClientCommandId: Guid.CreateVersion7())));
     }
 
+    /// <summary>
+    /// A photo added and a pin moved in the console reach a diner on the next read, not when a
+    /// cache expires; and a pin's state is the floor's now.
+    /// </summary>
+    /// <remarks>
+    /// QA 2026-10-16 saw a room photo turn up mid-booking minutes after it was added. The app's rooms
+    /// read is live; the web page by slug held its whole plan - rooms, photos and pins - for five
+    /// minutes. It now refreshes the plan whenever the floor-plan version has moved. One cache across
+    /// both reads, as in the running API.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_floor_plan_save_reaches_the_public_rooms_at_once_and_pin_state_is_live()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await CreateBranchAsync(clock);
+        var cache = new MemoryCache(new MemoryCacheOptions());
+
+        string venueSlug, branchSlug;
+        Guid second;
+
+        await using (var seed = fixture.CreateContext(clock))
+        {
+            var slugs = await seed.Branches.Where(b => b.Id == branch.BranchId).Select(b => new { Venue = b.Venue.Slug, b.Slug }).SingleAsync();
+            (venueSlug, branchSlug) = (slugs.Venue, slugs.Slug);
+            second = await TestMenuBuilder.AddPhotoAsync(seed, branch.BranchId);
+        }
+
+        var pageBefore = await ReadPageAsync();
+        var roomsBefore = await ReadRoomsAsync();
+        Assert.DoesNotContain(second, pageBefore.FloorPlan.Areas.SelectMany(a => a.Photos).Select(p => p.PhotoId));
+        Assert.DoesNotContain(second, roomsBefore.Rooms.SelectMany(r => r.Photos).Select(p => p.Photo.PhotoId));
+
+        // The console adds a second photo to Windows and moves the first table's pin onto it.
+        var loaded = await GetPlanAsync(clock, branch);
+        var areas = Areas(loaded);
+        areas[0] = areas[0] with { PhotoIds = [.. areas[0].PhotoIds!, second] };
+        var tables = Tables(loaded)
+            .Select(t => t.Id == branch.FirstTableId ? t with { PhotoId = second, PhotoX = 0.25, PhotoY = 0.75 } : t)
+            .ToList();
+        await WithServiceAsync(clock, branch, s => s.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(areas, tables, loaded.Version)));
+
+        // And a party sits down at it.
+        await using (var seat = fixture.CreateContext(clock))
+        {
+            await fixture.CreateService(seat, clock, TestActor.Waiter(branch.WaiterId))
+                .SeatWalkInAsync(new Yalla.Application.Tables.SeatWalkInCommand(branch.BranchId, branch.FirstTableId, 2, Guid.CreateVersion7()));
+        }
+
+        var page = await ReadPageAsync();
+        Assert.Contains(second, page.FloorPlan.Areas.SelectMany(a => a.Photos).Select(p => p.PhotoId));
+        var drawn = page.FloorPlan.Tables.Single(t => t.PhotoId == second);
+        Assert.Equal((0.25, 0.75), (drawn.PhotoX, drawn.PhotoY));
+
+        var rooms = await ReadRoomsAsync();
+        var onSecond = rooms.Rooms.SelectMany(r => r.Photos).Single(p => p.Photo.PhotoId == second);
+        var pin = Assert.Single(onSecond.Tables);
+        Assert.Equal(branch.FirstTableId, pin.TableId);
+        Assert.Equal(Yalla.Domain.Enums.DerivedTableState.Occupied, pin.State);
+
+        async Task<Yalla.Application.Public.PublicBranchPage> ReadPageAsync()
+        {
+            await using var db = fixture.CreateContext(clock);
+            return await new PublicVenueQuery(db, cache, clock, SqlServerFixture.CreateMenuQuery(db)).GetBranchAsync(venueSlug, branchSlug);
+        }
+
+        async Task<Yalla.Application.Public.PublicBranchRooms> ReadRoomsAsync()
+        {
+            await using var db = fixture.CreateContext(clock);
+            return await new PublicListingQuery(db, cache, clock).GetRoomsAsync(branch.BranchId);
+        }
+    }
+
     // ------------------------------------------------------------ matching rooms
 
     /// <summary>
