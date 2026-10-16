@@ -10,12 +10,15 @@ a table with history is deactivated rather than deleted.
 ## 1. The role hierarchy
 
 ```
-PlatformAdmin = 0     runs Yalla; belongs to no venue and no branch
-  Owner = 1           runs a venue; every branch
-    Manager = 2       runs a venue or one branch; configures it
-      Waiter = 3      works the floor
-      Kitchen = 4     works the pass
+PlatformAdmin = 5        runs Yalla; belongs to no venue and no branch
+  Owner = 1              runs a venue; every branch
+    GeneralManager = 6   runs every branch of the venue; the row names no branch
+      Manager = 2        a branch manager: runs one branch; the row always names it
+        Waiter = 3       works the floor
+        Kitchen = 4      works the pass
 ```
+
+The numbers are storage, not rank (`StaffRoleRules.Seniority` is the rank; see `docs/auth.md` §4).
 
 Lower numbers outrank higher ones. A `PlatformAdmin` is a `StaffMember` row like everyone else,
 so the same sign-in flow (`POST /api/auth/venue/sign-in`), the same token type and the same
@@ -133,8 +136,8 @@ hard delete anywhere.
 **The venue itself** (`GET /api/venues/{id}/manage`) — the read the console opens a venue with:
 name, type, slug, the suspended and deleted flags, and the branches the caller's own staff row
 covers (id, name, slug, time zone, active flag, tier, table count), active ones first. An owner
-and a manager with no home branch get every branch; a manager whose row names a branch gets that
-one; a platform admin gets everything. **Venue users never read `/api/platform`** — everything
+and a general manager get every branch; a branch manager gets their own; a platform admin gets
+everything. **Venue users never read `/api/platform`** — everything
 there is `PlatformAdminOnly`, and this read carries none of what the platform keeps to itself
 (tier rollup, paid-branch count, suspension timestamps).
 
@@ -168,21 +171,27 @@ which role is one table, `StaffRoleRules`:
 
 | Actor | May create or edit |
 | --- | --- |
-| Manager | Waiter, Kitchen |
-| Owner | Owner, Manager, Waiter, Kitchen |
+| Manager (branch manager) | Waiter, Kitchen — at their own branch only |
+| GeneralManager | Manager, Waiter, Kitchen — at any branch of the venue |
+| Owner | Owner, GeneralManager, Manager, Waiter, Kitchen |
 | Platform admin | any venue role — never another platform admin |
+
+A branch manager names a branch and a general manager names none: anything else is 422
+`validation-failed` on `branchId` (wording in `docs/auth.md` §4). A branch manager's staff list
+shows their own branch's people only.
 
 Nobody changes their **own** role, deactivates their own account, or **changes their own branch
 assignment** — a branch-confined manager who could clear their own branch would sign in on every
 branch's tablets, which is the same escalation by another route. The service decides from the
 acting staff member's *stored* row, not from the token's claim.
 
-**Only an owner or a manager may hold an email and password.** A password mints a `VenueUser`
+**Only an owner, a general manager or a branch manager may hold an email and password.** A password mints a `VenueUser`
 token, and that identity is venue-scoped rather than branch-scoped: giving one to a waiter would
 hand them, from a browser with no enrolled tablet, the branches their PIN on the floor is
 deliberately refused at. A waiter or kitchen hand taps a PIN on a device a manager enrolled. For
-the same reason the venue-wide widening in `BranchScopedHandler` applies to `Owner` and `Manager`
-only, not to every venue-user token.
+the same reason the venue-wide widening in `BranchScopedHandler` applies to `Owner` and
+`GeneralManager` only, not to every venue-user token - and not to a branch manager, who passes on
+their own branch alone.
 
 One address is one account across the whole system, so a duplicate email is refused with a message
 rather than a database error.

@@ -231,7 +231,9 @@ unfiltered one would let only one diner ever upload a given picture. Referenced 
 ### StaffMember
 
 Someone who works for a venue and signs in to the tablet or the admin panel, with a coarse
-`Role` (`Owner | Manager | Waiter | Kitchen`). A null `BranchId` means all branches of the venue.
+`Role` (`Owner = 1 | Manager = 2 | Waiter = 3 | Kitchen = 4 | PlatformAdmin = 5 | GeneralManager = 6`).
+A null `BranchId` means all branches of the venue. `CK_StaffMembers_RoleBranch` ties the two: a
+`Manager` (a branch manager) always names a branch and a `GeneralManager` never does.
 
 One person, two credentials, on one row. `PinHash` (plus `PinFailedAttempts` and
 `PinLockedUntilUtc`) is what a waiter taps on a tablet; `Email` and `PasswordHash` are what an

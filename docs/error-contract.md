@@ -87,6 +87,8 @@ reported more than one problem out of six.
 | `PUT /api/branches/{branchId}/reservation-policy` | `turnTimeMinutes`, `bufferMinutes`, `graceMinutes`, `lateNudgeAfterMinutes`, `graceExtensionMinutes`, `minLeadMinutes`, `bookingWindowDays`, `cancellationDeadlineMinutes`, `walkInHoldbackMinutes`, `serviceChargePercent`, `maxSeatOverhang`, `approvalRequiredAbovePartySize` |
 | `PUT /api/branches/{branchId}/opening-hours` | `[n].opensAt`, `[n].closesAt` |
 | `PATCH /api/branches/{branchId}/menu/items/{itemId}` | `categoryId`, when it names a category on another branch |
+| `POST /api/venues/{venueId}/staff` and `PATCH .../staff/{staffMemberId}` | `branchId` — a branch manager (`role` 2) with no branch: *"A branch manager works at one branch. Choose it."*; a general manager (`role` 6) with one: *"A general manager runs every branch, so leave the branch empty."* Checked on the resulting role and branch together |
+| `PUT /api/diner/me/password` | `currentPassword` — needed and not sent: the account has a password and this sign-in did not prove the phone in the last ten minutes. *"Enter your current password, or sign in again with a code to set a new one."* A `currentPassword` that is sent and wrong stays **401 `invalid-credentials`**, as before |
 
 **Already correct, unchanged** — the shape the above was modelled on:
 
@@ -264,6 +266,18 @@ capability the app was handed moments ago and an anonymous poller with somebody 
 learn which of those it is. Not 401: nothing was presented wrongly; the thing polled for is gone.
 No `context`. The app's response is the same in every case: start again. See `docs/auth.md`,
 "Telegram verification".
+
+### 409 `pin-taken`
+
+`POST /api/venues/{venueId}/staff` with a `pin`, and `POST /api/venues/{venueId}/staff/{staffMemberId}/pin`,
+when somebody else who signs in on the same tablet already uses that PIN. `context.field` is `pin`;
+the sentence is *"Somebody who signs in on this tablet already uses that PIN. Choose another."* "The
+same tablet" is the roster: for somebody at a branch, everyone active at that branch plus the venue's
+venue-wide people (owner, general manager, any branchless staff); for somebody venue-wide, everyone
+active in every branch of the venue plus the other venue-wide people. Deactivated people do not count,
+and your own current PIN is no clash. A conflict rather than a 422: the PIN is well formed, it is
+somebody else's. PINs are hashed, so the check verifies the candidate against each roster hash;
+duplicates already in the data are left alone. Minted by `PinTakenException`.
 
 ### Which status, and why
 

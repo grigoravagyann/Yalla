@@ -481,7 +481,9 @@ K7), `review-needs-visit` (403, K8), `bookings-not-accepted` (409, K9).
   (`DinerUser.ProveNumber`); setting or changing a password; `SetActive(false)`;
   `DELETE /api/diner/me`. A password rehash at sign-in does not bump it.
 - `PUT /api/diner/me/password` without a current password also compares the token's `sgen` with the
-  stored row, past the cache. `DinerPhoneGate` (bookings, holds, tabs from a booking, reviews) also
+  stored row, past the cache. On an account that has a password, leaving it out is allowed only within
+  ten minutes of a code or Telegram sign-in (the token's `phone_proved_at`; `docs/auth.md` §2) and is
+  otherwise 422 `validation-failed` on `currentPassword`. `DinerPhoneGate` (bookings, holds, tabs from a booking, reviews) also
   requires an active, undeleted account.
 - **Refresh behaviour.** Refresh tokens are revoked on displacement and on deletion, as before. A
   password change revokes the refresh tokens of **every other sign-in** (reason `password-changed`)
