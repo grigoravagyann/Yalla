@@ -932,6 +932,8 @@ internal sealed class BranchSettingsService(
 
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
+        await RequireUnusedAreaNameAsync(branchId, command.Name, null, cancellationToken);
+
         var area = new FloorArea(branch.Id, command.Name, command.DisplayOrder);
         db.FloorAreas.Add(area);
         branch.BumpFloorPlanVersion();
@@ -959,6 +961,8 @@ internal sealed class BranchSettingsService(
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
+        await RequireUnusedAreaNameAsync(branchId, command.Name, area.Id, cancellationToken);
+
         area.Rename(command.Name);
         area.SetDisplayOrder(command.DisplayOrder);
         branch.BumpFloorPlanVersion();
@@ -972,6 +976,42 @@ internal sealed class BranchSettingsService(
             .ToListAsync(cancellationToken);
 
         return new FloorAreaView(area.Id, area.Name, area.DisplayOrder, [.. photos.Select(PhotoView.From)]);
+    }
+
+    /// <summary>
+    /// Refuses a room name another room at the branch already has, ignoring case and spaces at the
+    /// ends - the rule the plan save applies to the whole plan.
+    /// </summary>
+    /// <remarks>
+    /// Without it these routes made the very plan the save refuses: two rooms called Terrace, and an
+    /// editor that loads them, sends them back, and is told its names repeat with no way to see why
+    /// it is stuck. Checked inside the branch lock, so two adds cannot both pass it. A blank name is
+    /// left to the room's own guard.
+    /// </remarks>
+    /// <exception cref="FieldValidationException">The name is taken: field <c>name</c>, bound <c>conflict</c>.</exception>
+    private async Task RequireUnusedAreaNameAsync(Guid branchId, string? name, Guid? exceptAreaId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        var trimmed = name.Trim();
+
+        var names = await db.FloorAreas
+            .AsNoTracking()
+            .Where(a => a.BranchId == branchId && a.Id != exceptAreaId)
+            .Select(a => a.Name)
+            .ToListAsync(cancellationToken);
+
+        if (names.Any(n => string.Equals(n.Trim(), trimmed, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "name",
+                $"Area names must be unique within a branch. {trimmed} is already used.",
+                FieldBounds.Conflict,
+                Value: trimmed));
+        }
     }
 
     public async Task DeleteFloorAreaAsync(Guid branchId, Guid areaId, CancellationToken cancellationToken = default)

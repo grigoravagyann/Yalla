@@ -525,6 +525,39 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
         await AssertStaleAsync(clock, branch, loaded);
     }
 
+    /// <summary>The whole-plan save refuses a repeated room name; the single-room routes must too.</summary>
+    [SkippableFact]
+    public async Task Adding_or_renaming_a_room_to_a_name_already_used_is_refused()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await CreateBranchAsync(clock);
+
+        var added = await Assert.ThrowsAsync<FieldValidationException>(() => WithServiceAsync(
+            clock, branch, s => s.CreateFloorAreaAsync(branch.BranchId, new FloorAreaCommand(" windows ", 1))));
+
+        var violation = Assert.Single(added.Violations);
+        Assert.Equal("name", violation.Field);
+        Assert.Equal(FieldBounds.Conflict, violation.Bound);
+
+        var terrace = await WithServiceAsync(clock, branch, s => s.CreateFloorAreaAsync(branch.BranchId, new FloorAreaCommand("Terrace", 1)));
+
+        var renamed = await Assert.ThrowsAsync<FieldValidationException>(() => WithServiceAsync(
+            clock, branch, s => s.UpdateFloorAreaAsync(branch.BranchId, terrace.Id, new FloorAreaCommand("WINDOWS", 1))));
+
+        violation = Assert.Single(renamed.Violations);
+        Assert.Equal("name", violation.Field);
+        Assert.Equal(FieldBounds.Conflict, violation.Bound);
+
+        // Its own name, in another case, is not a clash.
+        var same = await WithServiceAsync(clock, branch, s => s.UpdateFloorAreaAsync(branch.BranchId, terrace.Id, new FloorAreaCommand("TERRACE", 2)));
+        Assert.Equal("TERRACE", same.Name);
+
+        var plan = await GetPlanAsync(clock, branch);
+        Assert.Equal(["Windows", "TERRACE"], plan.Areas.Select(a => a.Name));
+    }
+
     // ------------------------------------------------------------ the sweep racing a save
 
     // ------------------------------------------------------------ helpers
