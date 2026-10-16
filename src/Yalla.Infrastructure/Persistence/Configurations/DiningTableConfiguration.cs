@@ -18,17 +18,11 @@ internal sealed class DiningTableConfiguration : EntityConfiguration<DiningTable
         builder.Property(t => t.Seats)
             .IsRequired();
 
-        builder.Property(t => t.X).IsRequired();
-        builder.Property(t => t.Y).IsRequired();
-        builder.Property(t => t.Width).IsRequired();
-        builder.Property(t => t.Height).IsRequired();
-        builder.Property(t => t.RotationDegrees).IsRequired();
-
-        // Position on the branch's cover photo, 0-1 each way. Nullable: most tables are not in the picture.
+        // The pin: which room photo, and where on it, 0-1 each way. All three null for a table with no
+        // pin, which staff still seat and diners are not offered.
         builder.Property(t => t.PhotoX);
         builder.Property(t => t.PhotoY);
 
-        builder.Property(t => t.Shape).IsRequired();
         builder.Property(t => t.IsBookable).IsRequired();
         builder.Property(t => t.IsActive).IsRequired();
         builder.Property(t => t.Status).IsRequired();
@@ -58,6 +52,13 @@ internal sealed class DiningTableConfiguration : EntityConfiguration<DiningTable
         builder.HasOne(t => t.FloorArea)
             .WithMany(a => a.DiningTables)
             .HasForeignKey(t => t.FloorAreaId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Restrict, like every other photo reference: a picture a table is pinned on must not be
+        // deletable out from under the pin. Removing the photo from its room takes the pin off first.
+        builder.HasOne(t => t.Photo)
+            .WithMany()
+            .HasForeignKey(t => t.PhotoId)
             .OnDelete(DeleteBehavior.Restrict);
 
         // Table 7 exists once per branch.

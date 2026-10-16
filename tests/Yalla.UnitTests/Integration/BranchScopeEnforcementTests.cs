@@ -311,8 +311,7 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
     }
 
     /// <summary>
-    /// Every branch-scoped route this package guards, in an order that works on a real branch: the
-    /// cover is set before the pins that need it.
+    /// Every branch-scoped route this package guards, in an order that works on a real branch.
     /// </summary>
     private static async Task<List<(string Route, HttpStatusCode Status)>> EveryBranchRouteAsync(
         HttpClient client, Guid branchId, Guid coverPhotoId)
@@ -328,23 +327,18 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
         var planResponse = await client.GetAsync($"{prefix}/floor-plan");
         results.Add(("GET /floor-plan", planResponse.StatusCode));
 
-        Guid tableId;
         Dictionary<string, object?> planBody;
 
         if (planResponse.IsSuccessStatusCode)
         {
             var plan = await planResponse.Content.ReadFromJsonAsync<JsonElement>();
-            tableId = plan.GetProperty("tables")[0].GetProperty("id").GetGuid();
             planBody = FloorPlanBody.From(plan, plan.GetProperty("version").GetString());
         }
         else
         {
             // Refused anyway; the body only has to be well formed.
-            tableId = Guid.CreateVersion7();
             planBody = new Dictionary<string, object?>
             {
-                ["floorWidth"] = 1000,
-                ["floorHeight"] = 700,
                 ["areas"] = Array.Empty<object>(),
                 ["tables"] = Array.Empty<object>(),
                 ["expectedVersion"] = "0",
@@ -356,14 +350,6 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
         results.Add(("PUT /public-profile", (await client.PutAsJsonAsync(
             $"/api/branches/{branchId}/public-profile",
             new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId })).StatusCode));
-
-        results.Add(("PUT /table-photo-positions", (await client.PutAsJsonAsync(
-            $"/api/branches/{branchId}/table-photo-positions",
-            new
-            {
-                coverPhotoId,
-                positions = new[] { new { tableId, photoX = 0.5, photoY = 0.5 } },
-            })).StatusCode));
 
         results.Add(("POST /photos", (await UploadAsync(client, branchId, Png((byte)Random.Shared.Next(256)))).StatusCode));
 

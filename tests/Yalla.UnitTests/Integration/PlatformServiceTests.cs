@@ -229,9 +229,7 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
         Address: "1 Test Street, Yerevan",
         Latitude: 40.18,
         Longitude: 44.51,
-        TimeZoneId: "Asia/Yerevan",
-        FloorWidth: 1000,
-        FloorHeight: 700);
+        TimeZoneId: "Asia/Yerevan");
 
     private async Task AssertAuditAsync(YallaDbContext _, Guid actorId, Guid targetId, string action)
     {

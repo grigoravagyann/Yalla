@@ -49,12 +49,16 @@ public sealed class PhotoScopeTests(SqlServerFixture fixture) : IDisposable
         AuthBranch mine;
         AuthBranch theirs;
         PlatformAdminAccount admin;
+        int theirPhotos;
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             mine = await AuthTestData.CreateBranchAsync(db);
             theirs = await AuthTestData.CreateBranchAsync(db);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
+
+            // The fixture's room photo; counted rather than assumed away.
+            theirPhotos = await db.Photos.CountAsync(p => p.BranchId == theirs.BranchId);
         }
 
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
@@ -71,8 +75,8 @@ public sealed class PhotoScopeTests(SqlServerFixture fixture) : IDisposable
         // And nothing was written for it - a refusal that stored the file would be no refusal.
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            Assert.False(await db.Photos.AnyAsync(p => p.BranchId == theirs.BranchId));
-            Assert.True(await db.Photos.AnyAsync(p => p.BranchId == mine.BranchId));
+            Assert.Equal(theirPhotos, await db.Photos.CountAsync(p => p.BranchId == theirs.BranchId));
+            Assert.True(await db.Photos.AnyAsync(p => p.BranchId == mine.BranchId && !p.IsExternallyHosted));
         }
 
         // The platform tier belongs to no venue and passes for every branch.

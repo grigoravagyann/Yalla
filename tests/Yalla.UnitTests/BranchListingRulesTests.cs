@@ -174,26 +174,42 @@ public class BranchListingRulesTests
             refused.Violations.Select(v => v.Field));
     }
 
+    private static readonly Guid RoomPhotoId = Guid.Parse("0199a2b4-0000-7000-8000-000000000001");
+
     [Theory]
     [InlineData(0.5, 0.25)]
     [InlineData(0d, 1d)]
-    public void A_table_takes_photo_coordinates_between_zero_and_one(double x, double y)
+    public void A_table_takes_a_photo_and_coordinates_between_zero_and_one(double x, double y)
     {
-        Assert.Equal((x, y), BranchListingRules.PhotoPosition(x, y, "7"));
+        Assert.Equal((RoomPhotoId, x, y), BranchListingRules.PhotoPosition(RoomPhotoId, x, y, "7"));
     }
 
     [Fact]
-    public void A_table_with_one_photo_coordinate_or_one_off_the_photo_is_refused()
+    public void A_pin_is_a_photo_and_both_coordinates_or_none_of_them()
     {
         Assert.Equal(
             "photoY",
-            Assert.Throws<FieldValidationException>(() => BranchListingRules.PhotoPosition(0.5, null, "7")).Field);
+            Assert.Throws<FieldValidationException>(() => BranchListingRules.PhotoPosition(RoomPhotoId, 0.5, null, "7")).Field);
+
+        // Coordinates with no photo have nowhere to be drawn.
+        Assert.Equal(
+            "photoId",
+            Assert.Throws<FieldValidationException>(() => BranchListingRules.PhotoPosition(null, 0.5, 0.5, "7")).Field);
 
         Assert.Equal(
             "photoX",
-            Assert.Throws<FieldValidationException>(() => BranchListingRules.PhotoPosition(1.2, 0.5, "7")).Field);
+            Assert.Throws<FieldValidationException>(() => BranchListingRules.PhotoPosition(RoomPhotoId, 1.2, 0.5, "7")).Field);
 
-        Assert.Equal((null, null), BranchListingRules.PhotoPosition(null, null, "7"));
+        Assert.Equal((null, null, null), BranchListingRules.PhotoPosition(null, null, null, "7"));
+    }
+
+    [Fact]
+    public void A_pin_violation_is_named_against_the_row_the_editor_drew()
+    {
+        var refused = Assert.Throws<FieldValidationException>(
+            () => BranchListingRules.PhotoPosition(RoomPhotoId, null, -0.1, "7", "tables[3]."));
+
+        Assert.Equal(["tables[3].photoX", "tables[3].photoY"], refused.Violations.Select(v => v.Field));
     }
 
     // ------------------------------------------------------------ badges

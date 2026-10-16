@@ -151,7 +151,7 @@ internal sealed class PublicListingQuery(
             .CountAsync(t => t.BranchId == branchId && t.IsActive, cancellationToken);
 
         var recent = await ReviewsAsync(branchId, skip: 0, take: RecentReviewCount, cancellationToken);
-        var markers = await MarkersAsync(branchId, row.CoverPhotoId, cancellationToken);
+        var rooms = await RoomsAsync(branchId, cancellationToken);
         var stats = await StatsAsync(cancellationToken);
 
         // The aggregate live, not from the cached stats: recentReviews above is live, and the two
@@ -170,7 +170,7 @@ internal sealed class PublicListingQuery(
             extra.AcceptsWebBookings,
             extra.AcceptsAppBookings,
             recent,
-            markers,
+            rooms,
             clock.UtcNow);
     }
 
@@ -202,16 +202,11 @@ internal sealed class PublicListingQuery(
             await ReviewsAsync(branchId, (page - 1) * ReviewPageSize, ReviewPageSize, cancellationToken));
     }
 
-    public async Task<PublicTableMarkers> GetTableMarkersAsync(Guid branchId, CancellationToken cancellationToken = default)
+    public async Task<PublicBranchRooms> GetRoomsAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
-        var row = await Project(Published().Where(b => b.Id == branchId)).FirstOrDefaultAsync(cancellationToken)
-                  ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
+        await RequirePublishedAsync(branchId, cancellationToken);
 
-        return new PublicTableMarkers(
-            branchId,
-            Cover(row),
-            clock.UtcNow,
-            await MarkersAsync(branchId, row.CoverPhotoId, cancellationToken));
+        return new PublicBranchRooms(branchId, clock.UtcNow, await RoomsAsync(branchId, cancellationToken));
     }
 
     // ------------------------------------------------------------ the pieces
@@ -430,23 +425,39 @@ internal sealed class PublicListingQuery(
     }
 
     /// <summary>
-    /// Tables placed on the cover photo, each with the state the floor plan derives now.
+    /// The rooms with their photos in order, and on each photo the active tables pinned there, each
+    /// with the state the floor derives now.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Physical status plus the next live booking, through <see cref="TableStateProjection.Derive"/> -
-    /// the same rule the staff floor and availability use, so a marker cannot read free while the
-    /// floor reads reserved. None at all without a cover: the positions are fractions of that picture,
-    /// and with no picture there is nothing for them to be on.
+    /// the same rule the staff floor and availability use, so a pin cannot read free while the floor
+    /// reads reserved.
+    /// </para>
+    /// <para>
+    /// A room with no photo is left out: there is nothing to swipe and nowhere to tap. A table with no
+    /// pin is left out too - a diner books by tapping a pin, so it is not offered. Three reads, none
+    /// per room or per table.
+    /// </para>
     /// </remarks>
-    private async Task<IReadOnlyList<PublicTableMarker>> MarkersAsync(
-        Guid branchId, Guid? coverPhotoId, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<PublicRoom>> RoomsAsync(Guid branchId, CancellationToken cancellationToken)
     {
-        if (coverPhotoId is null)
-        {
-            return [];
-        }
-
         var nowUtc = clock.UtcNow;
+
+        var rooms = await db.FloorAreas
+            .AsNoTracking()
+            .Where(a => a.BranchId == branchId)
+            .OrderBy(a => a.DisplayOrder)
+            .ThenBy(a => a.Name)
+            .Select(a => new { a.Id, a.Name, a.DisplayOrder })
+            .ToListAsync(cancellationToken);
+
+        var photos = await db.FloorAreaPhotos
+            .AsNoTracking()
+            .Where(p => p.FloorArea.BranchId == branchId)
+            .OrderBy(p => p.Position)
+            .Select(p => new { p.FloorAreaId, p.Photo })
+            .ToListAsync(cancellationToken);
 
         var bufferMinutes = await db.Branches
             .AsNoTracking()
@@ -456,7 +467,11 @@ internal sealed class PublicListingQuery(
 
         var tables = await db.DiningTables
             .AsNoTracking()
-            .Where(t => t.BranchId == branchId && t.IsActive && t.PhotoX != null && t.PhotoY != null)
+            .Where(t => t.BranchId == branchId
+                        && t.IsActive
+                        && t.PhotoId != null
+                        && t.PhotoX != null
+                        && t.PhotoY != null)
             .OrderBy(t => t.Label)
             .Select(t => new
             {
@@ -465,6 +480,7 @@ internal sealed class PublicListingQuery(
                 t.Seats,
                 t.IsBookable,
                 t.Status,
+                t.PhotoId,
                 t.PhotoX,
                 t.PhotoY,
                 NextStartUtc = db.Reservations
@@ -477,16 +493,38 @@ internal sealed class PublicListingQuery(
             })
             .ToListAsync(cancellationToken);
 
+        var pinsByPhoto = tables
+            .GroupBy(t => t.PhotoId!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<PublicTableMarker>)
+                [
+                    .. g.Select(t => new PublicTableMarker(
+                        t.Id,
+                        t.Label,
+                        t.Seats,
+                        t.IsBookable,
+                        TableStateProjection.Derive(t.Status, t.NextStartUtc, nowUtc, bufferMinutes),
+                        t.PhotoX!.Value,
+                        t.PhotoY!.Value)),
+                ]);
+
+        var photosByRoom = photos
+            .GroupBy(p => p.FloorAreaId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<PublicRoomPhoto>)
+                [
+                    .. g.Select(p => new PublicRoomPhoto(
+                        PhotoView.From(p.Photo),
+                        pinsByPhoto.GetValueOrDefault(p.Photo.Id, []))),
+                ]);
+
         return
         [
-            .. tables.Select(t => new PublicTableMarker(
-                t.Id,
-                t.Label,
-                t.Seats,
-                t.IsBookable,
-                TableStateProjection.Derive(t.Status, t.NextStartUtc, nowUtc, bufferMinutes),
-                t.PhotoX!.Value,
-                t.PhotoY!.Value)),
+            .. rooms
+                .Where(r => photosByRoom.ContainsKey(r.Id))
+                .Select(r => new PublicRoom(r.Id, r.Name, r.DisplayOrder, photosByRoom[r.Id])),
         ];
     }
 

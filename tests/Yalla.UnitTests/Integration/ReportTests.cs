@@ -355,9 +355,7 @@ public class ReportTests(SqlServerFixture fixture)
                 address: "2 Test Street, Yerevan",
                 latitude: 40.18,
                 longitude: 44.51,
-                timeZoneId: Yerevan,
-                floorWidth: 800,
-                floorHeight: 600));
+                timeZoneId: Yerevan));
 
             await db.SaveChangesAsync();
         }

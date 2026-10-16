@@ -94,8 +94,6 @@ public sealed record CreateBranchCommand(
     double Latitude,
     double Longitude,
     string TimeZoneId,
-    int FloorWidth,
-    int FloorHeight,
     SubscriptionTier SubscriptionTier = SubscriptionTier.Free);
 
 /// <summary>Patch a venue. Every field optional; only the ones supplied change.</summary>
@@ -112,8 +110,6 @@ public sealed record UpdateBranchCommand(
     double? Latitude = null,
     double? Longitude = null,
     string? TimeZoneId = null,
-    int? FloorWidth = null,
-    int? FloorHeight = null,
     bool? IsActive = null,
     SubscriptionTier? SubscriptionTier = null);
 
@@ -165,8 +161,6 @@ public sealed record BranchSummary(
     double Latitude,
     double Longitude,
     string TimeZoneId,
-    int FloorWidth,
-    int FloorHeight,
     bool IsActive,
     SubscriptionTier SubscriptionTier,
     int TableCount);

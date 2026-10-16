@@ -188,10 +188,10 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
 
         // Keep tables 2 and 3 (by id), drop table 1, add a new table 4.
         var kept = plan.Tables.Where(t => t.Id != usedTableId).Select(Input).ToList();
-        kept.Add(new FloorTableInput(null, "4", 6, 600, 400, 120, 120, 0d, TableShape.Rectangle));
+        kept.Add(new FloorTableInput(null, "4", 6));
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, "Windows", 0)], kept, plan.Version));
+            branch.BranchId, new ReplaceFloorPlanCommand([new FloorAreaInput(null, "Windows", 0)], kept, plan.Version));
 
         Assert.Equal(["1"], result.DeactivatedTables);
         Assert.Empty(result.RemovedTables);
@@ -200,10 +200,10 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         Assert.True(result.Plan.Tables.Single(t => t.Label == "4").IsActive);
     }
 
-    // ------------------------------------------------------------ 13. geometry edits never touch the QR token
+    // ------------------------------------------------------------ 13. edits never touch the QR token
 
     [SkippableFact]
-    public async Task Editing_a_tables_geometry_does_not_change_its_QrToken_and_regeneration_is_explicit_and_audited()
+    public async Task Editing_a_table_and_moving_its_pin_does_not_change_its_QrToken_and_regeneration_is_explicit_and_audited()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -215,18 +215,22 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var before = await service.GetFloorPlanAsync(branch.BranchId);
         var table = before.Tables.First();
         var originalToken = table.QrToken;
+        var room = Assert.Single(before.Areas);
+        var photoId = Assert.Single(room.Photos).PhotoId;
 
-        // Move it across the room, resize it, rename it, drop the id so it matches by label.
-        var edited = before.Tables.Select(Input).ToList();
+        // New seats, a pin across the photo, and no id so it matches by label.
+        var edited = before.Tables.Select(t => Pinned(t, room.Name)).ToList();
         var index = edited.FindIndex(t => t.Id == table.Id);
-        edited[index] = edited[index] with { Id = null, X = 800, Y = 500, Width = 150, Height = 120, RotationDegrees = 45d, Label = table.Label };
+        edited[index] = edited[index] with { Id = null, Seats = 6, PhotoId = photoId, PhotoX = 0.8, PhotoY = 0.25 };
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], edited, before.Version));
+            branch.BranchId, new ReplaceFloorPlanCommand(Areas(before), edited, before.Version));
 
         var moved = result.Plan.Tables.Single(t => t.Id == table.Id);
-        Assert.Equal(800, moved.X);
-        Assert.Equal(150, moved.Width);
+        Assert.Equal(6, moved.Seats);
+        Assert.Equal(photoId, moved.PhotoId);
+        Assert.Equal(0.8, moved.PhotoX);
+        Assert.Equal(0.25, moved.PhotoY);
         Assert.Equal(originalToken, moved.QrToken);
 
         // The one deliberate way it changes.
@@ -245,7 +249,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
     // ------------------------------------------------------------ 10 and 11, through the database
 
     [SkippableFact]
-    public async Task A_plan_with_a_table_outside_the_canvas_is_rejected_and_nothing_changes()
+    public async Task A_plan_with_a_repeated_label_is_rejected_and_nothing_changes()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -256,20 +260,25 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var before = await service.GetFloorPlanAsync(branch.BranchId);
 
         var tables = before.Tables.Select(Input).ToList();
-        tables[0] = tables[0] with { X = 980, Width = 100 };
+        tables[1] = tables[1] with { Label = tables[0].Label, Seats = 9 };
 
         var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], tables, before.Version)));
 
-        Assert.Equal([tables[0].Label], refused.TablesOutsideCanvas);
+        Assert.Equal([tables[0].Label], refused.DuplicateLabels);
 
         await using var verify = fixture.CreateContext(clock);
-        var unchanged = await verify.DiningTables.AsNoTracking().FirstAsync(t => t.Id == before.Tables[0].Id);
-        Assert.Equal(before.Tables[0].X, unchanged.X);
+        var unchanged = await verify.DiningTables.AsNoTracking().FirstAsync(t => t.Id == before.Tables[1].Id);
+        Assert.Equal(before.Tables[1].Seats, unchanged.Seats);
+        Assert.Equal(before.Tables[1].PhotoId, unchanged.PhotoId);
     }
 
+    /// <summary>
+    /// Staff can seat a table with no pin, so it is saved - but diners are not offered it, and the
+    /// editor is told so rather than left to find out from an empty booking screen.
+    /// </summary>
     [SkippableFact]
-    public async Task A_plan_with_overlapping_tables_succeeds_with_a_warning()
+    public async Task A_plan_with_a_bookable_table_that_has_no_pin_succeeds_with_a_warning()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -278,19 +287,22 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
         var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var room = Assert.Single(before.Areas);
 
-        // Spread the fixture's tables out first - the builder packs them 50 units apart with
-        // 90-unit widths, so they overlap already - then sit table 2 on top of table 1.
-        var tables = before.Tables.Select(Input).Select((t, i) => t with { X = 100 + (i * 300), Y = 100 }).ToList();
-        tables[1] = tables[1] with { X = tables[0].X + 20, Y = tables[0].Y + 20 };
+        var tables = before.Tables.Select(t => Pinned(t, room.Name)).ToList();
+        tables[1] = tables[1] with { PhotoId = null, PhotoX = null, PhotoY = null };
+        tables[2] = tables[2] with { PhotoId = null, PhotoX = null, PhotoY = null, IsBookable = false };
 
-        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version));
+        var result = await service.ReplaceFloorPlanAsync(
+            branch.BranchId, new ReplaceFloorPlanCommand(Areas(before), tables, before.Version));
 
         var warning = Assert.Single(result.Warnings);
-        Assert.Contains("overlap", warning);
-        Assert.Contains(tables[0].Label, warning);
+        Assert.Contains("not pinned", warning);
         Assert.Contains(tables[1].Label, warning);
-        Assert.Equal(tables[0].X + 20, result.Plan.Tables.Single(t => t.Label == tables[1].Label).X);
+
+        // The walk-in-only table is not offered to diners whatever its pin, so it is not warned about.
+        Assert.DoesNotContain($" {tables[2].Label},", warning);
+        Assert.Null(result.Plan.Tables.Single(t => t.Label == tables[1].Label).PhotoId);
     }
 
     /// <summary>
@@ -346,7 +358,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var plan = await service.GetFloorPlanAsync(branch.BranchId);
 
         var kept = plan.Tables.Where(t => t.Id != auditedId).Select(Input).ToList();
-        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept, plan.Version));
+        var result = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], kept, plan.Version));
 
         Assert.Equal([plan.Tables.Single(t => t.Id == auditedId).Label], result.DeactivatedTables);
         Assert.Empty(result.RemovedTables);
@@ -377,7 +389,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         var kept = plan.Tables.Where(t => t.Id != occupiedId).Select(Input).ToList();
 
         var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], kept, plan.Version)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], kept, plan.Version)));
 
         Assert.Contains(label, refused.Message);
         Assert.Contains("seated", refused.Message, StringComparison.OrdinalIgnoreCase);
@@ -411,7 +423,7 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
         tables[1] = tables[1] with { Label = first.Label };
 
         var result = await service.ReplaceFloorPlanAsync(
-            branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], tables, before.Version));
+            branch.BranchId, new ReplaceFloorPlanCommand([], tables, before.Version));
 
         Assert.Equal(second.Label, result.Plan.Tables.Single(t => t.Id == first.Id).Label);
         Assert.Equal(first.Label, result.Plan.Tables.Single(t => t.Id == second.Id).Label);
@@ -441,18 +453,18 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
 
         var unlabelled = new List<FloorTableInput>
         {
-            new(null, null!, 4, 10, 10, 90, 90, 0d, TableShape.Round),
+            new(null, null!, 4),
         };
 
         var noLabel = await Assert.ThrowsAsync<FloorPlanInvalidException>(
-            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(1000, 700, [], unlabelled, version)));
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], unlabelled, version)));
 
         Assert.Contains("no label", noLabel.Message, StringComparison.OrdinalIgnoreCase);
 
         var noName = await Assert.ThrowsAsync<FloorPlanInvalidException>(
             () => service.ReplaceFloorPlanAsync(
                 branch.BranchId,
-                new ReplaceFloorPlanCommand(1000, 700, [new FloorAreaInput(null, null!, 0)], [], version)));
+                new ReplaceFloorPlanCommand([new FloorAreaInput(null, null!, 0)], [], version)));
 
         Assert.Contains("no name", noName.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -523,8 +535,17 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ helpers
 
+    /// <summary>A table as the editor would send it back with no room and no pin.</summary>
     private static FloorTableInput Input(FloorTableView t) =>
-        new(t.Id, t.Label, t.Seats, t.X, t.Y, t.Width, t.Height, t.RotationDegrees, t.Shape, null, t.IsBookable);
+        new(t.Id, t.Label, t.Seats, null, t.IsBookable);
+
+    /// <summary>A table as the editor would send it back: in its room, with the pin it was read with.</summary>
+    private static FloorTableInput Pinned(FloorTableView t, string roomName) =>
+        new(t.Id, t.Label, t.Seats, roomName, t.IsBookable, t.PhotoId, t.PhotoX, t.PhotoY);
+
+    /// <summary>The rooms as the editor would send them back, each with the photos it was read with.</summary>
+    private static List<FloorAreaInput> Areas(FloorPlanView plan) =>
+        [.. plan.Areas.Select(a => new FloorAreaInput(a.Id, a.Name, a.DisplayOrder, [.. a.Photos.Select(p => p.PhotoId)]))];
 
     private static ReservationPolicyCommand Command(ReservationPolicyView p) => new(
         p.TurnTimeMinutes, p.BufferMinutes, p.GraceMinutes, p.LateNudgeAfterMinutes, p.GraceExtensionMinutes,

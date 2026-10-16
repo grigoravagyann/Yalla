@@ -224,49 +224,44 @@ public class PlatformAdminRulesTests
     // ------------------------------------------------------------ 10 and 11. the floor plan
 
     [Fact]
-    public void A_plan_with_a_table_outside_the_canvas_is_rejected_naming_the_tables()
+    public void A_plan_with_a_bookable_table_that_has_no_pin_is_valid_with_a_warning()
     {
+        var photoId = Guid.CreateVersion7();
+
         var tables = new List<FloorTableInput>
         {
-            Table("1", x: 10, y: 10),
-            Table("7", x: 950, y: 10, width: 100),   // runs off the right edge
-            Table("9", x: 10, y: 680, height: 50),   // runs off the bottom
+            Table("1") with { PhotoId = photoId, PhotoX = 0.2, PhotoY = 0.5 },
+            Table("2"),                                  // bookable, no pin: diners are not offered it
+            Table("3") with { IsBookable = false },      // walk-in only: nobody books it anyway
         };
 
-        var result = FloorPlanRules.Validate(1000, 700, tables);
-
-        Assert.False(result.IsValid);
-        Assert.Equal(["7", "9"], result.TablesOutsideCanvas);
-        Assert.Contains(result.Errors, e => e.Contains("7") && e.Contains("9"));
-    }
-
-    [Fact]
-    public void A_plan_with_overlapping_tables_is_valid_with_a_warning()
-    {
-        var tables = new List<FloorTableInput>
-        {
-            Table("1", x: 100, y: 100),
-            Table("2", x: 150, y: 150),   // sits on top of table 1
-            Table("3", x: 500, y: 500),
-        };
-
-        var result = FloorPlanRules.Validate(1000, 700, tables);
+        var result = FloorPlanRules.Validate(tables);
 
         Assert.True(result.IsValid);
         var warning = Assert.Single(result.Warnings);
-        Assert.Contains("1", warning);
         Assert.Contains("2", warning);
+        Assert.DoesNotContain("1", warning);
+        Assert.DoesNotContain("3", warning);
     }
 
     [Fact]
     public void Repeated_labels_are_an_error()
     {
-        var tables = new List<FloorTableInput> { Table("7", x: 10, y: 10), Table("7", x: 300, y: 300) };
+        var tables = new List<FloorTableInput> { Table("7"), Table("7") };
 
-        var result = FloorPlanRules.Validate(1000, 700, tables);
+        var result = FloorPlanRules.Validate(tables);
 
         Assert.False(result.IsValid);
         Assert.Equal(["7"], result.DuplicateLabels);
+    }
+
+    [Fact]
+    public void An_unlabelled_table_is_an_error_not_a_fault()
+    {
+        var result = FloorPlanRules.Validate([Table(null!)]);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("no label"));
     }
 
     // ------------------------------------------------------------ policy bounds
@@ -365,6 +360,5 @@ public class PlatformAdminRulesTests
         MaxSeatOverhang: 2,
         ApprovalRequiredAbovePartySize: 8);
 
-    private static FloorTableInput Table(string label, int x, int y, int width = 90, int height = 90) =>
-        new(null, label, 4, x, y, width, height, 0d, TableShape.Round);
+    private static FloorTableInput Table(string label) => new(null, label, 4);
 }

@@ -160,12 +160,7 @@ public class DiningTableTests
     internal static DiningTable NewTable(string label = "7") => new(
         branchId: Guid.CreateVersion7(),
         label: label,
-        seats: 4,
-        x: 100,
-        y: 200,
-        width: 80,
-        height: 80,
-        shape: TableShape.Round);
+        seats: 4);
 }
 
 public class OpeningHoursTests

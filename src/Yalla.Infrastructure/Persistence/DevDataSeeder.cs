@@ -66,8 +66,6 @@ internal sealed class DevDataSeeder(
                 latitude: 40.1830,
                 longitude: 44.5150,
                 timeZoneId: "Asia/Yerevan",
-                floorWidth: 1000,
-                floorHeight: 700,
                 subscriptionTier: SubscriptionTier.Paid);
 
             db.Branches.Add(branch);
@@ -240,24 +238,15 @@ internal sealed class DevDataSeeder(
 
         for (var i = 0; i < 4; i++)
         {
-            tables.Add(new DiningTable(
-                branch.Id, label: (i + 1).ToString(), seats: 2,
-                x: 80 + (i * 140), y: 90, width: 90, height: 90,
-                shape: TableShape.Round, floorAreaId: windows.Id));
+            tables.Add(new DiningTable(branch.Id, label: (i + 1).ToString(), seats: 2, floorAreaId: windows.Id));
         }
 
         for (var i = 0; i < 3; i++)
         {
-            tables.Add(new DiningTable(
-                branch.Id, label: (i + 5).ToString(), seats: 4,
-                x: 100 + (i * 200), y: 400, width: 140, height: 100,
-                shape: TableShape.Rectangle, floorAreaId: terrace.Id));
+            tables.Add(new DiningTable(branch.Id, label: (i + 5).ToString(), seats: 4, floorAreaId: terrace.Id));
         }
 
-        tables.Add(new DiningTable(
-            branch.Id, label: "8", seats: 10,
-            x: 700, y: 380, width: 240, height: 140,
-            shape: TableShape.Rectangle, floorAreaId: terrace.Id));
+        tables.Add(new DiningTable(branch.Id, label: "8", seats: 10, floorAreaId: terrace.Id));
 
         db.DiningTables.AddRange(tables);
 

@@ -181,8 +181,6 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
                 latitude = 40.18,
                 longitude = 44.51,
                 timeZoneId = "Asia/Yerevan",
-                floorWidth = 1000,
-                floorHeight = 700,
                 subscriptionTier = SubscriptionTier.Paid,
             },
         });
@@ -200,13 +198,11 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var put = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
             expectedVersion = loadedVersion,
-            floorWidth = 1000,
-            floorHeight = 700,
-            areas = new[] { new { id = (Guid?)null, name = "Windows", displayOrder = 0 } },
+            areas = new[] { new { id = (Guid?)null, name = "Windows", displayOrder = 0, photoIds = Array.Empty<Guid>() } },
             tables = new[]
             {
-                new { id = (Guid?)null, label = "1", seats = 2, x = 50, y = 50, width = 90, height = 90, rotationDegrees = 0d, shape = TableShape.Round, floorAreaName = (string?)"Windows", isBookable = true },
-                new { id = (Guid?)null, label = "2", seats = 4, x = 300, y = 50, width = 120, height = 90, rotationDegrees = 0d, shape = TableShape.Rectangle, floorAreaName = (string?)null, isBookable = true },
+                new { id = (Guid?)null, label = "1", seats = 2, floorAreaName = (string?)"Windows", isBookable = true },
+                new { id = (Guid?)null, label = "2", seats = 4, floorAreaName = (string?)null, isBookable = true },
             },
         });
 
@@ -214,23 +210,22 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var applied = await put.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(2, applied.GetProperty("plan").GetProperty("tables").GetArrayLength());
 
-        // A table off the canvas is a 422 naming it.
-        var outside = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
+        // A label used twice is a 422 naming it.
+        var repeated = await platform.PutAsJsonAsync($"/api/branches/{branchId}/floor-plan", new
         {
             expectedVersion = applied.GetProperty("plan").GetProperty("version").GetString(),
-            floorWidth = 1000,
-            floorHeight = 700,
             areas = Array.Empty<object>(),
             tables = new[]
             {
-                new { id = (Guid?)null, label = "9", seats = 2, x = 990, y = 50, width = 90, height = 90, rotationDegrees = 0d, shape = TableShape.Round, floorAreaName = (string?)null, isBookable = true },
+                new { id = (Guid?)null, label = "9", seats = 2, floorAreaName = (string?)null, isBookable = true },
+                new { id = (Guid?)null, label = "9", seats = 4, floorAreaName = (string?)null, isBookable = true },
             },
         });
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, outside.StatusCode);
-        var problem = await outside.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, repeated.StatusCode);
+        var problem = await repeated.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("floor-plan-invalid", problem.GetProperty("code").GetString());
-        Assert.Equal("9", problem.GetProperty("context").GetProperty("tablesOutsideCanvas")[0].GetString());
+        Assert.Equal("9", problem.GetProperty("context").GetProperty("duplicateLabels")[0].GetString());
 
         var list = await platform.GetAsync($"/api/platform/venues?search={marker}");
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
@@ -427,8 +422,6 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             slug = $"api-venue-{marker}",
             address = "1 Test Street, Yerevan",
             timeZoneId = "Asia/Yerevan",
-            floorWidth = 1000,
-            floorHeight = 700,
         });
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, flat.StatusCode);
@@ -450,8 +443,6 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
                 latitude = 40.18,
                 longitude = 44.51,
                 timeZoneId = "Asia/Yerevan",
-                floorWidth = 1000,
-                floorHeight = 700,
             },
         });
 
@@ -488,17 +479,13 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         latitude = 40.18,
         longitude = 44.51,
         timeZoneId = "Asia/Yerevan",
-        floorWidth = 1000,
-        floorHeight = 700,
         subscriptionTier,
     };
 
     private static async Task<string> QrTokenAsync(Yalla.Infrastructure.Persistence.YallaDbContext db, Guid branchId)
     {
         // A branch created through the API has no tables, so give it one to scan.
-        var table = new Yalla.Domain.Venues.DiningTable(
-            branchId, label: "1", seats: 2, x: 10, y: 10, width: 90, height: 90,
-            shape: Yalla.Domain.Enums.TableShape.Round);
+        var table = new Yalla.Domain.Venues.DiningTable(branchId, label: "1", seats: 2);
 
         db.DiningTables.Add(table);
         await db.SaveChangesAsync();

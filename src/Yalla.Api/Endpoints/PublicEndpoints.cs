@@ -168,7 +168,7 @@ public static class PublicEndpoints
         return app;
     }
 
-    /// <summary>The diner app's browse reads: Explore, search, the map, details, reviews and table markers.</summary>
+    /// <summary>The diner app's browse reads: Explore, search, the map, details, reviews and rooms.</summary>
     private static void MapListingRoutes(RouteGroupBuilder group)
     {
         const string listingFields =
@@ -210,7 +210,8 @@ public static class PublicEndpoints
                 + "`phoneE164`, `amenities`, `openingHours` (`day` 0 = Sunday, wall-clock `opensAt`/"
                 + "`closesAt` as `HH:mm:ss`, `closesNextDay`), `gallery` (pictures beyond the cover, in "
                 + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three) and "
-                + "`tableMarkers` - the tables placed on the cover photo with their live state.\n\n"
+                + "`rooms` - the rooms with their photos and the live pins on them, exactly as "
+                + "`GET /api/public/branches/{branchId}/rooms` serves them.\n\n"
                 + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
                 + "`listing.rating` and `listing.reviewCount` are read live too; the other live numbers "
                 + "share the list's fifteen seconds.")
@@ -232,17 +233,18 @@ public static class PublicEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
             .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
 
-        group.MapGet("/branches/{branchId:guid}/table-markers", GetTableMarkersAsync)
-            .WithName("getPublicTableMarkers")
-            .WithSummary("Tables drawn on the cover photo, with their live state")
+        group.MapGet("/branches/{branchId:guid}/rooms", GetRoomsAsync)
+            .WithName("getPublicBranchRooms")
+            .WithSummary("The rooms a diner picks from: photos, and the live pins on them")
             .WithDescription(
-                "Only tables a manager placed on the photo (`photoX`/`photoY` on the floor plan) appear, "
-                + "and none while the branch has no cover. Changing or clearing the cover takes every table "
-                + "off the photo, because the positions described the old picture. "
-                + "`photoX` and `photoY` are 0-1 across and down `photo`, the branch's cover. `state` is "
-                + "what the floor plan derives now: 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, "
-                + "5 OutOfService. Refetch this more often than the details.")
-            .Produces<PublicTableMarkers>()
+                "`rooms` lowest `displayOrder` first; each room's `photos` in the order the venue chose; on "
+                + "each photo the active tables pinned there, by label. A room with no photo is not listed, "
+                + "and a table with no pin is not on any photo - a diner books by tapping a pin, so an "
+                + "unpinned table is not offered.\n\n"
+                + "`photoX` and `photoY` are 0-1 across and down that photo. `state` is what the floor derives "
+                + "now: 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService. `isBookable` false is a "
+                + "walk-in-only table, shown but not booked. Refetch this more often than the details.")
+            .Produces<PublicBranchRooms>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
             .RequireRateLimiting(RateLimitingExtensions.PublicPlacePolicy);
     }
@@ -268,9 +270,9 @@ public static class PublicEndpoints
         Guid branchId, IPublicListingQuery listings, CancellationToken ct, int page = 1) =>
         Results.Ok(await listings.GetReviewsAsync(branchId, page, ct));
 
-    private static async Task<IResult> GetTableMarkersAsync(
+    private static async Task<IResult> GetRoomsAsync(
         Guid branchId, IPublicListingQuery listings, CancellationToken ct) =>
-        Results.Ok(await listings.GetTableMarkersAsync(branchId, ct));
+        Results.Ok(await listings.GetRoomsAsync(branchId, ct));
 
     private static async Task<IResult> GetVenuesAsync(IPublicVenueQuery venues, CancellationToken ct) =>
         Results.Ok(await venues.GetVenuesAsync(ct));

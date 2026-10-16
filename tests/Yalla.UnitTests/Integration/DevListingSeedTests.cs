@@ -82,10 +82,20 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
                 await AssertImageAsync(anonymous, cover.GetProperty(variant).GetString()!);
             }
 
-            // Pins on that cover.
-            var markers = await anonymous.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branchId}/table-markers");
-            Assert.Equal(cover.GetProperty("photoId").GetGuid(), markers.GetProperty("photo").GetProperty("photoId").GetGuid());
-            Assert.NotEmpty(markers.GetProperty("tables").EnumerateArray());
+            // Both rooms with a photo, and every table pinned on one - the Windows photo is the cover's row.
+            var rooms = (await anonymous.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branchId}/rooms"))
+                .GetProperty("rooms").EnumerateArray().ToList();
+
+            Assert.Equal(["Windows", "Terrace"], rooms.Select(r => r.GetProperty("name").GetString()));
+
+            var windowsPhoto = Assert.Single(rooms[0].GetProperty("photos").EnumerateArray());
+            Assert.Equal(cover.GetProperty("photoId").GetGuid(), windowsPhoto.GetProperty("photo").GetProperty("photoId").GetGuid());
+            await AssertImageAsync(anonymous, windowsPhoto.GetProperty("photo").GetProperty("cardUrl").GetString()!);
+
+            Assert.Equal(
+                8,
+                rooms.SelectMany(r => r.GetProperty("photos").EnumerateArray())
+                    .Sum(p => p.GetProperty("tables").GetArrayLength()));
 
             // A gallery whose pictures load, and bookings open from the app.
             var detail = await anonymous.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branchId}");
@@ -138,10 +148,12 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
         Assert.InRange(first.Reviews, 3, 6);
         Assert.Equal(DevListingSeeder.ReviewerPhones.Length, first.Reviewers);
 
-        // The pictures, stored by the seed itself, and the pins it put on the cover.
+        // The pictures, stored by the seed itself, a photo per room, and every table pinned on one.
+        // The rooms' photos reuse the cover's and the terrace picture's rows: nothing stored twice.
         Assert.NotNull(first.CoverPhotoId);
         Assert.Equal(DevListingSeeder.GalleryResources.Length, first.GalleryPictures);
         Assert.Equal(1 + DevListingSeeder.GalleryResources.Length, first.BranchPhotos);
+        Assert.Equal(DevListingSeeder.RoomPhotos.Length, first.RoomPhotos);
         Assert.Equal(0, first.UnplacedTables);
 
         // Open to bookings from the app: the switch on and the policy marked reviewed (K9).
@@ -187,20 +199,22 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             Assert.Equal(["wifi", "vegan"], branch.Amenities);
             Assert.Null(branch.Cuisine);
 
-            // The manager's cover stays, and the seed adds no pictures of its own beside it.
+            // The manager's cover stays, and the seed adds no pictures of its own beside it or the
+            // room photo the branch already has.
             Assert.Equal(coverId, branch.CoverPhotoId);
             Assert.False(await db.BranchGalleryPhotos.AnyAsync(g => g.BranchId == branchId));
-            Assert.Equal(1, await db.Photos.CountAsync(p => p.BranchId == branchId));
+            Assert.Equal(2, await db.Photos.CountAsync(p => p.BranchId == branchId));
+            Assert.Equal(1, await db.FloorAreaPhotos.CountAsync(p => p.FloorArea.BranchId == branchId));
 
-            // Nobody had laid the photo out, so the seed placed every table.
+            // The room was already laid out, every table pinned.
             var tables = await db.DiningTables
                 .Where(t => t.BranchId == branchId && t.IsActive)
                 .OrderBy(t => t.Label)
                 .ToListAsync();
-            Assert.All(tables, t => Assert.NotNull(t.PhotoX));
+            Assert.All(tables, t => Assert.NotNull(t.PhotoId));
 
             // The manager takes one off the picture.
-            tables[0].PlaceOnPhoto(null, null);
+            tables[0].TakeOffPhoto();
             takenOff = tables[0].Id;
             await db.SaveChangesAsync();
         }
@@ -209,8 +223,8 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
 
         await using (var db = fixture.CreateContext(clock))
         {
-            Assert.Null((await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == takenOff)).PhotoX);
-            Assert.Equal(2, await db.DiningTables.CountAsync(t => t.BranchId == branchId && t.IsActive && t.PhotoX != null));
+            Assert.Null((await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == takenOff)).PhotoId);
+            Assert.Equal(2, await db.DiningTables.CountAsync(t => t.BranchId == branchId && t.IsActive && t.PhotoId != null));
             Assert.Equal(["wifi", "vegan"], (await db.Branches.AsNoTracking().SingleAsync(b => b.Id == branchId)).Amenities);
         }
     }
@@ -300,6 +314,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
         Guid? CoverPhotoId,
         int GalleryPictures,
         int BranchPhotos,
+        int RoomPhotos,
         bool AcceptsWebBookings,
         bool PolicyReviewed);
 
@@ -314,10 +329,11 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             branch.Cuisine,
             await db.BranchReviews.CountAsync(r => r.BranchId == branch.Id),
             await db.DinerUsers.CountAsync(d => DevListingSeeder.ReviewerPhones.Contains(d.PhoneE164) && d.PhoneVerifiedAtUtc != null),
-            await db.DiningTables.CountAsync(t => t.BranchId == branch.Id && t.IsActive && t.PhotoX == null),
+            await db.DiningTables.CountAsync(t => t.BranchId == branch.Id && t.IsActive && t.PhotoId == null),
             branch.CoverPhotoId,
             await db.BranchGalleryPhotos.CountAsync(g => g.BranchId == branch.Id),
             await db.Photos.CountAsync(p => p.BranchId == branch.Id),
+            await db.FloorAreaPhotos.CountAsync(p => p.FloorArea.BranchId == branch.Id),
             branch.AcceptsWebBookings,
             branch.ReservationPolicyReviewedAtUtc is not null);
     }

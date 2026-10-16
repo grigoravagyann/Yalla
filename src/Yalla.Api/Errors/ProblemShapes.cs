@@ -248,10 +248,10 @@ public sealed record BranchNotReadyProblem : ProblemShape
 }
 
 /// <summary>The floor plan the editor sent could not be applied.</summary>
-/// <param name="TablesOutsideCanvas">Labels of tables that fall outside the canvas.</param>
+/// <param name="Errors">Every reason, one sentence each, naming the tables and rooms involved.</param>
 /// <param name="DuplicateLabels">Labels used more than once.</param>
 public sealed record FloorPlanRejectedContext(
-    IReadOnlyList<string> TablesOutsideCanvas,
+    IReadOnlyList<string> Errors,
     IReadOnlyList<string> DuplicateLabels);
 
 /// <summary><c>floor-plan-invalid</c>, 422.</summary>
@@ -268,16 +268,6 @@ public sealed record FloorPlanChangedContext(string CurrentVersion);
 public sealed record FloorPlanChangedProblem : ProblemShape
 {
     public required FloorPlanChangedContext Context { get; init; }
-}
-
-/// <summary>Table pins were placed on a cover photo the branch no longer has.</summary>
-/// <param name="CurrentCoverPhotoId">The branch's cover now, or null when it has none.</param>
-public sealed record CoverChangedContext(Guid? CurrentCoverPhotoId);
-
-/// <summary><c>cover-changed</c>, 409. Nothing was written.</summary>
-public sealed record CoverChangedProblem : ProblemShape
-{
-    public required CoverChangedContext Context { get; init; }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -151,9 +151,7 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
             address: "1 Test Street, Yerevan",
             latitude: 40.18,
             longitude: 44.51,
-            timeZoneId: "Asia/Yerevan",
-            floorWidth: 1000,
-            floorHeight: 700);
+            timeZoneId: "Asia/Yerevan");
 
         db.Branches.Add(branch);
         await db.SaveChangesAsync();

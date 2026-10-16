@@ -126,7 +126,8 @@ public static class ReservationEndpoints
             .AllowAnonymous()
             .WithSummary("Which tables a branch can offer for one slot")
             .WithDescription(
-                "Every table in the branch with its floor-plan geometry, its derived state at the "
+                "Every table in the branch pinned on a room photo - `photoId`, `photoX`, `photoY` - with its "
+                + "derived state at the "
                 + "requested time, whether it can be booked for this party - and if not, the one "
                 + "specific reason - and the window the diner may have. Assembled in a single "
                 + "query. Returns no guest names and no money. Omit date and time for 'now, at "

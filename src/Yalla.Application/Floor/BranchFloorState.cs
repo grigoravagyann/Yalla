@@ -3,7 +3,8 @@ using Yalla.Domain.Enums;
 namespace Yalla.Application.Floor;
 
 /// <summary>
-/// Everything needed to draw one branch's floor from above, as of one instant.
+/// Every active table in one branch with its live state, as of one instant: what the staff floor
+/// screen lists, grouped by room.
 /// </summary>
 /// <remarks>
 /// This backs the hottest endpoint in the product: the diner app polls it to pick a table and the
@@ -19,10 +20,6 @@ public sealed record BranchFloorState
 
     /// <summary>IANA zone, so a client can render <see cref="TableFloorState.NextReservationStartUtc"/> locally.</summary>
     public required string TimeZoneId { get; init; }
-
-    public required int FloorWidth { get; init; }
-
-    public required int FloorHeight { get; init; }
 
     /// <summary>
     /// The instant the derived states were computed for. Every <c>ReservedSoon</c> in this
@@ -60,23 +57,23 @@ public sealed record TableFloorState
 
     public required int Seats { get; init; }
 
-    public required int X { get; init; }
-
-    public required int Y { get; init; }
-
-    public required int Width { get; init; }
-
-    public required int Height { get; init; }
-
-    public required double RotationDegrees { get; init; }
-
-    public required TableShape Shape { get; init; }
-
     public Guid? FloorAreaId { get; init; }
 
     public string? FloorAreaName { get; init; }
 
     public int FloorAreaDisplayOrder { get; init; }
+
+    /// <summary>
+    /// The room photo the table is pinned on, or null when it has no pin. Staff seat an unpinned
+    /// table like any other; diners are not offered one.
+    /// </summary>
+    public Guid? PhotoId { get; init; }
+
+    /// <summary>Where the pin sits on <see cref="PhotoId"/>, 0-1 across; null when there is no pin.</summary>
+    public double? PhotoX { get; init; }
+
+    /// <summary>Where the pin sits on <see cref="PhotoId"/>, 0-1 down; null when there is no pin.</summary>
+    public double? PhotoY { get; init; }
 
     public required bool IsBookable { get; init; }
 

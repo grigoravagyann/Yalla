@@ -148,12 +148,6 @@ public sealed class Branch : Entity
     /// <summary>Sets or clears the venue card's picture.</summary>
     public void SetCoverPhoto(Guid? photoId) => CoverPhotoId = photoId;
 
-    /// <summary>Width of the floor-plan canvas the tables are positioned on, in design units.</summary>
-    public int FloorWidth { get; private set; }
-
-    /// <summary>Height of the floor-plan canvas the tables are positioned on, in design units.</summary>
-    public int FloorHeight { get; private set; }
-
     /// <summary>
     /// What this branch pays for. <see cref="Enums.SubscriptionTier.Free"/> gets the floor plan and
     /// reservations; <see cref="Enums.SubscriptionTier.Paid"/> adds tabs, ordering and payments.
@@ -199,8 +193,6 @@ public sealed class Branch : Entity
         double latitude,
         double longitude,
         string timeZoneId,
-        int floorWidth,
-        int floorHeight,
         ReservationPolicy? reservationPolicy = null,
         SubscriptionTier subscriptionTier = SubscriptionTier.Free)
         : base(Guid.CreateVersion7())
@@ -214,8 +206,6 @@ public sealed class Branch : Entity
         Latitude = InRange(latitude, -90d, 90d, nameof(latitude));
         Longitude = InRange(longitude, -180d, 180d, nameof(longitude));
         TimeZoneId = NormaliseTimeZoneId(timeZoneId);
-        FloorWidth = Guard.Positive(floorWidth, nameof(floorWidth));
-        FloorHeight = Guard.Positive(floorHeight, nameof(floorHeight));
         ReservationPolicy = reservationPolicy ?? ReservationPolicy.DefaultFor(venue.Type);
         SubscriptionTier = Guard.Defined(subscriptionTier, nameof(subscriptionTier));
         IsActive = true;
@@ -251,12 +241,6 @@ public sealed class Branch : Entity
         ReservationPolicyReviewedAtUtc = Guard.NotLocalTime(reviewedAtUtc, nameof(reviewedAtUtc));
     }
 
-    public void ResizeFloor(int floorWidth, int floorHeight)
-    {
-        FloorWidth = Guard.Positive(floorWidth, nameof(floorWidth));
-        FloorHeight = Guard.Positive(floorHeight, nameof(floorHeight));
-    }
-
     /// <summary>
     /// Which saved revision of the floor plan this is. An optimistic concurrency token.
     /// </summary>
@@ -268,9 +252,8 @@ public sealed class Branch : Entity
     /// loaded; a save against an older one is refused as <c>floor-plan-changed</c>.
     /// </para>
     /// <para>
-    /// <b>Only a floor-plan save moves it.</b> Pinning tables on the cover photo and changing the cover
-    /// do not: neither changes what the editor shows, and bumping it would make an open editor refuse
-    /// a save that conflicts with nothing.
+    /// <b>Only a floor-plan save moves it.</b> Rooms, their photos and the pins on them are all saved
+    /// by that one call, so there is no second writer to keep in step with it.
     /// </para>
     /// </remarks>
     public int FloorPlanVersion { get; private set; }

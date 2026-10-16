@@ -8,8 +8,9 @@
 //
 //   dotnet run generate-images.cs -- <output folder>
 //
-// The cover is laid out to match the seed: each table is drawn where DevListingSeeder places its
-// pin - x = 0.1 + 0.8 * (floor centre x / 1000), y = 0.25 + 0.6 * (floor centre y / 700).
+// The pictures are laid out to match the seed: DevListingSeeder.RoomPhotos pins tables 1-4 where the
+// cover draws them (it is also the Windows room's photo) and tables 5-7 on the three terrace tables
+// of gallery-2. Move a table here and move its pin there.
 
 using SkiaSharp;
 

@@ -7,7 +7,8 @@ using Yalla.Application.BranchSettings;
 namespace Yalla.UnitTests.Integration;
 
 /// <summary>
-/// K6: the floor plan carries a version, a stale save is refused, and a plan save never touches pins.
+/// K6: the floor plan carries a version, a stale save is refused - and the rooms, their photos and
+/// every pin ride on the same save, so an editor echoing back what it loaded changes nothing.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,9 +17,8 @@ namespace Yalla.UnitTests.Integration;
 /// gone, with a 200 for both.
 /// </para>
 /// <para>
-/// And table pins used to ride on this form, so any editor that did not know about them - or an
-/// older console - took every pin off the cover photo on its next save. Pins now have their own route
-/// (K7); what this form sends about them is ignored.
+/// Pins are part of the plan now: a table is pinned on one of its room's photos, and the rooms and
+/// their photos are on this form. There is no second writer of pins to keep out of its way.
 /// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
@@ -42,12 +42,12 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
 
         var tableId = first.GetProperty("tables")[0].GetProperty("id").GetGuid();
 
-        var saveA = await manager.PutAsJsonAsync(url, FloorPlanBody.From(first, version, MoveTable(tableId, x: 200)));
+        var saveA = await manager.PutAsJsonAsync(url, FloorPlanBody.From(first, version, SetSeats(tableId, seats: 6)));
         Assert.Equal(HttpStatusCode.OK, saveA.StatusCode);
         var current = (await saveA.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("plan").GetProperty("version").GetString();
         Assert.NotEqual(version, current);
 
-        var saveB = await manager.PutAsJsonAsync(url, FloorPlanBody.From(second, version, MoveTable(tableId, x: 400)));
+        var saveB = await manager.PutAsJsonAsync(url, FloorPlanBody.From(second, version, SetSeats(tableId, seats: 8)));
         Assert.Equal(HttpStatusCode.Conflict, saveB.StatusCode);
 
         var problem = await saveB.Content.ReadFromJsonAsync<JsonElement>();
@@ -56,7 +56,7 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            Assert.Equal(200, (await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == tableId)).X);
+            Assert.Equal(6, (await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == tableId)).Seats);
         }
 
         // Reloaded, the second editor's change goes through.
@@ -64,7 +64,7 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
         Assert.Equal(current, reloaded.GetProperty("version").GetString());
         Assert.Equal(
             HttpStatusCode.OK,
-            (await manager.PutAsJsonAsync(url, FloorPlanBody.From(reloaded, current, MoveTable(tableId, x: 400)))).StatusCode);
+            (await manager.PutAsJsonAsync(url, FloorPlanBody.From(reloaded, current, SetSeats(tableId, seats: 8)))).StatusCode);
     }
 
     [SkippableFact]
@@ -111,21 +111,19 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
                 .GetFloorPlanAsync(branch.BranchId);
         }
 
-        async Task<Exception?> SaveAsync(int x)
+        async Task<Exception?> SaveAsync(int seats)
         {
             await using var db = fixture.CreateContext(clock);
             var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
             var tables = plan.Tables
-                .Select((t, i) => new FloorTableInput(
-                    t.Id, t.Label, t.Seats, i == 0 ? x : t.X, t.Y, t.Width, t.Height, t.RotationDegrees, t.Shape,
-                    null, t.IsBookable))
+                .Select((t, i) => new FloorTableInput(t.Id, t.Label, i == 0 ? seats : t.Seats, null, t.IsBookable))
                 .ToList();
 
             try
             {
                 await service.ReplaceFloorPlanAsync(
-                    branch.BranchId, new ReplaceFloorPlanCommand(plan.FloorWidth, plan.FloorHeight, [], tables, plan.Version));
+                    branch.BranchId, new ReplaceFloorPlanCommand([], tables, plan.Version));
                 return null;
             }
             catch (Exception ex)
@@ -134,7 +132,7 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
             }
         }
 
-        var outcomes = await Task.WhenAll(SaveAsync(120), SaveAsync(240));
+        var outcomes = await Task.WhenAll(SaveAsync(5), SaveAsync(7));
 
         Assert.Single(outcomes, o => o is null);
         Assert.Single(outcomes, o => o is FloorPlanChangedException);
@@ -143,8 +141,12 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
         Assert.Equal(1, (await verify.Branches.AsNoTracking().SingleAsync(b => b.Id == branch.BranchId)).FloorPlanVersion);
     }
 
+    /// <summary>
+    /// The rooms editor end to end over HTTP: a room gets a photo, tables are pinned on it, the
+    /// public rooms read shows them, and echoing the loaded plan back changes nothing.
+    /// </summary>
     [SkippableFact]
-    public async Task A_plan_save_leaves_every_pin_where_it_was_even_one_that_sends_photo_coordinates()
+    public async Task Rooms_photos_and_pins_round_trip_through_the_plan_and_show_on_the_public_rooms_read()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -153,90 +155,61 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
         var planUrl = $"/api/branches/{mine.BranchId}/floor-plan";
 
-        Guid cover;
+        Guid terracePhoto;
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            cover = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
+            terracePhoto = await TestMenuBuilder.AddPhotoAsync(db, mine.BranchId);
         }
 
-        Assert.Equal(
-            HttpStatusCode.OK,
-            (await manager.PutAsJsonAsync(
-                $"/api/branches/{mine.BranchId}/public-profile",
-                new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId = cover })).StatusCode);
-
         var loaded = await manager.GetFromJsonAsync<JsonElement>(planUrl);
-        var t1 = loaded.GetProperty("tables")[0].GetProperty("id").GetGuid();
-        var t2 = loaded.GetProperty("tables")[1].GetProperty("id").GetGuid();
+        var t3 = loaded.GetProperty("tables")[2].GetProperty("id").GetGuid();
 
-        var pinned = await manager.PutAsJsonAsync($"/api/branches/{mine.BranchId}/table-photo-positions", new
+        // A second room with its own photo, and table 3 moved into it and pinned there.
+        var body = FloorPlanBody.From(loaded, loaded.GetProperty("version").GetString(), table =>
         {
-            coverPhotoId = cover,
-            positions = new[]
+            if ((Guid)table["id"]! == t3)
             {
-                new { tableId = t1, photoX = 0.2, photoY = 0.3 },
-                new { tableId = t2, photoX = 0.7, photoY = 0.8 },
-            },
+                table["floorAreaName"] = "Terrace";
+                table["photoId"] = terracePhoto;
+                table["photoX"] = 0.25;
+                table["photoY"] = 0.75;
+            }
         });
-        Assert.Equal(HttpStatusCode.OK, pinned.StatusCode);
+
+        ((List<Dictionary<string, object?>>)body["areas"]!).Add(new Dictionary<string, object?>
+        {
+            ["name"] = "Terrace",
+            ["displayOrder"] = 1,
+            ["photoIds"] = new[] { terracePhoto },
+        });
+
+        var saved = await manager.PutAsJsonAsync(planUrl, body);
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        var plan = (await saved.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("plan");
+        var terrace = plan.GetProperty("areas").EnumerateArray().Single(a => a.GetProperty("name").GetString() == "Terrace");
+        Assert.Equal(terracePhoto, Assert.Single(terrace.GetProperty("photos").EnumerateArray()).GetProperty("photoId").GetGuid());
+
+        var moved = plan.GetProperty("tables").EnumerateArray().Single(t => t.GetProperty("id").GetGuid() == t3);
+        Assert.Equal(terracePhoto, moved.GetProperty("photoId").GetGuid());
+        Assert.Equal(0.25, moved.GetProperty("photoX").GetDouble());
 
         using var anyone = factory.CreateClient();
-        var markersBefore = await MarkersAsync(anyone, mine.BranchId);
-        Assert.Equal(2, markersBefore.Count);
+        var pinsBefore = await PinsAsync(anyone, mine.BranchId);
+        Assert.Equal(3, pinsBefore.Count);
+        Assert.Contains((t3, terracePhoto, 0.25, 0.75), pinsBefore);
 
-        // Pins and a cover save do not move the version: an open editor must not be refused for them.
-        var afterPins = await manager.GetFromJsonAsync<JsonElement>(planUrl);
-        Assert.Equal(loaded.GetProperty("version").GetString(), afterPins.GetProperty("version").GetString());
-
-        // A plan with no photo keys at all.
-        var plain = await manager.PutAsJsonAsync(
-            planUrl, FloorPlanBody.From(afterPins, afterPins.GetProperty("version").GetString()));
-        Assert.Equal(HttpStatusCode.OK, plain.StatusCode);
-        Assert.Equal(markersBefore, await MarkersAsync(anyone, mine.BranchId));
-
-        // A plan that sends photo coordinates on every table - an older editor. Ignored.
+        // The plan as loaded, sent straight back: every room, photo and pin stays.
         var current = await manager.GetFromJsonAsync<JsonElement>(planUrl);
-        var carrying = await manager.PutAsJsonAsync(planUrl, FloorPlanBody.From(
-            current,
-            current.GetProperty("version").GetString(),
-            table =>
-            {
-                table["photoX"] = 0.9;
-                table["photoY"] = 0.9;
-            }));
-        Assert.Equal(HttpStatusCode.OK, carrying.StatusCode);
-        Assert.Equal(markersBefore, await MarkersAsync(anyone, mine.BranchId));
-
-        // A table added by the plan has no pin, whatever it sends.
-        current = await manager.GetFromJsonAsync<JsonElement>(planUrl);
-        var withNewTable = FloorPlanBody.From(current, current.GetProperty("version").GetString());
-        ((List<Dictionary<string, object?>>)withNewTable["tables"]!).Add(new Dictionary<string, object?>
-        {
-            ["label"] = "B2-new",
-            ["seats"] = 2,
-            ["x"] = 10,
-            ["y"] = 10,
-            ["width"] = 40,
-            ["height"] = 40,
-            ["rotationDegrees"] = 0d,
-            ["shape"] = 1,
-            ["isBookable"] = true,
-            ["photoX"] = 0.5,
-            ["photoY"] = 0.5,
-        });
-
-        Assert.Equal(HttpStatusCode.OK, (await manager.PutAsJsonAsync(planUrl, withNewTable)).StatusCode);
-        Assert.Equal(markersBefore, await MarkersAsync(anyone, mine.BranchId));
-
-        await using var verify = fixture.CreateContext(factory.Clock);
-        var added = await verify.DiningTables.AsNoTracking().SingleAsync(t => t.BranchId == mine.BranchId && t.Label == "B2-new");
-        Assert.Null(added.PhotoX);
-        Assert.Null(added.PhotoY);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await manager.PutAsJsonAsync(planUrl, FloorPlanBody.From(current, current.GetProperty("version").GetString()))).StatusCode);
+        Assert.Equal(pinsBefore, await PinsAsync(anyone, mine.BranchId));
     }
 
-    /// <summary>The published schema: the table input has no photo position; the plan has a version.</summary>
+    /// <summary>The published schema: rooms carry photo ids, tables carry a pin and no geometry, the plan has a version.</summary>
     [Fact]
-    public async Task The_published_floor_plan_schema_has_a_version_and_no_photo_position_on_the_table_input()
+    public async Task The_published_floor_plan_schema_has_rooms_with_photos_pins_on_tables_and_no_geometry()
     {
         await using var factory = new YallaApiFactory().WithSwagger(enabled: true);
         using var client = factory.CreateClient();
@@ -248,32 +221,49 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
             schemas.EnumerateObject().Single(s => s.Name == name || s.Name.EndsWith("." + name, StringComparison.Ordinal)).Value;
 
         var tableInput = Schema(nameof(FloorTableInput)).GetProperty("properties");
-        Assert.False(tableInput.TryGetProperty("photoX", out _), "FloorTableInput still publishes photoX.");
-        Assert.False(tableInput.TryGetProperty("photoY", out _), "FloorTableInput still publishes photoY.");
-        Assert.True(tableInput.TryGetProperty("label", out _));
 
-        Assert.True(Schema(nameof(ReplaceFloorPlanCommand)).GetProperty("properties").TryGetProperty("expectedVersion", out _));
+        foreach (var pin in new[] { "photoId", "photoX", "photoY", "label", "floorAreaName" })
+        {
+            Assert.True(tableInput.TryGetProperty(pin, out _), $"FloorTableInput does not publish {pin}.");
+        }
+
+        foreach (var gone in new[] { "x", "y", "width", "height", "rotationDegrees", "shape" })
+        {
+            Assert.False(tableInput.TryGetProperty(gone, out _), $"FloorTableInput still publishes {gone}.");
+        }
+
+        Assert.True(Schema(nameof(FloorAreaInput)).GetProperty("properties").TryGetProperty("photoIds", out _));
+        Assert.True(Schema(nameof(FloorAreaView)).GetProperty("properties").TryGetProperty("photos", out _));
+
+        var command = Schema(nameof(ReplaceFloorPlanCommand)).GetProperty("properties");
+        Assert.True(command.TryGetProperty("expectedVersion", out _));
+        Assert.False(command.TryGetProperty("floorWidth", out _));
         Assert.True(Schema(nameof(FloorPlanView)).GetProperty("properties").TryGetProperty("version", out _));
     }
 
     // ------------------------------------------------------------ helpers
 
-    private static Action<Dictionary<string, object?>> MoveTable(Guid tableId, int x) =>
+    private static Action<Dictionary<string, object?>> SetSeats(Guid tableId, int seats) =>
         table =>
         {
             if ((Guid)table["id"]! == tableId)
             {
-                table["x"] = x;
+                table["seats"] = seats;
             }
         };
 
-    /// <summary>The placed tables on the public marker read, as comparable tuples.</summary>
-    private static async Task<List<(Guid TableId, double X, double Y)>> MarkersAsync(HttpClient anyone, Guid branchId)
+    /// <summary>Every pin on the public rooms read, as comparable tuples.</summary>
+    private static async Task<List<(Guid TableId, Guid PhotoId, double X, double Y)>> PinsAsync(HttpClient anyone, Guid branchId)
     {
-        var markers = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branchId}/table-markers");
+        var rooms = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{branchId}/rooms");
 
-        return markers.GetProperty("tables").EnumerateArray()
-            .Select(t => (t.GetProperty("tableId").GetGuid(), t.GetProperty("photoX").GetDouble(), t.GetProperty("photoY").GetDouble()))
+        return rooms.GetProperty("rooms").EnumerateArray()
+            .SelectMany(r => r.GetProperty("photos").EnumerateArray())
+            .SelectMany(p => p.GetProperty("tables").EnumerateArray().Select(t => (
+                t.GetProperty("tableId").GetGuid(),
+                p.GetProperty("photo").GetProperty("photoId").GetGuid(),
+                t.GetProperty("photoX").GetDouble(),
+                t.GetProperty("photoY").GetDouble())))
             .OrderBy(t => t.Item1)
             .ToList();
     }
@@ -292,8 +282,8 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
 /// A floor-plan PUT body echoing a loaded plan, the way the editor sends one back.
 /// </summary>
 /// <remarks>
-/// Dictionaries rather than anonymous objects, so a test can add a key the contract does not declare
-/// (<c>photoX</c> on a table) or leave <c>expectedVersion</c> null, which is what those tests are about.
+/// Dictionaries rather than anonymous objects, so a test can change one table's pin or room, add a
+/// room, or leave <c>expectedVersion</c> null, which is what those tests are about.
 /// </remarks>
 internal static class FloorPlanBody
 {
@@ -313,16 +303,13 @@ internal static class FloorPlanBody
                     ["id"] = t.GetProperty("id").GetGuid(),
                     ["label"] = t.GetProperty("label").GetString(),
                     ["seats"] = t.GetProperty("seats").GetInt32(),
-                    ["x"] = t.GetProperty("x").GetInt32(),
-                    ["y"] = t.GetProperty("y").GetInt32(),
-                    ["width"] = t.GetProperty("width").GetInt32(),
-                    ["height"] = t.GetProperty("height").GetInt32(),
-                    ["rotationDegrees"] = t.GetProperty("rotationDegrees").GetDouble(),
-                    ["shape"] = t.GetProperty("shape").GetInt32(),
                     ["floorAreaName"] = t.TryGetProperty("floorAreaId", out var area) && area.ValueKind == JsonValueKind.String
                         ? areaNames[area.GetGuid()]
                         : null,
                     ["isBookable"] = t.GetProperty("isBookable").GetBoolean(),
+                    ["photoId"] = Nullable(t, "photoId", p => p.GetGuid()),
+                    ["photoX"] = Nullable(t, "photoX", p => p.GetDouble()),
+                    ["photoY"] = Nullable(t, "photoY", p => p.GetDouble()),
                 };
 
                 eachTable?.Invoke(table);
@@ -333,18 +320,20 @@ internal static class FloorPlanBody
 
         return new Dictionary<string, object?>
         {
-            ["floorWidth"] = plan.GetProperty("floorWidth").GetInt32(),
-            ["floorHeight"] = plan.GetProperty("floorHeight").GetInt32(),
             ["areas"] = plan.GetProperty("areas").EnumerateArray()
                 .Select(a => new Dictionary<string, object?>
                 {
                     ["id"] = a.GetProperty("id").GetGuid(),
                     ["name"] = a.GetProperty("name").GetString(),
                     ["displayOrder"] = a.GetProperty("displayOrder").GetInt32(),
+                    ["photoIds"] = a.GetProperty("photos").EnumerateArray().Select(p => p.GetProperty("photoId").GetGuid()).ToArray(),
                 })
                 .ToList(),
             ["tables"] = tables,
             ["expectedVersion"] = expectedVersion,
         };
     }
+
+    private static object? Nullable(JsonElement table, string name, Func<JsonElement, object> read) =>
+        table.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? read(value) : null;
 }

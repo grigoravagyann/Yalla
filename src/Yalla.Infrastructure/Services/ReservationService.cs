@@ -652,8 +652,12 @@ internal sealed class ReservationService(
                 command.LocalDate, command.LocalTime, TimeOnly.FromDateTime(localEnd));
         }
 
+        // A table with no pin on a room photo is not offered to diners - availability leaves it out -
+        // so a booking that names one anyway is refused as not bookable, the same answer a walk-in-only
+        // table gets. Every booking here is a diner's (RequireDiner above); staff seat such a table
+        // through the floor, not through this.
         var tableReason = ReservationRules.CheckTable(
-            table.Status, table.IsBookable, table.Seats, command.PartySize, policy);
+            table.Status, table.IsBookable && table.PhotoId is not null, table.Seats, command.PartySize, policy);
 
         switch (tableReason)
         {
