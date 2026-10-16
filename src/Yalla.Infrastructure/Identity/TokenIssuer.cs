@@ -58,10 +58,15 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     /// The refresh-token chain issued alongside, carried as <see cref="YallaClaims.RefreshChainId"/> so
     /// a password change can keep this sign-in and end every other.
     /// </param>
+    /// <param name="phoneProvedAtUtc">
+    /// When the phone was proved for this sign-in, carried as <see cref="YallaClaims.PhoneProvedAt"/>.
+    /// Passed by the code and Telegram sign-ins only; a refresh and a password sign-in leave it out.
+    /// </param>
     public (string Token, DateTime ExpiresAtUtc) IssueDinerToken(
         Guid dinerUserId,
         int sessionGeneration,
-        Guid? refreshChainId = null)
+        Guid? refreshChainId = null,
+        DateTime? phoneProvedAtUtc = null)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -76,6 +81,15 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         if (refreshChainId is { } chainId)
         {
             claims.Add(new Claim(YallaClaims.RefreshChainId, chainId.ToString()));
+        }
+
+        if (phoneProvedAtUtc is { } proved)
+        {
+            claims.Add(new Claim(
+                YallaClaims.PhoneProvedAt,
+                new DateTimeOffset(DateTime.SpecifyKind(proved, DateTimeKind.Utc)).ToUnixTimeSeconds()
+                    .ToString(CultureInfo.InvariantCulture),
+                ClaimValueTypes.Integer64));
         }
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);
@@ -133,12 +147,12 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     }
 
     /// <summary>
-    /// A token for an owner or manager in the admin panel.
+    /// A token for an owner, general manager or branch manager in the admin panel.
     /// </summary>
     /// <remarks>
-    /// Venue-scoped, not branch-scoped: this is the account that manages every branch. When such a
-    /// person carries a home branch it is included, so branch-scoped endpoints work for them
-    /// without a second sign-in.
+    /// Carries the venue, and the branch exactly when the stored row names one. A general manager's
+    /// row never does, so their token is venue-wide; a branch manager's always does, so theirs names
+    /// the one branch <c>BranchScoped</c> lets them act on. An owner's normally names none.
     /// </remarks>
     public (string Token, DateTime ExpiresAtUtc) IssueVenueUserToken(
         Guid staffMemberId,

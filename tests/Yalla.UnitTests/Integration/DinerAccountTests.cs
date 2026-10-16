@@ -416,9 +416,12 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
             await again.PutAsJsonAsync("/api/diner/me/password", new { currentPassword = "wrong", newPassword = replacement }),
             HttpStatusCode.Unauthorized, "invalid-credentials");
 
+        // Left out, from a password sign-in - which proved nothing about the phone - it is a missing
+        // field rather than a wrong credential. (A code sign-in in the last ten minutes may leave it
+        // out: DinerPasswordAfterPhoneProofTests.)
         await AssertProblemAsync(
             await again.PutAsJsonAsync("/api/diner/me/password", new { newPassword = replacement }),
-            HttpStatusCode.Unauthorized, "invalid-credentials");
+            HttpStatusCode.UnprocessableEntity, "validation-failed", field: "currentPassword");
 
         // The new one is under the same rule as registration.
         await AssertProblemAsync(

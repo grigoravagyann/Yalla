@@ -30,25 +30,38 @@ public interface IDinerProfileService
     /// An account the code flow created has no password and sets one without proving anything
     /// further - the bearer token is the proof, so that token's session generation must still be
     /// the account's, read from the row rather than trusted from a cache. An account that has one
-    /// must send it.
+    /// must send it - <b>unless</b> the token was minted by a phone proof (a code or the Telegram
+    /// claim) within the last ten minutes, which is how a diner who forgot it sets a new one.
     /// </remarks>
-    /// <param name="currentPassword">Required when the account has a password.</param>
+    /// <param name="currentPassword">
+    /// Required when the account has a password and the session has no recent phone proof. When sent,
+    /// it must be right.
+    /// </param>
     /// <param name="newPassword">The new one, under registration's rule.</param>
     /// <param name="tokenSessionGeneration">The <c>sgen</c> claim of the token the request carried.</param>
     /// <param name="tokenRefreshChainId">
     /// The <c>rch</c> claim of the token the request carried: the one sign-in whose refresh tokens are
     /// kept. Null (a token minted before the claim) keeps none, so that device signs in again too.
     /// </param>
+    /// <param name="tokenPhoneProvedAtUtc">
+    /// The <c>phone_proved_at</c> claim of the token the request carried, or null when it has none.
+    /// </param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <exception cref="Domain.Identity.AuthenticationFailedException">
-    /// <c>invalid-credentials</c>: the current password was wrong, or was needed and not sent.
-    /// <c>session-revoked</c>: a first password from a token whose session has ended.
+    /// <c>invalid-credentials</c>: the current password was sent and is wrong.
+    /// <c>session-revoked</c>: a first password, or one set on a phone proof, from a token whose
+    /// session has ended.
+    /// </exception>
+    /// <exception cref="Domain.FieldValidationException">
+    /// <c>currentPassword</c>: needed and not sent - the account has a password and this session's
+    /// phone proof is missing or older than ten minutes.
     /// </exception>
     Task SetPasswordAsync(
         string? currentPassword,
         string newPassword,
         int tokenSessionGeneration,
         Guid? tokenRefreshChainId,
+        DateTime? tokenPhoneProvedAtUtc,
         CancellationToken cancellationToken = default);
 
     /// <summary>
