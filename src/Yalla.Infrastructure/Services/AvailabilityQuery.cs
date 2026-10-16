@@ -119,9 +119,16 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 OpeningHours = b.OpeningHours.Where(h => relevantDays.Contains(h.Day)).ToList(),
                 // Pinned tables only. A diner books by tapping a table's pin on a room photo, so a
                 // table with no pin has nowhere to be tapped and is not offered - however bookable
-                // it is. Staff still seat it; that is the floor read, not this one.
+                // it is. Staff still seat it; that is the floor read, not this one. And the pin must
+                // be on a photo of the table's own room: the rooms read draws a table on its room's
+                // photos, so a pin left on another room's picture is a pin nobody can see, and a
+                // table offered here that the room view never shows.
                 Tables = b.DiningTables
-                    .Where(t => t.IsActive && t.PhotoId != null && t.PhotoX != null && t.PhotoY != null)
+                    .Where(t => t.IsActive
+                                && t.PhotoId != null
+                                && t.PhotoX != null
+                                && t.PhotoY != null
+                                && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId))
                     .Select(t => new AvailabilityTableRow
                     {
                         TableId = t.Id,

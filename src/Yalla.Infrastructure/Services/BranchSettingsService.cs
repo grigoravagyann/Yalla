@@ -359,6 +359,10 @@ internal sealed class BranchSettingsService(
             errors.Add($"Tables reference areas that are not in the plan: {string.Join(", ", unknownAreas)}.");
         }
 
+        // Which stored room each entry is, decided once for the whole plan - so the photo and pin
+        // rules below and the writes after them agree on it.
+        var storedAreas = MatchAreas(areasInput, branch.FloorAreas, errors);
+
         // Thrown here rather than with the rest below: the photo and pin rules that follow find a
         // table's room by name, which only means something once the names are unique and known.
         if (errors.Count > 0)
@@ -394,10 +398,10 @@ internal sealed class BranchSettingsService(
         var keptAreaIds = new HashSet<Guid>();
         var photosByArea = new Dictionary<Guid, HashSet<Guid>>();
 
-        foreach (var input in areasInput)
+        for (var index = 0; index < areasInput.Count; index++)
         {
-            var area = (input.Id is { } id ? branch.FloorAreas.FirstOrDefault(a => a.Id == id) : null)
-                       ?? branch.FloorAreas.FirstOrDefault(a => string.Equals(a.Name, input.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+            var input = areasInput[index];
+            var area = storedAreas[index];
 
             if (area is null)
             {
@@ -808,6 +812,71 @@ internal sealed class BranchSettingsService(
         }
 
         return -1;
+    }
+
+    /// <summary>
+    /// The stored room each entry in the plan is, or null for a new one: by id first, for every
+    /// entry, and only then by name among the rooms no id claimed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The order is the point. Matching entry by entry, id-then-name, let a name reach a room before
+    /// its own id did: rename Hall to Lounge and add a new Hall in one save, the new Hall listed
+    /// first, and the new Hall took the stored room by name, Lounge took it again by id, the new
+    /// room was never created and its photos and pins landed on a room that did not show them.
+    /// </para>
+    /// <para>
+    /// A name that matches only a room an id claimed is a new room - the entry holding that id
+    /// renamed it, since two entries cannot share a name. An id claimed by two entries has no honest
+    /// reading, and is refused naming both, the way a table matched twice is.
+    /// </para>
+    /// </remarks>
+    private static FloorArea?[] MatchAreas(
+        IReadOnlyList<FloorAreaInput> areas,
+        IReadOnlyCollection<FloorArea> stored,
+        List<string> errors)
+    {
+        var matched = new FloorArea?[areas.Count];
+        var claimedBy = new Dictionary<Guid, int>();
+
+        for (var i = 0; i < areas.Count; i++)
+        {
+            if (areas[i].Id is not { } id || stored.FirstOrDefault(a => a.Id == id) is not { } area)
+            {
+                continue;
+            }
+
+            if (claimedBy.TryGetValue(area.Id, out var first))
+            {
+                errors.Add(
+                    $"Room {area.Name} is matched by more than one entry in the plan: "
+                    + $"{areas[first].Name.Trim()} and {areas[i].Name.Trim()}.");
+                continue;
+            }
+
+            claimedBy[area.Id] = i;
+            matched[i] = area;
+        }
+
+        for (var i = 0; i < areas.Count; i++)
+        {
+            if (matched[i] is not null || (areas[i].Id is { } id && claimedBy.ContainsKey(id)))
+            {
+                continue;
+            }
+
+            var name = areas[i].Name.Trim();
+            var area = stored.FirstOrDefault(a => !claimedBy.ContainsKey(a.Id)
+                                                  && string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+
+            if (area is not null)
+            {
+                claimedBy[area.Id] = i;
+                matched[i] = area;
+            }
+        }
+
+        return matched;
     }
 
     // ------------------------------------------------------------ areas and tables

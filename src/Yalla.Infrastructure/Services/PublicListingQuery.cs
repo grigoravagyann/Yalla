@@ -471,7 +471,12 @@ internal sealed class PublicListingQuery(
                         && t.IsActive
                         && t.PhotoId != null
                         && t.PhotoX != null
-                        && t.PhotoY != null)
+                        && t.PhotoY != null
+
+                        // On a photo of its own room. A pin left on another room's picture would
+                        // draw the table in the wrong room; availability and the booking apply the
+                        // same rule, so what is drawn here is what can be booked.
+                        && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId))
             .OrderBy(t => t.Label)
             .Select(t => new
             {

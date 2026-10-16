@@ -458,7 +458,10 @@ internal sealed class PublicVenueQuery(
 
                 // Offered to a diner only with a pin: a table nobody can tap on a room photo is not
                 // bookable from here, whatever the venue set - the booking service refuses it too.
-                t.IsBookable && t.PhotoId != null,
+                // The pin counts only on a photo of the table's own room, as everywhere a diner books.
+                t.IsBookable
+                && t.PhotoId != null
+                && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId),
 
                 // IsFree, placeholder. Stitched on by the caller from a live read: the cached copy
                 // of this page must not carry a table's occupancy, or a shared link would freeze

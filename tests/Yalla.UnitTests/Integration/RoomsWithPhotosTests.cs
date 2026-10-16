@@ -331,6 +331,138 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
         Assert.Contains(floor.Tables, t => t.TableId == unpinned.Id && t.PhotoId == null);
     }
 
+    /// <summary>
+    /// A pin on a photo that is not one of the table's own room's is a pin nobody can tap: the rooms
+    /// read draws each table on its room's photos. Availability, the booking and the public page must
+    /// agree, or a diner is offered a table the room view never shows.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_table_pinned_on_another_rooms_photo_is_not_offered_to_diners()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+
+        // Terrace and its photo, and table 1 - still in Windows - pinned on it. The editor refuses
+        // this; a row written before that rule, or by hand, is what it guards against.
+        var terrace = new FloorArea(branch.BranchId, "Terrace", 1);
+        var terracePhoto = TestBranchBuilder.RoomPhoto(branch.BranchId);
+        db.FloorAreas.Add(terrace);
+        db.Photos.Add(terracePhoto);
+        db.FloorAreaPhotos.Add(new FloorAreaPhoto(terrace.Id, terracePhoto.Id, 0));
+        await db.SaveChangesAsync();
+
+        var stray = await db.DiningTables.SingleAsync(t => t.Id == branch.FirstTableId);
+        stray.PlaceOnPhoto(terracePhoto.Id, 0.5, 0.5);
+        await db.SaveChangesAsync();
+
+        var availability = await fixture.CreateAvailabilityQuery(db, clock)
+            .GetAvailabilityAsync(new AvailabilityRequest(branch.BranchId, 2, new DateOnly(2026, 9, 13), new TimeOnly(18, 0)));
+
+        Assert.NotNull(availability);
+        Assert.Contains(availability.Tables, t => t.TableId == branch.TableIds[1]);
+        Assert.DoesNotContain(availability.Tables, t => t.TableId == stray.Id);
+
+        var rooms = await new PublicListingQuery(db, new MemoryCache(new MemoryCacheOptions()), clock)
+            .GetRoomsAsync(branch.BranchId);
+
+        Assert.DoesNotContain(stray.Id, rooms.Rooms.SelectMany(r => r.Photos).SelectMany(p => p.Tables).Select(t => t.TableId));
+
+        var slugs = await db.Branches.Where(b => b.Id == branch.BranchId).Select(b => new { Venue = b.Venue.Slug, b.Slug }).SingleAsync();
+        var page = await SqlServerFixture.CreatePublicQuery(db, clock).GetBranchAsync(slugs.Venue, slugs.Slug);
+
+        Assert.False(page.FloorPlan.Tables.Single(t => t.Label == stray.Label).IsBookable);
+
+        await Assert.ThrowsAsync<TableNotBookableException>(() => fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(new CreateReservationCommand(
+                branch.BranchId,
+                stray.Id,
+                new DateOnly(2026, 9, 13),
+                new TimeOnly(18, 0),
+                2,
+                GuestName: "Ani Test",
+                GuestPhone: "+37411223344",
+                ClientCommandId: Guid.CreateVersion7())));
+    }
+
+    // ------------------------------------------------------------ matching rooms
+
+    /// <summary>
+    /// The editor renames Windows to Lounge and adds a new room called Windows in one save, the new
+    /// one listed first. The stored room is Lounge's by its id; a name match must not take it too.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_room_renamed_while_a_new_room_takes_its_old_name_becomes_two_rooms()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var second = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var windows = Assert.Single(before.Areas);
+        var first = Assert.Single(windows.Photos).PhotoId;
+
+        List<FloorAreaInput> areas =
+        [
+            new(null, "Windows", 0, [second]),
+            new(windows.Id, "Lounge", 1, [first]),
+        ];
+
+        // Every table stays in (the new) Windows, pinned on its photo.
+        var tables = Tables(before).Select(t => t with { FloorAreaName = "Windows", PhotoId = second }).ToList();
+
+        var saved = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(areas, tables, before.Version));
+
+        var lounge = Assert.Single(saved.Plan.Areas, a => a.Name == "Lounge");
+        var newWindows = Assert.Single(saved.Plan.Areas, a => a.Name == "Windows");
+        Assert.Equal(windows.Id, lounge.Id);
+        Assert.NotEqual(windows.Id, newWindows.Id);
+        Assert.Equal([first], lounge.Photos.Select(p => p.PhotoId));
+        Assert.Equal([second], newWindows.Photos.Select(p => p.PhotoId));
+        Assert.All(saved.Plan.Tables, t =>
+        {
+            Assert.Equal(newWindows.Id, t.FloorAreaId);
+            Assert.Equal(second, t.PhotoId);
+        });
+    }
+
+    [SkippableFact]
+    public async Task A_room_claimed_by_two_entries_is_refused_naming_it_and_nothing_changes()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var windows = Assert.Single(before.Areas);
+
+        List<FloorAreaInput> areas =
+        [
+            new(windows.Id, "Windows", 0, [.. windows.Photos.Select(p => p.PhotoId)]),
+            new(windows.Id, "Lounge", 1, []),
+        ];
+
+        var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
+            () => service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand(areas, Tables(before), before.Version)));
+
+        Assert.Contains(refused.Errors, e => e.Contains("Windows") && e.Contains("Lounge") && e.Contains("more than one"));
+
+        await AssertUnchangedAsync(clock, branch, before);
+    }
+
+    // ------------------------------------------------------------ a photo moving between rooms
+
+    // ------------------------------------------------------------ the version and the room routes
+
+    // ------------------------------------------------------------ the sweep racing a save
+
     // ------------------------------------------------------------ helpers
 
     /// <summary>The plan as the database holds it is still the plan the test loaded.</summary>
