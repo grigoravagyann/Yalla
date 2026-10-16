@@ -46,6 +46,8 @@ public sealed class PhotoOrientationTests : IDisposable
     [InlineData(8, 20, 40, Corner.BottomLeft, Corner.TopLeft)]
     [InlineData(5, 20, 40, Corner.TopLeft, Corner.BottomLeft)]
     [InlineData(2, 40, 20, Corner.TopRight, Corner.TopLeft)]
+    [InlineData(4, 40, 20, Corner.BottomLeft, Corner.BottomRight)]
+    [InlineData(7, 20, 40, Corner.BottomRight, Corner.TopRight)]
     public async Task A_photo_is_stored_upright_whatever_its_exif_orientation(
         int orientation, int width, int height, Corner red, Corner blue)
     {
