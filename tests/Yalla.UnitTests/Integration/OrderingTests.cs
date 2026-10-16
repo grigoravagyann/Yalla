@@ -973,6 +973,36 @@ public sealed class OrderingTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ helpers
 
+    // ------------------------------------------------------------ the clock does not gate a tab
+
+    /// <summary>
+    /// A seated party keeps ordering past closing time. The tab decides, not the opening hours.
+    /// </summary>
+    /// <remarks>
+    /// Pinned after QA 2026-10-16 (parity P3) asked whether an order at 01:35 on a branch whose
+    /// hours end at 01:00 should be refused. It should not: the tab was opened by a scan at the
+    /// table, so the party is physically there, and "last orders" is the staff's call - marking the
+    /// tab closing refuses every further order (<see cref="TabNotAcceptingOrdersException"/>). A
+    /// clock gate would instead refuse a real table over hours an owner mistyped, with the kitchen
+    /// still working. See docs/tabs.md, "Ordering after closing time".
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_seated_party_keeps_ordering_after_closing_time_because_the_tab_decides_not_the_clock()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        // Now is 22:00 in Yerevan; the branch's hours ended at noon.
+        var world = await ArrangeAsync(openingHours: [(new TimeOnly(9, 0), new TimeOnly(12, 0), false)]);
+        await using var db = world.Db;
+
+        var host = fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId));
+
+        var placed = await host.PlaceOrderAsync(new PlaceOrderCommand(
+            world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+
+        Assert.Equal(TabOrderStatus.New, placed.Status);
+    }
+
     private sealed record World(
         YallaDbContext Db,
         TestClock Clock,
@@ -983,11 +1013,12 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         Guid GuestId);
 
     /// <summary>A seated table with a tab, a host, one approved guest, and a menu.</summary>
-    private async Task<World> ArrangeAsync()
+    private async Task<World> ArrangeAsync(
+        IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null)
     {
         var clock = new TestClock(Now);
         var db = fixture.CreateContext(clock);
-        var branch = await TestBranchBuilder.CreateAsync(db);
+        var branch = await TestBranchBuilder.CreateAsync(db, openingHours: openingHours);
         var menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
 
         var qr = await db.DiningTables
