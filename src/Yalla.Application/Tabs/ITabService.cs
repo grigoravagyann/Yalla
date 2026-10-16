@@ -148,6 +148,24 @@ public interface ITabService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// <b>Staff.</b> Opens the tab on a seated table for a party that is not going to scan, or
+    /// answers with the tab already open there.
+    /// </summary>
+    /// <remarks>
+    /// Convergent like a scan: a table that already has a tab - a guest scanned first, or the
+    /// waiter tapped twice - gets that tab back rather than a second one. The tab has no
+    /// participants and no host until somebody scans; the first to scan becomes host. A table still
+    /// Occupied after its last bill was paid in full gets a new sitting for the same party.
+    /// </remarks>
+    /// <exception cref="Domain.Staff.StaffPermissionException">The caller is not staff.</exception>
+    /// <exception cref="KeyNotFoundException">No table in service with that id at that branch.</exception>
+    /// <exception cref="Domain.Tabs.TableNotSeatedException">Nobody is seated at the table.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">The table is out of service.</exception>
+    Task<TabStaffView> OpenForStaffAsync(
+        OpenTabForStaffCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// <b>Staff.</b> Moves the host role to another approved participant. The host left early or
     /// their phone died, and otherwise the tab is stuck.
     /// </summary>

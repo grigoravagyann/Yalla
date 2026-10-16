@@ -103,3 +103,21 @@ public sealed class ServiceRequestRateLimitedException(Guid tabId, int limit, in
 
     public int WindowMinutes { get; } = windowMinutes;
 }
+
+/// <summary>
+/// Staff asked to open a tab on a table nobody is sitting at.
+/// </summary>
+/// <remarks>
+/// A tab hangs off a sitting, and the sitting is what seating a party creates. Opening one on a
+/// free table would have to guess the party size and seat it in the same tap, which is the walk-in
+/// button's job - so the answer is to seat the party first, and the client says exactly that.
+/// </remarks>
+public sealed class TableNotSeatedException(Guid tableId, string tableLabel, TableStatus status)
+    : DomainStateException($"Nobody is seated at table {tableLabel}. Seat the party first, then open the tab.")
+{
+    public Guid TableId { get; } = tableId;
+
+    public string TableLabel { get; } = tableLabel;
+
+    public TableStatus Status { get; } = status;
+}

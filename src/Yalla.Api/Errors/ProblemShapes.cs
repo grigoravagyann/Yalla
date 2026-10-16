@@ -84,6 +84,18 @@ public sealed record TabNotAcceptingOrdersProblem : ProblemShape
     public required TabNotAcceptingOrdersContext Context { get; init; }
 }
 
+/// <summary>Nobody is seated at the table a tab was asked for.</summary>
+/// <param name="TableId">The table.</param>
+/// <param name="TableLabel">What staff call it.</param>
+/// <param name="Status">1 Free, 2 Held, 5 Out of service.</param>
+public sealed record TableNotSeatedContext(Guid TableId, string TableLabel, TableStatus Status);
+
+/// <summary><c>table-not-seated</c>, 409. Seat the party first, then open the tab.</summary>
+public sealed record TableNotSeatedProblem : ProblemShape
+{
+    public required TableNotSeatedContext Context { get; init; }
+}
+
 /// <summary>Removing this line would reverse money already taken.</summary>
 /// <param name="TabId">The tab.</param>
 /// <param name="LineId">The line.</param>

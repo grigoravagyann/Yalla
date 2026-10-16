@@ -81,7 +81,7 @@ public sealed record TabJoinTokenResult(
 /// <param name="SettlementMode">1 HostPaysEverything, 2 EveryonePaysOwnItems, 3 AnyonePaysAnyAmount.</param>
 /// <param name="SettlementModeLocked">True once a payment has landed; the split can no longer change.</param>
 /// <param name="HideTotalFromGuests">The table default for a joiner's <c>CanSeeTableTotal</c>.</param>
-/// <param name="HostParticipantId">Who hosts. Null only on a tab built by hand with no host.</param>
+/// <param name="HostParticipantId">Who hosts. Null on a tab staff opened that nobody has scanned onto yet.</param>
 /// <param name="OpenedAtUtc">When the tab opened.</param>
 /// <param name="ClosedAtUtc">When it closed, if it has.</param>
 /// <param name="Me">The caller's own participant row, with every flag and whether they may order right now.</param>

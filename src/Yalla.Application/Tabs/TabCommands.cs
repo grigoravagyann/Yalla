@@ -64,6 +64,22 @@ public sealed record OpenTabByBookingCommand(
     SettlementMode? SettlementMode = null,
     bool? HideTotalFromGuests = null);
 
+/// <summary>
+/// Staff open the tab on a seated table, for a party that is not going to scan - no phone, no
+/// wish to, or a waiter taking the order before anyone has.
+/// </summary>
+/// <remarks>
+/// The tab opens with <b>nobody on it</b>: the waiter is not a participant and there is no phone to
+/// host it. Staff key the orders in and take the money. Should somebody at the table scan later,
+/// the first of them becomes the host rather than waiting for an approval no one can give.
+/// </remarks>
+/// <param name="BranchId">The branch in the route, already checked against the caller's token.</param>
+/// <param name="TableId">The table.</param>
+/// <param name="ClientCommandId">
+/// Caller-generated. A double tap with the same id answers with the same tab.
+/// </param>
+public sealed record OpenTabForStaffCommand(Guid BranchId, Guid TableId, Guid ClientCommandId);
+
 /// <summary>Join an open tab with the invitation the host passed round.</summary>
 /// <param name="JoinToken">The token from the host's QR or share link. Thirty-minute lifetime.</param>
 /// <param name="DeviceId">The joining phone. Not an account.</param>

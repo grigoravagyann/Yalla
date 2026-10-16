@@ -183,6 +183,26 @@ host, and the approval is written to the ledger as `ParticipantApproved` so the 
 move. A booker already on that tab — matched by device or by their diner account, so a second phone or
 a reinstalled app counts — gets that same participant back, approved if it was still pending.
 
+### From staff: `POST /api/branches/{branchId}/tables/{tableId}/open-tab`
+
+For the walk-in with no phone, or who would rather not use one. The waiter seats the party, taps
+"Open tab", and keys the order in with `staff-orders`; cash closes it as usual. Staff-only
+(`WaiterOrAbove`, `BranchScoped` on the route's branch), online-only, and convergent like a scan: a
+table that already has a tab — a guest scanned first, or this is the second tap — answers with that
+tab, and a retry with the same `clientCommandId` answers with the same one.
+
+It needs a sitting. A free or held table is `409 table-not-seated`: seating is the walk-in button's
+job, and that is where the party size is asked. One exception: a table still **Occupied** with no
+sitting - the party paid in full, which closes the sitting but not the table, and is still there
+wanting more - gets a new sitting for the same party (its size carried over) and the new tab on that.
+The paid sitting stays closed, and the table's physical status does not change.
+
+The tab opens with **nobody on it and no host** — staff are not participants. So the join rule has one
+more case: **the first phone onto a tab with no host becomes its host**, approved on the spot, exactly
+as if it had scanned first; anyone after that joins pending as usual. Without this rule a scan would
+land pending on a tab nobody could ever approve. Two phones racing for the role meet on the tab's row
+version, and the loser comes back round the open loop as an ordinary guest.
+
 ## 3. Inviting others
 
 The host invites; nobody types a code.
