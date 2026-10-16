@@ -753,8 +753,11 @@ internal sealed class BranchSettingsService(
     /// client placing it there, and is refused; so is a photo that was never one of this branch's
     /// rooms.
     /// </para>
+    /// <para>
+    /// <c>previousPhotos</c> is, per plan room by index, what its stored room showed before this save
+    /// (nothing for a new room).
+    /// </para>
     /// </remarks>
-    /// <param name="previousPhotos">Per plan room, by index, the photos its stored room showed before this save.</param>
     /// <exception cref="FieldValidationException">A half pin, a coordinate outside 0-1, or a photo not the table's room's.</exception>
     private static (Guid? PhotoId, double? X, double? Y)[] PlanPins(
         IReadOnlyList<FloorTableInput> tables,
