@@ -34,8 +34,8 @@ billed here: the venue exists so a chain has one identity, one slug, and one pla
 
 ### Branch
 
-One physical location, and the operational and commercial unit of the whole system: a floor plan
-canvas, opening hours, a menu, a reservation policy, a time zone. `(VenueId, Slug)` is unique.
+One physical location, and the operational and commercial unit of the whole system: its rooms and
+tables, opening hours, a menu, a reservation policy, a time zone. `(VenueId, Slug)` is unique.
 **`ReservationPolicy`** is an owned entity stored as extra columns on the Branches row — every
 reservation rule (turn time, buffer, grace, lead time, booking window, cancellation deadline,
 auto-confirm, service charge, VAT, seat overhang, approval threshold) is a per-branch setting
@@ -97,28 +97,43 @@ marks a closing time after midnight (10:00–01:00); without it, a closing time 
 opening time is indistinguishable from bad data. Not unique per day, because a branch may close
 for the afternoon and reopen. This is the one child collection that cascades from its branch.
 
-### FloorArea and DiningTable
+### FloorArea, FloorAreaPhoto and DiningTable
 
-`FloorArea` is a named zone — Windows, Bar, Terrace. `DiningTable` (named that, not `Table`,
-which collides with too much persistence vocabulary) is one table positioned on the branch's
-canvas so the diner app can draw the room from above: `X`, `Y`, `Width`, `Height`,
-`RotationDegrees`, `Shape`, `Seats`. `(BranchId, Label)` is unique — table 7 exists once per
-branch. `QrToken` is a stable, unguessable, unique string: it is what a walk-in scans, so it must
-survive the table being renamed or moved.
+`FloorArea` is a **room** — Hall, Terrace, VIP. The table keeps the older name; the drawn floor plan
+it used to be a zone of is gone (`RoomsWithPhotos`), and a room is now what a diner picks before
+swiping through its photos. `Name`, `DisplayOrder`; Restrict from its branch.
+
+`FloorAreaPhoto` is one picture of a room, in order: `(FloorAreaId, PhotoId, Position)`, at most 10
+per room, `(FloorAreaId, PhotoId)` unique, `(FloorAreaId, Position)` indexed. Cascades from its room;
+Restrict to the photo, like every photo reference. A photo is in at most one room of its branch - the
+floor-plan save refuses the second - because a table is pinned on a photo and a photo in two rooms
+would put the table in both. The same shape as `BranchGalleryPhoto`, one level down.
+
+`DiningTable` (named that, not `Table`, which collides with too much persistence vocabulary) is one
+table: `Label`, `Seats`, `FloorAreaId` (its room, nullable), `IsBookable`, `IsActive`.
+`(BranchId, Label)` is unique — table 7 exists once per branch. `QrToken` is a stable, unguessable,
+unique string: it is what a walk-in scans, so it must survive the table being renamed, re-pinned or
+moved to another room. There is no geometry: `X`, `Y`, `Width`, `Height`, `RotationDegrees`, `Shape`
+and the branch's `FloorWidth`/`FloorHeight` were dropped by `RoomsWithPhotos`.
 
 `Status` (`Free | Held | Occupied | OutOfService`) holds only **physical** state — the states a
-person creates by doing something — and is a **denormalised cache** so the floor plan renders in
-one query rather than joining sessions and reservations for every square on the canvas. There is
+person creates by doing something — and is a **denormalised cache** so the floor renders in one
+query rather than joining sessions and reservations for every table. There is
 deliberately no `Reserved` member; see [Why `Reserved` and `Late` are derived, not
 stored](#why-reserved-and-late-are-derived-not-stored). `TableSession` is authoritative; when the two disagree, the cache is wrong and is to
 be recomputed. `CurrentSessionId` is a pointer, not a foreign key — `TableSession` already points
 at the table, and an opposing key would make the pair circular and uninsertable. `RowVersion`
 stops two waiters seating a walk-in on the same table at the same moment.
 
-`PhotoX` and `PhotoY` (nullable, 0–1, both or neither) place the table on the branch's **cover
-photo**, as fractions of its width and height, so the diner app can draw a marker on the picture of
-the room. Set per table through the floor-plan `PUT`; served on availability and on
-`GET /api/public/branches/{id}/table-markers`.
+**The pin**: `PhotoId` (nullable, Restrict to `Photos`), `PhotoX` and `PhotoY` (nullable, 0–1) - all
+three or none. `PhotoId` is one of the table's own room's photos, and the coordinates are fractions
+of that photo's width and height. A diner books by tapping a pin, so **a table with no pin is not
+offered to diners** (availability, the public rooms read, and the booking itself refuse it as not
+bookable); staff seat it like any other. Set through the floor-plan `PUT`; taken off when its photo
+leaves the room or the room is deleted. Served on availability, on the staff floor and on
+`GET /api/public/branches/{id}/rooms`. `RoomsWithPhotos` **cleared** every `PhotoX`/`PhotoY` that
+existed - they were places on the branch's cover photo, which is not a room photo - and kept every
+table.
 
 ### Reservation
 
@@ -225,8 +240,9 @@ constraint (`CK_Photos_OneOwner`) says so, and the owner is the first segment of
 (`{branchId}/…` or `diner-{id}/…`). Uniqueness on `(owner, ContentHash)` is two filtered indexes,
 one per kind of owner, because SQL Server treats two NULLs as equal in a unique index and an
 unfiltered one would let only one diner ever upload a given picture. Referenced by
-`MenuItems.PhotoId`, `Branches.CoverPhotoId`, `BranchGalleryPhotos.PhotoId` and
-`DinerUsers.PhotoId`; a row none of the four points at is deleted, files included, a day after upload.
+`MenuItems.PhotoId`, `Branches.CoverPhotoId`, `BranchGalleryPhotos.PhotoId`, `FloorAreaPhotos.PhotoId`,
+`DiningTables.PhotoId` and `DinerUsers.PhotoId`; a row none of the six points at is deleted, files
+included, a day after upload.
 
 ### StaffMember
 

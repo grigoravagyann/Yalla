@@ -23,8 +23,8 @@ just an owner staring at "something is wrong" over a form with fourteen inputs.
 
 ## 2. The shape
 
-Modelled on the floor plan's `tablesOutsideCanvas` / `duplicateLabels`, which already did this
-correctly.
+Modelled on the floor plan's `duplicateLabels` (and the `tablesOutsideCanvas` it had while there was
+a drawn canvas), which already did this correctly.
 
 `FieldValidationException` (domain) → **HTTP 422**, code `validation-failed`.
 
@@ -94,7 +94,7 @@ reported more than one problem out of six.
 
 | Endpoint | Context |
 | --- | --- |
-| `PUT /api/branches/{branchId}/floor-plan` | `tablesOutsideCanvas`, `duplicateLabels`, `errors` — `floor-plan-invalid` / 422 |
+| `PUT /api/branches/{branchId}/floor-plan` | `duplicateLabels`, `errors` — `floor-plan-invalid` / 422. The photo and pin rules (rooms with photos) answer `validation-failed` naming `areas[i].photoIds[j]` and `tables[i].photoId`/`photoX`/`photoY` |
 
 A plan that removes an area while a table still names it is refused the same way; the table and the
 area are named in `errors` as `label -> area`, and nothing is written. Moving the tables to no area in
@@ -112,7 +112,7 @@ change in one place gave `context.field` to every endpoint whose refusals come o
 including:
 
 - `POST/PATCH /api/platform/venues` and `/api/platform/branches` — `name`, `slug`, `address`,
-  `latitude`, `longitude`, `timeZoneId`, `floorWidth`, `floorHeight`
+  `latitude`, `longitude`, `timeZoneId`
 - `POST /api/branches/{branchId}/menu/categories/{categoryId}/items` and the item patch —
   `name`, `priceAmd`, `photoId`, `prepMinutes`, `ingredients`, `allergens`, `portionSize`,
   `description`, `displayOrder`

@@ -45,10 +45,10 @@ hundred a minute for every phone in the city. A 429 there is the no-restaurants 
 
 `GET /api/public/branches` · `GET /api/public/branches/search?q=&category=&lat=&lng=` ·
 `GET /api/public/branches/{branchId}` · `GET /api/public/branches/{branchId}/reviews?page=` ·
-`GET /api/public/branches/{branchId}/table-markers`
+`GET /api/public/branches/{branchId}/rooms`
 
 Branch-first rather than venue-first, because the app's place *is* a branch: Explore, search, the
-map, the details screen and the photo table view all key on the branch id the booking flow takes.
+map, the details screen and the rooms screen all key on the branch id the booking flow takes.
 The list and search return `PublicBranchListing`; the details route returns `PublicBranchDetail`,
 whose `listing` is that same card. `/api/public/venues` is unchanged for the web chooser.
 
@@ -64,11 +64,13 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
   unchanged is not a move.
 - **Distance** is computed server-side only when the caller sends `lat` and `lng` together, and then
   orders the list nearest first. Without a position the list is best rated first.
-- **Table markers** are tables a manager placed on the cover photo (through
-  `PUT /api/branches/{id}/table-photo-positions`), each with the derived `state` the staff floor shows. Tables not placed are simply absent, and
-  a branch with no cover has none. The positions are fractions of that one picture, so saving the
-  public profile with a **different** cover (or none) takes every table off the photo in the same save;
-  re-saving the same cover keeps them.
+- **Rooms** (`GET /api/public/branches/{id}/rooms`, and `rooms` on the details route) are the branch's
+  rooms, lowest `displayOrder` first, each with its photos in the venue's order and, on each photo, the
+  active tables a manager pinned there - `photoX`/`photoY` as fractions of that photo - with the derived
+  `state` the staff floor shows. A room with no photo is not listed. **A table with no pin is not on
+  any photo and is not offered to diners**: availability leaves it out and a booking naming it is
+  refused as not bookable. Pins are set through the rooms editor (`PUT /api/branches/{id}/floor-plan`).
+  The cover photo is the card's picture only; changing it moves no pin.
 - **Caching**: the list and search hold the estate and every live number for fifteen seconds; the id
   routes check their branch live, so a suspended venue is a 404 at once. The reviews route and the
   details route read the review aggregate live, since they are the screens somebody opens right after
@@ -236,7 +238,8 @@ Seeded branch, phone published and bookings switched on. Regenerate with
 `PublicBranchPageShapeTests`, which prints this and fails if a key is renamed or dropped -
 the mapper that started this whole exercise was written against a guess, and this is the antidote.
 
-Opening hours trimmed to two days and the floor plan to two tables; nothing else is elided.
+Opening hours trimmed to two days and the rooms to one room of one photo and two tables; nothing
+else is elided.
 
 ```json
 {
@@ -268,41 +271,41 @@ Opening hours trimmed to two days and the floor plan to two tables; nothing else
   "freeTableCount": 2,
   "tableCount": 2,
   "floorPlan": {
-    "floorWidth": 1000,
-    "floorHeight": 700,
     "areas": [
       {
         "id": "01a078ec-fcbf-7c91-b1dd-ab63ddd9cdf9",
         "name": "Windows",
-        "displayOrder": 0
+        "displayOrder": 0,
+        "photos": [
+          {
+            "photoId": "01a078ec-fcc0-7a52-8d0e-3c2f4c1b9a77",
+            "thumbnailUrl": "https://cdn.example.test/room.jpg",
+            "cardUrl": "https://cdn.example.test/room.jpg",
+            "fullUrl": "https://cdn.example.test/room.jpg"
+          }
+        ]
       }
     ],
     "tables": [
       {
         "label": "1",
         "seats": 4,
-        "x": 50,
-        "y": 100,
-        "width": 90,
-        "height": 90,
-        "rotationDegrees": 0,
-        "shape": 2,
         "areaName": "Windows",
         "isBookable": true,
-        "isFree": true
+        "isFree": true,
+        "photoId": "01a078ec-fcc0-7a52-8d0e-3c2f4c1b9a77",
+        "photoX": 0.05,
+        "photoY": 0.5
       },
       {
         "label": "2",
         "seats": 4,
-        "x": 100,
-        "y": 100,
-        "width": 90,
-        "height": 90,
-        "rotationDegrees": 0,
-        "shape": 2,
         "areaName": "Windows",
         "isBookable": true,
-        "isFree": true
+        "isFree": true,
+        "photoId": "01a078ec-fcc0-7a52-8d0e-3c2f4c1b9a77",
+        "photoX": 0.14,
+        "photoY": 0.5
       }
     ]
   },
@@ -320,7 +323,7 @@ Opening hours trimmed to two days and the floor plan to two tables; nothing else
 
 Notes for a mapper:
 
-- `venueType` (1 Cafe, 2 Restaurant), `shape` and `day` are **integers**, not strings. The whole API serialises
+- `venueType` (1 Cafe, 2 Restaurant) and `day` are **integers**, not strings. The whole API serialises
   enums as numbers on purpose - see `docs/openapi.md` - and the schema carries `x-enum-varnames`
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.
@@ -338,6 +341,11 @@ Notes for a mapper:
   to a walk-in, who is who the live count is for.
 - There is no `qrToken` on a public table and there never will be: it is the credential that opens
   a tab.
+- A table's pin - `photoId`, `photoX`, `photoY` - is absent when it has none, and `isBookable` is false
+  for such a table whatever the venue set: a diner is only offered a table pinned on a room photo.
+  Every active table is still listed, pinned or not, so the counts above stay out of the whole branch.
+- There is no drawn floor plan any more - no canvas, no `x`/`y`/`width`/`height`/`rotationDegrees`/
+  `shape`. A room is its photos and the pins on them.
 
 ---
 
@@ -423,7 +431,7 @@ Chained, so a request passes every one that applies to it:
 | Public branch ceiling | One branch, whoever is asking | 300 / min |
 | Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
 | Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
-| Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/table-markers` - replaces the page budget there; the branch ceiling still applies | 120 / min |
+| Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/rooms` - replaces the page budget there; the branch ceiling still applies | 120 / min |
 | Public booking | Manage token (digest) | 20 / min |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
