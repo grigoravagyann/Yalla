@@ -459,6 +459,41 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ a photo moving between rooms
 
+    /// <summary>
+    /// A photo moves from Windows to a new Terrace; the tables staying in Windows still send the pin
+    /// they loaded. That is the manager's decision about the photo, the same as removing it - so the
+    /// pins come off with a warning rather than the whole save being refused.
+    /// </summary>
+    [SkippableFact]
+    public async Task Moving_a_photo_to_another_room_takes_off_the_pins_of_tables_that_stay_and_says_so()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var photo = Assert.Single(before.Areas[0].Photos).PhotoId;
+
+        var areas = Areas(before);
+        areas[0] = areas[0] with { PhotoIds = [] };
+        areas.Add(new FloorAreaInput(null, "Terrace", 1, [photo]));
+
+        var result = await service.ReplaceFloorPlanAsync(
+            branch.BranchId, new ReplaceFloorPlanCommand(areas, Tables(before), before.Version));
+
+        Assert.All(result.Plan.Tables, t =>
+        {
+            Assert.Null(t.PhotoId);
+            Assert.Null(t.PhotoX);
+            Assert.Null(t.PhotoY);
+        });
+
+        Assert.Contains(result.Warnings, w => w.Contains(before.Tables[0].Label) && w.Contains("taken off") && w.Contains("another room"));
+        Assert.Equal([photo], result.Plan.Areas.Single(a => a.Name == "Terrace").Photos.Select(p => p.PhotoId));
+    }
+
     // ------------------------------------------------------------ the version and the room routes
 
     // ------------------------------------------------------------ the sweep racing a save

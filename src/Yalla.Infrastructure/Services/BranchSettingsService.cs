@@ -378,7 +378,12 @@ internal sealed class BranchSettingsService(
             .Select(p => p.PhotoId)
             .ToHashSet();
 
-        var pins = PlanPins(tablesInput, areasInput, photoRoom, currentRoomPhotos);
+        // What each room in the plan showed before this save: none for a new one.
+        var previousPhotos = storedAreas
+            .Select(a => (IReadOnlySet<Guid>)(a?.Photos.Select(p => p.PhotoId).ToHashSet() ?? []))
+            .ToList();
+
+        var pins = PlanPins(tablesInput, areasInput, photoRoom, previousPhotos, currentRoomPhotos);
 
         // Refused the way the gallery refuses one: a photo uploaded for another branch is simply not
         // found here. Pins need no check of their own - each was just held to its room's photos.
@@ -629,9 +634,20 @@ internal sealed class BranchSettingsService(
 
         var warnings = validation.Warnings.ToList();
 
-        var unpinnedByRemoval = tablesInput
+        // Every pin the client sent that PlanPins took off rather than refused: on a photo the plan
+        // dropped from every room, or moved out of the table's room.
+        var unpinned = tablesInput
             .Select((input, index) => (input, index))
             .Where(x => x.input.PhotoId is not null && pins[x.index].PhotoId is null)
+            .ToList();
+
+        var unpinnedByRemoval = unpinned
+            .Where(x => !photoRoom.ContainsKey(x.input.PhotoId!.Value))
+            .Select(x => x.input.Label.Trim())
+            .ToList();
+
+        var unpinnedByMove = unpinned
+            .Where(x => photoRoom.ContainsKey(x.input.PhotoId!.Value))
             .Select(x => x.input.Label.Trim())
             .ToList();
 
@@ -639,6 +655,12 @@ internal sealed class BranchSettingsService(
         {
             warnings.Add(
                 $"Table(s) {string.Join(", ", unpinnedByRemoval)} were taken off photos this plan removed from every room.");
+        }
+
+        if (unpinnedByMove.Count > 0)
+        {
+            warnings.Add(
+                $"Table(s) {string.Join(", ", unpinnedByMove)} were taken off photos this plan moved to another room.");
         }
 
         logger.LogInformation(
@@ -725,17 +747,26 @@ internal sealed class BranchSettingsService(
     /// diner finds in the wrong room.
     /// </para>
     /// <para>
-    /// <b>A pin on a photo this plan drops from every room is taken off, not refused.</b> Removing a
-    /// picture is the manager's decision about the room; an editor that still sends the pins it
-    /// loaded must not turn that into an error the manager cannot see the cause of. A photo that was
-    /// never one of this branch's rooms is a mistake, and is refused.
+    /// <b>A pin the save's own photo changes invalidate is taken off, not refused</b>, with a warning:
+    /// on a photo this plan drops from every room, or on one it moves out of the table's room (the
+    /// photo was the room's before this save and is another room's after it). Removing or moving a
+    /// picture is the manager's decision about the rooms; an editor that still sends the pins it
+    /// loaded must not turn that into an error the manager cannot see the cause of - and removing and
+    /// moving must answer the same way, or the same intent is a warning one way and a 422 the other.
+    /// </para>
+    /// <para>
+    /// A pin on another room's photo that was <b>not</b> the table's room's before either is the
+    /// client placing it there, and is refused; so is a photo that was never one of this branch's
+    /// rooms.
     /// </para>
     /// </remarks>
+    /// <param name="previousPhotos">Per plan room, by index, the photos its stored room showed before this save.</param>
     /// <exception cref="FieldValidationException">A half pin, a coordinate outside 0-1, or a photo not the table's room's.</exception>
     private static (Guid? PhotoId, double? X, double? Y)[] PlanPins(
         IReadOnlyList<FloorTableInput> tables,
         IReadOnlyList<FloorAreaInput> areas,
         IReadOnlyDictionary<Guid, int> photoRoom,
+        IReadOnlyList<IReadOnlySet<Guid>> previousPhotos,
         IReadOnlySet<Guid> currentRoomPhotos)
     {
         var violations = new List<FieldViolation>();
@@ -771,6 +802,11 @@ internal sealed class BranchSettingsService(
                 if (photoIn == room)
                 {
                     pins[i] = pin;
+                }
+                else if (room >= 0 && previousPhotos[room].Contains(photoId))
+                {
+                    // The photo was this table's room's and the save moved it away.
+                    pins[i] = (null, null, null);
                 }
                 else
                 {
