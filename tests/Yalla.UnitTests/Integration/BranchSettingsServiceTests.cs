@@ -401,6 +401,96 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// Renumber table 1 to 13 and add a new table 1 in the same save. The new entry is listed first
+    /// on purpose: matched entry by entry, its label reached the stored table 1 before table 1's
+    /// own id did, and the save was refused as "matched by more than one entry".
+    /// </summary>
+    [SkippableFact]
+    public async Task Renaming_a_table_and_adding_a_new_one_under_its_old_label_in_one_save_keeps_both()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var before = await service.GetFloorPlanAsync(branch.BranchId);
+        var renamed = before.Tables.Single(t => t.Label == "1");
+
+        var tables = before.Tables.Select(Input).ToList();
+        tables[tables.FindIndex(t => t.Id == renamed.Id)] = Input(renamed) with { Label = "13" };
+        tables.Insert(0, new FloorTableInput(null, "1", 2));
+
+        var result = await service.ReplaceFloorPlanAsync(
+            branch.BranchId, new ReplaceFloorPlanCommand([], tables, before.Version));
+
+        // 13 is the old table 1: its id, so its QR code and its history.
+        var kept = result.Plan.Tables.Single(t => t.Id == renamed.Id);
+        Assert.Equal("13", kept.Label);
+        Assert.Equal(renamed.QrToken, kept.QrToken);
+
+        // And 1 is a table that did not exist before.
+        var added = result.Plan.Tables.Single(t => t.Label == "1");
+        Assert.DoesNotContain(before.Tables, t => t.Id == added.Id);
+        Assert.Equal(4, result.Plan.Tables.Count);
+    }
+
+    /// <summary>
+    /// A new entry carrying an out-of-service table's label used to match that table by label and
+    /// bring it back - old QR code, old history - when the editor meant a new table. Putting a
+    /// table back is the console's own action, and it sends the table's id; a label alone is refused.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_new_table_under_an_out_of_service_tables_label_is_refused_and_putting_it_back_by_id_works()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var usedTableId = branch.TableIds[0];
+
+        var session = TableSession.SeatWalkIn(branch.BranchId, usedTableId, 2, Now.AddDays(-1), branch.WaiterId);
+        session.Close(Now.AddDays(-1).AddHours(1));
+        db.TableSessions.Add(session);
+        await db.SaveChangesAsync();
+
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        var plan = await service.GetFloorPlanAsync(branch.BranchId);
+        var old = plan.Tables.Single(t => t.Id == usedTableId);
+
+        // Take table 1 out of the plan: it has history, so it is deactivated.
+        var active = plan.Tables.Where(t => t.Id != usedTableId).Select(Input).ToList();
+        var dropped = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], active, plan.Version));
+
+        // A new table 1, no id.
+        var refused = await Assert.ThrowsAsync<FloorPlanInvalidException>(
+            () => service.ReplaceFloorPlanAsync(
+                branch.BranchId,
+                new ReplaceFloorPlanCommand([], [.. active, new FloorTableInput(null, "1", 2)], dropped.Plan.Version)));
+
+        Assert.Contains(
+            "Table 1 is out of service. Put it back instead of adding a new table with the same label.",
+            refused.Errors);
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            var row = await verify.DiningTables.AsNoTracking().FirstAsync(t => t.Id == usedTableId);
+            Assert.False(row.IsActive);
+        }
+
+        // The put-back path: the inactive table's own id.
+        var restored = await service.ReplaceFloorPlanAsync(
+            branch.BranchId,
+            new ReplaceFloorPlanCommand([], [.. active, Input(old)], dropped.Plan.Version));
+
+        var back = restored.Plan.Tables.Single(t => t.Id == usedTableId);
+        Assert.True(back.IsActive);
+        Assert.Equal(old.QrToken, back.QrToken);
+    }
+
+    /// <summary>
     /// Renumbering a room swaps labels between existing tables. It is a legal plan, and one a
     /// single pass cannot write - the unique index is checked per statement.
     /// </summary>

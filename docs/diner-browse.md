@@ -633,13 +633,12 @@ Inactive tables included. Null fields are omitted.
 `{ areas: [ { id?, name, displayOrder, photoIds?: [uuid] } ], tables: [ { id?, label, seats,
 floorAreaName?, isBookable, photoId?, photoX?, photoY? } ], expectedVersion }`. Replace-whole: rooms,
 their photos (in the order sent; null or absent = none) and every pin. Kept: the branch lock, `version`
-/ `409 floor-plan-changed`, matching tables by id then label, history-aware delete vs deactivate,
-staging labels, QR tokens never changed. 200 → `FloorPlanReplaceResult { plan, warnings,
-deactivatedTables, removedTables }`.
+/ `409 floor-plan-changed`, history-aware delete vs deactivate, staging labels, QR tokens never
+changed. 200 → `FloorPlanReplaceResult { plan, warnings, deactivatedTables, removedTables }`.
 
 | Rule | Answer (nothing written) |
 | --- | --- |
-| Missing/repeated table label, missing/repeated room name, unknown `floorAreaName`, table matched twice, room `id` sent by two entries, omitted occupied table, label clash with a deactivated table | 422 `floor-plan-invalid`, `context.errors[]`, `context.duplicateLabels[]` (`tablesOutsideCanvas` is gone) |
+| Missing/repeated table label, missing/repeated room name, unknown `floorAreaName`, table or room `id` sent by two entries, omitted occupied table, a label held by an inactive table or by one this save deactivates | 422 `floor-plan-invalid`, `context.errors[]`, `context.duplicateLabels[]` (`tablesOutsideCanvas` is gone) |
 | More than 10 photos in a room | 422 `validation-failed`, field `areas[i].photoIds`, bound `max`, `max` 10 |
 | A photo twice in one room, or in a second room | 422, field `areas[i].photoIds[j]`, bound `conflict` |
 | An empty photo id | 422, field `areas[i].photoIds[j]`, bound `required` |
@@ -652,6 +651,15 @@ deactivatedTables, removedTables }`.
 **Matching rooms:** every entry's `id` is matched to a stored room first; only then are names matched,
 and only against rooms no `id` claimed. So renaming Hall to Lounge and adding a new Hall in one save
 makes two rooms, in either order. An `id` this branch does not have is matched by name, else new.
+
+**Matching tables:** the same order - every entry's `id` first (active or inactive), then labels,
+and only against **active** tables no `id` claimed. Renumbering 5 to 13 and adding a new 5 in one save
+keeps 13's id, QR code and history and creates a new 5; swapping 5 and 13 still works (every renamed
+table is parked on a staging label first). A label is never matched to an inactive table: a new entry
+with an inactive table's label is 422 `floor-plan-invalid`, "Table 5 is out of service. Put it back
+instead of adding a new table with the same label." - putting it back means sending its `id`. Renaming
+another table onto it gets "Table 5 is out of service and keeps its label. Put it back, or give table
+13 another label."
 
 **Taken off, not refused:** a pin on a photo the save drops from every room comes off (the table is
 saved unpinned, and `warnings` says so); so does a pin on a photo the save **moves out of the table's

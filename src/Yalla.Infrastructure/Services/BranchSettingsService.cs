@@ -442,59 +442,32 @@ internal sealed class BranchSettingsService(
             }
         }
 
-        // ---- tables: match by id, then by label; anything else is new.
+        // ---- tables: by id for every entry, then by label among the active tables no id claimed.
         var existingTables = branch.DiningTables.ToList();
-        var matched = new HashSet<Guid>();
+        var storedTables = MatchTables(tablesInput, existingTables, errors);
+        var matched = storedTables.OfType<DiningTable>().Select(t => t.Id).ToHashSet();
         var newTables = new List<(int Index, FloorTableInput Input)>();
         var updatedTables = new List<(int Index, FloorTableInput Input, DiningTable Table)>();
 
         for (var index = 0; index < tablesInput.Count; index++)
         {
-            var input = tablesInput[index];
-            var label = input.Label.Trim();
-
-            var table = (input.Id is { } id ? existingTables.FirstOrDefault(t => t.Id == id) : null)
-                        ?? existingTables.FirstOrDefault(t => string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
-
-            if (table is not null && !matched.Add(table.Id))
+            if (storedTables[index] is { } table)
             {
-                errors.Add($"Table {label} is matched by more than one entry in the plan.");
-                continue;
-            }
-
-            if (table is null)
-            {
-                newTables.Add((index, input));
+                updatedTables.Add((index, tablesInput[index], table));
             }
             else
             {
-                updatedTables.Add((index, input, table));
+                newTables.Add((index, tablesInput[index]));
             }
         }
 
-        // ---- tables left out: history decides delete versus deactivate.
+        // ---- tables left out: history decides delete versus deactivate. The editor never sends an
+        // out-of-service table, so every save leaves those out too; they stay as they are.
         var omitted = existingTables.Where(t => !matched.Contains(t.Id)).ToList();
         var omittedIds = omitted.Select(t => t.Id).ToList();
         var used = omittedIds.Count == 0 ? [] : await TablesWithHistoryAsync(omittedIds, cancellationToken);
 
-        // A label about to be reused by a NEW table while a deactivated table keeps it would hit
-        // the unique index. Name it rather than let the index answer.
-        var retainedLabels = omitted
-            .Where(t => used.Contains(t.Id))
-            .Select(t => t.Label)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var clashing = newTables
-            .Where(n => retainedLabels.Contains(n.Input.Label.Trim()))
-            .Select(n => n.Input.Label.Trim())
-            .ToList();
-
-        if (clashing.Count > 0)
-        {
-            errors.Add(
-                $"Label(s) {string.Join(", ", clashing)} belong to tables with history that this plan omits. "
-                + "Those tables are deactivated, not deleted, and keep their labels - reuse them by keeping the table (with its id) instead.");
-        }
+        errors.AddRange(LabelsHeldByOmittedTables(tablesInput, storedTables, omitted, used));
 
         // A table with diners at it must not vanish from the plan. DeleteTableAsync already refuses
         // this one table at a time; a plan that leaves the table out is the same act, and a floor
@@ -557,12 +530,12 @@ internal sealed class BranchSettingsService(
         // "table A becomes B" lands while the real B still holds the name. Park the movers on
         // throwaway labels, flush, then write the real ones. Both flushes are inside the branch
         // lock's transaction, so a plan still applies whole or not at all.
-        var currentLabels = existingTables.ToDictionary(t => t.Id, t => t.Label);
-
+        //
+        // Every renamed table is parked, not only one whose new label another table holds: renaming
+        // 5 to 13 and adding a new 5 frees a label that an insert in the same flush takes, and
+        // nothing here should rest on the order the provider writes an update and an insert in.
         var movers = updatedTables
-            .Where(u => !string.Equals(currentLabels[u.Table.Id], u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase))
-            .Where(u => existingTables.Any(other => other.Id != u.Table.Id
-                                                   && string.Equals(other.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .Where(u => !string.Equals(u.Table.Label, u.Input.Label.Trim(), StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         if (movers.Count > 0)
@@ -947,6 +920,119 @@ internal sealed class BranchSettingsService(
         }
 
         return matched;
+    }
+
+    /// <summary>
+    /// The stored table each entry in the plan is, or null for a new one: by id first, for every
+    /// entry, and only then by label among the <b>active</b> tables no id claimed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same order as <see cref="MatchAreas"/>, for the same reason. Matched entry by entry,
+    /// renumbering table 5 to 13 and adding a new table 5 in one save let the new 5 reach the stored
+    /// table 5 by label before 13 reached it by id, and the save was refused as one table matched
+    /// twice. A label that matches only a table an id claimed is a new table.
+    /// </para>
+    /// <para>
+    /// Out-of-service tables are never matched by label. The editor does not send them, so a label
+    /// that equals one is a manager adding a table, and matching it would bring the old one back -
+    /// its printed QR code working again, its history attached to a table the manager thinks is new.
+    /// Putting a table back is its own act, and it sends the table's id; an id still matches any
+    /// table, active or not. <see cref="LabelsHeldByOmittedTables"/> refuses the label instead.
+    /// </para>
+    /// <para>An id sent by two entries has no honest reading, and is refused naming both.</para>
+    /// </remarks>
+    private static DiningTable?[] MatchTables(
+        IReadOnlyList<FloorTableInput> tables,
+        IReadOnlyCollection<DiningTable> stored,
+        List<string> errors)
+    {
+        var matched = new DiningTable?[tables.Count];
+        var claimedBy = new Dictionary<Guid, int>();
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            if (tables[i].Id is not { } id || stored.FirstOrDefault(t => t.Id == id) is not { } table)
+            {
+                continue;
+            }
+
+            if (claimedBy.TryGetValue(table.Id, out var first))
+            {
+                errors.Add(
+                    $"Table {table.Label} is matched by more than one entry in the plan: "
+                    + $"{tables[first].Label.Trim()} and {tables[i].Label.Trim()}.");
+                continue;
+            }
+
+            claimedBy[table.Id] = i;
+            matched[i] = table;
+        }
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            if (matched[i] is not null || (tables[i].Id is { } id && claimedBy.ContainsKey(id)))
+            {
+                continue;
+            }
+
+            var label = tables[i].Label.Trim();
+            var table = stored.FirstOrDefault(t => t.IsActive
+                                                   && !claimedBy.ContainsKey(t.Id)
+                                                   && string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
+
+            if (table is not null)
+            {
+                claimedBy[table.Id] = i;
+                matched[i] = table;
+            }
+        }
+
+        return matched;
+    }
+
+    /// <summary>
+    /// Entries that take the label of a table this save leaves out but that keeps its label: one
+    /// already out of service, or one with history that this save deactivates.
+    /// </summary>
+    /// <remarks>
+    /// The unique index on (branch, label) would refuse these anyway, with a message that names
+    /// neither table. Named here, the manager is told which table holds the label and what to do:
+    /// put an out-of-service table back (by id, which <see cref="MatchTables"/> honours) rather than
+    /// add a stranger under its number.
+    /// </remarks>
+    private static List<string> LabelsHeldByOmittedTables(
+        IReadOnlyList<FloorTableInput> tables,
+        IReadOnlyList<DiningTable?> storedTables,
+        IReadOnlyList<DiningTable> omitted,
+        IReadOnlySet<Guid> used)
+    {
+        var errors = new List<string>();
+
+        for (var i = 0; i < tables.Count; i++)
+        {
+            var label = tables[i].Label.Trim();
+            var holder = omitted.FirstOrDefault(t => (!t.IsActive || used.Contains(t.Id))
+                                                     && string.Equals(t.Label, label, StringComparison.OrdinalIgnoreCase));
+
+            if (holder is null)
+            {
+                continue;
+            }
+
+            errors.Add((holder.IsActive, storedTables[i]) switch
+            {
+                (false, null) =>
+                    $"Table {holder.Label} is out of service. Put it back instead of adding a new table with the same label.",
+                (false, { } renamed) =>
+                    $"Table {holder.Label} is out of service and keeps its label. Put it back, or give table {renamed.Label} another label.",
+                (true, _) =>
+                    $"Table {holder.Label} has history, so leaving it out of the plan takes it out of service with its label. "
+                    + "Keep it in the plan, or give the other table another label.",
+            });
+        }
+
+        return errors;
     }
 
     // ------------------------------------------------------------ areas and tables
