@@ -152,6 +152,20 @@ internal static class ApiExceptionMapper
                 ["status"] = (int)e.Status,
             }),
 
+        // A tab hangs off a sitting. Its own code so the tablet can say "seat them first" rather
+        // than show a generic conflict.
+        TableNotSeatedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableNotSeated,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["status"] = (int)e.Status,
+            }),
+
         // Taking this off would reverse money that has already changed hands, which is a refund.
         LineAlreadyPaidException e => new MappedError(
             StatusCodes.Status409Conflict,

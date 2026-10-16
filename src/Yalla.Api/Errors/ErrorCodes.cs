@@ -81,6 +81,12 @@ public static class ErrorCodes
     /// <summary>The bill has been asked for; the app should show it rather than the menu.</summary>
     public const string TabNotAcceptingOrders = "tab-not-accepting-orders";
 
+    /// <summary>
+    /// Staff tried to open a tab on a table with nobody seated at it. Seat the party first. HTTP 409,
+    /// with the table's status in the context. Minted by <c>TableNotSeatedException</c>.
+    /// </summary>
+    public const string TableNotSeated = "table-not-seated";
+
     /// <summary>Removing this line would reverse money already taken. That is a refund.</summary>
     public const string LineAlreadyPaid = "line-already-paid";
 
@@ -367,6 +373,7 @@ public static class ErrorCodes
         TableCurrentlyOccupied => "Table currently occupied",
         MenuItemUnavailable => "Item unavailable",
         TabNotAcceptingOrders => "Tab not accepting orders",
+        TableNotSeated => "Nobody seated at this table",
         LineAlreadyPaid => "Line already paid for",
         PaymentExceedsRemaining => "Payment exceeds the balance",
         ServiceRequestRateLimited => "Too many requests from this table",

@@ -109,3 +109,8 @@ public sealed record SetSettlementModeRequest(
 /// <param name="NewHostParticipantId">The approved participant who takes over.</param>
 public sealed record ReassignHostRequest(
     [Required] Guid NewHostParticipantId);
+
+/// <summary>Body of <c>POST /api/branches/{branchId}/tables/{tableId}/open-tab</c>.</summary>
+/// <param name="ClientCommandId">Caller-generated. A double tap with the same id answers with the same tab.</param>
+public sealed record OpenTabForStaffRequest(
+    [Required] Guid ClientCommandId) : IClientCommandRequest;

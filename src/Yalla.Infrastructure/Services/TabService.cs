@@ -361,8 +361,23 @@ internal sealed class TabService(
 
             if (existingTab is not null)
             {
-                var joined = await JoinExistingAsync(
-                    existingTab, opening.Device, opening.DisplayName, cancellationToken, asBooker: booking is not null);
+                TabParticipant joined;
+
+                try
+                {
+                    joined = await JoinExistingAsync(
+                        existingTab, opening.Device, opening.DisplayName, cancellationToken, asBooker: booking is not null);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Two phones reached a tab staff opened at the same moment and both went for the
+                    // host role. The other one has it; look again and join as a guest.
+                    logger.LogInformation(
+                        "Joining tab {TabId} lost the race to host it; re-reading.", existingTab.Id);
+
+                    db.ChangeTracker.Clear();
+                    continue;
+                }
 
                 return await ResultAsync(existingTab, joined, TabOpenOutcome.JoinedExistingTab, wasReplay: false, cancellationToken);
             }
@@ -505,6 +520,31 @@ internal sealed class TabService(
             throw new DomainStateException(tab.Status == TabStatus.Closing
                 ? "This tab is being settled and no longer takes new people. Ask a member of staff."
                 : "That tab is closed. Scan the table's QR code to open a new one.");
+        }
+
+        // A tab staff opened has nobody on it. Somebody landing on it pending would wait for a
+        // host who does not exist, so the first person to arrive hosts it - exactly as if they
+        // had scanned the table first. The tab row changes, so two phones racing for the role
+        // meet on its row version and the loser comes back round as an ordinary guest.
+        if (tab.HostParticipantId is null)
+        {
+            var host = TabParticipant.Host(
+                tab.Id,
+                NameOrDefault(displayName, tab.Participants.Count + 1),
+                device,
+                nowUtc,
+                actor.DinerUserId);
+
+            tab.SetHostParticipant(host.Id);
+            db.TabParticipants.Add(host);
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Participant {ParticipantId} became host of tab {TabId}, which staff opened with nobody on it.",
+                host.Id, tab.Id);
+
+            return host;
         }
 
         var guest = TabParticipant.Guest(
@@ -859,6 +899,114 @@ internal sealed class TabService(
     }
 
     // ---------------------------------------------------------------- staff
+
+    public async Task<TabStaffView> OpenForStaffAsync(
+        OpenTabForStaffCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        RequireStaff("Open tab");
+        RequireOpening(command.ClientCommandId, partySize: null);
+
+        if (await FindStaffReplayAsync(command, cancellationToken) is { } replay)
+        {
+            return replay;
+        }
+
+        for (var attempt = 1; attempt <= MaxOpenAttempts; attempt++)
+        {
+            // The branch is the route's, which the policy has already matched to the token: a table
+            // at another branch is simply not found.
+            var table = await db.DiningTables
+                .Include(t => t.Branch)
+                    .ThenInclude(b => b.Venue)
+                .FirstOrDefaultAsync(
+                    t => t.Id == command.TableId && t.BranchId == command.BranchId && t.IsActive,
+                    cancellationToken)
+                ?? throw new KeyNotFoundException("No table in service with that id at this branch.");
+
+            VenueGate.RequireOpenForBusiness(table.Branch);
+            RequirePaid(table.Branch);
+
+            if (table.Status == TableStatus.OutOfService)
+            {
+                throw new DomainStateException($"Table {table.Label} is out of service.");
+            }
+
+            var session = await db.TableSessions
+                .FirstOrDefaultAsync(s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, cancellationToken)
+                ?? throw new TableNotSeatedException(table.Id, table.Label, table.Status);
+
+            // Somebody scanned first, or this is the second tap: that tab, not a second one.
+            if (await LoadTabBySessionAsync(session.Id, cancellationToken) is { } existing)
+            {
+                return await StaffViewAsync(existing.Id, cancellationToken);
+            }
+
+            var tab = new Tab(
+                table.BranchId,
+                table.Id,
+                session.Id,
+                clock.UtcNow,
+                table.Branch.ReservationPolicy.ServiceChargePercent,
+                clientCommandId: command.ClientCommandId);
+
+            session.AttachTab(tab.Id);
+            db.Tabs.Add(tab);
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabPerSession))
+            {
+                // A phone at the table opened one in the same instant. Answer with theirs.
+                db.ChangeTracker.Clear();
+                continue;
+            }
+            catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabClientCommand))
+            {
+                db.ChangeTracker.Clear();
+
+                return await FindStaffReplayAsync(command, cancellationToken)
+                       ?? throw new ClientCommandIdAlreadyUsedException(command.ClientCommandId);
+            }
+
+            logger.LogInformation(
+                "Staff {StaffId} opened tab {TabId} on table {TableId} with nobody on it.",
+                actor.StaffMemberId, tab.Id, table.Id);
+
+            return await StaffViewAsync(tab.Id, cancellationToken);
+        }
+
+        throw new DomainStateException("This table is being opened from several places at once. Try again in a second.");
+    }
+
+    /// <summary>
+    /// The same staff tap arriving twice. A command id that opened a tab at another table - or that a
+    /// phone used for its scan - is a client bug, and the honest answer is that the id is taken.
+    /// </summary>
+    private async Task<TabStaffView?> FindStaffReplayAsync(
+        OpenTabForStaffCommand command,
+        CancellationToken cancellationToken)
+    {
+        var tab = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.ClientCommandId == command.ClientCommandId)
+            .Select(t => new { t.Id, t.DiningTableId, t.BranchId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (tab is null)
+        {
+            return null;
+        }
+
+        if (tab.DiningTableId != command.TableId || tab.BranchId != command.BranchId)
+        {
+            throw new ClientCommandIdAlreadyUsedException(command.ClientCommandId);
+        }
+
+        return await StaffViewAsync(tab.Id, cancellationToken);
+    }
 
     public async Task<TabStaffView> ReassignHostAsync(
         Guid tabId,

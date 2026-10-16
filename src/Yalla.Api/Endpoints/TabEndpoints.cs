@@ -46,6 +46,7 @@ public static class TabEndpoints
         MapBookingOpening(app);
         MapParticipantSurface(app);
         MapStaffSurface(app);
+        MapStaffOpening(app);
 
         return app;
     }
@@ -288,6 +289,45 @@ public static class TabEndpoints
             .Produces<TabView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotHostDescription)
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "The settlement mode is locked.");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Staff: opening a tab for a party that is not going to scan.
+    // ---------------------------------------------------------------------------------------
+    private static void MapStaffOpening(IEndpointRouteBuilder app)
+    {
+        // Addressed by table, under the branch, like every other floor action: BranchScoped reads
+        // the branch from the route, so a branch manager's token cannot open a tab next door.
+        var group = app.MapGroup("/api/branches/{branchId:guid}/tables")
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
+
+        group.AddEndpointFilter<ClientCommandIdFilter>();
+
+        group.MapPost("/{tableId:guid}/open-tab", OpenForStaffAsync)
+            .WithName("openTabForStaff")
+            .WithSummary("Staff: open the tab on a seated table for a party that is not scanning")
+            .WithDescription(
+                "For the walk-in with no phone, or who would rather not: the waiter seats them, opens "
+                + "the tab here, and keys the order in with `staff-orders`. Cash closes it as usual.\n\n"
+                + "The tab opens with **nobody on it** - staff are not participants, and there is no "
+                + "phone to host it. If somebody at the table scans the QR code later, the **first of "
+                + "them becomes the host**, approved on the spot, exactly as if they had scanned "
+                + "first; anyone after them joins pending as usual.\n\n"
+                + "Convergent: a table that already has a tab - a guest scanned first, or this is the "
+                + "second tap - answers with that tab rather than opening another. A retry with the "
+                + "same `clientCommandId` answers with the same tab.\n\n"
+                + "Online only. Opening a tab is not one of the floor commands the tablet queues.")
+            .Produces<TabStaffView>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Missing clientCommandId.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No table in service with that id at this branch.")
+            .ProducesProblem<Errors.TableNotSeatedProblem>(
+                StatusCodes.Status409Conflict,
+                "`table-not-seated`: nobody is sitting there - seat the party first. Also returned, "
+                + "with no `context`, when the table is out of service, the branch is not on a tier "
+                + "with tabs, or this `clientCommandId` opened a tab somewhere else.");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -549,6 +589,15 @@ public static class TabEndpoints
 
         return tab is null ? Results.NotFound() : Results.Ok(tab);
     }
+
+    private static async Task<IResult> OpenForStaffAsync(
+        Guid branchId,
+        Guid tableId,
+        OpenTabForStaffRequest request,
+        ITabService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.OpenForStaffAsync(
+            new OpenTabForStaffCommand(branchId, tableId, request.ClientCommandId), cancellationToken));
 
     private static async Task<IResult> ReassignHostAsync(
         Guid tabId,
