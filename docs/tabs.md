@@ -192,7 +192,10 @@ table that already has a tab — a guest scanned first, or this is the second ta
 tab, and a retry with the same `clientCommandId` answers with the same one.
 
 It needs a sitting. A free or held table is `409 table-not-seated`: seating is the walk-in button's
-job, and that is where the party size is asked.
+job, and that is where the party size is asked. One exception: a table still **Occupied** with no
+sitting - the party paid in full, which closes the sitting but not the table, and is still there
+wanting more - gets a new sitting for the same party (its size carried over) and the new tab on that.
+The paid sitting stays closed, and the table's physical status does not change.
 
 The tab opens with **nobody on it and no host** — staff are not participants. So the join rule has one
 more case: **the first phone onto a tab with no host becomes its host**, approved on the spot, exactly

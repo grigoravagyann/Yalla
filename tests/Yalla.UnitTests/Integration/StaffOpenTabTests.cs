@@ -88,6 +88,71 @@ public class StaffOpenTabTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A party that has paid and sits on can be given a new tab without freeing the table first.
+    /// </summary>
+    /// <remarks>
+    /// Paying in full closes the sitting but leaves the table Occupied, because a party that has
+    /// paid usually stays for another twenty minutes. The tablet then offered "Start a tab" and
+    /// the server answered "nobody is seated" about a table the screen showed occupied - and
+    /// seating it again was refused as Occupied to Occupied, so the waiter was stuck (QA
+    /// 2026-10-17).
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_party_that_paid_and_sits_on_gets_a_new_tab_on_a_new_sitting()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, menu) = await ArrangeAsync(factory);
+        var tableId = branch.FirstTableId;
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        await SeatWalkInAsync(waiter, branch, tableId);
+        var first = await TabIdOfAsync(await OpenAsync(waiter, branch, tableId));
+
+        var ordered = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{first}/staff-orders",
+            new { items = new[] { new { menuItemId = menu.Khachapuri, quantity = 1 } }, clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.Created, ordered.StatusCode);
+
+        var owed = (await ReadAsync(waiter, $"/api/tabs/{first}/participants"))
+            .GetProperty("totals").GetProperty("remainingAmd").GetInt64();
+        var paid = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{first}/payments/cash",
+            new { amountAmd = owed, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.Created, paid.StatusCode);
+
+        // Paid, sitting closed, table still Occupied: the case the tablet could not get out of.
+        var second = await TabIdOfAsync(await OpenAsync(waiter, branch, tableId));
+
+        Assert.NotEqual(first, second);
+
+        var floor = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor");
+        var row = floor.GetProperty("tables").EnumerateArray()
+            .Single(t => t.GetProperty("tableId").GetGuid() == tableId);
+
+        Assert.Equal(second, row.GetProperty("openTabId").GetGuid());
+        Assert.Equal(TableStatus.Occupied, (TableStatus)row.GetProperty("physicalStatus").GetInt32());
+
+        // A sitting of its own, for the same party: the paid bill's sitting stays closed.
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var sittings = await db.TableSessions.AsNoTracking()
+            .Where(s => s.DiningTableId == tableId)
+            .ToListAsync();
+
+        // The test clock does not move, so both sittings share a start: closed one first.
+        sittings = [.. sittings.OrderBy(s => s.ClosedAtUtc is null)];
+
+        Assert.Equal(2, sittings.Count);
+        Assert.NotNull(sittings[0].ClosedAtUtc);
+        Assert.Null(sittings[1].ClosedAtUtc);
+        Assert.Equal(sittings[0].PartySize, sittings[1].PartySize);
+        Assert.Equal(sittings[1].Id, (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == second)).TableSessionId);
+    }
+
+    /// <summary>
     /// A second tap, a retry, and a guest who scanned first all end on one tab.
     /// </summary>
     [SkippableFact]

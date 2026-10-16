@@ -325,7 +325,9 @@ public static class TabEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No table in service with that id at this branch.")
             .ProducesProblem<Errors.TableNotSeatedProblem>(
                 StatusCodes.Status409Conflict,
-                "`table-not-seated`: nobody is sitting there - seat the party first. Also returned, "
+                "`table-not-seated`: nobody is sitting there - seat the party first. (A table still "
+                + "Occupied after its last bill was paid is not refused: the party gets a new sitting "
+                + "and the new tab on it.) Also returned, "
                 + "with no `context`, when the table is out of service, the branch is not on a tier "
                 + "with tabs, or this `clientCommandId` opened a tab somewhere else.");
     }

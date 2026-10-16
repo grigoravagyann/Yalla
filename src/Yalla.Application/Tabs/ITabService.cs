@@ -154,7 +154,8 @@ public interface ITabService
     /// <remarks>
     /// Convergent like a scan: a table that already has a tab - a guest scanned first, or the
     /// waiter tapped twice - gets that tab back rather than a second one. The tab has no
-    /// participants and no host until somebody scans; the first to scan becomes host.
+    /// participants and no host until somebody scans; the first to scan becomes host. A table still
+    /// Occupied after its last bill was paid in full gets a new sitting for the same party.
     /// </remarks>
     /// <exception cref="Domain.Staff.StaffPermissionException">The caller is not staff.</exception>
     /// <exception cref="KeyNotFoundException">No table in service with that id at that branch.</exception>

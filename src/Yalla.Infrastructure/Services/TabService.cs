@@ -933,8 +933,28 @@ internal sealed class TabService(
             }
 
             var session = await db.TableSessions
-                .FirstOrDefaultAsync(s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, cancellationToken)
-                ?? throw new TableNotSeatedException(table.Id, table.Label, table.Status);
+                .FirstOrDefaultAsync(s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, cancellationToken);
+
+            if (session is null)
+            {
+                if (table.Status != TableStatus.Occupied)
+                {
+                    throw new TableNotSeatedException(table.Id, table.Label, table.Status);
+                }
+
+                // Occupied with no sitting: the party paid in full - which closes the sitting but
+                // not the table - and is still there, now wanting something more. Seating them
+                // again is refused as Occupied to Occupied, so the new bill gets a sitting of its
+                // own here, for the same party, and the paid one stays closed.
+                session = await ReopenSittingAsync(table, cancellationToken);
+
+                if (session is null)
+                {
+                    // Somebody else gave the table a sitting in the same instant. Look again.
+                    db.ChangeTracker.Clear();
+                    continue;
+                }
+            }
 
             // Somebody scanned first, or this is the second tap: that tab, not a second one.
             if (await LoadTabBySessionAsync(session.Id, cancellationToken) is { } existing)
@@ -979,6 +999,45 @@ internal sealed class TabService(
         }
 
         throw new DomainStateException("This table is being opened from several places at once. Try again in a second.");
+    }
+
+    /// <summary>
+    /// A new sitting on a table that is still Occupied after its last bill was paid in full, for
+    /// the party that never left. Null when another sitting won the table's one open slot first.
+    /// </summary>
+    /// <remarks>
+    /// Not a state-machine transition: the table's physical status does not change, exactly as it
+    /// did not when the payment closed the previous sitting. The party size is carried over from
+    /// that sitting, because it is the same people.
+    /// </remarks>
+    private async Task<TableSession?> ReopenSittingAsync(DiningTable table, CancellationToken cancellationToken)
+    {
+        var previous = await db.TableSessions
+            .AsNoTracking()
+            .Where(s => s.DiningTableId == table.Id)
+            .OrderByDescending(s => s.SeatedAtUtc)
+            .Select(s => (int?)s.PartySize)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var session = TableSession.SeatWalkIn(
+            table.BranchId, table.Id, previous ?? 1, clock.UtcNow, actor.StaffMemberId);
+
+        db.TableSessions.Add(session);
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.OpenSessionPerTable))
+        {
+            return null;
+        }
+
+        logger.LogInformation(
+            "Staff {StaffId} gave occupied table {TableId} a new sitting {SessionId} after its bill was paid.",
+            actor.StaffMemberId, table.Id, session.Id);
+
+        return session;
     }
 
     /// <summary>
