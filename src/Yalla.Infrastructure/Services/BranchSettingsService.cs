@@ -618,7 +618,7 @@ internal sealed class BranchSettingsService(
             db.FloorAreas.Remove(area);
         }
 
-        // The only place the version moves.
+        // With the room routes (add, rename, delete), the places the version moves.
         branch.BumpFloorPlanVersion();
 
         try
@@ -926,11 +926,16 @@ internal sealed class BranchSettingsService(
 
         await branchGuard.RequireAtBranchAsync(branchId, "Add a floor area", cancellationToken);
 
+        // The plan's lock and the plan's version: a room added here is a change to the plan, and an
+        // editor that loaded it before must hear 409 rather than save over it and delete the room.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         var area = new FloorArea(branch.Id, command.Name, command.DisplayOrder);
         db.FloorAreas.Add(area);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
         // A new room has no photos; they are added through the floor-plan save.
         return new FloorAreaView(area.Id, area.Name, area.DisplayOrder, []);
@@ -946,12 +951,18 @@ internal sealed class BranchSettingsService(
 
         await branchGuard.RequireAtBranchAsync(branchId, "Edit a floor area", cancellationToken);
 
+        // As for an added room: a stale editor's save would undo the rename, so it moves the version.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
 
         area.Rename(command.Name);
         area.SetDisplayOrder(command.DisplayOrder);
-        await db.SaveChangesAsync(cancellationToken);
+        branch.BumpFloorPlanVersion();
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
         var photos = await db.FloorAreaPhotos
             .AsNoTracking()
@@ -968,8 +979,11 @@ internal sealed class BranchSettingsService(
         await branchGuard.RequireAtBranchAsync(branchId, "Remove a floor area", cancellationToken);
 
         // The same lock as the plan save: this changes pins, and a save validating pins against the
-        // room's photos must not interleave with the room going.
+        // room's photos must not interleave with the room going. And the same version: an editor that
+        // loaded the plan with this room in it would otherwise save it back, photos and pins and all.
         await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         var area = await db.FloorAreas.FirstOrDefaultAsync(a => a.Id == areaId && a.BranchId == branchId, cancellationToken)
                    ?? throw new KeyNotFoundException($"Floor area {areaId} was not found at this branch.");
@@ -985,6 +999,7 @@ internal sealed class BranchSettingsService(
         }
 
         db.FloorAreas.Remove(area);
+        branch.BumpFloorPlanVersion();
         await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
     }
 
@@ -1072,8 +1087,8 @@ internal sealed class BranchSettingsService(
     private const string SetLockTimeout = "SET LOCK_TIMEOUT 5000;";
 
     /// <summary>
-    /// Opens a transaction and takes an update lock on the branch row, for the writers that decide
-    /// what a table's pin means: the plan replace and the room delete.
+    /// Opens a transaction and takes an update lock on the branch row, for the writers that change
+    /// the plan and move its version: the plan replace and the room add, rename and delete.
     /// </summary>
     /// <remarks>
     /// <c>UPDLOCK</c> serialises those writers against each other without blocking readers, and

@@ -496,9 +496,61 @@ public sealed class RoomsWithPhotosTests(SqlServerFixture fixture)
 
     // ------------------------------------------------------------ the version and the room routes
 
+    /// <summary>
+    /// Adding, renaming or deleting a room through its own route changes the plan; an editor that
+    /// loaded the plan before must be told so, not silently resurrect the room or delete the new one.
+    /// </summary>
+    [SkippableFact]
+    public async Task Adding_renaming_or_deleting_a_room_moves_the_version_so_a_stale_save_is_refused()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await CreateBranchAsync(clock);
+
+        var loaded = await GetPlanAsync(clock, branch);
+        var created = await WithServiceAsync(clock, branch, s => s.CreateFloorAreaAsync(branch.BranchId, new FloorAreaCommand("Terrace", 1)));
+        await AssertStaleAsync(clock, branch, loaded);
+
+        loaded = await GetPlanAsync(clock, branch);
+        await WithServiceAsync(clock, branch, s => s.UpdateFloorAreaAsync(branch.BranchId, created.Id, new FloorAreaCommand("Garden", 1)));
+        await AssertStaleAsync(clock, branch, loaded);
+
+        loaded = await GetPlanAsync(clock, branch);
+        await WithServiceAsync(clock, branch, async s =>
+        {
+            await s.DeleteFloorAreaAsync(branch.BranchId, created.Id);
+            return true;
+        });
+        await AssertStaleAsync(clock, branch, loaded);
+    }
+
     // ------------------------------------------------------------ the sweep racing a save
 
     // ------------------------------------------------------------ helpers
+
+    private async Task<TestBranch> CreateBranchAsync(TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+        return await TestBranchBuilder.CreateAsync(db);
+    }
+
+    private Task<FloorPlanView> GetPlanAsync(TestClock clock, TestBranch branch) =>
+        WithServiceAsync(clock, branch, s => s.GetFloorPlanAsync(branch.BranchId));
+
+    /// <summary>One call on a fresh context, the way one request would make it.</summary>
+    private async Task<T> WithServiceAsync<T>(TestClock clock, TestBranch branch, Func<BranchSettingsService, Task<T>> call)
+    {
+        await using var db = fixture.CreateContext(clock);
+        return await call(fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId)));
+    }
+
+    /// <summary>The plan as loaded, sent back unchanged, is refused as stale.</summary>
+    private async Task AssertStaleAsync(TestClock clock, TestBranch branch, FloorPlanView loaded)
+    {
+        await Assert.ThrowsAsync<FloorPlanChangedException>(() => WithServiceAsync(clock, branch, s => s.ReplaceFloorPlanAsync(
+            branch.BranchId, new ReplaceFloorPlanCommand(Areas(loaded), Tables(loaded), loaded.Version))));
+    }
 
     /// <summary>The plan as the database holds it is still the plan the test loaded.</summary>
     private async Task AssertUnchangedAsync(TestClock clock, TestBranch branch, FloorPlanView before)
