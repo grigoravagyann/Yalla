@@ -498,6 +498,14 @@ internal sealed class BranchSettingsService(
         {
             if (used.Contains(table.Id))
             {
+                // Reported only when this save is the one that took it out of service: an
+                // out-of-service table is left out of every save, and listing it each time tells
+                // the manager something happened that did not.
+                if (table.IsActive)
+                {
+                    deactivated.Add(table.Label);
+                }
+
                 table.SetActive(false);
 
                 // Its area may be leaving with this plan; a deactivated table need not point at one.
@@ -515,8 +523,6 @@ internal sealed class BranchSettingsService(
                 {
                     table.TakeOffPhoto();
                 }
-
-                deactivated.Add(table.Label);
             }
             else
             {

@@ -491,6 +491,38 @@ public sealed class BranchSettingsServiceTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// The editor never sends an out-of-service table back, so every save omits it. Reporting
+    /// "deactivated" for it on every later save tells the manager something happened that did not.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_later_save_does_not_report_a_table_an_earlier_save_deactivated()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var usedTableId = branch.TableIds[0];
+
+        var session = TableSession.SeatWalkIn(branch.BranchId, usedTableId, 2, Now.AddDays(-1), branch.WaiterId);
+        session.Close(Now.AddDays(-1).AddHours(1));
+        db.TableSessions.Add(session);
+        await db.SaveChangesAsync();
+
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        var plan = await service.GetFloorPlanAsync(branch.BranchId);
+        var active = plan.Tables.Where(t => t.Id != usedTableId).Select(Input).ToList();
+
+        var first = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], active, plan.Version));
+        Assert.Equal(["1"], first.DeactivatedTables);
+
+        var second = await service.ReplaceFloorPlanAsync(branch.BranchId, new ReplaceFloorPlanCommand([], active, first.Plan.Version));
+        Assert.Empty(second.DeactivatedTables);
+        Assert.Empty(second.RemovedTables);
+        Assert.False(second.Plan.Tables.Single(t => t.Id == usedTableId).IsActive);
+    }
+
+    /// <summary>
     /// Renumbering a room swaps labels between existing tables. It is a legal plan, and one a
     /// single pass cannot write - the unique index is checked per statement.
     /// </summary>

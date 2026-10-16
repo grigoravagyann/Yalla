@@ -635,6 +635,9 @@ floorAreaName?, isBookable, photoId?, photoX?, photoY? } ], expectedVersion }`. 
 their photos (in the order sent; null or absent = none) and every pin. Kept: the branch lock, `version`
 / `409 floor-plan-changed`, history-aware delete vs deactivate, staging labels, QR tokens never
 changed. 200 → `FloorPlanReplaceResult { plan, warnings, deactivatedTables, removedTables }`.
+`deactivatedTables` lists only tables **this save** took out of service (active before, inactive
+after); an inactive table the editor leaves out, as it always does, is not reported again.
+`removedTables` lists the rows this save deleted.
 
 | Rule | Answer (nothing written) |
 | --- | --- |

@@ -398,7 +398,11 @@ public sealed class FloorPlanChangedException(string currentVersion)
 /// Things worth fixing that are not errors - today, a bookable table with no pin, which diners are
 /// not offered.
 /// </param>
-/// <param name="DeactivatedTables">Labels of omitted tables kept, inactive, because they have history.</param>
+/// <param name="DeactivatedTables">
+/// Labels of tables this save took out of service: active before, left out, kept inactive because
+/// they have history. Not the tables already inactive - the editor leaves those out of every save,
+/// and reporting them each time would announce a change nobody made.
+/// </param>
 /// <param name="RemovedTables">Labels of omitted tables deleted outright.</param>
 public sealed record FloorPlanReplaceResult(
     FloorPlanView Plan,
