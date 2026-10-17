@@ -76,6 +76,8 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
 
         Assert.NotEmpty(before);
 
+        var run = Guid.NewGuid().ToString("N");
+
         // One of each, all five, with payloads the handlers can actually read.
         await using (var enqueueDb = fixture.CreateContext(clock))
         {
@@ -101,7 +103,6 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             };
 
             var outbox = fixture.CreateOutbox(enqueueDb, clock);
-            var run = Guid.NewGuid().ToString("N");
 
             outbox.Enqueue(OutboxMessageTypes.ReservationReminder, reservationNotice, clock.UtcNow, $"{run}:1");
             outbox.Enqueue(OutboxMessageTypes.ReservationLateNudge, reservationNotice, clock.UtcNow, $"{run}:2");
@@ -118,12 +119,28 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         {
             var pass = await AllHandlers(passDb, clock, channel).RunOnceAsync();
 
-            Assert.Equal(5, pass.Sent);
-            Assert.Equal(0, pass.Failed);
+            // The database is shared across the collection, so the pass may also carry another
+            // test's messages that are due by this clock - a rescheduled booking's reminder, say.
+            // Those are not this test's to count; its own five are.
+            Assert.True(pass.Sent >= 5, $"Expected at least this run's 5 sent, got {pass.Sent}.");
+        }
+
+        await using (var checkDb = fixture.CreateContext(clock))
+        {
+            var ours = await checkDb.Set<OutboxMessage>()
+                .Where(message => message.IdempotencyKey.StartsWith(run + ":"))
+                .ToListAsync();
+
+            Assert.Equal(5, ours.Count);
+            Assert.All(ours, message =>
+            {
+                Assert.True(message.IsSent, $"{message.Type} was not sent.");
+                Assert.Null(message.LastError);
+            });
         }
 
         // Every handler ran and reached the channel, so this is not five no-ops.
-        Assert.Equal(5, channel.Sent);
+        Assert.True(channel.Sent >= 5, $"Expected at least 5 deliveries, got {channel.Sent}.");
 
         var after = await StreamAsync(tab.TabId, clock);
 
