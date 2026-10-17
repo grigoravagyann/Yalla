@@ -66,11 +66,11 @@ public sealed record MoveOrderStatusRequest(TabOrderStatus Status);
 /// <param name="BillScope">
 /// Only with preset 3: whose part of the bill - 1 WholeBill, 2 MyShare. The server prices it and the
 /// response carries <c>billAmountAmd</c>. Leave it out for a plain "the bill, please". WholeBill needs
-/// sight of the table total.
+/// sight of the table total. Replaces the asker's own earlier open request for the bill on the tab.
 /// </param>
 /// <param name="TipPercent">
-/// Only with a <paramref name="BillScope"/>: the tip, 0 to 25 percent of the items that scope covers
-/// (before service). The response carries it priced as <c>tipAmd</c>.
+/// Only with a <paramref name="BillScope"/>: the tip, 0 to 25 percent of the items that scope still
+/// leaves unpaid (before service). The response carries it priced as <c>tipAmd</c>.
 /// </param>
 public sealed record RaiseServiceRequest(
     ServiceRequestPreset Preset,

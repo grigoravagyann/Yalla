@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
@@ -243,6 +244,70 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             e => Assert.True(
                 Enum.IsDefined(e.Type),
                 $"{e.Type} is not a TabEventType. The stream was: {trail}"));
+    }
+
+    // ------------------------------------------------------------ what a payload may say
+
+    /// <summary>
+    /// A request for the bill reaches the stream as what was asked for - the scope and the tip
+    /// percentage - and never as how much.
+    /// </summary>
+    /// <remarks>
+    /// Every phone at the table reads this stream, including a guest the host has hidden the total
+    /// from. The priced amount of somebody's request is their share or the table's balance, so an
+    /// amount here would hand that guest the very figure the projection keeps from them. The asker
+    /// has it in their own response and the waiter on the staff list; the stream has the member names
+    /// below and no others, so a field added to the event later is a decision rather than a leak.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_bill_request_on_the_stream_says_what_was_asked_for_and_never_how_much()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 3);
+        var menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+
+        var diner = await DinerAsync(db, clock);
+        var tab = await TabWithOrdersAsync(branch, menu, clock, diner);
+
+        ServiceRequestView raised;
+
+        await using (var requestDb = fixture.CreateContext(clock))
+        {
+            raised = await fixture.CreateServiceRequests(
+                    requestDb, clock, TestActor.Participant(tab.HostParticipantId))
+                .RaiseAsync(
+                    tab.TabId,
+                    tab.HostParticipantId,
+                    ServiceRequestPreset.TheBill,
+                    note: null,
+                    billScope: BillScope.WholeBill,
+                    tipPercent: 10);
+        }
+
+        // The asker is told the price.
+        Assert.NotNull(raised.BillAmountAmd);
+        Assert.NotNull(raised.TipAmd);
+
+        await using var verify = fixture.CreateContext(clock);
+
+        var payloadJson = await verify.TabEvents
+            .AsNoTracking()
+            .Where(e => e.TabId == tab.TabId && e.Type == TabEventType.ServiceRequested)
+            .Select(e => e.PayloadJson)
+            .SingleAsync();
+
+        using var payload = JsonDocument.Parse(payloadJson);
+
+        Assert.Equal(
+            ["billScope", "note", "preset", "requestedByParticipantId", "serviceRequestId", "tipPercent"],
+            payload.RootElement.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+
+        Assert.Equal(raised.ServiceRequestId, payload.RootElement.GetProperty("serviceRequestId").GetGuid());
+        Assert.Equal((int)BillScope.WholeBill, payload.RootElement.GetProperty("billScope").GetInt32());
+        Assert.Equal(10, payload.RootElement.GetProperty("tipPercent").GetInt32());
     }
 
     // ------------------------------------------------------------ helpers

@@ -1,5 +1,6 @@
 using Yalla.Domain;
 using Yalla.Domain.Billing;
+using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 
@@ -28,7 +29,7 @@ public sealed class BillRequestTests
     [Fact]
     public void The_whole_bill_is_the_tabs_remaining_balance_with_the_tip_on_the_subtotal()
     {
-        var quote = BillQuote.For(Bill(), GuestA, BillScope.WholeBill, tipPercent: 10);
+        var quote = BillQuote.For(Bill(), GuestA, BillScope.WholeBill, tipPercent: 10, canSeeTableTotal: true);
 
         Assert.Equal(BillScope.WholeBill, quote.Scope);
         Assert.Equal(25_520L, quote.AmountAmd);
@@ -41,7 +42,7 @@ public sealed class BillRequestTests
     [Fact]
     public void My_share_is_the_askers_own_share_with_the_tip_on_their_part_of_the_subtotal()
     {
-        var quote = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: 5);
+        var quote = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: 5, canSeeTableTotal: true);
 
         Assert.Equal(8_433L, quote.AmountAmd);
 
@@ -53,52 +54,146 @@ public sealed class BillRequestTests
     public void A_tip_rounds_half_up_like_every_other_amount()
     {
         // 15% of 5,966 is 894.9.
-        var guestB = BillQuote.For(Bill(), GuestB, BillScope.MyShare, tipPercent: 15);
+        var guestB = BillQuote.For(Bill(), GuestB, BillScope.MyShare, tipPercent: 15, canSeeTableTotal: true);
         Assert.Equal(6_562L, guestB.AmountAmd);
         Assert.Equal(895L, guestB.TipAmd);
 
         // 5% of 9,568 is 478.4.
-        Assert.Equal(478L, BillQuote.For(Bill(), Host, BillScope.MyShare, tipPercent: 5).TipAmd);
+        Assert.Equal(
+            478L,
+            BillQuote.For(Bill(), Host, BillScope.MyShare, tipPercent: 5, canSeeTableTotal: true).TipAmd);
     }
 
+    /// <summary>
+    /// With nothing paid the amount is the whole of what the items come to with service, so the
+    /// pro-rata base is the items themselves - to the dram, for every person, scope and tip the
+    /// sheet offers. The client works the same figure out from the same rule; a dram of drift here
+    /// is a pay sheet that disagrees with the waiter.
+    /// </summary>
     [Fact]
-    public void What_has_been_paid_comes_off_the_amount_and_not_off_the_tip()
+    public void With_nothing_paid_the_tip_is_on_the_items_exactly()
+    {
+        var bill = Bill();
+
+        for (var percent = 0; percent <= BillQuote.MaxTipPercent; percent++)
+        {
+            Assert.Equal(
+                Money.PercentOf(bill.SubtotalAmd, percent),
+                BillQuote.For(bill, Host, BillScope.WholeBill, percent, canSeeTableTotal: true).TipAmd);
+
+            foreach (var share in bill.Shares)
+            {
+                foreach (var sees in new[] { true, false })
+                {
+                    var quote = BillQuote.For(bill, share.ParticipantId, BillScope.MyShare, percent, sees);
+
+                    Assert.Equal(share.ShareAmd, quote.AmountAmd);
+                    Assert.Equal(Money.PercentOf(share.PersonalAmd, percent), quote.TipAmd);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A tip is on what is still being paid for. Guest A settled 3,000 of their 8,433, so the 5,433
+    /// left carries the items in it - 7,666 x 5,433 / 8,433 = 4,938.9 - and not the coffee that is
+    /// already paid for. The whole bill likewise: 23,200 x 22,520 / 25,520 = 20,472.7.
+    /// </summary>
+    [Fact]
+    public void What_has_been_paid_comes_off_the_amount_and_off_the_tips_base()
     {
         var bill = Bill(paidByGuestA: 3_000L);
 
-        var mine = BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10);
+        var mine = BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10, canSeeTableTotal: true);
         Assert.Equal(5_433L, mine.AmountAmd);
-        Assert.Equal(767L, mine.TipAmd);
+        Assert.Equal(494L, mine.TipAmd);
 
-        var whole = BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: 10);
+        var whole = BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: 10, canSeeTableTotal: true);
         Assert.Equal(22_520L, whole.AmountAmd);
-        Assert.Equal(2_320L, whole.TipAmd);
+        Assert.Equal(2_047L, whole.TipAmd);
+    }
+
+    /// <summary>
+    /// Several payments, some named and some against the table: guest B paid 2,000 of their own and
+    /// the waiter took 5,000 naming nobody. Each scope's tip follows its own unpaid part.
+    /// </summary>
+    [Fact]
+    public void Partial_payments_scale_each_scopes_tip_by_what_it_still_asks_for()
+    {
+        var bill = Bill(paidByGuestB: 2_000L, paidAgainstTheTable: 5_000L);
+
+        // 25,520 less 7,000; 23,200 x 18,520 / 25,520 = 16,836.4; 15% is 2,525.4.
+        var whole = BillQuote.For(bill, GuestB, BillScope.WholeBill, tipPercent: 15, canSeeTableTotal: true);
+        Assert.Equal(18_520L, whole.AmountAmd);
+        Assert.Equal(2_525L, whole.TipAmd);
+
+        // 6,562 less 2,000; 5,966 x 4,562 / 6,562 = 4,147.6; 15% is 622.1.
+        var mine = BillQuote.For(bill, GuestB, BillScope.MyShare, tipPercent: 15, canSeeTableTotal: true);
+        Assert.Equal(4_562L, mine.AmountAmd);
+        Assert.Equal(622L, mine.TipAmd);
+
+        // The table's 5,000 lowered nobody's share: guest A still owes all of theirs.
+        var guestA = BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 5, canSeeTableTotal: true);
+        Assert.Equal(8_433L, guestA.AmountAmd);
+        Assert.Equal(383L, guestA.TipAmd);
     }
 
     [Fact]
     public void No_tip_asked_is_no_tip_line_and_a_zero_tip_is_a_zero_one()
     {
-        var none = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: null);
+        var none = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: null, canSeeTableTotal: true);
         Assert.Null(none.TipPercent);
         Assert.Null(none.TipAmd);
 
-        var zero = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: 0);
+        var zero = BillQuote.For(Bill(), GuestA, BillScope.MyShare, tipPercent: 0, canSeeTableTotal: true);
         Assert.Equal(0, zero.TipPercent);
         Assert.Equal(0L, zero.TipAmd);
     }
 
     /// <summary>
     /// Cash a waiter took against the table, naming nobody, lowers the balance without lowering any
-    /// share. The waiter must not be sent for more than the tab owes.
+    /// share. Somebody who can see the total is never sent for more than the tab owes - and the tip
+    /// shrinks with the amount: 9,568 x 5,520 / 10,525 = 5,018.1.
     /// </summary>
     [Fact]
-    public void My_share_is_never_more_than_the_tab_still_owes()
+    public void My_share_is_never_more_than_the_tab_still_owes_for_somebody_who_sees_the_total()
     {
         var bill = Bill(paidAgainstTheTable: 20_000L);
 
         Assert.Equal(5_520L, bill.RemainingAmd);
-        Assert.Equal(5_520L, BillQuote.For(bill, Host, BillScope.MyShare, tipPercent: null).AmountAmd);
-        Assert.Equal(5_520L, BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: null).AmountAmd);
+
+        var mine = BillQuote.For(bill, Host, BillScope.MyShare, tipPercent: 10, canSeeTableTotal: true);
+        Assert.Equal(5_520L, mine.AmountAmd);
+        Assert.Equal(502L, mine.TipAmd);
+
+        Assert.Equal(
+            5_520L,
+            BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: null, canSeeTableTotal: true).AmountAmd);
+    }
+
+    /// <summary>
+    /// The cap would quote a guest the table's balance whenever it was the smaller number - and the
+    /// balance is what the host hid from them. So their quote is their own share, whatever the table
+    /// owes; a waiter's keypad still refuses more than the tab owes when the cash is taken.
+    /// </summary>
+    [Fact]
+    public void A_guest_who_cannot_see_the_total_is_quoted_their_own_share_uncapped()
+    {
+        var bill = Bill(paidAgainstTheTable: 20_000L);
+
+        var mine = BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10, canSeeTableTotal: false);
+
+        // All of guest A's 8,433, though the table owes 5,520; the tip on all of their 7,666.
+        Assert.Equal(8_433L, mine.AmountAmd);
+        Assert.Equal(767L, mine.TipAmd);
+        Assert.NotEqual(bill.RemainingAmd, mine.AmountAmd);
+    }
+
+    [Fact]
+    public void The_whole_bill_is_not_priced_for_somebody_who_may_not_see_the_total()
+    {
+        Assert.Throws<ArgumentException>(
+            () => BillQuote.For(Bill(), GuestA, BillScope.WholeBill, tipPercent: null, canSeeTableTotal: false));
     }
 
     [Fact]
@@ -107,15 +202,21 @@ public sealed class BillRequestTests
         var bill = Bill(paidByGuestA: 8_433L);
 
         var refused = Assert.Throws<FieldValidationException>(
-            () => BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10));
+            () => BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10, canSeeTableTotal: true));
 
         var violation = Assert.Single(refused.Violations);
         Assert.Equal("billScope", violation.Field);
         Assert.Equal(BillQuote.NothingLeftToPay, violation.Message);
         Assert.Equal((int)BillScope.MyShare, violation.Value);
 
+        // Refused the same way whether or not the total is in sight: it is the guest's own share.
+        Assert.Equal("billScope", Assert.Throws<FieldValidationException>(
+            () => BillQuote.For(bill, GuestA, BillScope.MyShare, tipPercent: 10, canSeeTableTotal: false)).Field);
+
         // The rest of the table still owes, so the whole bill is still a thing to bring.
-        Assert.Equal(17_087L, BillQuote.For(bill, GuestA, BillScope.WholeBill, tipPercent: null).AmountAmd);
+        Assert.Equal(
+            17_087L,
+            BillQuote.For(bill, GuestA, BillScope.WholeBill, tipPercent: null, canSeeTableTotal: true).AmountAmd);
     }
 
     [Fact]
@@ -124,16 +225,17 @@ public sealed class BillRequestTests
         var bill = Bill(paidAgainstTheTable: 25_520L);
 
         Assert.Equal("billScope", Assert.Throws<FieldValidationException>(
-            () => BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: null)).Field);
+            () => BillQuote.For(bill, Host, BillScope.WholeBill, tipPercent: null, canSeeTableTotal: true)).Field);
         Assert.Equal("billScope", Assert.Throws<FieldValidationException>(
-            () => BillQuote.For(bill, Host, BillScope.MyShare, tipPercent: null)).Field);
+            () => BillQuote.For(bill, Host, BillScope.MyShare, tipPercent: null, canSeeTableTotal: true)).Field);
     }
 
     [Fact]
     public void Somebody_with_no_share_on_the_bill_has_nothing_of_their_own_to_pay()
     {
         Assert.Equal("billScope", Assert.Throws<FieldValidationException>(
-            () => BillQuote.For(Bill(), Guid.CreateVersion7(), BillScope.MyShare, tipPercent: null)).Field);
+            () => BillQuote.For(
+                Bill(), Guid.CreateVersion7(), BillScope.MyShare, tipPercent: null, canSeeTableTotal: true)).Field);
     }
 
     // ------------------------------------------------------------ the shape
@@ -228,10 +330,61 @@ public sealed class BillRequestTests
             ServiceRequestPreset.TheBill, Now, bill: quote with { TipAmd = null }));
     }
 
+    // ------------------------------------------------------------ asking again
+
+    [Fact]
+    public void Asking_for_the_bill_again_supersedes_an_open_request_and_leaves_it_unacknowledged()
+    {
+        var request = new ServiceRequest(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), GuestA,
+            ServiceRequestPreset.TheBill, Now, bill: new BillQuote(BillScope.MyShare, 8_433L, 5, 383L));
+
+        Assert.True(request.IsOpen);
+        Assert.True(request.Supersede(Now.AddMinutes(1)));
+
+        Assert.False(request.IsOpen);
+        Assert.Equal(Now.AddMinutes(1), request.SupersededAtUtc);
+
+        // Nobody went: it was replaced, not answered.
+        Assert.Null(request.AcknowledgedAtUtc);
+        Assert.Null(request.AcknowledgedByStaffId);
+
+        // Twice is a no-op, and the first stamp stands.
+        Assert.False(request.Supersede(Now.AddMinutes(2)));
+        Assert.Equal(Now.AddMinutes(1), request.SupersededAtUtc);
+
+        // A superseded request is no longer anybody's to acknowledge.
+        Assert.False(request.Acknowledge(Now.AddMinutes(3), Guid.CreateVersion7()));
+    }
+
+    [Fact]
+    public void A_request_a_waiter_already_picked_up_stays_picked_up()
+    {
+        var request = new ServiceRequest(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), GuestA,
+            ServiceRequestPreset.TheBill, Now);
+
+        Assert.True(request.Acknowledge(Now.AddMinutes(1), Guid.CreateVersion7()));
+
+        Assert.False(request.Supersede(Now.AddMinutes(2)));
+        Assert.Null(request.SupersededAtUtc);
+    }
+
+    [Fact]
+    public void Only_a_request_for_the_bill_can_be_superseded()
+    {
+        var water = new ServiceRequest(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), GuestA,
+            ServiceRequestPreset.Water, Now);
+
+        Assert.Throws<DomainStateException>(() => water.Supersede(Now.AddMinutes(1)));
+        Assert.True(water.IsOpen);
+    }
+
     // ------------------------------------------------------------ helpers
 
     /// <summary>The documented example, with whatever has been paid against it.</summary>
-    private static TabBill Bill(long paidByGuestA = 0L, long paidAgainstTheTable = 0L)
+    private static TabBill Bill(long paidByGuestA = 0L, long paidByGuestB = 0L, long paidAgainstTheTable = 0L)
     {
         var wine = Guid.CreateVersion7();
 
@@ -247,10 +400,14 @@ public sealed class BillRequestTests
         [
             new(Host, IsHost: true, ParticipantStatus.Approved),
             new(GuestA, IsHost: false, ParticipantStatus.Approved, PaidAmd: paidByGuestA),
-            new(GuestB, IsHost: false, ParticipantStatus.Approved),
+            new(GuestB, IsHost: false, ParticipantStatus.Approved, PaidAmd: paidByGuestB),
         ];
 
         return TabBilling.Compute(
-            lines, [], participants, serviceChargePercent: 10m, paidAmd: paidByGuestA + paidAgainstTheTable);
+            lines,
+            [],
+            participants,
+            serviceChargePercent: 10m,
+            paidAmd: paidByGuestA + paidByGuestB + paidAgainstTheTable);
     }
 }

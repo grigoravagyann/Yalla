@@ -840,14 +840,24 @@ public class TabEndpointTests(SqlServerFixture fixture)
         Assert.Equal(5, guestsAsk.GetProperty("tipPercent").GetInt32());
         Assert.Equal(160L, guestsAsk.GetProperty("tipAmd").GetInt64());
 
-        // And so does the tab's own stream, for the other phones at the table.
-        var events = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}/events");
+        // The tab's own stream says what was asked for and never how much. The guest the total is
+        // hidden from reads it too, and the host's whole-bill ask would otherwise hand them the
+        // balance.
+        var events = await ReadAsync(guestClient, $"/api/tabs/{host.TabId}/events");
         var raised = events.GetProperty("events").EnumerateArray()
             .Where(e => e.GetProperty("type").GetInt32() == (int)TabEventType.ServiceRequested)
             .Select(e => e.GetProperty("payload"))
-            .Single(p => p.GetProperty("serviceRequestId").GetGuid() == mine.GetProperty("serviceRequestId").GetGuid());
-        Assert.Equal(3_520L, raised.GetProperty("billAmountAmd").GetInt64());
-        Assert.Equal(160L, raised.GetProperty("tipAmd").GetInt64());
+            .ToList();
+
+        var hostsAsk = raised.Single(p => p.GetProperty("serviceRequestId").GetGuid()
+                                          == whole.GetProperty("serviceRequestId").GetGuid());
+        Assert.Equal(1, hostsAsk.GetProperty("billScope").GetInt32());
+        Assert.Equal(10, hostsAsk.GetProperty("tipPercent").GetInt32());
+        Assert.All(raised, p =>
+        {
+            Assert.False(p.TryGetProperty("billAmountAmd", out _));
+            Assert.False(p.TryGetProperty("tipAmd", out _));
+        });
 
         // The waiter brings it and takes it, tip included.
         var paid = await waiter.PostAsJsonAsync(
@@ -873,11 +883,24 @@ public class TabEndpointTests(SqlServerFixture fixture)
         var staffView = await ReadAsync(waiter, $"/api/tabs/{host.TabId}/participants");
         Assert.Equal(160L, staffView.GetProperty("tipsAmd").GetInt64());
 
-        // What is left of the whole bill is the host's part; the tip is still on the whole subtotal.
+        // What is left of the whole bill is the host's part, and so is the tip: on the items still
+        // unpaid, 5,600 x 2,640 / 6,160 = 2,400 - the guest's khachapuri is paid for and tipped on.
         var rest = await RaisedAsync(await hostClient.PostAsJsonAsync(
             $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 1, tipPercent = 10 }));
         Assert.Equal(2_640L, rest.GetProperty("billAmountAmd").GetInt64());
-        Assert.Equal(560L, rest.GetProperty("tipAmd").GetInt64());
+        Assert.Equal(240L, rest.GetProperty("tipAmd").GetInt64());
+
+        // Asking again replaced the host's earlier asks for the bill on the waiter's list - the first
+        // whole bill and the plain one - and left the guest's own alone.
+        var stillOpen = (await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/service-requests"))
+            .EnumerateArray()
+            .Select(r => r.GetProperty("serviceRequestId").GetGuid())
+            .ToList();
+
+        Assert.Contains(rest.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.Contains(mine.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.DoesNotContain(whole.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.DoesNotContain(plain.GetProperty("serviceRequestId").GetGuid(), stillOpen);
     }
 
     // ------------------------------------------------------------ faces on the roster

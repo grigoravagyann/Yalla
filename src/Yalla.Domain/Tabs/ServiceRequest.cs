@@ -27,6 +27,12 @@ namespace Yalla.Domain.Tabs;
 /// choice (<see cref="BillQuote"/>). The four bill columns travel together: all null on every other
 /// request and on a plain "the bill, please", all set - the tip pair as a pair - on one that chose.
 /// </para>
+/// <para>
+/// <b>Asking again replaces the earlier ask.</b> A diner who asked for their share and then, on the
+/// same sheet, for the whole bill has one bill in mind - the latest. Their earlier open request for
+/// the bill is <see cref="Supersede">superseded</see> by the new one and leaves the waiter's list, so
+/// nobody walks over with a figure the table has already changed its mind about.
+/// </para>
 /// </remarks>
 public sealed class ServiceRequest : Entity
 {
@@ -84,7 +90,14 @@ public sealed class ServiceRequest : Entity
 
     public StaffMember? AcknowledgedByStaff { get; private set; }
 
-    public bool IsOpen => AcknowledgedAtUtc is null;
+    /// <summary>
+    /// When the same participant asked for the bill again on this tab, and this request stopped being
+    /// the one to bring. Null while it still is, and on every request that is not for the bill.
+    /// </summary>
+    public DateTime? SupersededAtUtc { get; private set; }
+
+    /// <summary>Still waiting for somebody: neither seen by a waiter nor replaced by a later ask.</summary>
+    public bool IsOpen => AcknowledgedAtUtc is null && SupersededAtUtc is null;
 
     private ServiceRequest()
     {
@@ -220,6 +233,34 @@ public sealed class ServiceRequest : Entity
 
         AcknowledgedAtUtc = Guard.NotLocalTime(acknowledgedAtUtc, nameof(acknowledgedAtUtc));
         AcknowledgedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        return true;
+    }
+
+    /// <summary>
+    /// The same participant asked for the bill again: this request is no longer the one to bring.
+    /// </summary>
+    /// <remarks>
+    /// Not an acknowledgement - nobody went - so <see cref="AcknowledgedAtUtc"/> stays empty and the
+    /// record still says the table waited unanswered. A request a waiter already picked up stays
+    /// picked up: superseding one that is not open is a no-op, as acknowledging twice is.
+    /// </remarks>
+    /// <returns>True when this request was open and is now superseded.</returns>
+    /// <exception cref="DomainStateException">The request is not for the bill.</exception>
+    public bool Supersede(DateTime supersededAtUtc)
+    {
+        if (Preset != ServiceRequestPreset.TheBill)
+        {
+            throw new DomainStateException(
+                $"Only a request for the bill is replaced by asking again; this one is for {Preset}.");
+        }
+
+        if (!IsOpen)
+        {
+            return false;
+        }
+
+        SupersededAtUtc = Guard.NotLocalTime(supersededAtUtc, nameof(supersededAtUtc));
 
         return true;
     }

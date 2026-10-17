@@ -12,7 +12,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    [Migration("20261017151027_BillRequestTip")]
+    [Migration("20261017180602_BillRequestTip")]
     partial class BillRequestTip
     {
         /// <inheritdoc />
@@ -1231,6 +1231,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("RequestedByParticipantId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<Guid>("TabId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1250,13 +1253,13 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("BranchId", "CreatedAtUtc")
                         .HasDatabaseName("IX_ServiceRequests_Open")
-                        .HasFilter("[AcknowledgedAtUtc] IS NULL");
+                        .HasFilter("[AcknowledgedAtUtc] IS NULL AND [SupersededAtUtc] IS NULL");
 
                     b.HasIndex("TabId", "CreatedAtUtc");
 
                     b.ToTable("ServiceRequests", null, t =>
                         {
-                            t.HasCheckConstraint("CK_ServiceRequests_Bill", "([BillScope] IS NULL AND [BillAmountAmd] IS NULL AND [TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([Preset] = 3 AND [BillScope] IS NOT NULL AND [BillAmountAmd] > 0 AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([TipPercent] >= 0 AND [TipAmd] >= 0)))");
+                            t.HasCheckConstraint("CK_ServiceRequests_Bill", "([BillScope] IS NULL AND [BillAmountAmd] IS NULL AND [TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([Preset] = 3 AND [BillScope] IS NOT NULL AND [BillScope] IN (1, 2) AND [BillAmountAmd] IS NOT NULL AND [BillAmountAmd] > 0 AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([TipPercent] IS NOT NULL AND [TipAmd] IS NOT NULL AND [TipPercent] BETWEEN 0 AND 25 AND [TipAmd] >= 0)))");
                         });
                 });
 
@@ -1704,6 +1707,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<string>("Cuisine")
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("District")
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
 
                     b.Property<int>("FloorPlanVersion")
                         .IsConcurrencyToken()

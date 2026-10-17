@@ -397,11 +397,16 @@ the answer is **409 `concurrent-update`** - a move never resurrects a cancelled 
 
 **The status is decided again**, by creation's rules with the new party size (`DecideStatusAsync`):
 auto-confirm off or a party over the threshold goes to `PendingApproval`, and so does a diner over the
-no-show threshold; otherwise `Confirmed`. A venue that approved twelve at seven has not approved them
-at nine, so going back for approval clears `ConfirmedAtUtc`; a party that shrinks under the threshold
-is confirmed without anybody. A booking can therefore be approved twice. The second approval's push
-is its own message - `reservation:{id}:approved:{yyyyMMddHHmmssfff}` once the first key is taken -
-rather than a collision with the first.
+no-show threshold; otherwise `Confirmed`. **One exception, for a booking that is `Confirmed`**: when
+the only reason the re-decision would ask for approval is the party-size threshold and the new party is
+**not larger** than the booking's current one, it stays `Confirmed` and keeps its `ConfirmedAtUtc`. The
+venue said yes to that many people; moving them to another table or time does not undo it. A party
+that grows past its current size is asked about again, and the other two reasons are asked as for any
+booking - a branch with auto-confirm off sees every move, and a diner whose no-shows cost them instant
+confirmation loses it on a move too. Going back for approval clears `ConfirmedAtUtc`; a party that
+shrinks under the threshold is confirmed without anybody. A booking can therefore be approved twice.
+The second approval's push is its own message - `reservation:{id}:approved:{yyyyMMddHHmmssfff}` once
+the first key is taken - rather than a collision with the first.
 
 **Reminders are replaced, not edited.** Both the reminder and the late nudge name the old time, so the
 unsent ones are cancelled exactly as a cancellation cancels them (`IOutbox.CancelAsync` by the booking's
@@ -417,7 +422,11 @@ the diner as actor) in the same save as the move, and checked before the lock an
 replay answers `200` with the booking **as it stands now** and `wasReplay: true`, moving nothing. The
 record holds which booking and where it went, never the view - the view carries the guest's name and
 number. The same id on another command - another diner's, another booking's, a table command - is
-`409 client-command-id-in-use`, revealing nothing about it.
+`409 client-command-id-in-use`, revealing nothing about it. **So is the same id on a different change
+of the same booking**: a replay must name the table, the start (its local date and time, in the
+branch's zone) and the party size the record holds. Answering `wasReplay` with the booking still at
+eight to a command that asked for nine would tell the phone a move happened that did not; the 409 is
+the client's cue to mint a fresh id for the new change.
 
 ## 4. The rules, and why none of them is a number in code
 

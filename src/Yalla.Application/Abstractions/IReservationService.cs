@@ -52,11 +52,15 @@ public interface IReservationService
     /// </para>
     /// <para>
     /// The status is decided again by creation's rules, so a move can confirm a booking, keep it
-    /// confirmed, or send it back for approval. Its reminder and late nudge are replaced with ones for
-    /// the new time.
+    /// confirmed, or send it back for approval - except that a confirmed booking whose party does not
+    /// grow is not sent back for its size alone. Its reminder and late nudge are replaced with ones
+    /// for the new time.
     /// </para>
     /// </remarks>
     /// <exception cref="KeyNotFoundException">No such booking, or it is somebody else's - one answer for both.</exception>
+    /// <exception cref="ClientCommandIdAlreadyUsedException">
+    /// The <c>ClientCommandId</c> belongs to another command, or to a different change of this booking.
+    /// </exception>
     /// <exception cref="Domain.Occupancy.ReservationNotChangeableException">
     /// The booking is not pending or confirmed, or it has started.
     /// </exception>

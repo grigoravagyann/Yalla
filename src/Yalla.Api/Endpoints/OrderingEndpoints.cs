@@ -269,16 +269,22 @@ public static class OrderingEndpoints
                 + "**Asking for the bill from the pay sheet.** With `preset` 3 a request may carry "
                 + "`billScope` (1 WholeBill, 2 MyShare) and `tipPercent` (0 to 25). The server prices "
                 + "it from the tab's own arithmetic - the same numbers `/shares` reports - and the "
-                + "response, the waiter's list and the `ServiceRequested` event all carry "
-                + "`billAmountAmd` and `tipAmd`:\n"
-                + "- WholeBill: the tab's remaining balance; the tip is on the tab subtotal. Only for "
-                + "somebody who can see the table total - otherwise 403.\n"
-                + "- MyShare: what the asker still owes of their own share (`shareAmd` less `paidAmd`), "
-                + "never more than the tab owes; the tip is on their `personalAmd`.\n\n"
-                + "The service charge is inside `billAmountAmd`; the tip is **outside** it, as a cash "
-                + "payment's `tipAmd` is outside the balance. Either field on another preset, a tip "
-                + "with no scope, or a tip outside 0 to 25 is a 422 naming the field; a scope with "
-                + "nothing left to pay is a 422 on `billScope`.")
+                + "response and the waiter's list carry `billAmountAmd` and `tipAmd`:\n"
+                + "- WholeBill: the tab's remaining balance. Only for somebody who can see the table "
+                + "total - otherwise 403.\n"
+                + "- MyShare: what the asker still owes of their own share (`shareAmd` less `paidAmd`); "
+                + "for somebody who can see the table total, never more than the tab owes.\n\n"
+                + "The tip is on the **unpaid part of the items**: the tab subtotal (WholeBill) or the "
+                + "asker's `personalAmd` (MyShare), in the proportion `billAmountAmd` bears to the "
+                + "total or the share - all of the items when nothing has been paid. The service "
+                + "charge is inside `billAmountAmd`; the tip is **outside** it, as a cash payment's "
+                + "`tipAmd` is outside the balance. Either field on another preset, a tip with no "
+                + "scope, or a tip outside 0 to 25 is a 422 naming the field; a scope with nothing "
+                + "left to pay is a 422 on `billScope`.\n\n"
+                + "A request with a `billScope` **replaces** the asker's own earlier open request for "
+                + "the bill on this tab: that one leaves the waiter's list. The `ServiceRequested` "
+                + "event carries `billScope` and `tipPercent` but never the amounts - every phone at "
+                + "the table reads the stream.")
             .Produces<ServiceRequestView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
@@ -303,7 +309,9 @@ public static class OrderingEndpoints
                 + "thing that just came in is the one nobody has walked to yet.\n\n"
                 + "A request for the bill from the diner's pay sheet carries `billScope`, "
                 + "`billAmountAmd`, `tipPercent` and `tipAmd`: the amount to bring, priced when the "
-                + "diner asked, and the tip to expect on top of it - what the cash keypad opens with.")
+                + "diner asked, and the tip to expect on top of it - what the cash keypad opens with. "
+                + "One the same diner has since replaced with a newer request for the bill is not "
+                + "listed: the newer one is what to bring.")
             .Produces<IReadOnlyList<ServiceRequestView>>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.");
 

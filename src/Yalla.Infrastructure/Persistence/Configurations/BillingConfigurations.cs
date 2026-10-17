@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
@@ -58,16 +59,26 @@ internal sealed class ServiceRequestConfiguration : EntityConfiguration<ServiceR
     protected override void ConfigureEntity(EntityTypeBuilder<ServiceRequest> builder)
     {
         // The bill columns travel together, as the domain constructor has them: none at all, or a
-        // request for the bill with a scope and a positive amount, its tip a percentage and an
-        // amount or neither. Held here as well so a row written around the domain still reads as
-        // one thing to the waiter's screen.
+        // request for the bill with a defined scope and a positive amount, its tip a percentage in
+        // range and an amount, or neither. Held here as well so a row written around the domain still
+        // reads as one thing to the waiter's screen.
+        //
+        // Every comparison carries its own IS NOT NULL. A CHECK passes when its predicate is UNKNOWN,
+        // not only when it is TRUE, so "[BillAmountAmd] > 0" alone lets a missing amount through and
+        // "[TipPercent] >= 0 AND [TipAmd] >= 0" lets half a tip through. Guarded, each branch is TRUE
+        // or FALSE and nothing falls between them. SupersededAtUtc is left out on purpose: any
+        // request for the bill may be replaced by a later one, whatever it carries.
         builder.ToTable(
             "ServiceRequests",
             table => table.HasCheckConstraint(
                 "CK_ServiceRequests_Bill",
                 "([BillScope] IS NULL AND [BillAmountAmd] IS NULL AND [TipPercent] IS NULL AND [TipAmd] IS NULL) "
-                + $"OR ([Preset] = {(int)ServiceRequestPreset.TheBill} AND [BillScope] IS NOT NULL AND [BillAmountAmd] > 0 "
-                + "AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([TipPercent] >= 0 AND [TipAmd] >= 0)))"));
+                + $"OR ([Preset] = {(int)ServiceRequestPreset.TheBill} "
+                + $"AND [BillScope] IS NOT NULL AND [BillScope] IN ({(int)BillScope.WholeBill}, {(int)BillScope.MyShare}) "
+                + "AND [BillAmountAmd] IS NOT NULL AND [BillAmountAmd] > 0 "
+                + "AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) "
+                + "OR ([TipPercent] IS NOT NULL AND [TipAmd] IS NOT NULL "
+                + $"AND [TipPercent] BETWEEN 0 AND {BillQuote.MaxTipPercent} AND [TipAmd] >= 0)))"));
 
         builder.Property(r => r.Preset).IsRequired();
 
@@ -79,6 +90,7 @@ internal sealed class ServiceRequestConfiguration : EntityConfiguration<ServiceR
         builder.Property(r => r.TipAmd);
 
         builder.Property(r => r.AcknowledgedAtUtc);
+        builder.Property(r => r.SupersededAtUtc);
 
         builder.Ignore(r => r.IsOpen);
 
@@ -108,10 +120,10 @@ internal sealed class ServiceRequestConfiguration : EntityConfiguration<ServiceR
             .OnDelete(DeleteBehavior.Restrict);
 
         // The floor screen's question, several times a minute: what is outstanding in this branch.
-        // Filtered on the open ones, because that is the only set anybody ever asks for and the
-        // acknowledged rows accumulate for the whole evening.
+        // Filtered on the open ones - neither acknowledged nor superseded - because that is the only
+        // set anybody ever asks for, and the closed rows accumulate for the whole evening.
         builder.HasIndex(r => new { r.BranchId, r.CreatedAtUtc })
-            .HasFilter("[AcknowledgedAtUtc] IS NULL")
+            .HasFilter("[AcknowledgedAtUtc] IS NULL AND [SupersededAtUtc] IS NULL")
             .HasDatabaseName("IX_ServiceRequests_Open");
 
         // The rate limit reads this: how many has this tab raised recently.

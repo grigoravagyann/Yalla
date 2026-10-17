@@ -110,7 +110,9 @@ public interface IServiceRequestService
     /// <remarks>
     /// A request for the bill may name a <paramref name="billScope"/> and a
     /// <paramref name="tipPercent"/>; the amount and the tip are then priced here, from the tab's own
-    /// arithmetic, and stored with the request. See <c>Domain.Billing.BillQuote</c>.
+    /// arithmetic, and stored with the request. See <c>Domain.Billing.BillQuote</c>. Such a request
+    /// supersedes the asker's own earlier open request for the bill on the tab, which then leaves
+    /// <see cref="GetOpenAsync"/>.
     /// </remarks>
     /// <param name="tabId">The tab.</param>
     /// <param name="actingParticipantId">Who is asking.</param>
@@ -136,7 +138,10 @@ public interface IServiceRequestService
         int? tipPercent = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>What is outstanding in this branch, newest first. <b>Waiter or above.</b></summary>
+    /// <summary>
+    /// What is outstanding in this branch - neither acknowledged nor superseded - newest first.
+    /// <b>Waiter or above.</b>
+    /// </summary>
     Task<IReadOnlyList<ServiceRequestView>> GetOpenAsync(
         Guid branchId,
         CancellationToken cancellationToken = default);

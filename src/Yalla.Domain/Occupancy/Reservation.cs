@@ -627,9 +627,10 @@ public sealed class Reservation : Entity
     /// </para>
     /// <para>
     /// <b>The status is decided again</b>, by the caller and by the same rules as creation: a move can
-    /// keep a booking confirmed, confirm one that was waiting, or send one back for approval - a venue
-    /// that approved twelve people at seven has not approved them at nine. Sending it back clears
-    /// <see cref="ConfirmedAtUtc"/>, because that approval was for a different slot.
+    /// keep a booking confirmed, confirm one that was waiting, or send one back for approval - a party
+    /// that grew past what the venue confirmed, a venue that approves every booking, a diner whose
+    /// no-shows cost them instant confirmation. Sending it back clears <see cref="ConfirmedAtUtc"/>,
+    /// because that approval was for a different booking.
     /// </para>
     /// </remarks>
     /// <param name="diningTableId">The table it moves to - the same one, or another at the branch.</param>

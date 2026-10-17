@@ -154,7 +154,8 @@ internal sealed class ReservationService(
 
         Validate(command.LocalDate, command.LocalTime, command.PartySize, table, pinned, branch, policy, zone, proposed, nowUtc);
 
-        var status = await DecideStatusAsync(command.PartySize, policy, dinerUserId, nowUtc, cancellationToken);
+        var status = await DecideStatusAsync(
+            command.PartySize, approvedPartySize: null, policy, dinerUserId, nowUtc, cancellationToken);
 
         var reservation = Reservation.Create(
             branchId: branch.Id,
@@ -277,9 +278,14 @@ internal sealed class ReservationService(
             throw new KeyNotFoundException($"Reservation {command.ReservationId} was not found.");
         }
 
+        // The branch's zone first, because a replay is judged by where the change asked to go: the
+        // start a retry names is a local time, and the record holds the instant it became.
+        var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+        var zone = BranchZone.For(branch.TimeZoneId);
+
         // Cheap path first, as for creation: a retry that arrives after the original committed is
         // answered with the booking as it stands and never reaches the lock.
-        if (await IsRescheduleReplayAsync(command, dinerUserId, cancellationToken))
+        if (await IsRescheduleReplayAsync(command, dinerUserId, zone, cancellationToken))
         {
             return await ReplayViewAsync(reservation.Id, cancellationToken);
         }
@@ -291,8 +297,6 @@ internal sealed class ReservationService(
         // looking for another table for nothing.
         reservation.RequireChangeableAt(nowUtc);
 
-        var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
-
         // Every gate creation applies: a move is a new promise about a slot, so a venue that stopped
         // trading - or stopped taking bookings from where this one came from - does not make it.
         VenueGate.RequireOpenForBusiness(branch);
@@ -301,7 +305,6 @@ internal sealed class ReservationService(
         // At the booking's own branch: a move changes the slot, never the venue.
         var table = await LoadTableAsync(reservation.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
-        var zone = BranchZone.For(branch.TimeZoneId);
 
         var startUtc = zone.ToUtc(command.LocalDate, command.LocalTime);
         var proposed = new BookedInterval(startUtc, startUtc.AddMinutes(policy.TurnTimeMinutes));
@@ -310,9 +313,18 @@ internal sealed class ReservationService(
         Validate(
             command.LocalDate, command.LocalTime, command.PartySize, table, pinned, branch, policy, zone, proposed, nowUtc);
 
-        // Decided again, by creation's rules: a venue that approved twelve people at seven has not
-        // approved them at nine, and a party that shrank under the threshold no longer needs anybody.
-        var status = await DecideStatusAsync(command.PartySize, policy, dinerUserId, nowUtc, cancellationToken);
+        // Decided again, by creation's rules - with one thing creation never has: a party somebody
+        // already confirmed. Twelve people the venue confirmed are still twelve people it has said
+        // yes to at nine instead of seven, so the size threshold alone does not send them back; a
+        // party that grew past what was confirmed does, and so do a venue that approves every
+        // booking and a no-show history, which are about the diner and the venue, not the size.
+        // A party that shrank under the threshold no longer needs anybody.
+        var approvedPartySize = reservation.Status == ReservationStatus.Confirmed
+            ? reservation.PartySize
+            : (int?)null;
+
+        var status = await DecideStatusAsync(
+            command.PartySize, approvedPartySize, policy, dinerUserId, nowUtc, cancellationToken);
 
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
@@ -328,7 +340,7 @@ internal sealed class ReservationService(
         {
             // A retry of the same change committed while this one waited. Asked again out here
             // because the record the lock found may be somebody else's command, which is refused.
-            await IsRescheduleReplayAsync(command, dinerUserId, cancellationToken);
+            await IsRescheduleReplayAsync(command, dinerUserId, zone, cancellationToken);
 
             return await ReplayViewAsync(reservation.Id, cancellationToken);
         }
@@ -448,15 +460,25 @@ internal sealed class ReservationService(
     /// Whether this change was already applied - or throws when the id belongs to some other command.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A replay is this diner sending this change of this booking again. The command id is unique
     /// across every command anybody sends, so the record holding it may be another diner's change,
     /// a change of another booking, or a waiter's table command - and answering any of those as a
     /// replay would hand the caller a booking that is not theirs. Those are a collision, refused as
     /// <c>client-command-id-in-use</c>.
+    /// </para>
+    /// <para>
+    /// <b>So is a different change under the same id.</b> A phone that reuses the id it sent for
+    /// "eight o'clock at table 4" to ask for "nine at table 6" is not retrying, and answering
+    /// <c>wasReplay</c> with the booking still at eight would tell it the nine o'clock move was done.
+    /// The record's table, start and party size must be the command's; anything else is the same
+    /// 409, and the client mints a fresh id for the new change.
+    /// </para>
     /// </remarks>
     private async Task<bool> IsRescheduleReplayAsync(
         RescheduleReservationCommand command,
         Guid dinerUserId,
+        BranchZone zone,
         CancellationToken cancellationToken)
     {
         var processed = await db.ProcessedCommands
@@ -472,11 +494,11 @@ internal sealed class ReservationService(
 
         if (processed.CommandType != RescheduleCommandType
             || processed.ActorId != dinerUserId
-            || JsonSerializer.Deserialize<RescheduleRecord>(processed.ResponseJson, RecordJson)?.ReservationId
-               != command.ReservationId)
+            || JsonSerializer.Deserialize<RescheduleRecord>(processed.ResponseJson, RecordJson) is not { } record
+            || !record.Records(command, zone))
         {
             logger.LogWarning(
-                "Change command {ClientCommandId} reuses an id already held by another command.",
+                "Change command {ClientCommandId} reuses an id already held by another command or another change.",
                 command.ClientCommandId);
 
             throw new ClientCommandIdAlreadyUsedException(
@@ -1022,10 +1044,23 @@ internal sealed class ReservationService(
     /// </summary>
     /// <remarks>
     /// Asked of a new booking and again of a moved one, with the party size it now has: the same
-    /// three reasons, in the same order, either way.
+    /// three reasons, in the same order, either way. A moved booking that was confirmed passes its
+    /// confirmed size as <paramref name="approvedPartySize"/>, and a party no larger than that is not
+    /// held back by the size threshold - the venue has said yes to that many people already. The
+    /// other two reasons are asked as for any booking.
     /// </remarks>
+    /// <param name="partySize">How many are coming.</param>
+    /// <param name="approvedPartySize">
+    /// The party size the booking was confirmed for, on a move of a confirmed booking; null on a new
+    /// booking and on a move of one still waiting.
+    /// </param>
+    /// <param name="policy">The branch's policy.</param>
+    /// <param name="dinerUserId">Whose booking, for the no-show count.</param>
+    /// <param name="nowUtc">Now, for the no-show window.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
     private async Task<StatusDecision> DecideStatusAsync(
         int partySize,
+        int? approvedPartySize,
         ReservationPolicy policy,
         Guid dinerUserId,
         DateTime nowUtc,
@@ -1037,7 +1072,9 @@ internal sealed class ReservationService(
                 ReservationStatus.PendingApproval, ApprovalTrigger.BranchApprovesEveryBooking);
         }
 
-        if (ReservationRules.NeedsApproval(partySize, policy))
+        var alreadyConfirmedThisMany = approvedPartySize is { } approved && partySize <= approved;
+
+        if (!alreadyConfirmedThisMany && ReservationRules.NeedsApproval(partySize, policy))
         {
             // Not a rejection. Twelve people is the most valuable booking of the night and the one
             // most likely to need tables moved, so a human looks at it.
@@ -1737,7 +1774,24 @@ internal sealed class ReservationService(
         Guid TableId,
         DateTime StartUtc,
         int PartySize,
-        ReservationStatus Status);
+        ReservationStatus Status)
+    {
+        /// <summary>
+        /// Whether this is the record of <paramref name="command"/>: the same booking, moved to the
+        /// same table, start and party size.
+        /// </summary>
+        /// <remarks>
+        /// The start is compared as the instant the command's local date and time are in the branch's
+        /// zone, which is how the move computed it. A local time the zone skips names no instant, so
+        /// it cannot be the change that was recorded.
+        /// </remarks>
+        public bool Records(RescheduleReservationCommand command, BranchZone zone) =>
+            ReservationId == command.ReservationId
+            && TableId == command.TableId
+            && PartySize == command.PartySize
+            && zone.TryToUtc(command.LocalDate, command.LocalTime, out var startUtc)
+            && StartUtc == startUtc;
+    }
 
     private static readonly JsonSerializerOptions RecordJson = new(JsonSerializerDefaults.Web);
 

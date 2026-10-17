@@ -6,6 +6,7 @@ using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Occupancy;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Services;
 
 namespace Yalla.UnitTests.Integration;
@@ -293,11 +294,18 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         // The approval push went out before the diner changed their mind again.
         await MarkSentAsync(OutboxMessageTypes.KeyFor("reservation", booked.Id, "approved"), clock);
 
-        // A venue that approved nine at six has not approved nine at eight.
+        // Nine people the venue said yes to are still nine people it said yes to at eight.
         var later = await diner.RescheduleAsync(Move(booked.Id, tenSeater.Id, EightPm, partySize: 9));
 
-        Assert.Equal(ReservationStatus.PendingApproval, later.Status);
-        Assert.Null(later.ConfirmedAtUtc);
+        Assert.Equal(ReservationStatus.Confirmed, later.Status);
+        Assert.Equal(approved.ConfirmedAtUtc, later.ConfirmedAtUtc);
+
+        // Ten is more than anybody approved: a human looks again.
+        var grownAgain = await diner.RescheduleAsync(Move(booked.Id, tenSeater.Id, EightPm, partySize: 10));
+
+        Assert.Equal(ReservationStatus.PendingApproval, grownAgain.Status);
+        Assert.Equal(ApprovalTrigger.LargeParty, grownAgain.AwaitingApprovalBecause);
+        Assert.Null(grownAgain.ConfirmedAtUtc);
 
         // The second approval is its own message, not a collision with the first one's key.
         clock.Advance(TimeSpan.FromMinutes(5));
@@ -313,6 +321,98 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
 
         Assert.Equal(ReservationStatus.Confirmed, smaller.Status);
         Assert.Null(smaller.AwaitingApprovalBecause);
+    }
+
+    /// <summary>
+    /// A large party a human confirmed keeps that confirmation when it moves to another table or time
+    /// without growing - the venue said yes to that many people, not to a slot.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_confirmed_large_party_that_moves_without_growing_stays_confirmed()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var tenSeater = await TestBranchBuilder.AddTableAsync(db, branch, "12", seats: 10);
+        var otherTenSeater = await TestBranchBuilder.AddTableAsync(db, branch, "14", seats: 10);
+
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+        var manager = fixture.CreateReservationService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        var booked = await diner.CreateAsync(Booking(branch, tenSeater.Id, SixPm) with { PartySize = 10 });
+        Assert.Equal(ApprovalTrigger.LargeParty, booked.AwaitingApprovalBecause);
+
+        var approved = await manager.ApproveAsync(new DecideReservationCommand(booked.Id));
+        Assert.Equal(ReservationStatus.Confirmed, approved.Status);
+
+        // The approval push went out before the diner moved the booking.
+        await MarkSentAsync(OutboxMessageTypes.KeyFor("reservation", booked.Id, "approved"), clock);
+
+        // Another table, another time, the same ten.
+        var moved = await diner.RescheduleAsync(Move(booked.Id, otherTenSeater.Id, EightPm, partySize: 10));
+
+        Assert.Equal(ReservationStatus.Confirmed, moved.Status);
+        Assert.Null(moved.AwaitingApprovalBecause);
+        Assert.Equal(approved.ConfirmedAtUtc, moved.ConfirmedAtUtc);
+
+        // One fewer, still over the threshold of eight: still approved.
+        var fewer = await diner.RescheduleAsync(Move(booked.Id, otherTenSeater.Id, SixPm, partySize: 9));
+        Assert.Equal(ReservationStatus.Confirmed, fewer.Status);
+
+        // Nothing went back to the venue, so no second decision was written - only the one sent.
+        Assert.Single(await OutboxKeysAsync(booked.Id, clock, OutboxMessageTypes.ReservationDecided));
+
+        // Growing past the booking as it stands is the size question asked afresh.
+        var grown = await diner.RescheduleAsync(Move(booked.Id, otherTenSeater.Id, SixPm, partySize: 10));
+        Assert.Equal(ReservationStatus.PendingApproval, grown.Status);
+        Assert.Equal(ApprovalTrigger.LargeParty, grown.AwaitingApprovalBecause);
+        Assert.Null(grown.ConfirmedAtUtc);
+    }
+
+    /// <summary>
+    /// The confirmation a large party keeps is from the size threshold only. A venue that approves
+    /// every booking looks at every move, and a diner whose no-shows cost them instant confirmation
+    /// loses it on a move as on a new booking.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_kept_confirmation_does_not_get_past_approve_everything_or_a_no_show_history()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+
+        // A venue that approves every booking.
+        var strict = await TestBranchBuilder.CreateAsync(db, policy: ApprovesEveryBooking());
+        var strictDiner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var small = await strictDiner.CreateAsync(Booking(strict, strict.FirstTableId, SixPm));
+        await fixture.CreateReservationService(db, clock, TestActor.Manager(strict.ManagerId))
+            .ApproveAsync(new DecideReservationCommand(small.Id));
+
+        var movedAtStrict = await strictDiner.RescheduleAsync(Move(small.Id, strict.FirstTableId, EightPm));
+
+        Assert.Equal(ReservationStatus.PendingApproval, movedAtStrict.Status);
+        Assert.Equal(ApprovalTrigger.BranchApprovesEveryBooking, movedAtStrict.AwaitingApprovalBecause);
+
+        // A diner who has since missed four bookings.
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var tenSeater = await TestBranchBuilder.AddTableAsync(db, branch, "12", seats: 10);
+        var dinerActor = TestActor.Diner();
+        var diner = fixture.CreateReservationService(db, clock, dinerActor);
+
+        var large = await diner.CreateAsync(Booking(branch, tenSeater.Id, SixPm) with { PartySize = 9 });
+        await fixture.CreateReservationService(db, clock, TestActor.Manager(branch.ManagerId))
+            .ApproveAsync(new DecideReservationCommand(large.Id));
+
+        await AddNoShowsAsync(branch, dinerActor.DinerUserId!.Value, count: 4, clock);
+
+        var movedWithHistory = await diner.RescheduleAsync(Move(large.Id, tenSeater.Id, EightPm, partySize: 9));
+
+        Assert.Equal(ReservationStatus.PendingApproval, movedWithHistory.Status);
+        Assert.Equal(ApprovalTrigger.NoShowHistory, movedWithHistory.AwaitingApprovalBecause);
     }
 
     // ---------------------------------------------------------------- idempotency
@@ -364,6 +464,28 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
 
         Assert.True(afterCancel.WasReplay);
         Assert.Equal(ReservationStatus.CancelledByDiner, afterCancel.Status);
+
+        // The same id naming somewhere else for the same booking is not a retry either: answering
+        // wasReplay would tell the phone a move had happened that had not.
+        foreach (var different in new[]
+                 {
+                     change with { LocalTime = new TimeOnly(20, 30) },
+                     change with { LocalDate = BookingDate.AddDays(1) },
+                     change with { TableId = branch.TableIds[2] },
+                     change with { PartySize = 3 },
+                 })
+        {
+            var reused = await Assert.ThrowsAsync<ClientCommandIdAlreadyUsedException>(
+                () => service.RescheduleAsync(different));
+
+            Assert.Equal("client-command-id-in-use", ApiExceptionMapper.Map(reused).Code);
+        }
+
+        // And none of them moved it: the booking is where the first change put it, cancelled.
+        var untouched = await StoredAsync(booked.Id, clock);
+        Assert.Equal(first.StartUtc, untouched.StartUtc);
+        Assert.Equal(first.TableId, untouched.DiningTableId);
+        Assert.Equal(first.PartySize, untouched.PartySize);
 
         // The same id on a different booking is not a retry of this change.
         var other = await service.CreateAsync(Booking(branch, branch.TableIds[2], SixPm));
@@ -625,6 +747,57 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         int partySize = 2,
         DateOnly? date = null) =>
         new(reservationId, tableId, date ?? BookingDate, localTime, partySize, Guid.CreateVersion7());
+
+    /// <summary>The shipped restaurant policy, except that a human approves every booking.</summary>
+    private static ReservationPolicy ApprovesEveryBooking() => new(
+        turnTimeMinutes: 90,
+        bufferMinutes: 15,
+        graceMinutes: 15,
+        lateNudgeAfterMinutes: 10,
+        graceExtensionMinutes: 10,
+        minLeadMinutes: 30,
+        bookingWindowDays: 14,
+        cancellationDeadlineMinutes: 120,
+        autoConfirm: false,
+        serviceChargePercent: 10m,
+        pricesIncludeVat: true,
+        maxSeatOverhang: 2,
+        approvalRequiredAbovePartySize: 8);
+
+    /// <summary>Bookings this diner did not turn up for, in the past and inside the rolling window.</summary>
+    private async Task AddNoShowsAsync(TestBranch branch, Guid dinerUserId, int count, TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var policy = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branch.BranchId)
+            .Select(b => b.ReservationPolicy)
+            .FirstAsync();
+
+        for (var i = 0; i < count; i++)
+        {
+            var startUtc = Now.AddDays(-(i + 1) * 7);
+
+            var missed = Reservation.Create(
+                branchId: branch.BranchId,
+                diningTableId: branch.FirstTableId,
+                startUtc: startUtc,
+                localDate: DateOnly.FromDateTime(startUtc),
+                localStartTime: TimeOnly.FromDateTime(startUtc),
+                partySize: 2,
+                guestName: "Ani Test",
+                guestPhone: "+37411223344",
+                code: ReservationCode.Generate(),
+                policy: policy,
+                dinerUserId: dinerUserId);
+
+            missed.MarkNoShow(startUtc.AddMinutes(30));
+            db.Reservations.Add(missed);
+        }
+
+        await db.SaveChangesAsync();
+    }
 
     private async Task<Reservation> StoredAsync(Guid reservationId, TestClock clock)
     {

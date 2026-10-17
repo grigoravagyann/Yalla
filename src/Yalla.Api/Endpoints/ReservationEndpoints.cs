@@ -250,11 +250,14 @@ public static class ReservationEndpoints
                 + "because of itself - and the 409's fresh floor shows the diner's own table free.\n\n"
                 + "**The status is decided again** by the create rules: the move can keep it `Confirmed`, "
                 + "confirm a pending one, or send it back to `PendingApproval` (`awaitingApprovalBecause` "
-                + "says why) - a venue that approved twelve at seven has not approved them at nine.\n\n"
+                + "says why). A `Confirmed` booking whose party does not grow keeps its confirmation "
+                + "against the party-size threshold - the venue already said yes to that many people - "
+                + "but not against a branch that approves every booking or the diner's no-show history.\n\n"
                 + "The reminder and late nudge are replaced with ones for the new time. Idempotent on "
-                + "`clientCommandId`: a retry answers `200` with the booking **as it stands now** and "
-                + "`wasReplay: true`, moving nothing; the same id on another command is `409 "
-                + "client-command-id-in-use`.")
+                + "`clientCommandId`: a retry of the same change answers `200` with the booking **as it "
+                + "stands now** and `wasReplay: true`, moving nothing; the same id on another command, "
+                + "or on a different change (another table, start or party size), is `409 "
+                + "client-command-id-in-use` - mint a fresh id per change.")
             .Produces<ReservationView>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`diningTableId` names a table at another branch.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
@@ -267,7 +270,8 @@ public static class ReservationEndpoints
                 + "`table-already-booked` / `table-currently-occupied`: the new slot is taken - " + ConflictDescription
                 + " `concurrent-update`: the booking was cancelled, approved or seated while this was in "
                 + "flight; read it again. `bookings-not-accepted`, `web-bookings-not-accepted`, "
-                + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`.")
+                + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`: "
+                + "the id belongs to another command or to a different change.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);

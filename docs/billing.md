@@ -262,17 +262,38 @@ request from the tab's own lines — `TabLedger.Compute`, the same bill `/shares
 read — and stores the price with it (`ServiceRequest.BillScope`, `BillAmountAmd`, `TipPercent`,
 `TipAmd`; `Domain.Billing.BillQuote`). The waiter walks over with the number the diner was shown.
 
+**The diner's pay sheet computes the same figure from the same rules**, so these are the rules both
+sides implement, to the dram:
+
 ```
-WholeBill:  billAmount = tab remaining                         tip = round(subtotal × tip% ÷ 100)
-MyShare:    billAmount = min(share − paidByMe, tab remaining)  tip = round(personal × tip% ÷ 100)
+percentOf(a, p)    = a × p ÷ 100, rounded half-up (away from zero) to whole dram    Money.PercentOf
+proRata(a, n, d)   = a × n ÷ d,   rounded half-up; 0 when d ≤ 0, n ≤ 0 or a = 0   Money.ProRata
+
+WholeBill  (only for somebody who can see the table total, else 403)
+  amount  = tab remaining
+  base    = proRata(subtotal, amount, tab total)
+
+MyShare
+  owed    = share − paid                     (the requester's row of the shares view)
+  amount  = canSeeTableTotal ? min(owed, tab remaining) : owed
+  base    = proRata(personal, amount, share)  (0 when share ≤ 0)
+
+tip = percentOf(base, tip%)          amount ≤ 0 → 422 on billScope
 ```
 
-- **The service charge is inside `billAmountAmd`; the tip is outside it**, for the reason above. A
-  tip is a percentage of the **items** the scope covers — the subtotal before service for the whole
-  bill, the asker's `personalAmd` for their share — because a tip on the service charge is a tip on a
-  tip. Rounded half-up, once, by `Money.PercentOf`.
-- **MyShare never exceeds what the tab owes.** Cash a waiter took against the table without naming
-  anybody lowers the balance without lowering any share, and the cash keypad would refuse the excess.
+- **The service charge is inside `billAmountAmd`; the tip is outside it**, for the reason above.
+- **The tip is on the unpaid part of the items.** The items the scope covers — the subtotal before
+  service for the whole bill, the asker's `personalAmd` for their share — in the proportion the amount
+  bears to what those items come to with service. A tip on the service charge is a tip on a tip, and a
+  tip on a coffee somebody already settled is a tip paid twice. **With nothing paid the base is the
+  items exactly** (`proRata(x, t, t) = x`), so the first request of an evening is a plain percentage of
+  the subtotal or of `personalAmd`.
+- **MyShare is capped at what the tab owes — for somebody who can see the total.** Cash a waiter took
+  against the table without naming anybody lowers the balance without lowering any share, and the cash
+  keypad would refuse the excess. A guest the host hid the total from is quoted their own share
+  uncapped: the cap would quote them the table's balance whenever it was the smaller figure, and that
+  balance is what the projection keeps from them. The keypad still refuses more than the tab owes when
+  the waiter takes the cash.
 - **Nothing to pay is refused.** A scope that leaves 0 — a share already settled, a closed tab — is a
   422 `validation-failed` on `billScope`, rather than a waiter sent across the room for nothing.
 - **WholeBill needs sight of the total.** A guest the host hid the total from would otherwise read it
@@ -281,6 +302,11 @@ MyShare:    billAmount = min(share − paidByMe, tab remaining)  tip = round(per
   field on another preset, a tip with no scope, an undefined scope or a tip outside 0 to 25 is a 422
   naming each field.
 - A plain `{ "preset": 3 }` is still a request for the bill, with the four fields absent.
+- **Asking again replaces the earlier ask.** A request with a `billScope` supersedes the same
+  participant's own open request(s) for the bill on that tab — scoped or plain — by stamping
+  `ServiceRequest.SupersededAtUtc` (`ServiceRequest.Supersede`) in the same save. A superseded request
+  is not open: it leaves the waiter's list and cannot be acknowledged, though nobody acknowledged it
+  either. A tablemate's request is theirs and stays; a plain "the bill, please" replaces nothing.
 
 Worked against the three-person example in section 5 (subtotal 23,200, total 25,520, shares 10,525 /
 8,433 / 6,562 on personal parts of 9,568 / 7,666 / 5,966):
@@ -290,13 +316,29 @@ Worked against the three-person example in section 5 (subtotal 23,200, total 25,
 | Guest A, WholeBill, 10% | 25,520 | 2,320 |
 | Guest A, MyShare, 5% | 8,433 | 383 (383.3) |
 | Guest B, MyShare, 15% | 6,562 | 895 (894.9) |
-| Guest A, MyShare, 10%, after paying 3,000 | 5,433 | 767 |
+| Guest A, MyShare, 10%, after paying 3,000 | 5,433 | 494 (base 4,939) |
+| Host, WholeBill, 10%, after guest A paid 3,000 | 22,520 | 2,047 (base 20,473) |
+| Guest B, MyShare, 15%, after paying 2,000 and 5,000 paid against the table | 4,562 | 622 (base 4,148) |
+| Host, MyShare, 10%, sees the total, after 20,000 paid against the table | 5,520 (capped) | 502 (base 5,018) |
+| Guest A, MyShare, 10%, total hidden, after 20,000 paid against the table | 8,433 (not capped) | 767 |
 
-`BillRequestTests` asserts every row. The request, the waiter's list
-(`GET /api/branches/{branchId}/service-requests`) and the `ServiceRequested` event all carry the four
-fields, so the staff tablet can open the cash keypad prefilled with the amount and the tip.
-`CK_ServiceRequests_Bill` holds the columns together in the database: none at all, or preset 3 with a
-scope and a positive amount, the tip a percentage and an amount or neither.
+`BillRequestTests` asserts every row, and that with nothing paid the tip is `percentOf` the items
+exactly for every participant, scope and tip from 0 to 25.
+
+**Who sees the price.** The response to the asker and the waiter's list
+(`GET /api/branches/{branchId}/service-requests`) carry all four fields, so the staff tablet can open
+the cash keypad prefilled with the amount and the tip. **The `ServiceRequested` event does not carry
+the amounts** — its payload is `serviceRequestId`, `preset`, `note`, `requestedByParticipantId`,
+`billScope` and `tipPercent`, nothing else (`TabEventContractTests` pins the member names). Every
+phone at the table reads the stream, including a guest the total is hidden from, and somebody else's
+priced request is their share or the table's balance.
+
+`CK_ServiceRequests_Bill` holds the columns together in the database: none at all, or preset 3 with
+`BillScope IN (1, 2)` and a positive amount, the tip a percentage from 0 to 25 and a non-negative
+amount, or neither. Every comparison carries its own `IS NOT NULL`, because a CHECK passes on UNKNOWN
+as well as on TRUE and `[BillAmountAmd] > 0` alone would let a missing amount in.
+`SupersededAtUtc` is outside it. `PaymentAndServiceTests` writes the bad rows with raw SQL and expects
+each to be refused.
 
 ---
 

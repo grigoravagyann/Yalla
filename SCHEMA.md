@@ -225,13 +225,17 @@ refunding one of them.
 
 A table asking for something - napkins, water, the bill - from a fixed list of presets and one short
 note, never a chat. `BranchId` is denormalised from the tab so the waiter's open list is one read of
-the filtered index `IX_ServiceRequests_Open`. A request for the bill from the diner's pay sheet also
-carries **`BillScope`** (`1 WholeBill, 2 MyShare`), **`BillAmountAmd`**, **`TipPercent`** and
-**`TipAmd`** (migration `BillRequestTip`): the amount that scope left to pay when the diner asked,
-service charge in and tip out, priced by the server from the tab's lines, and the tip on top. A
-snapshot, not a live figure - the waiter brings the bill the diner was shown. `CK_ServiceRequests_Bill`
-keeps the four together: all null, or `Preset = 3` with a scope and a positive amount whose tip is a
-percentage and an amount or neither. See `docs/billing.md` section 6.
+the filtered index `IX_ServiceRequests_Open` (neither acknowledged nor superseded). A request for the
+bill from the diner's pay sheet also carries **`BillScope`** (`1 WholeBill, 2 MyShare`),
+**`BillAmountAmd`**, **`TipPercent`** and **`TipAmd`** (migration `BillRequestTip`): the amount that
+scope left to pay when the diner asked, service charge in and tip out, priced by the server from the
+tab's lines, and the tip on top. A snapshot, not a live figure - the waiter brings the bill the diner
+was shown. `CK_ServiceRequests_Bill` keeps the four together: all null, or `Preset = 3` with
+`BillScope IN (1, 2)` and a positive amount whose tip is a percentage from 0 to 25 and a non-negative
+amount, or neither - every comparison with its own `IS NOT NULL`, so a NULL cannot pass as UNKNOWN.
+**`SupersededAtUtc`** (same migration, outside the constraint) is stamped when the same participant
+asks for the bill again with a scope: the earlier request leaves the open list without being
+acknowledged. See `docs/billing.md` section 6.
 
 ### MenuCategory and MenuItem
 

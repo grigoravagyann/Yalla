@@ -93,8 +93,16 @@ internal sealed class ServiceRequestService(
 
         db.ServiceRequests.Add(request);
 
-        // The bill fields ride on the event too, so the other phones at the table and a staff
-        // screen following the stream see the same request the waiter's list does.
+        if (bill is not null)
+        {
+            await SupersedeEarlierBillRequestsAsync(tab.Id, participant.Id, nowUtc, cancellationToken);
+        }
+
+        // What was asked for rides on the event - the scope and the tip percentage - but not the
+        // priced amounts. Every phone at the table reads this stream, and a guest the host hid the
+        // total from would otherwise read a tablemate's share, or the whole balance, off somebody
+        // else's request. The figures are for the waiter: the asker's response and the staff list
+        // carry them.
         ledger.Append(tab.Id, TabEventType.ServiceRequested, new
         {
             serviceRequestId = request.Id,
@@ -102,9 +110,7 @@ internal sealed class ServiceRequestService(
             note = request.Note,
             requestedByParticipantId = participant.Id,
             billScope = (int?)request.BillScope,
-            billAmountAmd = request.BillAmountAmd,
             tipPercent = request.TipPercent,
-            tipAmd = request.TipAmd,
         });
 
         await ledger.SaveAppendedAsync(cancellationToken);
@@ -129,10 +135,11 @@ internal sealed class ServiceRequestService(
         var nowUtc = clock.UtcNow;
 
         // Newest first: on a busy floor the screen is glanced at, not read, and the thing that just
-        // came in is the thing nobody has walked to yet.
+        // came in is the thing nobody has walked to yet. A request for the bill the diner has since
+        // replaced with another is not outstanding - the newer one is.
         var rows = await db.ServiceRequests
             .AsNoTracking()
-            .Where(r => r.BranchId == branchId && r.AcknowledgedAtUtc == null)
+            .Where(r => r.BranchId == branchId && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
             .OrderByDescending(r => r.CreatedAtUtc)
             .Select(r => new { Request = r, TableLabel = r.DiningTable.Label })
             .ToListAsync(cancellationToken);
@@ -180,6 +187,48 @@ internal sealed class ServiceRequestService(
     }
 
     /// <summary>
+    /// Closes the asker's own earlier requests for the bill on this tab that nobody has answered yet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only when the new request says what to bring. A diner who asked for their share and then for
+    /// the whole bill wants one bill brought, the latest; leaving both open sends the waiter over with
+    /// a figure the table has moved on from, or twice. A plain "the bill, please" replaces nothing: it
+    /// names no amount to bring instead.
+    /// </para>
+    /// <para>
+    /// The asker's own, never a tablemate's: two people may well each want to pay their part. Saved
+    /// with the new request, in its unit of work, so the list never shows both or neither.
+    /// </para>
+    /// </remarks>
+    private async Task SupersedeEarlierBillRequestsAsync(
+        Guid tabId,
+        Guid participantId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var earlier = await db.ServiceRequests
+            .Where(r => r.TabId == tabId
+                        && r.RequestedByParticipantId == participantId
+                        && r.Preset == ServiceRequestPreset.TheBill
+                        && r.AcknowledgedAtUtc == null
+                        && r.SupersededAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var request in earlier)
+        {
+            request.Supersede(nowUtc);
+        }
+
+        if (earlier.Count > 0)
+        {
+            logger.LogInformation(
+                "Participant {ParticipantId} asked for the bill again on tab {TabId}; superseded {Count} earlier request(s).",
+                participantId, tabId, earlier.Count);
+        }
+    }
+
+    /// <summary>
     /// Prices a request for the bill against the tab as it stands, from its lines.
     /// </summary>
     /// <remarks>
@@ -192,7 +241,8 @@ internal sealed class ServiceRequestService(
     /// <para>
     /// <b>The whole bill needs sight of the total.</b> A guest the host has hidden the total from
     /// would otherwise read it back off their own request, which is the leak the projection exists to
-    /// prevent - so they may ask for their own share, and only that.
+    /// prevent - so they may ask for their own share, and only that. The same sight decides whether
+    /// their share is capped at the tab's balance, for the same reason (<see cref="BillQuote.For"/>).
     /// </para>
     /// </remarks>
     private async Task<BillQuote> QuoteAsync(
@@ -202,8 +252,9 @@ internal sealed class ServiceRequestService(
         int? tipPercent,
         CancellationToken cancellationToken)
     {
-        if (scope == BillScope.WholeBill
-            && !TabPermissions.MaySeeTableTotal(participant.Status, participant.CanSeeTableTotal))
+        var canSeeTableTotal = TabPermissions.MaySeeTableTotal(participant.Status, participant.CanSeeTableTotal);
+
+        if (scope == BillScope.WholeBill && !canSeeTableTotal)
         {
             throw new TabPermissionException(
                 "Asking for the whole bill", "somebody who can see the table total");
@@ -211,7 +262,7 @@ internal sealed class ServiceRequestService(
 
         var loaded = await ledger.LoadForWriteAsync(tab.Id, cancellationToken);
 
-        return BillQuote.For(ledger.Compute(loaded), participant.Id, scope, tipPercent);
+        return BillQuote.For(ledger.Compute(loaded), participant.Id, scope, tipPercent, canSeeTableTotal);
     }
 
     private static ServiceRequestView ToView(
@@ -227,7 +278,8 @@ internal sealed class ServiceRequestService(
             request.Note,
             request.RequestedByParticipantId,
             request.CreatedAtUtc,
-            (int)Math.Max(0d, ((request.AcknowledgedAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
+            (int)Math.Max(
+                0d, ((request.AcknowledgedAtUtc ?? request.SupersededAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
             request.AcknowledgedAtUtc,
             tabEventSequence,
             request.BillScope,
