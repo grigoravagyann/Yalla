@@ -19,18 +19,30 @@ public static class BranchListingRules
         ["outdoorSeating", "wifi", "parking", "cardPayment", "vegan"];
 
     /// <summary>Checks and normalises every listing field at once.</summary>
+    /// <param name="cuisine">The cuisine line.</param>
+    /// <param name="about">A paragraph about the place.</param>
+    /// <param name="priceLevel">1-4.</param>
+    /// <param name="websiteUrl">An absolute http(s) address.</param>
+    /// <param name="amenities">Keys from <see cref="AmenityKeys"/>.</param>
+    /// <param name="district">
+    /// The part of town, e.g. "Kentron" - what the app prints after the venue type and the cuisine.
+    /// Free text like the cuisine line, because a closed list of districts is a list somebody has to
+    /// keep for every city.
+    /// </param>
     /// <exception cref="FieldValidationException">Every field that broke a rule, named.</exception>
     public static BranchListing Normalise(
         string? cuisine,
         string? about,
         int? priceLevel,
         string? websiteUrl,
-        IEnumerable<string>? amenities)
+        IEnumerable<string>? amenities,
+        string? district = null)
     {
         var violations = new List<FieldViolation>();
 
         var cuisineText = Optional(cuisine, "cuisine", FieldLengths.Cuisine, violations);
         var aboutText = Optional(about, "about", FieldLengths.Description, violations);
+        var districtText = Optional(district, "district", FieldLengths.District, violations);
 
         if (priceLevel is < MinPriceLevel or > MaxPriceLevel)
         {
@@ -71,7 +83,7 @@ public static class BranchListingRules
 
         return violations.Count > 0
             ? throw new FieldValidationException(violations)
-            : new BranchListing(cuisineText, aboutText, priceLevel, website, keys);
+            : new BranchListing(cuisineText, aboutText, priceLevel, website, keys, districtText);
     }
 
     /// <summary>
@@ -177,7 +189,8 @@ public sealed record BranchListing(
     string? About,
     int? PriceLevel,
     string? WebsiteUrl,
-    IReadOnlyList<string> Amenities);
+    IReadOnlyList<string> Amenities,
+    string? District = null);
 
 /// <summary>
 /// The two content badges on a browse card, derived from data and never stored.

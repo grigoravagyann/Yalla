@@ -203,6 +203,7 @@ enumeration, and anything added to the state machine belongs in it explicitly.
 | Command | Locks | Why |
 |---|---|---|
 | Create a booking | **Yes** | Two bookers insert different rows and collide on nothing, so optimistic concurrency sees no conflict and both commit. |
+| Move a booking (reschedule) | **Yes**, the **target** table | The same hazard: the moved booking updates its own row, and the booking it now overlaps is a different one, so no row version sees the clash. Leaving the old table only frees it, which narrows nothing - see [3c](#3c-changing-a-booking). |
 | Seat: walk-in, QR, reservation, held party | **Yes** | Booking's re-check reads `TableSessions`. A seating that skipped the lock could commit between that read and the booking's commit, and both would succeed. |
 | Mark out of service | **Yes** | A booking validated while the table was `Free`, committing after this commits, is a **confirmed reservation on a broken table**. Not a narrower answer — a wrong one. Rare enough that the throughput argument below does not apply. |
 | Free | No | Only narrows what a booking finds. |
@@ -247,10 +248,12 @@ repair job that finds it afterwards — just two confirmations and two parties a
 protocol above is the entire guarantee, and a protocol anyone can bypass by typing
 `db.Reservations.Add` in the next feature is not a guarantee at all.
 
-The insert therefore lives behind exactly one method:
+The insert therefore lives behind exactly one method, and moving a booking - the other way a
+booking comes to occupy a slot - behind its twin:
 
 ```csharp
 ReservationWriter.InsertUnderTableLockAsync(...)   // the only db.Reservations.Add in the codebase
+ReservationWriter.MoveUnderTableLockAsync(...)     // the only change of a booking's table or time
 ```
 
 `ReservationService` validates, decides approval and builds the refusals; it cannot insert. The rule
@@ -346,6 +349,75 @@ Both outcomes:
 
 The threshold rule itself is unchanged: `RequiresApproval` is `>` and the shipped threshold is three,
 so it is the **fourth** no-show in the window that costs instant confirmation.
+
+---
+
+## 3c. Changing a booking
+
+`POST /api/reservations/{reservationId}/reschedule`, `VerifiedDiner`, idempotent on `clientCommandId`.
+
+```json
+{ "date": "2026-09-13", "time": "20:00", "partySize": 3, "diningTableId": "guid", "clientCommandId": "guid" }
+```
+
+The whole new slot, as a new booking states it. `diningTableId` is **required**, exactly as `tableId`
+is on a new booking: the current table or another at the same branch, picked off the room photos. The
+answer is `200` with the `ReservationView`.
+
+**The same booking, not a cancellation and a new one.** The `id`, the `code` quoted at the door and the
+manage link (`ManageTokenHash`) all stay, and so do the note, the guest's name and number, the channel
+and the `clientCommandId` that created it. The interval is recomputed from the branch's turn time and
+any hold is cleared. `Reservation.Reschedule` owns the transition.
+
+**Only a booking still to come moves**: `PendingApproval` or `Confirmed`, and not yet started. From
+the start the booking is the venue's to run - the table is held, the late nudge fires, a waiter may
+release it. Anything else is **409 `reservation-not-changeable`**, with `context.reservationId`,
+`status` and `startUtc`, checked **before** the new slot is looked at - a cancelled booking is not told
+"that table is taken". Somebody else's booking is **404**, word for word what an id that is no booking
+at all gets: unlike cancelling, which says "not yours", a change would go on to judge a slot, and a
+stranger guessing ids should not learn that one is a booking.
+
+**Judged exactly as a new booking for that slot**, in the same order and with the same `reservation-*`
+422s: the phone proved, the venue open for business, the branch still taking bookings from the channel
+the booking came from (`web-bookings-not-accepted`, `bookings-not-accepted`), lead time and booking
+window, opening hours, the table pinned on a photo of its room, capacity and seat overhang.
+
+**Under the target table's lock, minus itself.** `ReservationWriter.MoveUnderTableLockAsync` follows the
+insert's protocol step for step - the account's lock, the replay re-check, the table's status, the
+overlap check, the sittings - with the booking being moved **left out of the overlap check**, so moving
+dinner half an hour on the same table is never refused because of itself. A clash answers like
+creation's: `409 table-already-booked` or `table-currently-occupied`, with a fresh floor that leaves the
+diner's own booking out too. Only the target table is locked: leaving the old one only frees it, which
+makes another booker's answer at worst a moment too cautious, never wrong.
+
+**`RowVersion` guards a racing cancel.** The booking is read before the lock. A cancel, an approval or
+a seating that commits in between moves its row version; the move's `UPDATE` then matches no row and
+the answer is **409 `concurrent-update`** - a move never resurrects a cancelled booking at a new time.
+`ReservationRescheduleTests` lands a real cancel at the moment the lock is taken and proves it.
+
+**The status is decided again**, by creation's rules with the new party size (`DecideStatusAsync`):
+auto-confirm off or a party over the threshold goes to `PendingApproval`, and so does a diner over the
+no-show threshold; otherwise `Confirmed`. A venue that approved twelve at seven has not approved them
+at nine, so going back for approval clears `ConfirmedAtUtc`; a party that shrinks under the threshold
+is confirmed without anybody. A booking can therefore be approved twice. The second approval's push
+is its own message - `reservation:{id}:approved:{yyyyMMddHHmmssfff}` once the first key is taken -
+rather than a collision with the first.
+
+**Reminders are replaced, not edited.** Both the reminder and the late nudge name the old time, so the
+unsent ones are cancelled exactly as a cancellation cancels them (`IOutbox.CancelAsync` by the booking's
+prefix, `DinerNotices.CancelUnshownAsync` for the feed), and new ones are written for the new start in
+the same transaction. Their keys carry the start they are for -
+`reservation:{id}:reminder:{startUtc:yyyyMMddHHmm}`, `…:late-nudge:…` - because a message already
+**sent** keeps its row and its key; one whose key was sent already is not written again. A web
+booking's new reminder carries the manage link its old one did: the token's plaintext exists only in
+the create response and the messages written then.
+
+**Idempotency** is the `ProcessedCommands` pattern: the command is recorded (`reservation.reschedule`,
+the diner as actor) in the same save as the move, and checked before the lock and again inside it. A
+replay answers `200` with the booking **as it stands now** and `wasReplay: true`, moving nothing. The
+record holds which booking and where it went, never the view - the view carries the guest's name and
+number. The same id on another command - another diner's, another booking's, a table command - is
+`409 client-command-id-in-use`, revealing nothing about it.
 
 ## 4. The rules, and why none of them is a number in code
 
@@ -503,6 +575,49 @@ Each table also carries its derived state **at the requested instant** — not a
   start. It can already be past, since a slot inside the window has no free cancellation, and it is
   absent when no slot could be computed. Every booking read carries it too.
 
+### Day slots: one day, every half hour
+
+`GET /api/branches/{branchId}/availability/slots?date=&partySize=[&excludeReservationId=]`, anonymous,
+on the same rate limit as the single slot; the public twin is
+`GET /api/public/branches/{branchId}/availability/slots`, behind the public 404 rule.
+
+```json
+{
+  "branchId": "guid", "date": "2026-09-13", "partySize": 2, "stepMinutes": 30,
+  "unavailableReason": 3,              // the whole day refused; absent when not
+  "slots": [
+    { "time": "18:00", "startUtc": "2026-09-13T14:00:00Z", "isAvailable": false,
+      "requiresApproval": false, "freeTableCount": 0, "unavailableReason": 8 }
+  ]
+}
+```
+
+The time picker's read. Every half hour from 00:00 whose **whole sitting** fits one opening block is
+listed; a time the branch is shut for is left out, never struck. A time too soon or too far out is
+listed struck with `LeadTimeTooShort` or `OutsideBookingWindow`. Otherwise `isAvailable` is true when
+at least one bookable table pinned on its room's photo seats the party and has no booking or sitting
+running into the slot, clearing time included, and `freeTableCount` says how many. A struck time
+names `TableAlreadyBooked` (or `TableCurrentlyOccupied`) when tables that fit the party are taken -
+even in a room of two-seaters that do not - and otherwise the commonest table reason, e.g.
+`PartyExceedsCapacity`. The top-level `unavailableReason` refuses the whole day: `OutsideOpeningHours`
+with no slots when the branch is shut all day, or the timing reason every listed time shares.
+
+**It is the single-slot read, asked forty-eight times.** The day needs the same rows as one slot on
+it - the bookings around it, the open sittings, its opening blocks and the evening before's - so the
+day is `AvailabilityQuery.BuildQuery` too, one statement anchored on noon so the guard window covers
+every offset and the longest sitting, and every time goes through
+`TableReason`, the one per-table judgement the single-slot read makes. The two cannot disagree about a
+table at a time, and `AvailabilityQueryTests` asks both about every listed time, today and a later
+day, with bookings, a sitting, a table too big, one that takes no bookings and one out of service.
+
+### Leaving the diner's own booking out
+
+Both reads take `excludeReservationId`. A diner changing a booking sees the table they already hold
+as free, and every other booking still counts - the same exclusion the move's clash check makes, so
+what the change screen offers is what the move accepts. An id that is not a booking at the branch
+changes nothing. The parameter is as anonymous as the read: booking ids are unguessable version-7
+GUIDs, and the answer says no more about the booking left out than that its table is free.
+
 ---
 
 ## 6. Endpoints
@@ -510,15 +625,23 @@ Each table also carries its derived state **at the requested instant** — not a
 | Endpoint | Policy | Also enforced in the service |
 | --- | --- | --- |
 | `GET /api/branches/{branchId}/availability` | `AllowAnonymous` | — |
+| `GET /api/branches/{branchId}/availability/slots` | `AllowAnonymous` | — |
 | `POST /api/reservations` | `VerifiedDiner` | — |
+| `POST /api/reservations/{reservationId}/reschedule` | `VerifiedDiner` | the booking must be **theirs**, else 404 - see [3c](#3c-changing-a-booking) |
 | `GET /api/reservations/mine` | `VerifiedDiner` | filtered to the caller's own `DinerUserId` |
 | `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
 | `POST /api/reservations/{id}/extend-hold` | `VerifiedDiner` | the booking must be theirs, **started**, and not yet extended - see [notifications.md](notifications.md) |
 | `POST /api/tabs/open-by-booking` | `VerifiedDiner` | "I'm at my table": the booking whose `code` was sent must be **theirs** - else 404 `booking-not-found`, identical to a code nobody holds - and its table theirs now: `Confirmed` from `StartUtc - walkInHoldbackMinutes` until `EndUtc`, or `Seated`. A free table is seated as the booking. See [tabs.md](tabs.md) |
 | `POST /api/reservations/{id}/approve` · `/reject` | `ManagerOrAbove` | the booking's **branch and venue** must be theirs |
 
-Availability is the only anonymous endpoint outside the sign-in flows. Browsing needs no account:
-somebody deciding whether to eat here has to see the room before they are asked who they are.
+Availability - one slot or one day - is the only anonymous endpoint outside the sign-in flows.
+Browsing needs no account: somebody deciding whether to eat here has to see the room before they are
+asked who they are.
+
+**Every booking read names its room.** `ReservationView` carries `roomId` and `roomName` - the
+`FloorArea` the table is in - on the create and change responses, `GET /api/reservations/mine` and the
+staff branch list; the manage link carries `roomName`. Read live from the table, like `tableLabel`, so
+a table a manager moves to another room takes its bookings with it; absent for a table in no room.
 
 `VerifiedDiner` is deliberately narrower than "a diner". A tab participant — somebody who scanned a
 QR code at a table — is also `ActorType.Diner` in the audit sense, but has no `DinerUser` row by
@@ -553,7 +676,9 @@ facts under `context`:
 | --- | --- | --- |
 | a branch rule refused it | 422 | one per rule, e.g. `reservation-party-exceeds-capacity` |
 | the table went first | 409 | `table-already-booked`, with the clashing window and a fresh floor |
-| the command id belongs to another caller | 409 | `client-command-id-in-use` |
+| the command id belongs to another caller, or another command | 409 | `client-command-id-in-use` |
+| changing a booking that is not pending or confirmed, or has started | 409 | `reservation-not-changeable`, with `context.reservationId`, `status`, `startUtc` |
+| changing a booking that was cancelled, approved or seated meanwhile | 409 | `concurrent-update` |
 | the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |
 | keep-my-table before the start, or on a booking that is not confirmed | 409 | `hold-not-active`, with `context.startUtc` |
 | keep-my-table a second time | 409 | `hold-already-extended` |

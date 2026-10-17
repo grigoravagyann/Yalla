@@ -174,6 +174,22 @@ public class BranchListingRulesTests
             refused.Violations.Select(v => v.Field));
     }
 
+    [Fact]
+    public void A_district_is_trimmed_blank_is_none_and_sixty_characters_is_the_bound()
+    {
+        Assert.Equal("Kentron", BranchListingRules.Normalise(null, null, null, null, null, "  Kentron ").District);
+        Assert.Null(BranchListingRules.Normalise(null, null, null, null, null, "   ").District);
+        Assert.Equal(new string('d', 60), BranchListingRules.Normalise(null, null, null, null, null, new string('d', 60)).District);
+
+        var refused = Assert.Throws<FieldValidationException>(
+            () => BranchListingRules.Normalise(null, null, null, null, null, new string('d', 61)));
+
+        var violation = Assert.Single(refused.Violations);
+        Assert.Equal("district", violation.Field);
+        Assert.Equal(FieldBounds.Max, violation.Bound);
+        Assert.Equal(60, violation.Max);
+    }
+
     private static readonly Guid RoomPhotoId = Guid.Parse("0199a2b4-0000-7000-8000-000000000001");
 
     [Theory]

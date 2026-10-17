@@ -60,6 +60,7 @@ public class EveryRouteIsAuthorizedTests
         ["* /health"] = "A liveness probe must not depend on a credential.",
         ["GET /api/branches/{branchId:guid}/menu"] = "The menu behind the table's QR code, read before anybody has scanned or signed in.",
         ["GET /api/branches/{branchId:guid}/availability"] = "The public booking page draws the room from it before the diner has an account.",
+        ["GET /api/branches/{branchId:guid}/availability/slots"] = "The time picker strikes full times before the diner has an account, beside the room it draws from the route above.",
         ["POST /api/tabs/open"] = "Scanning the table's QR code is the product's front door; the QR token is the credential.",
         ["POST /api/tabs/join"] = "The host's invitation token is the credential.",
     };

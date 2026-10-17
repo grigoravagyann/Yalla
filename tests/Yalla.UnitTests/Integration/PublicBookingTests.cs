@@ -408,6 +408,9 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Assert.False(string.IsNullOrWhiteSpace(view.GetProperty("branchAddress").GetString()));
         Assert.Equal("Asia/Yerevan", view.GetProperty("timeZoneId").GetString());
         Assert.False(string.IsNullOrWhiteSpace(view.GetProperty("tableLabel").GetString()));
+
+        // The room the table is in, so somebody arriving knows which one to walk into.
+        Assert.Equal("Windows", view.GetProperty("roomName").GetString());
         Assert.Equal(booking.Code, view.GetProperty("code").GetString());
         Assert.Equal(2, view.GetProperty("partySize").GetInt32());
         Assert.Equal((int)ReservationStatus.Confirmed, view.GetProperty("status").GetInt32());

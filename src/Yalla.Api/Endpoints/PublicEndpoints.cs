@@ -104,8 +104,21 @@ public static class PublicEndpoints
             .WithDescription(
                 "The existing availability read model, unchanged and reused rather than "
                 + "reimplemented. It was already anonymous; what this route adds is the public 404 "
-                + "rule and the tighter rate limit.")
+                + "rule and the tighter rate limit.\n\n"
+                + ReservationEndpoints.ExcludeReservationDescription)
             .Produces<BranchAvailability>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
+
+        group.MapGet("/branches/{branchId:guid}/availability/slots", GetDaySlotsAsync)
+            .WithName("getPublicDaySlots")
+            .WithSummary("Which start times on one day have a table for this party")
+            .WithDescription(
+                "The app's day-slots read, reused rather than reimplemented, behind the public 404 rule "
+                + "and the tighter rate limit. `partySize` is required here, as on the public "
+                + "single-slot read.\n\n"
+                + ReservationEndpoints.DaySlotsDescription)
+            .Produces<BranchDaySlots>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`date` or `partySize` is missing or malformed.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.");
 
         group.MapGet("/bookings/{token}", GetBookingAsync)
@@ -113,8 +126,9 @@ public static class PublicEndpoints
             .WithSummary("One booking, by the manage link that was mailed with it")
             .WithDescription(
                 "What the confirmation screen renders, for somebody holding nothing but the link: "
-                + "venue, branch, address, table, local date and time, party size, status, the code "
-                + "quoted at the door, and the instant past which cancelling counts as late.\n\n"
+                + "venue, branch, address, table and the room it is in (`roomName`, absent for a table "
+                + "in no room), local date and time, party size, status, the code quoted at the door, "
+                + "and the instant past which cancelling counts as late.\n\n"
                 + "**Nothing else.** No diner id, no phone number, no other bookings, no floor "
                 + "state. The token is the whole credential and it will be pasted into WhatsApp, "
                 + "left in browser history and read by whoever picks the phone up, so this response "
@@ -176,7 +190,8 @@ public static class PublicEndpoints
             + "(1 Cafe, 2 Restaurant), `cuisine` and `priceLevel` (absent until the venue sets them), "
             + "`address`, `latitude`, `longitude`, `timeZoneId`, `isOpenNow`, `freeTableCount`, `rating` "
             + "(average to one decimal, **absent with no reviews**), `reviewCount`, `badges` and "
-            + "`coverPhoto`.\n\n"
+            + "`coverPhoto`, and `district` - the part of town, e.g. `Kentron`, absent until the venue "
+            + "sets it; search's `q` matches it as well as the names, cuisine and address.\n\n"
             + "`badges` is derived, never stored: `new` for a branch created in the last 30 days; "
             + "`popular` for one that seated 20 or more parties in the last 30 days, or has 5 or more "
             + "reviews averaging 4.5 or better.\n\n"
@@ -193,7 +208,7 @@ public static class PublicEndpoints
 
         group.MapGet("/branches/search", SearchBranchesAsync)
             .WithName("searchPublicBranches")
-            .WithSummary("Search published branches by name, cuisine or address")
+            .WithSummary("Search published branches by name, cuisine, address or district")
             .WithDescription(
                 "`q` matches venue name, branch name, cuisine and address, contains and case-insensitive; "
                 + "blank matches everything. `category` narrows to one venue type (1 Cafe, 2 Restaurant). "
@@ -322,12 +337,36 @@ public static class PublicEndpoints
         IAvailabilityQuery availability,
         CancellationToken ct,
         DateOnly? date = null,
-        TimeOnly? time = null)
+        TimeOnly? time = null,
+        Guid? excludeReservationId = null)
     {
         await venues.RequirePublicBranchAsync(branchId, ct);
 
         var result = await availability.GetAvailabilityAsync(
-            new AvailabilityRequest(branchId, partySize, date, time), ct);
+            new AvailabilityRequest(branchId, partySize, date, time, excludeReservationId), ct);
+
+        return result is null
+            ? Results.NotFound()
+            : Results.Ok(result);
+    }
+
+    /// <summary>
+    /// The day's slots, through the same read model as the app's - the public gate first, exactly as
+    /// for one slot.
+    /// </summary>
+    private static async Task<IResult> GetDaySlotsAsync(
+        Guid branchId,
+        DateOnly date,
+        int partySize,
+        IPublicVenueQuery venues,
+        IAvailabilityQuery availability,
+        CancellationToken ct,
+        Guid? excludeReservationId = null)
+    {
+        await venues.RequirePublicBranchAsync(branchId, ct);
+
+        var result = await availability.GetDaySlotsAsync(
+            new DaySlotsRequest(branchId, date, partySize, excludeReservationId), ct);
 
         return result is null
             ? Results.NotFound()

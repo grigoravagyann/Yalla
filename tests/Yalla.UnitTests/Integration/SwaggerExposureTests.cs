@@ -218,6 +218,12 @@ public class SwaggerExposureTests
                      ("Yalla.Api.Endpoints.CreateReservationRequest", "date"),
                      ("Yalla.Api.Endpoints.CreateReservationRequest", "time"),
                      ("Yalla.Api.Endpoints.ReleaseReservationRequest", "outcome"),
+
+                     // A change of booking states the whole new slot, the table included, exactly as
+                     // a new booking does.
+                     ("Yalla.Api.Endpoints.RescheduleReservationRequest", "date"),
+                     ("Yalla.Api.Endpoints.RescheduleReservationRequest", "time"),
+                     ("Yalla.Api.Endpoints.RescheduleReservationRequest", "diningTableId"),
                  })
         {
             var schema = schemas.GetProperty(schemaId);

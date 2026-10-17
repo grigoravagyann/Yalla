@@ -599,6 +599,21 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
             }),
 
+        // A change to a booking that is finished with or under way. Its own code so the app can say
+        // "this booking can no longer be changed" rather than offer another slot that will be refused
+        // the same way. Must stay ABOVE DomainStateException, which it derives from.
+        ReservationNotChangeableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationNotChangeable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["startUtc"] = e.StartUtc,
+            }),
+
         // "I'm at my table" refused, and which refusal: too early, over, or a booking not expecting
         // its party. Each its own code with the booking's facts, so the app can say "from 19:10" or
         // "this booking was cancelled" rather than that something went wrong. Must stay ABOVE

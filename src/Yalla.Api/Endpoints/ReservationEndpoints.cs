@@ -131,18 +131,69 @@ public static class ReservationEndpoints
                 + "requested time, whether it can be booked for this party - and if not, the one "
                 + "specific reason - and the window the diner may have. Assembled in a single "
                 + "query. Returns no guest names and no money. Omit date and time for 'now, at "
-                + "the branch'.")
+                + "the branch'.\n\n"
+                + ExcludeReservationDescription)
             .Produces<BranchAvailability>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
-            .ProducesProblemDetails(
-                StatusCodes.Status429TooManyRequests,
-                "Too many availability queries from this address. Generous but finite - the endpoint "
-                + "is anonymous and a phone will poll it.")
+            .ProducesProblemDetails(StatusCodes.Status429TooManyRequests, AvailabilityRateLimitedDescription)
 
             // Anonymous and the hottest endpoint in the product, so it is the one that most needs
             // a ceiling. Per address, because there is no account to partition by.
             .RequireRateLimiting(RateLimitingExtensions.AvailabilityPolicy);
+
+        app.MapGet("/api/branches/{branchId:guid}/availability/slots", GetDaySlotsAsync)
+            .WithTags(EndpointConventions.DinerTag)
+            .WithName("getBranchDaySlots")
+
+            // Anonymous for the same reason as the single slot: the time picker comes before the
+            // diner is asked who they are.
+            .AllowAnonymous()
+            .WithSummary("Which start times on one day have a table for this party")
+            .WithDescription(DaySlotsDescription)
+            .Produces<BranchDaySlots>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`date` is missing or is not a date.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(StatusCodes.Status429TooManyRequests, AvailabilityRateLimitedDescription)
+
+            // The same ceiling as the single slot, which it sits beside on the same screen.
+            .RequireRateLimiting(RateLimitingExtensions.AvailabilityPolicy);
     }
+
+    /// <summary>The day-slots read, word for word on the app route and its public twin.</summary>
+    internal const string DaySlotsDescription =
+        "Every half hour from 00:00 on `date` (`stepMinutes` is 30) whose whole sitting - the branch's "
+        + "turn time - fits one opening block, earliest first. A time the branch is shut for is **left "
+        + "out**, never struck. Each slot carries `time` (`HH:mm`, branch wall clock), `startUtc`, "
+        + "`isAvailable`, `requiresApproval`, `freeTableCount` and, when not available, "
+        + "`unavailableReason`.\n\n"
+        + "**`isAvailable`** is true when at least one bookable table pinned on a photo of its room "
+        + "seats the party within the seat-overhang limit and has no booking or sitting running into "
+        + "the slot, clearing time included. These are the single-slot read's own rules over the same "
+        + "rows, so a time listed here as free is one `availability?time=` offers exactly "
+        + "`freeTableCount` tables at, and a struck time is one it offers none at.\n\n"
+        + "**Why a time is struck**: `LeadTimeTooShort` (1) or `OutsideBookingWindow` (2) when the "
+        + "time itself is refused; otherwise `TableAlreadyBooked` (8) - or `TableCurrentlyOccupied` "
+        + "(10) - when tables that fit the party are taken, else the commonest table reason, e.g. "
+        + "`PartyExceedsCapacity` (4) when nothing seats them.\n\n"
+        + "The top-level `unavailableReason` refuses the whole day: `OutsideOpeningHours` (3) with no "
+        + "slots when the branch is shut all day, or the timing reason every listed time shares - a "
+        + "past day, the rest of today inside the lead time, a date beyond the booking window. Null "
+        + "when any time was judged on its tables.\n\n"
+        + "One query, like the single slot. Returns no guest names and no money. `partySize` "
+        + "defaults to 2.\n\n"
+        + ExcludeReservationDescription;
+
+    /// <summary>The <c>excludeReservationId</c> parameter, as both availability reads take it.</summary>
+    internal const string ExcludeReservationDescription =
+        "`excludeReservationId` leaves one booking out of the answer as though it had never been "
+        + "made - the diner's own, while they change it, so the table they already hold reads as free "
+        + "to them. Every other booking still counts, and an id that is not a booking at this branch "
+        + "changes nothing. Anonymous like the rest of the read: booking ids are unguessable, and the "
+        + "answer says no more about the one left out than that its table is free.";
+
+    private const string AvailabilityRateLimitedDescription =
+        "Too many availability queries from this address. Generous but finite - the endpoint "
+        + "is anonymous and a phone will poll it.";
 
     /// <summary>
     /// The 403 on every diner route that lands on the account's phone number. Public so the tab
@@ -176,6 +227,47 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
+            .ProducesProblem<LockTimeoutProblem>(
+                StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
+        group.MapPost("/{reservationId:guid}/reschedule", RescheduleAsync)
+            .WithName("rescheduleReservation")
+            .WithSummary("Change a booking's date, time, party size or table")
+            .WithDescription(
+                "Moves the diner's **own** booking and answers with it: the **same `id` and `code`** and "
+                + "manage link, at the new `startUtc`/`endUtc`, `partySize`, `tableId`, `roomId`/`roomName` "
+                + "and `status`. Send the whole new slot - `date`, `time`, `partySize` and `diningTableId` "
+                + "(required, the current table or another at the branch) - as a new booking would.\n\n"
+                + "**Only a booking still to come**: `PendingApproval` or `Confirmed` and not yet started. "
+                + "Anything else - seated, finished, cancelled, a no-show, or past its start - is `409 "
+                + "reservation-not-changeable`, before the new slot is looked at.\n\n"
+                + "**Judged as a new booking would be**, with the same `reservation-*` 422s: the branch "
+                + "open for business and still taking bookings from the channel the booking came from, "
+                + "lead time and booking window, opening hours, the table pinned on its room and fitting "
+                + "the party. The clash check runs under the target table's lock **excluding this "
+                + "booking**, so moving dinner by half an hour on the same table is never refused "
+                + "because of itself - and the 409's fresh floor shows the diner's own table free.\n\n"
+                + "**The status is decided again** by the create rules: the move can keep it `Confirmed`, "
+                + "confirm a pending one, or send it back to `PendingApproval` (`awaitingApprovalBecause` "
+                + "says why) - a venue that approved twelve at seven has not approved them at nine.\n\n"
+                + "The reminder and late nudge are replaced with ones for the new time. Idempotent on "
+                + "`clientCommandId`: a retry answers `200` with the booking **as it stands now** and "
+                + "`wasReplay: true`, moving nothing; the same id on another command is `409 "
+                + "client-command-id-in-use`.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`diningTableId` names a table at another branch.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "No such booking, or it is somebody else's - one answer for both; or no such table.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`reservation-not-changeable`: the booking is finished with or has started. "
+                + "`table-already-booked` / `table-currently-occupied`: the new slot is taken - " + ConflictDescription
+                + " `concurrent-update`: the booking was cancelled, approved or seated while this was in "
+                + "flight; read it again. `bookings-not-accepted`, `web-bookings-not-accepted`, "
+                + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
@@ -355,10 +447,25 @@ public static class ReservationEndpoints
         CancellationToken cancellationToken,
         DateOnly? date = null,
         TimeOnly? time = null,
-        int partySize = DefaultPartySize)
+        int partySize = DefaultPartySize,
+        Guid? excludeReservationId = null)
     {
         var result = await availability.GetAvailabilityAsync(
-            new AvailabilityRequest(branchId, partySize, date, time), cancellationToken);
+            new AvailabilityRequest(branchId, partySize, date, time, excludeReservationId), cancellationToken);
+
+        return result is null ? Results.NotFound() : Results.Ok(result);
+    }
+
+    private static async Task<IResult> GetDaySlotsAsync(
+        Guid branchId,
+        DateOnly date,
+        IAvailabilityQuery availability,
+        CancellationToken cancellationToken,
+        int partySize = DefaultPartySize,
+        Guid? excludeReservationId = null)
+    {
+        var result = await availability.GetDaySlotsAsync(
+            new DaySlotsRequest(branchId, date, partySize, excludeReservationId), cancellationToken);
 
         return result is null ? Results.NotFound() : Results.Ok(result);
     }
@@ -390,6 +497,26 @@ public static class ReservationEndpoints
         return view.WasReplay
             ? Results.Ok(view)
             : Results.Created($"/api/reservations/{view.Id}", view);
+    }
+
+    private static async Task<IResult> RescheduleAsync(
+        Guid reservationId,
+        RescheduleReservationRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // The validation filter has already refused a null date, time or table by the time this runs.
+        return Results.Ok(await reservations.RescheduleAsync(
+            new RescheduleReservationCommand(
+                reservationId,
+                request.DiningTableId!.Value,
+                request.Date!.Value,
+                request.Time!.Value,
+                request.PartySize,
+                request.ClientCommandId),
+            cancellationToken));
     }
 
     private static async Task<IResult> GetMineAsync(

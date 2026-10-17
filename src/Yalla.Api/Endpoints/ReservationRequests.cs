@@ -102,6 +102,37 @@ public sealed record CreateReservationRequest(
     // `required`, and the contract says `max`. The service trims it and refuses it naming `note`.
     string? Note = null) : IClientCommandRequest;
 
+/// <summary>Body of <c>POST /api/reservations/{reservationId}/reschedule</c>.</summary>
+/// <remarks>
+/// The whole new slot, as a new booking would state it - date, time, party size and table - rather
+/// than only what changed. A client that sent a time alone would leave the server guessing whether
+/// the old table still fits the old party at the new hour, and the answer the diner was shown is the
+/// one to judge.
+/// </remarks>
+/// <param name="Date">The new local calendar date at the branch, e.g. <c>2026-09-12</c>.</param>
+/// <param name="Time">The new local wall-clock start at the branch, e.g. <c>19:30</c>.</param>
+/// <param name="PartySize">How many are coming now.</param>
+/// <param name="DiningTableId">
+/// The table to move to: the one the booking is on, or another at the same branch, picked off the
+/// room photos as for a new booking. <b>Required</b>, as <c>tableId</c> is on a new booking - a
+/// booking is always for one table the diner chose.
+/// </param>
+/// <param name="ClientCommandId">
+/// The caller's own id for this change. <b>Required.</b> A retry with the same id answers with the
+/// booking as it stands instead of moving it again; a fresh id for every change.
+/// </param>
+public sealed record RescheduleReservationRequest(
+    // Nullable for the same reason as on a new booking: a missing DateOnly binds year one and a
+    // missing TimeOnly binds midnight, so only null lets [Required] tell absent from meant.
+    [Required] DateOnly? Date,
+    [Required] TimeOnly? Time,
+    [Range(1, 100)] int PartySize,
+
+    // Nullable, so an explicit null is refused naming the field rather than failing to deserialise;
+    // NotEmpty for the all-zeros id, as on a new booking.
+    [Required][NotEmpty] Guid? DiningTableId,
+    [Required] Guid ClientCommandId) : IClientCommandRequest;
+
 /// <summary>Query of <c>GET /api/branches/{branchId}/reservations</c>.</summary>
 /// <param name="Status">
 /// Which bookings to list, as the <c>ReservationStatus</c> number - <c>1</c> for PendingApproval.

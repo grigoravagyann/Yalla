@@ -588,6 +588,96 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
+    /// Whether the diner may still change this booking at <paramref name="nowUtc"/>: it is pending or
+    /// confirmed, and it has not started.
+    /// </summary>
+    /// <remarks>
+    /// From the start the booking is the venue's to run - the table is held for the party, the late
+    /// nudge fires, a waiter may release it - so moving it then would take the table from under a
+    /// party that may be walking through the door.
+    /// </remarks>
+    public bool IsChangeableAt(DateTime nowUtc) =>
+        Status is ReservationStatus.Confirmed or ReservationStatus.PendingApproval && StartUtc > nowUtc;
+
+    /// <summary>Refuses, unless <see cref="IsChangeableAt"/>.</summary>
+    /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
+    public void RequireChangeableAt(DateTime nowUtc)
+    {
+        if (!IsChangeableAt(nowUtc))
+        {
+            throw new ReservationNotChangeableException(Id, Code, Status, StartUtc);
+        }
+    }
+
+    /// <summary>
+    /// The diner moves their booking - another time, another table, another party size - and it stays
+    /// the same booking.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The same booking, not a cancellation and a new one.</b> The <see cref="Code"/> the diner
+    /// was given, the manage link (<see cref="ManageTokenHash"/>), the note, the guest's name and
+    /// number, the channel and the original <see cref="ClientCommandId"/> all stay: the code is what
+    /// they quote at the door and the link may already be in a WhatsApp thread, and replacing either
+    /// turns a change of plan into a booking nobody can find.
+    /// </para>
+    /// <para>
+    /// <b>The interval is recomputed</b> from the branch's turn time as it stands, exactly as
+    /// creation computes it, and any hold is cleared - it was for the old start.
+    /// </para>
+    /// <para>
+    /// <b>The status is decided again</b>, by the caller and by the same rules as creation: a move can
+    /// keep a booking confirmed, confirm one that was waiting, or send one back for approval - a venue
+    /// that approved twelve people at seven has not approved them at nine. Sending it back clears
+    /// <see cref="ConfirmedAtUtc"/>, because that approval was for a different slot.
+    /// </para>
+    /// </remarks>
+    /// <param name="diningTableId">The table it moves to - the same one, or another at the branch.</param>
+    /// <param name="startUtc">The new start.</param>
+    /// <param name="localDate">The new local date, as the diner picked it.</param>
+    /// <param name="localStartTime">The new local start time, as the diner picked it.</param>
+    /// <param name="partySize">How many are coming now.</param>
+    /// <param name="policy">The branch's policy, for the turn time that fixes <see cref="EndUtc"/>.</param>
+    /// <param name="status">Confirmed, or PendingApproval - decided by the caller.</param>
+    /// <param name="nowUtc">The instant of the change, against which "not started" is judged.</param>
+    /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
+    public void Reschedule(
+        Guid diningTableId,
+        DateTime startUtc,
+        DateOnly localDate,
+        TimeOnly localStartTime,
+        int partySize,
+        ReservationPolicy policy,
+        ReservationStatus status,
+        DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        RequireChangeableAt(nowUtc);
+
+        if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "A moved reservation must be Confirmed or PendingApproval.");
+        }
+
+        DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
+        StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
+        EndUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
+        LocalDate = localDate;
+        LocalStartTime = localStartTime;
+        PartySize = Guard.Positive(partySize, nameof(partySize));
+        HoldExpiresAtUtc = null;
+
+        if (status == ReservationStatus.PendingApproval)
+        {
+            ConfirmedAtUtc = null;
+        }
+
+        Status = status;
+    }
+
+    /// <summary>
     /// Re-rolls the door code after the unique index rejected the first one.
     /// </summary>
     /// <remarks>

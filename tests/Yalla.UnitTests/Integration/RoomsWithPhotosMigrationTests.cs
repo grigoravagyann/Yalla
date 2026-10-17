@@ -45,10 +45,13 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
 
                 // That schema still has the drawn plan's canvas, NOT NULL and with no default, which
-                // today's Branch no longer writes. A default stands in for what the old code sent.
+                // today's Branch no longer writes. A default stands in for what the old code sent. And
+                // today's Branch reads and writes a column a later migration adds (BranchDistrict), so
+                // it is put in place for the entity to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorWidth DEFAULT 1000 FOR FloorWidth; "
-                    + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight;");
+                    + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight; "
+                    + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL;");
 
                 branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
                 cover = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);

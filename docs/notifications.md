@@ -94,7 +94,10 @@ Every message carries a key derived from what caused it:
 ```
 reservation:{reservationId}:reminder
 reservation:{reservationId}:late-nudge
+reservation:{reservationId}:reminder:{startUtc:yyyyMMddHHmm}      (a moved booking's)
+reservation:{reservationId}:late-nudge:{startUtc:yyyyMMddHHmm}    (a moved booking's)
 reservation:{reservationId}:approved      (or :rejected)
+reservation:{reservationId}:approved:{yyyyMMddHHmmssfff}          (a second approval)
 participant:{participantId}:approved
 order:{orderId}:ready
 ```
@@ -110,6 +113,13 @@ unsent for that booking, in the same transaction as the cancellation itself.
 > silence. It is the notification they remember, and it teaches them ours are wrong.
 
 Sent messages are left alone. They are history, and history does not get cancelled.
+
+**A moved booking** (`POST /api/reservations/{id}/reschedule`) cancels its unsent messages the same
+way and writes a reminder and a late nudge for the new start, in the same transaction as the move.
+Their keys carry the start they are for, because a sent message keeps its row and its key: moving
+tomorrow's booking to next week must not collide with the reminder that went out an hour ago. A move
+can also send a booking back for approval, so a booking can be approved twice; the second approval's
+key carries when it was made. See [reservations.md](reservations.md#3c-changing-a-booking).
 
 ---
 

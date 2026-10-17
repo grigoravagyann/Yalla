@@ -1687,6 +1687,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
+                    b.Property<string>("District")
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
+
                     b.Property<int>("FloorPlanVersion")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAdd()

@@ -293,6 +293,30 @@ public class ApiExceptionMapperTests
     }
 
     /// <summary>
+    /// Changing a booking that is finished with or under way is its own 409, before - and instead of -
+    /// the generic conflicting-state its base type would map to, with what the app needs to say why.
+    /// </summary>
+    [Fact]
+    public void A_booking_that_can_no_longer_change_becomes_a_409_reservation_not_changeable()
+    {
+        var reservationId = Guid.CreateVersion7();
+        var startUtc = new DateTime(2026, 9, 13, 14, 0, 0, DateTimeKind.Utc);
+
+        var mapped = ApiExceptionMapper.Map(new ReservationNotChangeableException(
+            reservationId, "K7Q2LM", ReservationStatus.CancelledByDiner, startUtc));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("reservation-not-changeable", mapped.Code);
+        Assert.Equal(ErrorCodes.ReservationNotChangeable, mapped.Code);
+        Assert.Equal(reservationId, mapped.Context!["reservationId"]);
+        Assert.Equal((int)ReservationStatus.CancelledByDiner, mapped.Context["status"]);
+        Assert.Equal(startUtc, mapped.Context["startUtc"]);
+        Assert.Contains("K7Q2LM", mapped.Message, StringComparison.Ordinal);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Booking can no longer be changed", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
     /// Deleting a table, or leaving it out of the plan, while a booking is still to come is its own
     /// 409, naming the tables and the booking codes so the console can say what to move.
     /// </summary>

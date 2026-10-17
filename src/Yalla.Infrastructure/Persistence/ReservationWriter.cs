@@ -9,7 +9,7 @@ using Yalla.Infrastructure.Services;
 namespace Yalla.Infrastructure.Persistence;
 
 /// <summary>
-/// The only sanctioned way a <see cref="Reservation"/> row is created.
+/// The only sanctioned way a <see cref="Reservation"/> row is created, or moved to another slot.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,6 +20,12 @@ namespace Yalla.Infrastructure.Persistence;
 /// catches it afterwards - see <c>docs/reservations.md</c> - so the discipline of one entry point is
 /// the guarantee, which is why the insert lives behind a method and not in a service body where the
 /// next feature can quietly add a second one.
+/// </para>
+/// <para>
+/// <b>Moving a booking is the same hazard</b>, so it lives here too. A booking moved onto table 7 at
+/// eight collides with nothing a row version can see - it updates its own row, and the booking it
+/// now overlaps is a different one - so it takes the target table's lock and re-checks inside it,
+/// exactly as an insert does.
 /// </para>
 /// <para>
 /// The service layer above keeps everything that is not concurrency-critical: validation, the
@@ -137,6 +143,122 @@ internal sealed class ReservationWriter(
     }
 
     /// <summary>
+    /// Takes the target table's lock, re-checks the new slot inside it, and moves the booking there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The insert's protocol, step for step, with two differences that are the whole point of a
+    /// move:
+    /// </para>
+    /// <list type="number">
+    /// <item>
+    /// <b>The booking being moved is not a conflict.</b> It is left out of the overlap re-check, so
+    /// moving dinner by half an hour on the same table is not refused because of itself.
+    /// </item>
+    /// <item>
+    /// <b>The write is an update, guarded by the booking's row version.</b> The booking was read
+    /// before the lock, and a cancel, an approval or a seating that committed in between moved its
+    /// <c>RowVersion</c>: the update then matches no row and EF raises
+    /// <see cref="DbUpdateConcurrencyException"/> - a 409 <c>concurrent-update</c> - rather than
+    /// resurrecting a cancelled booking at a new time.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// Only the <b>target</b> table is locked. Leaving the old one only ever frees it, which narrows
+    /// nothing anybody else finds - a booker on the old table who still sees this booking there is
+    /// told no a moment too long, never yes wrongly.
+    /// </para>
+    /// <para>
+    /// <paramref name="applyAsync"/> stages the change itself - the domain's
+    /// <see cref="Reservation.Reschedule"/>, the replaced reminders, the record of the command - and is
+    /// called inside the lock once every re-check has passed, so all of it commits in this one
+    /// transaction or none of it does. It must not save.
+    /// </para>
+    /// </remarks>
+    /// <returns>What happened. Only <see cref="MoveOutcome.Moved"/> means the booking was changed.</returns>
+    /// <exception cref="TableLockTimeoutException">
+    /// Another writer held the table for longer than the wait allows. Nothing was changed.
+    /// </exception>
+    /// <exception cref="DbUpdateConcurrencyException">The booking changed since it was read.</exception>
+    public async Task<MoveOutcome> MoveUnderTableLockAsync(
+        Reservation reservation,
+        DiningTable table,
+        BookedInterval proposed,
+        ReservationPolicy policy,
+        Guid dinerUserId,
+        Guid clientCommandId,
+        Func<CancellationToken, Task> applyAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(applyAsync);
+
+        await using var locked = await tableLock.AcquireAsync(table.Id, table.Label, cancellationToken);
+
+        try
+        {
+            // The account's lock inside the table's, as for an insert: a move committed behind the
+            // account's deletion would put the deleted person's reminder back in the outbox.
+            await DinerAccountLock.RequireLiveAsync(db, dinerUserId, cancellationToken);
+
+            // Replay first, for the same reason as an insert: a retry that waited here while the
+            // original committed must be answered as a retry, not judged again against a table the
+            // original has since taken.
+            if (await db.ProcessedCommands.AnyAsync(c => c.ClientCommandId == clientCommandId, cancellationToken))
+            {
+                return MoveOutcome.Replayed;
+            }
+
+            await ReadTableStatusUnderLockAsync(table, cancellationToken);
+
+            if (await FindConflictAsync(
+                    table.Id, proposed, policy, cancellationToken, excludingReservationId: reservation.Id)
+                is { } conflict)
+            {
+                return MoveOutcome.Conflicted(conflict);
+            }
+
+            if (await FindOccupyingSessionAsync(table.Id, proposed, policy, cancellationToken) is { } sitting)
+            {
+                return MoveOutcome.OccupiedBy(sitting);
+            }
+
+            await applyAsync(cancellationToken);
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.ProcessedCommandId))
+            {
+                // The id was recorded by another request between the re-check above and this save -
+                // one that took a different table's lock under the same id, or another command
+                // altogether. Nothing of this one is kept - the lock scope rolls back - and the caller
+                // decides outside the lock whether that was this change, answered as a replay, or a
+                // collision.
+                logger.LogInformation(
+                    "Change command {ClientCommandId} was recorded concurrently; not applying it again.",
+                    clientCommandId);
+
+                db.ChangeTracker.Clear();
+
+                return MoveOutcome.Replayed;
+            }
+
+            await locked.CommitAsync(cancellationToken);
+
+            return MoveOutcome.Moved;
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
+            // Inside the lock, a wait on a row somebody else holds - the booking's own, mid-cancel -
+            // past the bound. Contention, not refusal, exactly as for the table's own lock.
+            throw new TableLockTimeoutException(locked.TableId, locked.TableLabel, locked.TimeoutMilliseconds);
+        }
+    }
+
+    /// <summary>
     /// Refuses a table that stopped being bookable while this booking was being validated.
     /// </summary>
     /// <remarks>
@@ -199,17 +321,27 @@ internal sealed class ReservationWriter(
     /// is therefore the rule that decides the insert, and the SQL is only an index-friendly way of
     /// narrowing the candidates.
     /// </remarks>
+    /// <param name="tableId">The table.</param>
+    /// <param name="proposed">The interval asked for.</param>
+    /// <param name="policy">The branch's policy, for the clearing time.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="excludingReservationId">
+    /// A booking that is not in its own way: the one being moved. <see cref="Guid.Empty"/> - which no
+    /// booking's id can be - when there is none.
+    /// </param>
     private async Task<Reservation?> FindConflictAsync(
         Guid tableId,
         BookedInterval proposed,
         ReservationPolicy policy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid excludingReservationId = default)
     {
         var (searchFromUtc, searchToUtc) = ReservationOverlap.SearchWindow(proposed, policy.BufferMinutes);
 
         var candidates = await db.Reservations
             .AsNoTracking()
             .Where(r => r.DiningTableId == tableId
+                        && r.Id != excludingReservationId
                         && (r.Status == ReservationStatus.Confirmed
                             || r.Status == ReservationStatus.PendingApproval
                             || r.Status == ReservationStatus.Seated)
@@ -310,6 +442,27 @@ internal sealed class ReservationWriter(
     /// request - a booking nobody made, for a table that was refused.
     /// </remarks>
     private void Detach(Reservation reservation) => db.Entry(reservation).State = EntityState.Detached;
+}
+
+/// <summary>
+/// What the locked move decided. At most one of these is set, and only <see cref="Moved"/> - none
+/// of them - means the booking was changed.
+/// </summary>
+/// <param name="Conflict">Another booking holds the table over the new slot.</param>
+/// <param name="Occupied">A party sitting there now runs into the new slot.</param>
+/// <param name="WasReplay">This command was already applied; nothing was changed now.</param>
+internal readonly record struct MoveOutcome(
+    Reservation? Conflict,
+    TableSession? Occupied,
+    bool WasReplay)
+{
+    public static MoveOutcome Moved => new(null, null, false);
+
+    public static MoveOutcome Replayed => new(null, null, true);
+
+    public static MoveOutcome Conflicted(Reservation conflict) => new(conflict, null, false);
+
+    public static MoveOutcome OccupiedBy(TableSession session) => new(null, session, false);
 }
 
 /// <summary>

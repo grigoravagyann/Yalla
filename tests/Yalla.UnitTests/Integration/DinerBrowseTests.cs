@@ -138,6 +138,90 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
         Assert.False(unchanged.TryGetProperty("cuisine", out _), "a refused form writes nothing");
     }
 
+    /// <summary>
+    /// The district a manager writes - "type · cuisine · area" on the card - reaches Explore, search,
+    /// the details screen and the diner's favourites, and search finds the place by it.
+    /// </summary>
+    /// <remarks>
+    /// A manager, not the owner, on purpose: the district is a listing field like the cuisine line, and
+    /// unlike the address it moves nobody's pin, so it must not be swept into the owner-only rule.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_managers_district_reaches_the_card_search_details_and_favourites()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch mine;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            mine = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, mine));
+
+        // Unique, so the search below can only find this branch in a database other tests share.
+        var district = $"Kentron {Guid.NewGuid():N}"[..40];
+
+        var saved = await manager.PutAsJsonAsync(
+            $"/api/branches/{mine.BranchId}/listing", new { cuisine = "Armenian", district = $"  {district}  " });
+
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        Assert.Equal(district, (await saved.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("district").GetString());
+
+        var read = await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/listing");
+        Assert.Equal(district, read.GetProperty("district").GetString());
+
+        // Sixty characters is the bound; the refusal names the field and writes nothing.
+        var tooLong = await manager.PutAsJsonAsync(
+            $"/api/branches/{mine.BranchId}/listing", new { cuisine = "Georgian", district = new string('d', 61) });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, tooLong.StatusCode);
+
+        var problem = await tooLong.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("validation-failed", problem.GetProperty("code").GetString());
+        Assert.Equal("district", problem.GetProperty("context").GetProperty("field").GetString());
+        Assert.Equal(
+            "Armenian",
+            (await manager.GetFromJsonAsync<JsonElement>($"/api/branches/{mine.BranchId}/listing"))
+                .GetProperty("cuisine").GetString());
+
+        using var anyone = factory.CreateClient();
+
+        // Search matches the district, case-insensitively, like the other text fields.
+        var found = await anyone.GetFromJsonAsync<JsonElement>(
+            $"/api/public/branches/search?q={Uri.EscapeDataString(district.ToUpperInvariant())}");
+        var card = Assert.Single(found.EnumerateArray());
+        Assert.Equal(mine.BranchId, card.GetProperty("branchId").GetGuid());
+        Assert.Equal(district, card.GetProperty("district").GetString());
+
+        var all = await anyone.GetFromJsonAsync<JsonElement>("/api/public/branches");
+        Assert.Equal(
+            district,
+            all.EnumerateArray().Single(b => b.GetProperty("branchId").GetGuid() == mine.BranchId)
+                .GetProperty("district").GetString());
+
+        var detail = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/{mine.BranchId}");
+        Assert.Equal(district, detail.GetProperty("listing").GetProperty("district").GetString());
+
+        using var diner = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await diner.PutAsync($"/api/diner/favorites/{mine.BranchId}", content: null)).StatusCode);
+
+        var favourites = await diner.GetFromJsonAsync<JsonElement>("/api/diner/favorites");
+        Assert.Equal(
+            district,
+            favourites.GetProperty("items")[0].GetProperty("listing").GetProperty("district").GetString());
+
+        // Blank clears it, and a cleared district is absent rather than an empty string.
+        var cleared = await manager.PutAsJsonAsync(
+            $"/api/branches/{mine.BranchId}/listing", new { cuisine = "Armenian", district = "   " });
+
+        Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+        Assert.False((await cleared.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("district", out _));
+    }
+
     // ------------------------------------------------------------ reviews
 
     [SkippableFact]

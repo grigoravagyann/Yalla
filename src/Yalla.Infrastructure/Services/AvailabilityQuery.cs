@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
@@ -10,7 +11,8 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The availability read model, assembled in one SQL statement.
+/// The availability read model, assembled in one SQL statement - for one slot, or for every half hour
+/// of one day.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -41,6 +43,14 @@ namespace Yalla.Infrastructure.Services;
 /// within 14 hours of UTC, so two days either side of the anchor covers every offset and every
 /// turn time, while still being a handful of rows per table.
 /// </para>
+/// <para>
+/// <b>The day read is the same statement, judged forty-eight times.</b> The day needs the same rows as
+/// one slot on it - the bookings around it, the open sittings, its opening blocks and the evening
+/// before's - so the day is one round trip too, and each half hour goes through
+/// <see cref="TableReason"/>, the one per-table judgement the single-slot read makes. The time picker
+/// and the room screen therefore cannot disagree about a table at a time; a test asks both about
+/// every listed time and compares.
+/// </para>
 /// </remarks>
 internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvailabilityQuery
 {
@@ -54,6 +64,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// </remarks>
     private static readonly TimeSpan GuardWindow = TimeSpan.FromDays(2);
 
+    private const int MinutesPerDay = 24 * 60;
+
     public async Task<BranchAvailability?> GetAvailabilityAsync(
         AvailabilityRequest request,
         CancellationToken cancellationToken = default)
@@ -62,7 +74,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         var nowUtc = clock.UtcNow;
 
-        var row = await BuildQuery(request, nowUtc).FirstOrDefaultAsync(cancellationToken);
+        var row = await SlotQuery(request, nowUtc).FirstOrDefaultAsync(cancellationToken);
 
         return row is null ? null : Project(row, request, nowUtc);
     }
@@ -71,23 +83,80 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        return BuildQuery(request, clock.UtcNow).ToQueryString();
+        return SlotQuery(request, clock.UtcNow).ToQueryString();
+    }
+
+    public async Task<BranchDaySlots?> GetDaySlotsAsync(
+        DaySlotsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var nowUtc = clock.UtcNow;
+
+        var row = await DayQuery(request).FirstOrDefaultAsync(cancellationToken);
+
+        return row is null ? null : ProjectDay(row, request, nowUtc);
+    }
+
+    public string GetDaySlotsQuerySql(DaySlotsRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return DayQuery(request).ToQueryString();
+    }
+
+    /// <summary>The one query, anchored on the slot asked about.</summary>
+    private IQueryable<AvailabilityRow> SlotQuery(AvailabilityRequest request, DateTime nowUtc)
+    {
+        var anchorUtc = AnchorUtc(request, nowUtc);
+
+        return BuildQuery(
+            request.BranchId, anchorUtc, RelevantDays(request.LocalDate, anchorUtc), request.ExcludeReservationId);
+    }
+
+    /// <summary>
+    /// The one query, anchored on noon of the day asked about.
+    /// </summary>
+    /// <remarks>
+    /// Noon so the guard window sits evenly over the day: the earliest start (midnight, fourteen
+    /// hours ahead of UTC) and the latest sitting's end (23:30 plus the longest turn and clearing
+    /// time, twelve hours behind) are both well inside two days of it. The opening blocks are the
+    /// day's and the evening before it, exactly as for one slot on that day.
+    /// </remarks>
+    private IQueryable<AvailabilityRow> DayQuery(DaySlotsRequest request)
+    {
+        var anchorUtc = DateTime.SpecifyKind(request.LocalDate.ToDateTime(new TimeOnly(12, 0)), DateTimeKind.Utc);
+
+        return BuildQuery(
+            request.BranchId, anchorUtc, RelevantDays(request.LocalDate, anchorUtc), request.ExcludeReservationId);
     }
 
     /// <summary>
     /// The one query.
     /// </summary>
     /// <remarks>
-    /// <paramref name="nowUtc"/> and the guard bounds are passed in rather than read inside the
+    /// <para>
+    /// The guard bounds and the excluded booking are passed in rather than read inside the
     /// expression so they become SQL parameters, which keeps the plan cacheable and lets tests
     /// drive the clock.
+    /// </para>
+    /// <para>
+    /// <paramref name="excludeReservationId"/> drops one booking from the bookings join - the
+    /// diner's own, while they change it - so the table they already hold reads as free to them
+    /// and every other booking still counts. <see cref="Guid.Empty"/> stands for "none", which no
+    /// booking's id can be.
+    /// </para>
     /// </remarks>
-    private IQueryable<AvailabilityRow> BuildQuery(AvailabilityRequest request, DateTime nowUtc)
+    private IQueryable<AvailabilityRow> BuildQuery(
+        Guid branchId,
+        DateTime anchorUtc,
+        DayOfWeek[] relevantDays,
+        Guid? excludeReservationId)
     {
-        var anchorUtc = AnchorUtc(request, nowUtc);
         var guardFromUtc = anchorUtc - GuardWindow;
         var guardToUtc = anchorUtc + GuardWindow;
-        var relevantDays = RelevantDays(request, anchorUtc);
+        var excludedId = excludeReservationId ?? Guid.Empty;
 
         return db.Branches
 
@@ -100,7 +169,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             // Diner browsing. A suspended or deleted venue does not exist here - it keeps every
             // row and stays visible to its owner through the admin surface, but a diner must not
             // be able to find it or book it.
-            .Where(b => b.Id == request.BranchId
+            .Where(b => b.Id == branchId
                         && b.IsActive
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
@@ -162,6 +231,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                         // IX_Reservations_DiningTableId_StartUtc_EndUtc.
                         Bookings = db.Reservations
                             .Where(r => r.DiningTableId == t.Id
+                                        && r.Id != excludedId
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval
                                             || r.Status == ReservationStatus.Seated)
@@ -199,14 +269,14 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// branch's local date can be a day either side of the UTC one, so the window widens by one in
     /// each direction - still fewer than a full week.
     /// </remarks>
-    private static DayOfWeek[] RelevantDays(AvailabilityRequest request, DateTime anchorUtc)
+    private static DayOfWeek[] RelevantDays(DateOnly? localDate, DateTime anchorUtc)
     {
         var anchorDate = DateOnly.FromDateTime(anchorUtc);
 
         // Named a date: the sitting is on that day, so that day and the evening before it.
         // Named none: the branch's local date can be a day either side of the UTC one, so widen
         // by one in each direction - still four days rather than a whole week.
-        int[] offsets = request.LocalDate is null ? [-2, -1, 0, 1] : [-1, 0];
+        int[] offsets = localDate is null ? [-2, -1, 0, 1] : [-1, 0];
 
         return offsets
             .Select(offset => anchorDate.AddDays(offset).DayOfWeek)
@@ -305,32 +375,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             .Where(b => b.EndUtc > proposed.StartUtc)
             .MinBy(b => b.StartUtc);
 
-        // The same pure rule the creation service applies inside its lock, over the same statuses.
-        var conflict = table.Bookings.FirstOrDefault(b =>
-            ReservationOverlap.Conflicts(
-                proposed, new BookedInterval(b.StartUtc, b.EndUtc), b.Status, policy.BufferMinutes));
-
-        // And the people already sitting there, projected forward by the branch's turn time. The
-        // same rule the booking service applies inside its lock, so the sheet and the refusal agree.
-        var occupied = table.OpenSessionSeatedAtUtc is { } seatedAtUtc
-                       && SessionOccupancy.Conflicts(
-                           proposed, seatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes);
-
-        // Physical status is checked by CheckTable only for the here and now; beyond the horizon it
-        // would be a statement about tonight applied to tomorrow.
-        var physicalReason = TableStateProjection.IsWithinPhysicalHorizon(proposed.StartUtc, nowUtc)
-            ? ReservationRules.CheckTable(table.Status, table.IsBookable, table.Seats, partySize, policy)
-            : ReservationRules.CheckTable(
-                table.Status == TableStatus.OutOfService ? TableStatus.OutOfService : TableStatus.Free,
-                table.IsBookable,
-                table.Seats,
-                partySize,
-                policy);
-
-        var reason = requestReason
-                     ?? physicalReason
-                     ?? (occupied ? ReservationRejectionReason.TableCurrentlyOccupied : (ReservationRejectionReason?)null)
-                     ?? (conflict is null ? null : ReservationRejectionReason.TableAlreadyBooked);
+        var reason = requestReason ?? TableReason(table, proposed, policy, partySize, nowUtc);
 
         var isAvailable = reason is null;
 
@@ -388,6 +433,200 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             NextReservationId = next?.ReservationId,
             NextReservationStartUtc = next?.StartUtc,
         };
+    }
+
+    /// <summary>
+    /// Why this table cannot take this party for this interval, or null when it can - the one
+    /// per-table judgement both reads make.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every rule here is the one the booking service applies inside the table's lock, so a table
+    /// either read offers is a table a booking accepts. The day read calls this for every half hour
+    /// and the single-slot read for the one asked about; keeping it in one place is what stops the
+    /// time picker striking a time the room screen would have offered a table at, or the reverse.
+    /// </para>
+    /// <para>
+    /// The order is the order of the reasons a diner can act on: the table itself (does not take
+    /// bookings, is broken, does not fit them), then somebody sitting there now, then a booking.
+    /// </para>
+    /// </remarks>
+    private static ReservationRejectionReason? TableReason(
+        AvailabilityTableRow table,
+        BookedInterval proposed,
+        ReservationPolicy policy,
+        int partySize,
+        DateTime nowUtc)
+    {
+        // Physical status is checked by CheckTable only for the here and now; beyond the horizon it
+        // would be a statement about tonight applied to tomorrow.
+        var physicalReason = TableStateProjection.IsWithinPhysicalHorizon(proposed.StartUtc, nowUtc)
+            ? ReservationRules.CheckTable(table.Status, table.IsBookable, table.Seats, partySize, policy)
+            : ReservationRules.CheckTable(
+                table.Status == TableStatus.OutOfService ? TableStatus.OutOfService : TableStatus.Free,
+                table.IsBookable,
+                table.Seats,
+                partySize,
+                policy);
+
+        if (physicalReason is not null)
+        {
+            return physicalReason;
+        }
+
+        // The people already sitting there, projected forward by the branch's turn time. The same
+        // rule the booking service applies inside its lock, so the sheet and the refusal agree.
+        if (table.OpenSessionSeatedAtUtc is { } seatedAtUtc
+            && SessionOccupancy.Conflicts(proposed, seatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes))
+        {
+            return ReservationRejectionReason.TableCurrentlyOccupied;
+        }
+
+        // The same pure overlap rule the creation service applies inside its lock, over the same
+        // statuses.
+        return table.Bookings.Any(b =>
+            ReservationOverlap.Conflicts(
+                proposed, new BookedInterval(b.StartUtc, b.EndUtc), b.Status, policy.BufferMinutes))
+            ? ReservationRejectionReason.TableAlreadyBooked
+            : null;
+    }
+
+    /// <summary>
+    /// Every half hour of the day whose sitting fits one opening block, each judged on its tables.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The request-level rules are the single-slot read's, in the same terms: a time whose sitting
+    /// does not fit one opening block is left out - it was never on offer - and a time too soon or
+    /// too far out is listed, struck, with that reason, so the picker can say why. A time the clocks
+    /// skip does not exist and is left out too.
+    /// </para>
+    /// <para>
+    /// Everything else is <see cref="TableReason"/> over the very rows the single-slot read judges.
+    /// </para>
+    /// </remarks>
+    private static BranchDaySlots ProjectDay(AvailabilityRow row, DaySlotsRequest request, DateTime nowUtc)
+    {
+        var zone = BranchZone.For(row.TimeZoneId);
+        var policy = row.Policy;
+        var localToday = zone.LocalDateAt(nowUtc);
+
+        // Knowable before booking, and the same for every time of the day: see Project.
+        var needsApproval = ReservationRules.AwaitsApproval(request.PartySize, policy);
+
+        var slots = new List<DaySlot>();
+
+        for (var minutes = 0; minutes < MinutesPerDay; minutes += DaySlotStep.Minutes)
+        {
+            var localTime = new TimeOnly(minutes / 60, minutes % 60);
+
+            if (!zone.TryToUtc(request.LocalDate, localTime, out var startUtc))
+            {
+                continue;
+            }
+
+            var endUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
+
+            if (ReservationRules.CheckOpeningHours(
+                    row.OpeningHours, request.LocalDate.ToDateTime(localTime), zone.ToLocal(endUtc)) is not null)
+            {
+                continue;
+            }
+
+            var time = localTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+
+            if (ReservationRules.CheckTiming(startUtc, nowUtc, request.LocalDate, localToday, policy) is { } timing)
+            {
+                slots.Add(new DaySlot
+                {
+                    Time = time,
+                    StartUtc = startUtc,
+                    IsAvailable = false,
+                    RequiresApproval = needsApproval,
+                    FreeTableCount = 0,
+                    UnavailableReason = timing,
+                });
+
+                continue;
+            }
+
+            var proposed = new BookedInterval(startUtc, endUtc);
+            var reasons = row.Tables
+                .Select(t => TableReason(t, proposed, policy, request.PartySize, nowUtc))
+                .ToList();
+            var free = reasons.Count(r => r is null);
+
+            slots.Add(new DaySlot
+            {
+                Time = time,
+                StartUtc = startUtc,
+                IsAvailable = free > 0,
+                RequiresApproval = needsApproval,
+                FreeTableCount = free,
+                UnavailableReason = free > 0 ? null : StruckReason(reasons),
+            });
+        }
+
+        return new BranchDaySlots
+        {
+            BranchId = row.BranchId,
+            Date = request.LocalDate,
+            PartySize = request.PartySize,
+            StepMinutes = DaySlotStep.Minutes,
+            UnavailableReason = DayReason(slots),
+            Slots = slots,
+        };
+    }
+
+    /// <summary>
+    /// The one reason to give for a time with no free table, out of every table's own.
+    /// </summary>
+    /// <remarks>
+    /// "Taken" before anything else: when tables that would seat the party are booked or sat at, that
+    /// is the fact that sends a diner to another time - even in a room of two-seaters that do not fit
+    /// them. Otherwise the commonest reason, which for a party of twelve is that nothing seats them.
+    /// Ties go to the lower reason, so the answer is the same on every call. A branch with no table on
+    /// offer at all has nothing that takes bookings.
+    /// </remarks>
+    private static ReservationRejectionReason StruckReason(IReadOnlyCollection<ReservationRejectionReason?> reasons)
+    {
+        static ReservationRejectionReason? Commonest(IEnumerable<ReservationRejectionReason> candidates) =>
+            candidates
+                .GroupBy(r => r)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Select(g => (ReservationRejectionReason?)g.Key)
+                .FirstOrDefault();
+
+        var known = reasons.OfType<ReservationRejectionReason>().ToList();
+
+        return Commonest(known.Where(r => r is ReservationRejectionReason.TableAlreadyBooked
+                             or ReservationRejectionReason.TableCurrentlyOccupied))
+               ?? Commonest(known)
+               ?? ReservationRejectionReason.TableNotBookable;
+    }
+
+    /// <summary>
+    /// Why the whole day is refused, or null when any time on it was judged on its tables.
+    /// </summary>
+    /// <remarks>
+    /// No time fits an opening block: shut all day. Every listed time refused for the same timing
+    /// reason: a day already past, the rest of today inside the lead time, or a date beyond the
+    /// booking window.
+    /// </remarks>
+    private static ReservationRejectionReason? DayReason(IReadOnlyList<DaySlot> slots)
+    {
+        if (slots.Count == 0)
+        {
+            return ReservationRejectionReason.OutsideOpeningHours;
+        }
+
+        var first = slots[0].UnavailableReason;
+
+        return first is ReservationRejectionReason.LeadTimeTooShort or ReservationRejectionReason.OutsideBookingWindow
+               && slots.All(s => s.UnavailableReason == first)
+            ? first
+            : null;
     }
 
     /// <summary>

@@ -53,6 +53,34 @@ public sealed record CreateReservationCommand(
     ReservationChannel Channel = ReservationChannel.Unknown,
     string? Note = null);
 
+/// <summary>
+/// A diner moving their own booking: another time, another table, another party size - the same
+/// booking, with the same code.
+/// </summary>
+/// <remarks>
+/// Judged exactly as a new booking for the same slot would be, by the same rules and under the same
+/// table lock, except that the booking being moved never stands in its own way.
+/// </remarks>
+/// <param name="ReservationId">The booking to move. Must be the caller's own.</param>
+/// <param name="TableId">
+/// The table to move to - the one it is on, or another at the same branch. Required, as on
+/// <see cref="CreateReservationCommand"/>: a booking is always for one table the diner picked.
+/// </param>
+/// <param name="LocalDate">The new local calendar date at the branch.</param>
+/// <param name="LocalTime">The new local wall-clock start time at the branch.</param>
+/// <param name="PartySize">How many are coming now.</param>
+/// <param name="ClientCommandId">
+/// The caller's own id for this change. <b>Required.</b> A retry with the same id answers with the
+/// booking as it stands instead of moving it again.
+/// </param>
+public sealed record RescheduleReservationCommand(
+    Guid ReservationId,
+    Guid TableId,
+    DateOnly LocalDate,
+    TimeOnly LocalTime,
+    int PartySize,
+    Guid ClientCommandId);
+
 /// <summary>A diner giving up a booking.</summary>
 /// <param name="ReservationId">The booking to cancel.</param>
 /// <param name="Reason">Optional free text, recorded on the booking.</param>
@@ -75,11 +103,33 @@ public sealed record DecideReservationCommand(Guid ReservationId, string? Reason
 /// <param name="PartySize">How many are coming. Decides capacity and seat overhang.</param>
 /// <param name="LocalDate">Local date at the branch. Defaults to today there.</param>
 /// <param name="LocalTime">Local time at the branch. Defaults to now there.</param>
+/// <param name="ExcludeReservationId">
+/// A booking to leave out of the answer, as though it had never been made - the diner's own, when
+/// they are changing it, so the table they already hold reads as free to them. Null leaves every
+/// booking in.
+/// </param>
 public sealed record AvailabilityRequest(
     Guid BranchId,
     int PartySize,
     DateOnly? LocalDate = null,
-    TimeOnly? LocalTime = null);
+    TimeOnly? LocalTime = null,
+    Guid? ExcludeReservationId = null);
+
+/// <summary>
+/// What the time picker is asking: which start times on one day have a table for this party.
+/// </summary>
+/// <param name="BranchId">The branch being browsed.</param>
+/// <param name="LocalDate">The local date at the branch.</param>
+/// <param name="PartySize">How many are coming.</param>
+/// <param name="ExcludeReservationId">
+/// A booking to leave out, as on <see cref="AvailabilityRequest"/> - the diner's own while they
+/// change it.
+/// </param>
+public sealed record DaySlotsRequest(
+    Guid BranchId,
+    DateOnly LocalDate,
+    int PartySize,
+    Guid? ExcludeReservationId = null);
 
 /// <summary>
 /// How long a booking will wait for the table's lock before giving up.
