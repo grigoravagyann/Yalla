@@ -12,6 +12,7 @@ namespace Yalla.Application.BranchSettings;
 /// <param name="Latitude">WGS84.</param>
 /// <param name="Longitude">WGS84.</param>
 /// <param name="Gallery">Pictures beyond the cover, in order.</param>
+/// <param name="District">The part of town, e.g. "Kentron", or absent.</param>
 public sealed record BranchListingView(
     string? Cuisine,
     string? About,
@@ -21,7 +22,8 @@ public sealed record BranchListingView(
     string Address,
     double Latitude,
     double Longitude,
-    IReadOnlyList<PhotoView> Gallery);
+    IReadOnlyList<PhotoView> Gallery,
+    string? District = null);
 
 /// <summary>
 /// The listing form, as written.
@@ -41,6 +43,11 @@ public sealed record BranchListingView(
 /// <param name="Address">A new street address; only applied together with coordinates.</param>
 /// <param name="Latitude">Sent with <paramref name="Longitude"/> to move the pin, or neither.</param>
 /// <param name="Longitude">Sent with <paramref name="Latitude"/>.</param>
+/// <param name="District">
+/// The part of town, e.g. "Kentron" - printed after the venue type and cuisine, and matched by search.
+/// Up to 60 characters, trimmed. Null or blank clears it. A listing field like the cuisine line: a
+/// manager may set it, unlike the address, because naming the neighbourhood moves nobody's pin.
+/// </param>
 public sealed record BranchListingCommand(
     string? Cuisine = null,
     string? About = null,
@@ -50,7 +57,8 @@ public sealed record BranchListingCommand(
     IReadOnlyList<Guid>? GalleryPhotoIds = null,
     string? Address = null,
     double? Latitude = null,
-    double? Longitude = null);
+    double? Longitude = null,
+    string? District = null);
 
 /// <summary>Reads and writes a branch's listing.</summary>
 public interface IBranchListingService

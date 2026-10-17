@@ -73,7 +73,7 @@ Four things worth stating outright, because each is a decision:
 - **Tips are outside the balance entirely.** `Payment.TipAmd` is excluded from `paid` and
   `remaining`. A 10,000 AMD bill settled with 12,000 AMD is not overpaid by 2,000, and folding the
   tip in makes every subsequent number — the balance, each share, whether the tab may close —
-  incomprehensible to everyone including us.
+  incomprehensible to everyone including us. Where tips *are* reported, see section 6.
 
 ### VAT is not a line
 
@@ -237,7 +237,112 @@ looks for is invisible in every example a person writes by hand.
 
 ---
 
-## 6. Concurrency
+## 6. Tips, and the bill a diner asks for
+
+### The tab's tips
+
+`tipsAmd` is the sum of `Payment.TipAmd` over the tab's **succeeded** payments. A wallet hold still
+sitting in `Reserved`, or one that `Failed`, put nothing in anybody's hand, so its tip is not counted.
+
+- **`TabView.tipsAmd`** goes where the table total goes: present when `tableTotalVisible` is true,
+  **absent** otherwise — a tip is money the table handed over, and a guest the host has hidden the
+  total from does not see the table's tips either, even their own.
+- **`TabStaffView.tipsAmd`** is always present. It is what the drawer holds beyond the bill.
+- **Neither is inside `TabTotalsView`.** `tableTotal.paidAmd` and `remainingAmd` never include a tip;
+  `tipsAmd` sits beside them.
+
+Summed in the same statement that reads the tab (`TabQuery`), not cached on the `Tab` row: the five
+cached totals are the balance, and a tip is not part of the balance.
+
+### Asking for the bill from the pay sheet
+
+`POST /api/tabs/{tabId}/service-requests` with `preset: 3` (TheBill) may say **whose part** and **what
+tip**: `billScope` (`1` WholeBill, `2` MyShare) and `tipPercent` (0 to 25). The server prices the
+request from the tab's own lines — `TabLedger.Compute`, the same bill `/shares` and the cash endpoint
+read — and stores the price with it (`ServiceRequest.BillScope`, `BillAmountAmd`, `TipPercent`,
+`TipAmd`; `Domain.Billing.BillQuote`). The waiter walks over with the number the diner was shown.
+
+**The diner's pay sheet computes the same figure from the same rules**, so these are the rules both
+sides implement, to the dram:
+
+```
+percentOf(a, p)    = a × p ÷ 100, rounded half-up (away from zero) to whole dram    Money.PercentOf
+proRata(a, n, d)   = a × n ÷ d,   rounded half-up; 0 when d ≤ 0, n ≤ 0 or a = 0   Money.ProRata
+
+WholeBill  (only for somebody who can see the table total, else 403)
+  amount  = tab remaining
+  base    = proRata(subtotal, amount, tab total)
+
+MyShare
+  owed    = share − paid                     (the requester's row of the shares view)
+  amount  = canSeeTableTotal ? min(owed, tab remaining) : owed
+  base    = proRata(personal, amount, share)  (0 when share ≤ 0)
+
+tip = percentOf(base, tip%)          amount ≤ 0 → 422 on billScope
+```
+
+- **The service charge is inside `billAmountAmd`; the tip is outside it**, for the reason above.
+- **The tip is on the unpaid part of the items.** The items the scope covers — the subtotal before
+  service for the whole bill, the asker's `personalAmd` for their share — in the proportion the amount
+  bears to what those items come to with service. A tip on the service charge is a tip on a tip, and a
+  tip on a coffee somebody already settled is a tip paid twice. **With nothing paid the base is the
+  items exactly** (`proRata(x, t, t) = x`), so the first request of an evening is a plain percentage of
+  the subtotal or of `personalAmd`.
+- **MyShare is capped at what the tab owes — for somebody who can see the total.** Cash a waiter took
+  against the table without naming anybody lowers the balance without lowering any share, and the cash
+  keypad would refuse the excess. A guest the host hid the total from is quoted their own share
+  uncapped: the cap would quote them the table's balance whenever it was the smaller figure, and that
+  balance is what the projection keeps from them. The keypad still refuses more than the tab owes when
+  the waiter takes the cash.
+- **Nothing to pay is refused.** A scope that leaves 0 — a share already settled, a closed tab — is a
+  422 `validation-failed` on `billScope`, rather than a waiter sent across the room for nothing.
+- **WholeBill needs sight of the total.** A guest the host hid the total from would otherwise read it
+  back off their own request, so they get 403 and may ask for their own share.
+- **The shape is checked first, every field at once** (`ServiceRequest.ValidateBillFields`): either
+  field on another preset, a tip with no scope, an undefined scope or a tip outside 0 to 25 is a 422
+  naming each field.
+- A plain `{ "preset": 3 }` is still a request for the bill, with the four fields absent.
+- **Asking again replaces the earlier ask.** A request with a `billScope` supersedes the same
+  participant's own open request(s) for the bill on that tab — scoped or plain — by stamping
+  `ServiceRequest.SupersededAtUtc` (`ServiceRequest.Supersede`) in the same save. A superseded request
+  is not open: it leaves the waiter's list and cannot be acknowledged, though nobody acknowledged it
+  either. A tablemate's request is theirs and stays; a plain "the bill, please" replaces nothing.
+
+Worked against the three-person example in section 5 (subtotal 23,200, total 25,520, shares 10,525 /
+8,433 / 6,562 on personal parts of 9,568 / 7,666 / 5,966):
+
+| Request | `billAmountAmd` | `tipAmd` |
+| --- | ---: | ---: |
+| Guest A, WholeBill, 10% | 25,520 | 2,320 |
+| Guest A, MyShare, 5% | 8,433 | 383 (383.3) |
+| Guest B, MyShare, 15% | 6,562 | 895 (894.9) |
+| Guest A, MyShare, 10%, after paying 3,000 | 5,433 | 494 (base 4,939) |
+| Host, WholeBill, 10%, after guest A paid 3,000 | 22,520 | 2,047 (base 20,473) |
+| Guest B, MyShare, 15%, after paying 2,000 and 5,000 paid against the table | 4,562 | 622 (base 4,148) |
+| Host, MyShare, 10%, sees the total, after 20,000 paid against the table | 5,520 (capped) | 502 (base 5,018) |
+| Guest A, MyShare, 10%, total hidden, after 20,000 paid against the table | 8,433 (not capped) | 767 |
+
+`BillRequestTests` asserts every row, and that with nothing paid the tip is `percentOf` the items
+exactly for every participant, scope and tip from 0 to 25.
+
+**Who sees the price.** The response to the asker and the waiter's list
+(`GET /api/branches/{branchId}/service-requests`) carry all four fields, so the staff tablet can open
+the cash keypad prefilled with the amount and the tip. **The `ServiceRequested` event does not carry
+the amounts** — its payload is `serviceRequestId`, `preset`, `note`, `requestedByParticipantId`,
+`billScope` and `tipPercent`, nothing else (`TabEventContractTests` pins the member names). Every
+phone at the table reads the stream, including a guest the total is hidden from, and somebody else's
+priced request is their share or the table's balance.
+
+`CK_ServiceRequests_Bill` holds the columns together in the database: none at all, or preset 3 with
+`BillScope IN (1, 2)` and a positive amount, the tip a percentage from 0 to 25 and a non-negative
+amount, or neither. Every comparison carries its own `IS NOT NULL`, because a CHECK passes on UNKNOWN
+as well as on TRUE and `[BillAmountAmd] > 0` alone would let a missing amount in.
+`SupersededAtUtc` is outside it. `PaymentAndServiceTests` writes the bad rows with raw SQL and expects
+each to be refused.
+
+---
+
+## 7. Concurrency
 
 Two rules that point in opposite directions, which is the whole of the subtlety.
 
@@ -288,7 +393,7 @@ next walk-in. Freeing stays an explicit waiter action.
 
 ---
 
-## 7. What is deliberately not here
+## 8. What is deliberately not here
 
 - **Any payment provider.** Idram, Telcell and cards are the next task; the reserve is the seam they
   plug into.
@@ -303,7 +408,7 @@ next walk-in. Freeing stays an explicit waiter action.
 
 ---
 
-## 8. Golden vectors, for the other implementation
+## 9. Golden vectors, for the other implementation
 
 The mobile app carries its own port of `TabBilling.Compute`, so it can show an offline bill that
 matches the one the server will send. A property test on that port proves it is **self-consistent**,

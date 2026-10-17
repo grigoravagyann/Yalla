@@ -73,10 +73,10 @@ a change that rolled back cannot either.
 
 | Action | Endpoint | Notes |
 | --- | --- | --- |
-| Create a venue **with its first branch** | `POST /api/platform/venues` | A venue with no branch is useless. One `SaveChanges`: venue, branch and both audit rows commit together or not at all. |
+| Create a venue **with its first branch** | `POST /api/platform/venues` | A venue with no branch is useless. One `SaveChanges`: venue, branch and both audit rows commit together or not at all. `type` is `1` Cafe, `2` Restaurant or `3` Bar; the first branch ships that type's reservation-policy defaults (a 120-minute turn for a cafe or a bar, 90 for a restaurant). |
 | List venues | `GET /api/platform/venues?search=&page=&pageSize=&includeDeleted=` | Branch count, table count, paid-branch count, tier rollup. Deleted venues are hidden unless `includeDeleted=true`. |
 | Read one venue | `GET /api/platform/venues/{id}` | The venue and every branch under it. |
-| Edit a venue | `PATCH /api/platform/venues/{id}` | Name, type, slug, active flag. |
+| Edit a venue | `PATCH /api/platform/venues/{id}` | Name, type (`1` Cafe, `2` Restaurant, `3` Bar), slug, active flag. Changing the type does not touch the policies existing branches already have. |
 | **Suspend** / reactivate | `POST .../suspend`, `.../reactivate` | What non-payment does. The venue disappears from diner browsing but keeps every row and stays visible to its owner. |
 | **Soft-delete** | `DELETE /api/platform/venues/{id}` | Never a hard delete. Refused, naming the blockers, while any tab is open or any confirmed booking is still in the future. |
 | Add a branch | `POST /api/platform/venues/{id}/branches` | |

@@ -1,4 +1,6 @@
+using System.ComponentModel.DataAnnotations;
 using Yalla.Application.Ordering;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
@@ -61,7 +63,20 @@ public sealed record MoveOrderStatusRequest(TabOrderStatus Status);
 /// <summary>A table asking for something.</summary>
 /// <param name="Preset">1 Napkins, 2 Water, 3 TheBill, 4 Other.</param>
 /// <param name="Note">One short line, optional. Not a conversation.</param>
-public sealed record RaiseServiceRequest(ServiceRequestPreset Preset, string? Note = null);
+/// <param name="BillScope">
+/// Only with preset 3: whose part of the bill - 1 WholeBill, 2 MyShare. The server prices it and the
+/// response carries <c>billAmountAmd</c>. Leave it out for a plain "the bill, please". WholeBill needs
+/// sight of the table total. Replaces the asker's own earlier open request for the bill on the tab.
+/// </param>
+/// <param name="TipPercent">
+/// Only with a <paramref name="BillScope"/>: the tip, 0 to 25 percent of the items that scope still
+/// leaves unpaid (before service). The response carries it priced as <c>tipAmd</c>.
+/// </param>
+public sealed record RaiseServiceRequest(
+    ServiceRequestPreset Preset,
+    string? Note = null,
+    BillScope? BillScope = null,
+    [Range(0, BillQuote.MaxTipPercent)] int? TipPercent = null);
 
 /// <summary>Cash handed over at the table.</summary>
 /// <param name="AmountAmd">What was taken against the balance, in whole dram.</param>

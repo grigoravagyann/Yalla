@@ -1,3 +1,5 @@
+using System.Globalization;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
@@ -187,6 +189,61 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
 
         Assert.Equal(1_320L, tab.PaidAmd);
         Assert.Equal(0L, tab.RemainingAmd);
+    }
+
+    /// <summary>
+    /// The tab's tips are the tips on payments that went through - a wallet hold still waiting, or
+    /// one that failed, put nothing in anybody's hand - shown with the table total and only there.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_tabs_tips_count_only_payments_that_went_through_and_show_only_with_the_total()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync(coffees: 2);
+        await using var db = world.Db;
+
+        var payments = fixture.CreatePaymentService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+
+        await payments.RecordCashAsync(new RecordCashPaymentCommand(
+            world.TabId, 1_000L, world.GuestId, TipAmd: 300L, Guid.CreateVersion7()));
+        await payments.RecordCashAsync(new RecordCashPaymentCommand(
+            world.TabId, 500L, null, TipAmd: 200L, Guid.CreateVersion7()));
+
+        await using (var seed = fixture.CreateContext(world.Clock))
+        {
+            var nowUtc = world.Clock.UtcNow;
+
+            seed.Payments.Add(Payment.Reserve(
+                world.TabId, 100L, PaymentMethod.Idram, nowUtc, world.GuestId, tipAmd: 5_000L));
+            seed.Payments.Add(new Payment(
+                world.TabId, 100L, PaymentMethod.Card, PaymentStatus.Failed, nowUtc, world.HostId,
+                completedAtUtc: nowUtc, tipAmd: 7_000L));
+
+            // And the host hides the total from the guest.
+            var guest = await seed.TabParticipants.FirstAsync(p => p.Id == world.GuestId);
+            guest.SetPermissions(canOrder: true, canSeeTableTotal: false, canPay: false);
+
+            await seed.SaveChangesAsync();
+        }
+
+        await using var read = fixture.CreateContext(world.Clock);
+        var query = fixture.CreateTabQuery(read);
+
+        var host = await query.GetForParticipantAsync(world.TabId, world.HostId);
+        Assert.Equal(500L, host!.TipsAmd);
+
+        // Outside the balance: 1,500 paid of 2,640, and the 500 in tips is in neither number.
+        Assert.Equal(1_500L, host.TableTotal!.PaidAmd);
+        Assert.Equal(1_140L, host.TableTotal.RemainingAmd);
+
+        // The guest tipped 300 of it, and still does not see the table's tips: they go with the total.
+        var guestView = await query.GetForParticipantAsync(world.TabId, world.GuestId);
+        Assert.False(guestView!.TableTotalVisible);
+        Assert.Null(guestView.TipsAmd);
+
+        var staff = await query.GetForStaffAsync(world.TabId);
+        Assert.Equal(500L, staff!.TipsAmd);
     }
 
     [SkippableFact]
@@ -399,6 +456,153 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
         Assert.Equal(acknowledged.AcknowledgedAtUtc, again.AcknowledgedAtUtc);
 
         Assert.Equal(4, (await staff.GetOpenAsync(world.Branch.BranchId)).Count);
+    }
+
+    /// <summary>
+    /// A diner who asks for the bill again, saying what to bring, replaces their own earlier ask: it
+    /// leaves the waiter's list, unacknowledged, and nobody else's request moves with it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Asking_for_the_bill_again_replaces_only_the_askers_own_open_request_for_it()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync(coffees: 2);
+        await using var db = world.Db;
+
+        async Task<ServiceRequestView> RaiseAsync(
+            Guid participantId, ServiceRequestPreset preset, BillScope? scope = null, int? tipPercent = null)
+        {
+            // A minute apart, so newest-first is a statement about time rather than about ties.
+            world.Clock.Advance(TimeSpan.FromMinutes(1));
+
+            await using var requestDb = fixture.CreateContext(world.Clock);
+
+            return await fixture.CreateServiceRequests(requestDb, world.Clock, TestActor.Participant(participantId))
+                .RaiseAsync(world.TabId, participantId, preset, null, scope, tipPercent);
+        }
+
+        var hostsShare = await RaiseAsync(world.HostId, ServiceRequestPreset.TheBill, BillScope.MyShare, 5);
+        var guestsWhole = await RaiseAsync(world.GuestId, ServiceRequestPreset.TheBill, BillScope.WholeBill, 10);
+
+        // A plain "the bill, please" names nothing to bring instead, so it replaces nothing.
+        var hostsPlain = await RaiseAsync(world.HostId, ServiceRequestPreset.TheBill);
+        var hostsWater = await RaiseAsync(world.HostId, ServiceRequestPreset.Water);
+
+        // The host changes their mind: the whole bill, no tip.
+        var hostsWhole = await RaiseAsync(world.HostId, ServiceRequestPreset.TheBill, BillScope.WholeBill, 0);
+        var replacedAt = world.Clock.UtcNow;
+
+        await using var staffDb = fixture.CreateContext(world.Clock);
+        var open = await fixture.CreateServiceRequests(staffDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .GetOpenAsync(world.Branch.BranchId);
+
+        // The host's newest ask, their water, and the guest's ask - which is the guest's to replace.
+        Assert.Equal(
+            [hostsWhole.ServiceRequestId, hostsWater.ServiceRequestId, guestsWhole.ServiceRequestId],
+            open.Select(r => r.ServiceRequestId));
+
+        await using var verify = fixture.CreateContext(world.Clock);
+        var replaced = await verify.ServiceRequests
+            .AsNoTracking()
+            .Where(r => r.Id == hostsShare.ServiceRequestId || r.Id == hostsPlain.ServiceRequestId)
+            .ToListAsync();
+
+        Assert.Equal(2, replaced.Count);
+        Assert.All(replaced, r =>
+        {
+            Assert.Equal(replacedAt, r.SupersededAtUtc);
+            Assert.False(r.IsOpen);
+
+            // Replaced, not answered: nobody went.
+            Assert.Null(r.AcknowledgedAtUtc);
+        });
+
+        // And the replaced quote is kept as it was, a record of what was asked.
+        Assert.Equal(BillScope.MyShare, replaced.Single(r => r.Id == hostsShare.ServiceRequestId).BillScope);
+    }
+
+    /// <summary>
+    /// <c>CK_ServiceRequests_Bill</c>, at the database, against rows written around the domain.
+    /// </summary>
+    /// <remarks>
+    /// A CHECK passes when its predicate is UNKNOWN as well as when it is TRUE, so a comparison on a
+    /// NULL column - <c>[BillAmountAmd] &gt; 0</c> with no amount - is not a refusal at all. Every
+    /// refused row below is one a predicate without its own <c>IS NOT NULL</c> would let in.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_database_refuses_bill_columns_that_do_not_belong_together_nulls_included()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync(coffees: 0);
+        await using var db = world.Db;
+
+        (int Preset, string Scope, string Amount, string TipPercent, string TipAmd, string Why)[] refused =
+        [
+            (3, "2", "NULL", "NULL", "NULL", "a scope with no amount"),
+            (3, "NULL", "5000", "NULL", "NULL", "an amount with no scope"),
+            (3, "NULL", "NULL", "10", "500", "a tip with no scope"),
+            (3, "2", "5000", "10", "NULL", "a tip percentage without its amount"),
+            (3, "2", "5000", "NULL", "500", "a tip amount without its percentage"),
+            (3, "9", "5000", "NULL", "NULL", "a scope that is not one"),
+            (3, "2", "0", "NULL", "NULL", "nothing to bring"),
+            (3, "2", "5000", "26", "1300", "a tip over 25 percent"),
+            (3, "2", "5000", "-1", "0", "a negative tip percentage"),
+            (3, "2", "5000", "10", "-1", "a negative tip"),
+            (2, "2", "5000", "NULL", "NULL", "a bill on a request for water"),
+        ];
+
+        foreach (var row in refused)
+        {
+            var error = await Assert.ThrowsAsync<SqlException>(
+                () => InsertRequestAsync(db, world, row.Preset, row.Scope, row.Amount, row.TipPercent, row.TipAmd, "NULL"));
+
+            Assert.True(
+                error.Number == 547 && error.Message.Contains("CK_ServiceRequests_Bill", StringComparison.Ordinal),
+                $"Expected the bill constraint to refuse {row.Why}; got: {error.Message}");
+        }
+
+        // What the domain writes goes in - superseded or not, which the constraint does not look at.
+        await InsertRequestAsync(db, world, 1, "NULL", "NULL", "NULL", "NULL", "NULL");
+        await InsertRequestAsync(db, world, 3, "NULL", "NULL", "NULL", "NULL", "NULL");
+        await InsertRequestAsync(db, world, 3, "1", "5000", "NULL", "NULL", "NULL");
+        await InsertRequestAsync(db, world, 3, "2", "5000", "0", "0", "SYSUTCDATETIME()");
+        await InsertRequestAsync(db, world, 3, "2", "5000", "25", "1250", "NULL");
+
+        Assert.Equal(5, await db.ServiceRequests.CountAsync(r => r.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// One service request row straight into the table, around the domain. The bill columns are SQL
+    /// literals - <c>NULL</c> spelt out - because what is under test is how the constraint reads them.
+    /// </summary>
+    private static Task<int> InsertRequestAsync(
+        YallaDbContext db,
+        World world,
+        int preset,
+        string billScope,
+        string billAmountAmd,
+        string tipPercent,
+        string tipAmd,
+        string supersededAtUtc)
+    {
+        var sql =
+            "INSERT INTO dbo.ServiceRequests "
+            + "(Id, TabId, BranchId, DiningTableId, RequestedByParticipantId, Preset, CreatedAtUtc, "
+            + "BillScope, BillAmountAmd, TipPercent, TipAmd, SupersededAtUtc) "
+            + "VALUES ({0}, {1}, {2}, {3}, {4}, "
+            + string.Join(", ", preset.ToString(CultureInfo.InvariantCulture), "SYSUTCDATETIME()",
+                billScope, billAmountAmd, tipPercent, tipAmd, supersededAtUtc)
+            + ")";
+
+        return db.Database.ExecuteSqlRawAsync(
+            sql,
+            Guid.CreateVersion7(),
+            world.TabId,
+            world.Branch.BranchId,
+            world.Branch.FirstTableId,
+            world.HostId);
     }
 
     // ------------------------------------------------------------ 20. the event stream

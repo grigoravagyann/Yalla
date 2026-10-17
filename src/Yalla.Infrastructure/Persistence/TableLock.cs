@@ -54,6 +54,12 @@ namespace Yalla.Infrastructure.Persistence;
 /// concurrency sees no conflict and both commit.</description>
 /// </item>
 /// <item>
+/// <term>Move a booking (reschedule)</term>
+/// <description><b>Yes, the target table.</b> The moved booking updates its own row and the booking it
+/// now overlaps is a different one, so no row version sees the clash. Leaving the old table only frees
+/// it, which narrows nothing.</description>
+/// </item>
+/// <item>
 /// <term>Seat (walk-in, QR, reservation, held party)</term>
 /// <description><b>Yes.</b> Booking's re-check reads <c>TableSessions</c>; a seating that skipped the
 /// lock could commit between that read and the booking's commit, and both would succeed.</description>

@@ -12,7 +12,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The listing form: cuisine, about, price level, website, amenities, map pin and gallery.
+/// The listing form: cuisine, about, price level, website, amenities, district, map pin and gallery.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -105,7 +105,8 @@ internal sealed class BranchListingService(
             }
         }
 
-        branch.UpdateListing(command.Cuisine, command.About, command.PriceLevel, command.WebsiteUrl, command.Amenities);
+        branch.UpdateListing(
+            command.Cuisine, command.About, command.PriceLevel, command.WebsiteUrl, command.Amenities, command.District);
 
         if (moves)
         {
@@ -247,6 +248,7 @@ internal sealed class BranchListingService(
             branch.Address,
             branch.Latitude,
             branch.Longitude,
-            [.. photos.Select(PhotoView.From)]);
+            [.. photos.Select(PhotoView.From)],
+            branch.District);
     }
 }

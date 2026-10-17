@@ -709,6 +709,70 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         Assert.Contains(hostView.Participants, p => p.ParticipantId == guestId && p.DisplayName == "Nare");
     }
 
+    // ------------------------------------------------------------ faces on the roster
+
+    /// <summary>
+    /// Every signed-in diner's picture comes back on the same read, in the same five statements -
+    /// however many of them are at the table. A query per face is the N+1 a roster of six phones
+    /// would pay on every refresh.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_tab_read_brings_every_participants_photo_in_the_same_five_statements()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (db, clock, _, qr) = await ArrangeAsync();
+        await using var ownedDb = db;
+        var service = fixture.CreateTabService(db, clock, Anonymous);
+
+        var (tabId, hostId, _) = await TabTestData.OpenWithApprovedGuestAsync(service, qr);
+
+        var photos = new Dictionary<Guid, Guid>();
+
+        await using (var seed = fixture.CreateContext(clock))
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                // The account first: it and its picture point at each other.
+                var diner = new DinerUser(ReviewTestData.NextPhone(), "en", $"Diner {i}");
+                seed.DinerUsers.Add(diner);
+                await seed.SaveChangesAsync();
+
+                var photo = Yalla.Domain.Media.Photo.ForDiner(
+                    diner.Id, Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"),
+                    "t", "c", "f", 320, 320, 1_000L, clock.UtcNow);
+
+                seed.Photos.Add(photo);
+                diner.SetPhoto(photo.Id);
+
+                var guest = TabParticipant.Guest(
+                    tabId, $"Diner {i}", $"device-{Guid.NewGuid():N}", clock.UtcNow, false, diner.Id);
+                guest.Approve(clock.UtcNow);
+                seed.TabParticipants.Add(guest);
+
+                photos[guest.Id] = photo.Id;
+            }
+
+            await seed.SaveChangesAsync();
+        }
+
+        var counter = new CommandCountingInterceptor();
+        await using var verify = fixture.CreateContext(clock, counter);
+
+        var view = (await fixture.CreateTabQuery(verify).GetForParticipantAsync(tabId, hostId))!;
+
+        Assert.Equal(5, counter.Count);
+        Assert.Equal(6, view.Participants.Count);
+
+        foreach (var (participantId, photoId) in photos)
+        {
+            Assert.Equal(photoId, view.Participants.Single(p => p.ParticipantId == participantId).Photo?.PhotoId);
+        }
+
+        // The two who scanned without an account have none.
+        Assert.Equal(2, view.Participants.Count(p => p.Photo is null));
+    }
+
     // ------------------------------------------------------------ arrange
 
     private async Task<(YallaDbContext Db, TestClock Clock, TestBranch Branch, string QrToken)> ArrangeAsync()

@@ -90,11 +90,11 @@ internal sealed class DevListingSeeder(
 
     private void FillListing(Branch branch)
     {
-        // Every listing field, amenities included: the seed writes all of them at once, so a person
-        // who set only amenities would otherwise lose them to the demo text on the next restart.
+        // Every listing field, amenities and district included: the seed writes all of them at once,
+        // so a person who set only one would otherwise lose it to the demo text on the next restart.
         if (branch.Cuisine is not null || branch.About is not null
             || branch.PriceLevel is not null || branch.WebsiteUrl is not null
-            || branch.AmenityKeys is not null)
+            || branch.AmenityKeys is not null || branch.District is not null)
         {
             return;
         }
@@ -105,7 +105,8 @@ internal sealed class DevListingSeeder(
                    + "an all-day menu of Armenian breakfasts, grills and fresh pastries.",
             priceLevel: 2,
             websiteUrl: "https://example.com/yalla-demo",
-            amenities: null);
+            amenities: null,
+            district: "Kentron");
 
         logger.LogInformation("Seeding development listing for branch {BranchId}.", branch.Id);
     }

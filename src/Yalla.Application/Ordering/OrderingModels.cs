@@ -247,6 +247,20 @@ public sealed record KitchenOrderView(
 /// one client guaranteed to be behind. Zero on the branch-wide list, which spans many tabs and so
 /// has no single stream to be caught up with.
 /// </param>
+/// <param name="BillScope">
+/// On a request for the bill that said whose part: 1 WholeBill, 2 MyShare. Absent on every other
+/// request.
+/// </param>
+/// <param name="BillAmountAmd">
+/// What that scope left to pay when the diner asked, in whole dram - service charge included, tip
+/// excluded. Priced by the server, so the waiter brings the number the diner was shown. Absent with
+/// <paramref name="BillScope"/>.
+/// </param>
+/// <param name="TipPercent">The tip the diner chose, 0 to 25. Absent when none was asked.</param>
+/// <param name="TipAmd">
+/// That tip in whole dram, on top of <paramref name="BillAmountAmd"/> and outside the bill, like a
+/// cash payment's <c>tipAmd</c>. Absent with <paramref name="TipPercent"/>.
+/// </param>
 public sealed record ServiceRequestView(
     Guid ServiceRequestId,
     Guid TabId,
@@ -257,7 +271,11 @@ public sealed record ServiceRequestView(
     DateTime CreatedAtUtc,
     int WaitingMinutes,
     DateTime? AcknowledgedAtUtc,
-    long TabEventSequence);
+    long TabEventSequence,
+    BillScope? BillScope,
+    long? BillAmountAmd,
+    int? TipPercent,
+    long? TipAmd);
 
 /// <summary>A cash payment, as recorded.</summary>
 /// <param name="PaymentId">The payment.</param>

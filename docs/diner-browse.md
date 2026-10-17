@@ -45,7 +45,7 @@ These apply to everything below.
 
 - JSON camelCase. **Null fields are omitted**, not written as `null` - treat a missing key as null.
 - Enums are **integers**:
-  - `venueType`: 1 Cafe, 2 Restaurant.
+  - `venueType`: 1 Cafe, 2 Restaurant, 3 Bar.
   - `state` (`DerivedTableState`): 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService.
   - `kitchenStatus` (`TabOrderStatus`): 1 New, 2 InKitchen, 3 Ready, 4 Served, 5 Voided.
   - `day` (`DayOfWeek`): 0 Sunday … 6 Saturday.
@@ -69,8 +69,10 @@ These apply to everything below.
 | Query | Type | Notes |
 | --- | --- | --- |
 | `q` | string | Search only. Contains-match on venue name, branch name, cuisine and address; case-insensitive; blank means all; at most 100 characters |
-| `category` | int | 1 Cafe, 2 Restaurant |
+| `category` | int | 1 Cafe, 2 Restaurant, 3 Bar |
 | `lat`, `lng` | double | Together or neither. Adds `distanceKm` and sorts nearest first. Without them: best rated first |
+
+`q` matches the branch's `district` too, so "Arabkir" finds the places a venue says are in Arabkir.
 
 Errors: 400 `invalid-request` (half a position, out of range, `q` too long). Cached 15 s (the estate
 and the live numbers).
@@ -84,6 +86,7 @@ and the live numbers).
   "cuisine": "Armenian & Mediterranean",   // absent until set
   "priceLevel": 2,                         // 1-4, absent until set
   "address": "12 Abovyan Street, Yerevan", "latitude": 40.1843, "longitude": 44.5129,
+  "district": "Kentron",                    // the part of town; absent until set
   "distanceKm": 0.3,                        // only when lat/lng were sent
   "timeZoneId": "Asia/Yerevan", "isOpenNow": true, "freeTableCount": 4,
   "rating": 4.8,                            // absent when reviewCount is 0
@@ -185,6 +188,11 @@ It replaces `GET …/table-markers`, which is gone.
   only**, and every `tables[]` entry carries `photoId`, `photoX`, `photoY` (always present). The
   floor-plan geometry (`x`, `y`, `width`, `height`, `rotationDegrees`, `shape`) and the branch's
   `floorWidth`/`floorHeight` are gone (K13).
+- `GET /api/public/branches/{branchId}/availability/slots?partySize=&date=` - the time picker's day:
+  every half hour whose sitting fits the opening hours, each `isAvailable` with its `freeTableCount`,
+  judged exactly as the single-slot read above judges that time. Both take `excludeReservationId`, so
+  a diner changing a booking sees their own table free. See
+  [reservations.md](reservations.md#day-slots-one-day-every-half-hour).
 - `GET /api/public/branches/{branchId}/menu` - `BranchMenuView`, complete items only.
 - `GET /api/public/venues` and `GET /api/public/branches/{venueSlug}/{branchSlug}` - unchanged; see
   [public-surface.md](public-surface.md).
@@ -309,12 +317,13 @@ Body (`BranchListingCommand`). Every listing field is replaced; null or blank cl
   "websiteUrl": "https://…",
   "amenities": ["outdoorSeating", "wifi"],
   "galleryPhotoIds": ["guid", "guid"],
+  "district": "Kentron",
   "address": "…",
   "latitude": 40.1843, "longitude": 44.5129
 }
 ```
 
-Response: `{ cuisine?, about?, priceLevel?, websiteUrl?, amenities[], address, latitude, longitude, gallery: PhotoView[] }`.
+Response: `{ cuisine?, about?, priceLevel?, websiteUrl?, amenities[], address, latitude, longitude, gallery: PhotoView[], district? }`.
 
 **Validation.** Everything is checked before anything is written, and the listing fields report every
 bad field at once in `context.fields`.
@@ -323,6 +332,7 @@ bad field at once in `context.fields`.
 | --- | --- | --- |
 | `cuisine` | Trimmed; blank is null; at most 120 characters | 422 `validation-failed`, bound `max` |
 | `about` | Trimmed; blank is null; at most 2000 characters | 422, bound `max` |
+| `district` | The part of town, e.g. "Kentron". Trimmed; blank is null; at most 60 characters. A listing field like `cuisine` - a manager may set it, because naming the neighbourhood moves nobody's pin | 422, bound `max` |
 | `priceLevel` | 1-4, or null | 422, bound `range` (`min` 1, `max` 4) |
 | `websiteUrl` | Trimmed; at most 2048 characters; an absolute `http` or `https` address | 422, bound `max` for length; no bound for a non-http(s) or relative address |
 | `amenities` | `outdoorSeating`, `wifi`, `parking`, `cardPayment`, `vegan`; case-insensitive; repeats collapse | 422 per unknown key, `value` is the key |
@@ -435,6 +445,7 @@ participant, the tablet, the staff member - and per remote address otherwise.
 | `20260914110522_BranchFloorPlanVersion` (K6) | `Branches.FloorPlanVersion int NOT NULL DEFAULT 0`, an EF concurrency token |
 | `20260914145450_ReviewModerationReportsAndReservationNote` (K8, its extension, K9) | `BranchReviews.HiddenAtUtc datetime2 NULL`, `HiddenReason nvarchar(500) NULL`, `HiddenByStaffMemberId uniqueidentifier NULL`, `HiddenByPlatform bit NOT NULL DEFAULT 0`; the `(BranchId, UpdatedAtUtc)` index replaced by `(BranchId, CreatedAtUtc)`; table `BranchReviewReports` (`ReviewId` cascading from its review, `DinerUserId` Restrict, `Reason nvarchar(32)` held to the five slugs by `CK_BranchReviewReports_Reason`, `Note nvarchar(500)`; `UX_BranchReviewReports_ReviewId_DinerUserId`, `IX_BranchReviewReports_DinerUserId`); `Reservations.Note nvarchar(500) NULL` |
 | `20261016130309_RoomsWithPhotos` (K13) | table `FloorAreaPhotos` (`FloorAreaId` cascading from its room, `PhotoId` Restrict, `Position`; unique `(FloorAreaId, PhotoId)`, index `(FloorAreaId, Position)`); `DiningTables.PhotoId uniqueidentifier NULL` (Restrict to `Photos`); every existing `PhotoX`/`PhotoY` **cleared** - they were places on the cover; drops `DiningTables.X`, `Y`, `Width`, `Height`, `RotationDegrees`, `Shape` and `Branches.FloorWidth`, `FloorHeight`. Down restores those columns (canvas 1000x700, tables 80x80 rectangles at 0,0) and clears the pins |
+| `20261017150829_BranchDistrict` | `Branches.District nvarchar(60) NULL` - every existing branch reads as not said until the venue sets it |
 | `20260914154849_FavoritesAndNotifications` (K11, K12) | table `DinerFavorites` (`DinerUserId` cascading from the account, `BranchId` with no foreign key; `UX_DinerFavorites_DinerUserId_BranchId`); table `DinerNotifications` (`DinerUserId` cascading from the account, `Kind nvarchar(40)` held to the six kinds by `CK_DinerNotifications_Kind`, `ParamsJson nvarchar(2000)`, nullable `BranchId`, `ReservationId`, `TabId`, `OrderId` with no foreign keys, `ReadAtUtc`, `Sequence bigint IDENTITY`; indexes `(DinerUserId, CreatedAtUtc)`, the same filtered to `ReadAtUtc IS NULL`, `CreatedAtUtc`, and `ReservationId` filtered to non-null) |
 
 ---
@@ -450,7 +461,8 @@ Development - every start seeds, idempotently:
   ten) and opening hours.
 - **The listing** (`DevListingSeeder`), filled only while every listing field - amenities included -
   is still empty: cuisine "Armenian & Mediterranean", an about text, price level 2, website
-  `https://example.com/yalla-demo`, no amenities.
+  `https://example.com/yalla-demo`, district "Kentron", no amenities. A database seeded before the
+  district existed keeps its listing as it is - the seed does not write over a listing somebody has.
 - **Five reviews** by five development reviewer accounts - "Dev Reviewer 1" to "Dev Reviewer 5", on the
   +374 99 000 051-055 test range, phone verified - rated 5, 4, 5, 3 and 4, dated 1 to 25 days back. A
   review is added only for a reviewer who has none at the branch.
@@ -892,7 +904,7 @@ The specification as first written:
 | `id` | `listing.branchId` |
 | `venueId` | `listing.venueId` |
 | `name` | `listing.venueName` (the card title; `listing.branchName` is the location - show "Venue · Branch" when a venue has several) |
-| `type` | `listing.venueType`: 1 → `'cafe'`, 2 → `'restaurant'` |
+| `type` | `listing.venueType`: 1 → `'cafe'`, 2 → `'restaurant'`, 3 → `'bar'` |
 | `cuisine` | `listing.cuisine` - absent → `''`, hide the line |
 | `distanceKm` | `listing.distanceKm` when `lat`/`lng` were sent; else computed from `latitude`/`longitude` and the device position; no position → unknown, hide |
 | `rating` | `listing.rating` - absent → no rating yet |
@@ -902,6 +914,7 @@ The specification as first written:
 | `photos` | `[listing.coverPhoto.cardUrl or fullUrl, ...detail.gallery[].cardUrl]`, resolved against the API origin. The first, the cover, carries the markers |
 | `coords` | `{ latitude: listing.latitude, longitude: listing.longitude }` |
 | `address` | `listing.address` |
+| `district` | `listing.district` - absent → the app's old fallback; the area in "type · cuisine · area" |
 | `phone` | `detail.phoneE164` (absent → undefined) |
 | `website` | `detail.websiteUrl` (absent → undefined) |
 | `timeZoneId` | `listing.timeZoneId` |

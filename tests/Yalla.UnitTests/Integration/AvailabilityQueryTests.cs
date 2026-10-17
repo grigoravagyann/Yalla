@@ -1,4 +1,5 @@
 using System.Data.Common;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
@@ -397,6 +398,291 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
 
         // No inner join anywhere: that is the mistake that silently drops the tables with nothing
         // booked, which are the ones a diner most wants to see.
+        Assert.DoesNotContain("INNER JOIN [Reservations]", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---------------------------------------------------------------- one day, every half hour
+
+    /// <summary>
+    /// The time picker and the room screen never disagree: every time the day lists is answered the
+    /// same way by the single-slot read for that time.
+    /// </summary>
+    /// <remarks>
+    /// Asked of today - where the lead time strikes the morning and a party seated now runs into the
+    /// next sittings - and of a later day with bookings, a table that is too big, one that takes no
+    /// bookings and one out of service. Every listed time is put to the single-slot read; every time
+    /// left out must be one the branch is shut for.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Every_time_the_day_lists_agrees_with_the_single_slot_read()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 3);
+
+        await TestBranchBuilder.AddTableAsync(db, branch, "8A", seats: 8);
+        await TestBranchBuilder.AddTableAsync(db, branch, "B1", seats: 2, isBookable: false);
+        var broken = await TestBranchBuilder.AddTableAsync(db, branch, "X1", seats: 4);
+
+        await fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .MarkOutOfServiceAsync(new TableStateCommand(branch.BranchId, broken.Id, Guid.NewGuid(), "broken chair"));
+
+        // Somebody sitting at table 3 right now, which runs into this afternoon's sittings.
+        await fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, branch.TableIds[2], 2, Guid.CreateVersion7()));
+
+        var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
+        await booker.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
+        await booker.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 0)));
+        await booker.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(13, 0)) with { LocalDate = new DateOnly(2026, 9, 10) });
+
+        await using var readDb = fixture.CreateContext(clock);
+        var query = fixture.CreateAvailabilityQuery(readDb, clock);
+
+        foreach (var date in new[] { new DateOnly(2026, 9, 10), BookingDate })
+        {
+            foreach (var partySize in new[] { 2, 4 })
+            {
+                var day = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, date, partySize));
+
+                Assert.NotNull(day);
+                Assert.Equal(30, day.StepMinutes);
+                Assert.NotEmpty(day.Slots);
+
+                for (var minutes = 0; minutes < 24 * 60; minutes += 30)
+                {
+                    var time = new TimeOnly(minutes / 60, minutes % 60);
+                    var single = await query.GetAvailabilityAsync(
+                        new AvailabilityRequest(branch.BranchId, partySize, date, time));
+
+                    var slot = day.Slots.SingleOrDefault(s => s.Time == time.ToString("HH\\:mm"));
+
+                    if (slot is null)
+                    {
+                        // Left out only when the branch is shut for that sitting - which the single
+                        // read reports as such, or as too soon when it is both.
+                        Assert.Contains(
+                            single!.UnavailableReason,
+                            new ReservationRejectionReason?[]
+                            {
+                                ReservationRejectionReason.OutsideOpeningHours,
+                                ReservationRejectionReason.LeadTimeTooShort,
+                            });
+
+                        continue;
+                    }
+
+                    var offered = single!.Tables.Count(t => t.IsAvailable);
+
+                    Assert.Equal(single.RequestedStartUtc, slot.StartUtc);
+                    Assert.Equal(offered, slot.FreeTableCount);
+                    Assert.Equal(offered > 0, slot.IsAvailable);
+                    Assert.All(single.Tables, t => Assert.Equal(t.RequiresApproval, slot.RequiresApproval));
+
+                    if (single.UnavailableReason is { } refused)
+                    {
+                        Assert.Equal(refused, slot.UnavailableReason);
+                    }
+                    else if (!slot.IsAvailable)
+                    {
+                        Assert.Contains(slot.UnavailableReason, single.Tables.Select(t => t.UnavailableReason));
+                    }
+                    else
+                    {
+                        Assert.Null(slot.UnavailableReason);
+                    }
+                }
+            }
+        }
+
+        // The morning of today is inside the lead time, and is listed struck with that reason.
+        var today = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, new DateOnly(2026, 9, 10), 2));
+        var tenOClock = today!.Slots.First();
+
+        Assert.Equal("10:00", tenOClock.Time);
+        Assert.False(tenOClock.IsAvailable);
+        Assert.Equal(ReservationRejectionReason.LeadTimeTooShort, tenOClock.UnavailableReason);
+        Assert.Null(today.UnavailableReason);
+    }
+
+    /// <summary>
+    /// The only table that fits the party is booked, so the times its sitting runs into are struck -
+    /// as already booked, not as "too small", although the two-seaters that do not fit outnumber it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_time_whose_only_fitting_table_is_booked_is_struck_as_already_booked()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
+
+        await TestBranchBuilder.AddTableAsync(db, branch, "2A", seats: 2);
+        await TestBranchBuilder.AddTableAsync(db, branch, "2B", seats: 2);
+
+        await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.FirstTableId, SixPm, partySize: 4));
+
+        await using var readDb = fixture.CreateContext(clock);
+        var day = await fixture.CreateAvailabilityQuery(readDb, clock)
+            .GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 4));
+
+        Assert.NotNull(day);
+        Assert.Null(day.UnavailableReason);
+
+        // Open 10:00-23:00 with a 90-minute turn: the last sitting that fits starts at 21:30.
+        Assert.Equal("10:00", day.Slots[0].Time);
+        Assert.Equal("21:30", day.Slots[^1].Time);
+        Assert.Equal(24, day.Slots.Count);
+
+        // 18:00-19:30 plus 15 minutes of clearing either side: 16:30 to 19:30 run into it.
+        var struck = day.Slots.Where(s => !s.IsAvailable).Select(s => s.Time).ToList();
+
+        Assert.Equal(["16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "19:30"], struck);
+        Assert.All(day.Slots.Where(s => !s.IsAvailable), s =>
+        {
+            Assert.Equal(ReservationRejectionReason.TableAlreadyBooked, s.UnavailableReason);
+            Assert.Equal(0, s.FreeTableCount);
+        });
+
+        var free = day.Slots.Single(s => s.Time == "16:00");
+
+        Assert.True(free.IsAvailable);
+        Assert.Equal(1, free.FreeTableCount);
+        Assert.Null(free.UnavailableReason);
+        Assert.Equal(new DateTime(2026, 9, 13, 12, 0, 0, DateTimeKind.Utc), free.StartUtc);
+    }
+
+    /// <summary>
+    /// A diner changing their booking sees their own table free - in the day and at the slot - and
+    /// every other booking still counts.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_diners_own_booking_can_be_left_out_of_both_reads()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 2);
+        var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var mine = await booker.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
+        await booker.CreateAsync(Booking(branch, branch.TableIds[1], SixPm));
+
+        await using var readDb = fixture.CreateContext(clock);
+        var query = fixture.CreateAvailabilityQuery(readDb, clock);
+
+        var everything = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 2));
+        var withoutMine = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 2, mine.Id));
+
+        Assert.False(everything!.Slots.Single(s => s.Time == "18:00").IsAvailable);
+
+        var six = withoutMine!.Slots.Single(s => s.Time == "18:00");
+        Assert.True(six.IsAvailable);
+        Assert.Equal(1, six.FreeTableCount);
+
+        var slot = await query.GetAvailabilityAsync(
+            new AvailabilityRequest(branch.BranchId, 2, BookingDate, SixPm, ExcludeReservationId: mine.Id));
+
+        Assert.True(slot!.Tables.Single(t => t.TableId == branch.TableIds[0]).IsAvailable);
+        Assert.Equal(
+            ReservationRejectionReason.TableAlreadyBooked,
+            slot.Tables.Single(t => t.TableId == branch.TableIds[1]).UnavailableReason);
+
+        // An id that is not a booking here changes nothing.
+        var stranger = await query.GetDaySlotsAsync(
+            new DaySlotsRequest(branch.BranchId, BookingDate, 2, Guid.CreateVersion7()));
+
+        Assert.Equal(
+            everything.Slots.Select(s => (s.Time, s.FreeTableCount)),
+            stranger!.Slots.Select(s => (s.Time, s.FreeTableCount)));
+    }
+
+    /// <summary>A day the branch cannot serve at all says so once, at the top.</summary>
+    [SkippableFact]
+    public async Task A_day_the_branch_cannot_serve_says_so_once()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 2);
+
+        // Shut on Sundays: 13 September 2026 is one.
+        await db.OpeningHours
+            .Where(h => h.BranchId == branch.BranchId && h.Day == DayOfWeek.Sunday)
+            .ExecuteDeleteAsync();
+
+        await using var readDb = fixture.CreateContext(clock);
+        var query = fixture.CreateAvailabilityQuery(readDb, clock);
+
+        var sunday = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 2));
+
+        Assert.Equal(ReservationRejectionReason.OutsideOpeningHours, sunday!.UnavailableReason);
+        Assert.Empty(sunday.Slots);
+
+        // Yesterday: every time listed, every one too soon.
+        var yesterday = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, new DateOnly(2026, 9, 9), 2));
+
+        Assert.Equal(ReservationRejectionReason.LeadTimeTooShort, yesterday!.UnavailableReason);
+        Assert.NotEmpty(yesterday.Slots);
+        Assert.All(yesterday.Slots, s => Assert.Equal(ReservationRejectionReason.LeadTimeTooShort, s.UnavailableReason));
+
+        // Further out than the branch's fourteen days.
+        var tooFar = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, new DateOnly(2026, 9, 30), 2));
+
+        Assert.Equal(ReservationRejectionReason.OutsideBookingWindow, tooFar!.UnavailableReason);
+        Assert.All(tooFar.Slots, s => Assert.False(s.IsAvailable));
+
+        // A party nothing seats is a reason per time, not one for the day: a smaller party could come.
+        var twelve = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, new DateOnly(2026, 9, 12), 12));
+
+        Assert.Null(twelve!.UnavailableReason);
+        Assert.All(twelve.Slots, s =>
+        {
+            Assert.False(s.IsAvailable);
+            Assert.Equal(ReservationRejectionReason.PartyExceedsCapacity, s.UnavailableReason);
+            Assert.True(s.RequiresApproval, "Twelve is over the branch's threshold of eight.");
+        });
+
+        Assert.Null(await query.GetDaySlotsAsync(new DaySlotsRequest(Guid.NewGuid(), BookingDate, 2)));
+    }
+
+    [SkippableFact]
+    public async Task The_whole_day_arrives_in_one_round_trip()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 8);
+        var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        foreach (var tableId in branch.TableIds.Take(4))
+        {
+            await booker.CreateAsync(Booking(branch, tableId, new TimeOnly(21, 0)));
+        }
+
+        var counter = new CommandCounter();
+        await using var readDb = fixture.CreateContext(clock, counter);
+        var query = fixture.CreateAvailabilityQuery(readDb, clock);
+
+        var day = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 2));
+
+        Assert.NotNull(day);
+        Assert.Equal(24, day.Slots.Count);
+
+        // Forty-eight times, eight tables, one statement.
+        Assert.Equal(1, counter.Count);
+
+        var sql = query.GetDaySlotsQuerySql(new DaySlotsRequest(branch.BranchId, BookingDate, 2, Guid.CreateVersion7()));
+        output.WriteLine(sql);
+
+        Assert.Contains("LEFT JOIN", sql, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("INNER JOIN [Reservations]", sql, StringComparison.OrdinalIgnoreCase);
     }
 

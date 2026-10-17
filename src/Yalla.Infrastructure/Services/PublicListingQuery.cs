@@ -70,7 +70,8 @@ internal sealed class PublicListingQuery(
                         || Contains(b.VenueName, needle)
                         || Contains(b.BranchName, needle)
                         || Contains(b.Cuisine, needle)
-                        || Contains(b.Address, needle))
+                        || Contains(b.Address, needle)
+                        || Contains(b.District, needle))
             .Select(b => ToListing(b, stats, request.Latitude, request.Longitude));
 
         return request.Latitude is not null
@@ -247,6 +248,7 @@ internal sealed class PublicListingQuery(
             Cuisine = b.Cuisine,
             PriceLevel = b.PriceLevel,
             Address = b.Address,
+            District = b.District,
             Latitude = b.Latitude,
             Longitude = b.Longitude,
             TimeZoneId = b.TimeZoneId,
@@ -365,7 +367,8 @@ internal sealed class PublicListingQuery(
                 stats.Sittings.GetValueOrDefault(row.BranchId),
                 count,
                 rating),
-            Cover(row));
+            Cover(row),
+            row.District);
     }
 
     private static PhotoView? Cover(EstateRow row) =>
@@ -582,6 +585,8 @@ internal sealed class PublicListingQuery(
         public int? PriceLevel { get; init; }
 
         public string Address { get; init; } = null!;
+
+        public string? District { get; init; }
 
         public double Latitude { get; init; }
 

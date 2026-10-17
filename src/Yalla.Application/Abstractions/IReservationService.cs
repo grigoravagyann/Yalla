@@ -38,6 +38,41 @@ public interface IReservationService
     Task<ReservationView> CreateAsync(CreateReservationCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Moves the calling diner's own booking to another time, table or party size, keeping its code
+    /// and manage link - or, for a retry with the same <c>ClientCommandId</c>, returns the booking as
+    /// it stands.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every rule creation applies, applied again: the branch open for business, the channel the
+    /// booking came from still accepted, timing, opening hours, the table pinned on its room and
+    /// fitting the party. The clash checks run under the target table's lock, as creation's do,
+    /// <b>excluding this booking</b> - a diner moving dinner by half an hour must not be told their
+    /// own booking is in the way.
+    /// </para>
+    /// <para>
+    /// The status is decided again by creation's rules, so a move can confirm a booking, keep it
+    /// confirmed, or send it back for approval - except that a confirmed booking whose party does not
+    /// grow is not sent back for its size alone. Its reminder and late nudge are replaced with ones
+    /// for the new time.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">No such booking, or it is somebody else's - one answer for both.</exception>
+    /// <exception cref="ClientCommandIdAlreadyUsedException">
+    /// The <c>ClientCommandId</c> belongs to another command, or to a different change of this booking.
+    /// </exception>
+    /// <exception cref="Domain.Occupancy.ReservationNotChangeableException">
+    /// The booking is not pending or confirmed, or it has started.
+    /// </exception>
+    /// <exception cref="Domain.Occupancy.ReservationRejectedException">A branch rule refused the new slot.</exception>
+    /// <exception cref="TableAlreadyBookedException">Another booking holds the table then.</exception>
+    /// <exception cref="TableCurrentlyOccupiedException">Somebody sitting there now runs into the slot.</exception>
+    /// <exception cref="ReservationLockTimeoutException">The table's lock could not be had in time. Retryable.</exception>
+    Task<ReservationView> RescheduleAsync(
+        RescheduleReservationCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Cancels a booking on behalf of the diner who made it.
     /// </summary>
     /// <remarks>

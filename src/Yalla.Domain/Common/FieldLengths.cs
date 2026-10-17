@@ -29,6 +29,9 @@ public static class FieldLengths
     /// <summary>A branch's cuisine line, e.g. "Armenian &amp; Mediterranean".</summary>
     public const int Cuisine = 120;
 
+    /// <summary>The part of town a branch is in, e.g. "Kentron". A short name, not an address.</summary>
+    public const int District = 60;
+
     /// <summary>A diner's review text.</summary>
     public const int ReviewText = 1000;
 

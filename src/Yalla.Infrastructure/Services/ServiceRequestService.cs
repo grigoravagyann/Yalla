@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
@@ -44,8 +45,14 @@ internal sealed class ServiceRequestService(
         Guid actingParticipantId,
         ServiceRequestPreset preset,
         string? note,
+        BillScope? billScope = null,
+        int? tipPercent = null,
         CancellationToken cancellationToken = default)
     {
+        // The shape first, every field at once, before anything is read: a tip on a request for
+        // napkins is wrong whoever sends it.
+        ServiceRequest.ValidateBillFields(preset, billScope, tipPercent);
+
         var tab = await db.Tabs
             .Include(t => t.Participants)
             .Include(t => t.DiningTable)
@@ -77,17 +84,33 @@ internal sealed class ServiceRequestService(
             throw new ServiceRequestRateLimitedException(tabId, RateLimit, RateWindowMinutes);
         }
 
+        var bill = billScope is { } scope
+            ? await QuoteAsync(tab, participant, scope, tipPercent, cancellationToken)
+            : null;
+
         var request = new ServiceRequest(
-            tab.Id, tab.BranchId, tab.DiningTableId, participant.Id, preset, nowUtc, note);
+            tab.Id, tab.BranchId, tab.DiningTableId, participant.Id, preset, nowUtc, note, bill);
 
         db.ServiceRequests.Add(request);
 
+        if (bill is not null)
+        {
+            await SupersedeEarlierBillRequestsAsync(tab.Id, participant.Id, nowUtc, cancellationToken);
+        }
+
+        // What was asked for rides on the event - the scope and the tip percentage - but not the
+        // priced amounts. Every phone at the table reads this stream, and a guest the host hid the
+        // total from would otherwise read a tablemate's share, or the whole balance, off somebody
+        // else's request. The figures are for the waiter: the asker's response and the staff list
+        // carry them.
         ledger.Append(tab.Id, TabEventType.ServiceRequested, new
         {
             serviceRequestId = request.Id,
             preset = (int)request.Preset,
             note = request.Note,
             requestedByParticipantId = participant.Id,
+            billScope = (int?)request.BillScope,
+            tipPercent = request.TipPercent,
         });
 
         await ledger.SaveAppendedAsync(cancellationToken);
@@ -112,10 +135,11 @@ internal sealed class ServiceRequestService(
         var nowUtc = clock.UtcNow;
 
         // Newest first: on a busy floor the screen is glanced at, not read, and the thing that just
-        // came in is the thing nobody has walked to yet.
+        // came in is the thing nobody has walked to yet. A request for the bill the diner has since
+        // replaced with another is not outstanding - the newer one is.
         var rows = await db.ServiceRequests
             .AsNoTracking()
-            .Where(r => r.BranchId == branchId && r.AcknowledgedAtUtc == null)
+            .Where(r => r.BranchId == branchId && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
             .OrderByDescending(r => r.CreatedAtUtc)
             .Select(r => new { Request = r, TableLabel = r.DiningTable.Label })
             .ToListAsync(cancellationToken);
@@ -162,6 +186,85 @@ internal sealed class ServiceRequestService(
             await ledger.MaxSequenceAsync(request.TabId, cancellationToken));
     }
 
+    /// <summary>
+    /// Closes the asker's own earlier requests for the bill on this tab that nobody has answered yet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only when the new request says what to bring. A diner who asked for their share and then for
+    /// the whole bill wants one bill brought, the latest; leaving both open sends the waiter over with
+    /// a figure the table has moved on from, or twice. A plain "the bill, please" replaces nothing: it
+    /// names no amount to bring instead.
+    /// </para>
+    /// <para>
+    /// The asker's own, never a tablemate's: two people may well each want to pay their part. Saved
+    /// with the new request, in its unit of work, so the list never shows both or neither.
+    /// </para>
+    /// </remarks>
+    private async Task SupersedeEarlierBillRequestsAsync(
+        Guid tabId,
+        Guid participantId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var earlier = await db.ServiceRequests
+            .Where(r => r.TabId == tabId
+                        && r.RequestedByParticipantId == participantId
+                        && r.Preset == ServiceRequestPreset.TheBill
+                        && r.AcknowledgedAtUtc == null
+                        && r.SupersededAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var request in earlier)
+        {
+            request.Supersede(nowUtc);
+        }
+
+        if (earlier.Count > 0)
+        {
+            logger.LogInformation(
+                "Participant {ParticipantId} asked for the bill again on tab {TabId}; superseded {Count} earlier request(s).",
+                participantId, tabId, earlier.Count);
+        }
+    }
+
+    /// <summary>
+    /// Prices a request for the bill against the tab as it stands, from its lines.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same <see cref="TabLedger.Compute"/> the shares view and the cash endpoint read, so the
+    /// amount on the waiter's screen is the amount the diner's split showed and the amount the cash
+    /// keypad will accept. Read-only: nothing on the tab row changes, so raising a request still
+    /// cannot collide with a payment.
+    /// </para>
+    /// <para>
+    /// <b>The whole bill needs sight of the total.</b> A guest the host has hidden the total from
+    /// would otherwise read it back off their own request, which is the leak the projection exists to
+    /// prevent - so they may ask for their own share, and only that. The same sight decides whether
+    /// their share is capped at the tab's balance, for the same reason (<see cref="BillQuote.For"/>).
+    /// </para>
+    /// </remarks>
+    private async Task<BillQuote> QuoteAsync(
+        Tab tab,
+        TabParticipant participant,
+        BillScope scope,
+        int? tipPercent,
+        CancellationToken cancellationToken)
+    {
+        var canSeeTableTotal = TabPermissions.MaySeeTableTotal(participant.Status, participant.CanSeeTableTotal);
+
+        if (scope == BillScope.WholeBill && !canSeeTableTotal)
+        {
+            throw new TabPermissionException(
+                "Asking for the whole bill", "somebody who can see the table total");
+        }
+
+        var loaded = await ledger.LoadForWriteAsync(tab.Id, cancellationToken);
+
+        return BillQuote.For(ledger.Compute(loaded), participant.Id, scope, tipPercent, canSeeTableTotal);
+    }
+
     private static ServiceRequestView ToView(
         ServiceRequest request,
         string tableLabel,
@@ -175,9 +278,14 @@ internal sealed class ServiceRequestService(
             request.Note,
             request.RequestedByParticipantId,
             request.CreatedAtUtc,
-            (int)Math.Max(0d, ((request.AcknowledgedAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
+            (int)Math.Max(
+                0d, ((request.AcknowledgedAtUtc ?? request.SupersededAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
             request.AcknowledgedAtUtc,
-            tabEventSequence);
+            tabEventSequence,
+            request.BillScope,
+            request.BillAmountAmd,
+            request.TipPercent,
+            request.TipAmd);
 
     private Guid RequireStaff(string operation) =>
         actor.Type == ActorType.Staff && actor.StaffMemberId is { } id

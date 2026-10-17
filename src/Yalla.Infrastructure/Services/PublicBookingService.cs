@@ -61,7 +61,8 @@ internal sealed class PublicBookingService(
                 r.EndUtc,
                 r.CancelledAfterDeadline,
                 r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
-                r.Note))
+                r.Note,
+                r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -113,7 +114,10 @@ internal sealed class PublicBookingService(
         CancelledAfterDeadline: row.CancelledAfterDeadline,
 
         // The diner's own words to the venue (K9): nothing the link holder did not write.
-        Note: row.Note);
+        Note: row.Note,
+
+        // Where the table is, which is about the venue rather than about anybody else.
+        RoomName: row.RoomName);
 
     private sealed record Row(
         string VenueName,
@@ -130,5 +134,6 @@ internal sealed class PublicBookingService(
         DateTime EndUtc,
         bool CancelledAfterDeadline,
         int CancellationDeadlineMinutes,
-        string? Note);
+        string? Note,
+        string? RoomName);
 }

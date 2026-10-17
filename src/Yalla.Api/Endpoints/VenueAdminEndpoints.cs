@@ -133,12 +133,14 @@ public static class VenueAdminEndpoints
 
         group.MapPut("/listing", PutListingAsync)
             .WithName("putBranchListing")
-            .WithSummary("Set cuisine, about, price level, website, amenities, map pin and gallery")
+            .WithSummary("Set cuisine, about, price level, website, amenities, district, map pin and gallery")
             .WithDescription(
                 "Every listing field is replaced; null or blank clears it. `priceLevel` is 1-4; "
                 + "`amenities` are keys from `outdoorSeating`, `wifi`, `parking`, `cardPayment`, `vegan`; "
-                + "`websiteUrl` is an absolute http(s) address. Every broken field is reported at once as "
-                + "`422 validation-failed`.\n\n"
+                + "`websiteUrl` is an absolute http(s) address; `district` is the part of town, e.g. "
+                + "`Kentron`, trimmed, at most 60 characters, and a manager may set it like any other "
+                + "listing field - it is not the address and moves nothing. Every broken field is reported "
+                + "at once as `422 validation-failed`.\n\n"
                 + "**Moving the branch.** `address`, `latitude` and `longitude` travel together: coordinates "
                 + "without an address, or an address without coordinates, is `422` naming the missing field "
                 + "(bound `required`); the address is at most 400 characters. Sending all three as they are "

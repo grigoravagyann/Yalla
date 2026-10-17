@@ -56,6 +56,10 @@ namespace Yalla.Application.Public;
 /// The note the diner typed for the venue when booking, or absent (K9). Theirs to see again; it
 /// says nothing the link holder did not write.
 /// </param>
+/// <param name="RoomName">
+/// The room the table is in - "Hall", "Terrace" - or absent for a table in no room. Said beside the
+/// table label, because "table 4" alone does not tell somebody arriving which room to walk into.
+/// </param>
 public sealed record PublicBookingView(
     string VenueName,
     string BranchName,
@@ -70,7 +74,8 @@ public sealed record PublicBookingView(
     DateTime CancellationDeadlineUtc,
     bool CanCancel,
     bool CancelledAfterDeadline,
-    string? Note = null);
+    string? Note = null,
+    string? RoomName = null);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.

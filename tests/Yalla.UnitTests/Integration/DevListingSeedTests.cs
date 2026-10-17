@@ -145,6 +145,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
 
         Assert.Equal(first, second);
         Assert.Equal("Armenian & Mediterranean", first.Cuisine);
+        Assert.Equal("Kentron", first.District);
         Assert.InRange(first.Reviews, 3, 6);
         Assert.Equal(DevListingSeeder.ReviewerPhones.Length, first.Reviewers);
 
@@ -186,7 +187,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             branch.SetCoverPhoto(coverId);
 
             // Amenities and nothing else: every field the old skip check looked at is empty.
-            branch.UpdateListing(null, null, null, null, ["wifi", "vegan"]);
+            branch.UpdateListing(null, null, null, null, ["wifi", "vegan"], district: null);
             await db.SaveChangesAsync();
         }
 
@@ -308,6 +309,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
 
     private sealed record Snapshot(
         string? Cuisine,
+        string? District,
         int Reviews,
         int Reviewers,
         int UnplacedTables,
@@ -327,6 +329,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
 
         return new Snapshot(
             branch.Cuisine,
+            branch.District,
             await db.BranchReviews.CountAsync(r => r.BranchId == branch.Id),
             await db.DinerUsers.CountAsync(d => DevListingSeeder.ReviewerPhones.Contains(d.PhoneE164) && d.PhoneVerifiedAtUtc != null),
             await db.DiningTables.CountAsync(t => t.BranchId == branch.Id && t.IsActive && t.PhotoId == null),

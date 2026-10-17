@@ -17,7 +17,7 @@ namespace Yalla.Application.Public;
 /// <param name="BranchSlug">The branch half.</param>
 /// <param name="VenueName">The brand name, what the card is titled with.</param>
 /// <param name="BranchName">Which location, e.g. "Cascade".</param>
-/// <param name="VenueType">1 Cafe, 2 Restaurant.</param>
+/// <param name="VenueType">1 Cafe, 2 Restaurant, 3 Bar.</param>
 /// <param name="Cuisine">Free text from the venue, or absent when not set.</param>
 /// <param name="PriceLevel">1-4, or absent when not set.</param>
 /// <param name="Address">Street address.</param>
@@ -31,6 +31,10 @@ namespace Yalla.Application.Public;
 /// <param name="ReviewCount">How many reviews.</param>
 /// <param name="Badges"><c>"popular"</c> and/or <c>"new"</c>, derived - see <c>BranchBadgeRules</c>.</param>
 /// <param name="CoverPhoto">The hero picture, or absent.</param>
+/// <param name="District">
+/// The part of town, e.g. "Kentron" - what the app prints after the venue type and the cuisine. Free
+/// text from the venue, or absent when not set. Search matches it.
+/// </param>
 public sealed record PublicBranchListing(
     Guid BranchId,
     Guid VenueId,
@@ -51,7 +55,8 @@ public sealed record PublicBranchListing(
     double? Rating,
     int ReviewCount,
     IReadOnlyList<string> Badges,
-    PhotoView? CoverPhoto);
+    PhotoView? CoverPhoto,
+    string? District = null);
 
 /// <summary>
 /// One branch's details screen: everything on the card, and the rest.
@@ -160,7 +165,7 @@ public sealed record PublicBranchRooms(
     IReadOnlyList<PublicRoom> Rooms);
 
 /// <summary>What Explore, search and the map ask for.</summary>
-/// <param name="Query">Contains-match on venue name, branch name, cuisine and address, case-insensitive. Blank means everything.</param>
+/// <param name="Query">Contains-match on venue name, branch name, cuisine, address and district, case-insensitive. Blank means everything.</param>
 /// <param name="Category">Only this venue type.</param>
 /// <param name="Latitude">The diner's position, to compute <c>distanceKm</c> and sort nearest first.</param>
 /// <param name="Longitude">Sent together with <paramref name="Latitude"/> or not at all.</param>

@@ -471,6 +471,86 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         }
     }
 
+    // ------------------------------------------------------------ bars
+
+    [SkippableFact]
+    public async Task A_bar_is_created_and_patched_as_type_3_ships_the_two_hour_turn_and_is_what_category_3_finds()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
+        var marker = Guid.NewGuid().ToString("N")[..8];
+
+        async Task<JsonElement> CreateAsync(string name, int type)
+        {
+            var response = await platform.PostAsJsonAsync("/api/platform/venues", new
+            {
+                name = $"{name} {marker}",
+                type,
+                slug = $"{name.ToLowerInvariant()}-{marker}",
+                firstBranch = NewBranch("main", SubscriptionTier.Free),
+            });
+
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            return await response.Content.ReadFromJsonAsync<JsonElement>();
+        }
+
+        // Created as a bar: the wire carries 3, and the first branch ships a cafe's two-hour turn.
+        var bar = await CreateAsync("Taproom", 3);
+        Assert.Equal(3, bar.GetProperty("venue").GetProperty("type").GetInt32());
+        var barBranchId = bar.GetProperty("branches")[0].GetProperty("branchId").GetGuid();
+
+        var policy = await platform.GetFromJsonAsync<JsonElement>($"/api/branches/{barBranchId}/reservation-policy");
+        Assert.Equal(120, policy.GetProperty("turnTimeMinutes").GetInt32());
+
+        // Turned into a bar later: the patch takes 3 like any other type.
+        var converted = await CreateAsync("Corner", (int)VenueType.Cafe);
+        var convertedVenueId = converted.GetProperty("venue").GetProperty("venueId").GetGuid();
+
+        var patched = await platform.PatchAsJsonAsync($"/api/platform/venues/{convertedVenueId}", new { type = 3 });
+        Assert.Equal(HttpStatusCode.OK, patched.StatusCode);
+        Assert.Equal(3, (await patched.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("venue").GetProperty("type").GetInt32());
+
+        var cafe = await CreateAsync("Espresso", (int)VenueType.Cafe);
+
+        // The diner's Bars tile: category=3 is the two bars and not the cafe, and category=1 the reverse.
+        using var anyone = factory.CreateClient();
+
+        var bars = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/search?q={marker}&category=3");
+        Assert.Equal(
+            new[] { barBranchId, converted.GetProperty("branches")[0].GetProperty("branchId").GetGuid() }.Order(),
+            bars.EnumerateArray().Select(b => b.GetProperty("branchId").GetGuid()).Order());
+        Assert.All(bars.EnumerateArray(), b => Assert.Equal(3, b.GetProperty("venueType").GetInt32()));
+
+        var cafes = await anyone.GetFromJsonAsync<JsonElement>($"/api/public/branches/search?q={marker}&category=1");
+        Assert.Equal(
+            cafe.GetProperty("branches")[0].GetProperty("branchId").GetGuid(),
+            Assert.Single(cafes.EnumerateArray()).GetProperty("branchId").GetGuid());
+
+        // A number past the last member is still refused, and the message now lists them in order.
+        var unknown = await platform.PostAsJsonAsync("/api/platform/venues", new
+        {
+            name = $"Nowhere {marker}",
+            type = 4,
+            slug = $"nowhere-{marker}",
+            firstBranch = NewBranch("main", SubscriptionTier.Free),
+        });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, unknown.StatusCode);
+        var field = Assert.Single(
+            (await unknown.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("context").GetProperty("fields").EnumerateArray());
+        Assert.Equal("type", field.GetProperty("field").GetString());
+        Assert.Contains("1 Cafe, 2 Restaurant, 3 Bar", field.GetProperty("message").GetString());
+    }
+
     private static object NewBranch(string slugPart, SubscriptionTier subscriptionTier) => new
     {
         name = $"Branch {slugPart}",

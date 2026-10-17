@@ -23,4 +23,19 @@ public interface IAvailabilityQuery
     /// bookings - the most available tables in the room, and the ones a diner most wants to see.
     /// </remarks>
     string GetAvailabilityQuerySql(AvailabilityRequest request);
+
+    /// <summary>
+    /// Every half-hour start time on one day, each marked available or not for the party, in a
+    /// single round trip. Null when the branch does not exist.
+    /// </summary>
+    /// <remarks>
+    /// The same statement as <see cref="GetAvailabilityAsync"/>, and the same per-table rule applied
+    /// to each time, so a time listed as free is one the single-slot read offers a table at.
+    /// </remarks>
+    Task<BranchDaySlots?> GetDaySlotsAsync(
+        DaySlotsRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The SQL <see cref="GetDaySlotsAsync"/> executes, for diagnostics.</summary>
+    string GetDaySlotsQuerySql(DaySlotsRequest request);
 }

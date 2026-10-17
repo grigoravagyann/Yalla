@@ -128,17 +128,35 @@ public sealed class Branch : Entity
     public IReadOnlyList<string> Amenities =>
         string.IsNullOrEmpty(AmenityKeys) ? [] : AmenityKeys.Split(',', StringSplitOptions.RemoveEmptyEntries);
 
+    /// <summary>
+    /// The part of town the branch is in - "Kentron", "Arabkir" - or null when the venue has not said.
+    /// </summary>
+    /// <remarks>
+    /// What the app prints beside the venue type and the cuisine, and what a diner who knows the city
+    /// searches by. Not derived from <see cref="Address"/>: a street address names its district in no
+    /// fixed place, and guessing one would print the wrong neighbourhood with confidence. A listing
+    /// field like the cuisine line, so a manager may set it - it moves nothing a diner walks to.
+    /// </remarks>
+    public string? District { get; private set; }
+
     /// <summary>Replaces every listing field at once. The console edits them as one form.</summary>
     /// <exception cref="FieldValidationException">Every field that broke a rule.</exception>
-    public void UpdateListing(string? cuisine, string? about, int? priceLevel, string? websiteUrl, IEnumerable<string>? amenities)
+    public void UpdateListing(
+        string? cuisine,
+        string? about,
+        int? priceLevel,
+        string? websiteUrl,
+        IEnumerable<string>? amenities,
+        string? district)
     {
-        var listing = BranchListingRules.Normalise(cuisine, about, priceLevel, websiteUrl, amenities);
+        var listing = BranchListingRules.Normalise(cuisine, about, priceLevel, websiteUrl, amenities, district);
 
         Cuisine = listing.Cuisine;
         About = listing.About;
         PriceLevel = listing.PriceLevel;
         WebsiteUrl = listing.WebsiteUrl;
         AmenityKeys = listing.Amenities.Count == 0 ? null : string.Join(',', listing.Amenities);
+        District = listing.District;
     }
 
     public Guid? CoverPhotoId { get; private set; }

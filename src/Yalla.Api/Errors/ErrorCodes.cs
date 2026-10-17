@@ -326,6 +326,18 @@ public static class ErrorCodes
     public const string ReviewNeedsVisit = "review-needs-visit";
 
     /// <summary>
+    /// A change to a booking that can no longer be changed: it is not pending or confirmed - seated,
+    /// finished, cancelled, a no-show - or it has already started. HTTP 409, with
+    /// <c>context.reservationId</c>, <c>context.status</c> and <c>context.startUtc</c>. Checked before
+    /// any rule about the new slot. Minted by <c>ReservationNotChangeableException</c>.
+    /// </summary>
+    /// <remarks>
+    /// A 409 although it shares the <c>reservation-</c> prefix of the 422 booking refusals: nothing in
+    /// the request is wrong, the booking simply is not in a state to move.
+    /// </remarks>
+    public const string ReservationNotChangeable = "reservation-not-changeable";
+
+    /// <summary>
     /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
     /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
     /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
@@ -410,6 +422,7 @@ public static class ErrorCodes
         TableHasFutureBookings => "Table has upcoming bookings",
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
+        ReservationNotChangeable => "Booking can no longer be changed",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",

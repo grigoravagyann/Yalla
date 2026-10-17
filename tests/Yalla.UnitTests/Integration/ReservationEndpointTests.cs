@@ -526,7 +526,283 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
             (await again.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
     }
 
+    /// <summary>
+    /// Every booking read names the room its table is in - the create response, the diner's list and
+    /// the staff queue - and a table taken out of its room takes the room off its bookings.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_booking_names_the_room_its_table_is_in_on_every_read()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        Guid bigTableId;
+        Guid roomId;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+
+            var testBranch = new TestBranch(
+                branch.VenueId, branch.BranchId, branch.WaiterId, branch.ManagerId,
+                branch.TableIds, "Asia/Yerevan");
+
+            bigTableId = (await TestBranchBuilder.AddTableAsync(db, testBranch, "12", seats: 10)).Id;
+            roomId = await db.FloorAreas.Where(a => a.BranchId == branch.BranchId).Select(a => a.Id).SingleAsync();
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        // Nine people, so it also waits in the staff queue.
+        var created = await diner.PostAsJsonAsync(
+            "/api/reservations", NewBooking(factory, branch, tableId: bigTableId, partySize: 9));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var body = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var id = body.GetProperty("id").GetGuid();
+
+        Assert.Equal(roomId, body.GetProperty("roomId").GetGuid());
+        Assert.Equal("Windows", body.GetProperty("roomName").GetString());
+
+        var mine = await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
+        var listed = Assert.Single(mine.GetProperty("upcoming").EnumerateArray());
+
+        Assert.Equal(roomId, listed.GetProperty("roomId").GetGuid());
+        Assert.Equal("Windows", listed.GetProperty("roomName").GetString());
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+
+        var queue = await manager.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/reservations?status={(int)ReservationStatus.PendingApproval}");
+        var queued = Assert.Single(queue.EnumerateArray());
+
+        Assert.Equal(id, queued.GetProperty("id").GetGuid());
+        Assert.Equal("Windows", queued.GetProperty("roomName").GetString());
+
+        // Read live from the table: one moved out of its room takes the room off its bookings, and
+        // the fields are absent rather than null.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var table = await db.DiningTables.SingleAsync(t => t.Id == bigTableId);
+            table.AssignToArea(null);
+            await db.SaveChangesAsync();
+        }
+
+        var after = Assert.Single(
+            (await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine")).GetProperty("upcoming").EnumerateArray());
+
+        Assert.False(after.TryGetProperty("roomId", out _));
+        Assert.False(after.TryGetProperty("roomName", out _));
+    }
+
+    /// <summary>
+    /// The time picker's read: anonymous, on the app route and its public twin, striking the times the
+    /// room is full - and freeing the diner's own table when they say which booking is theirs.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_day_slots_are_anonymous_and_strike_the_times_the_room_is_full()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        var (date, _) = Slot(factory);
+        var day = date.ToString("yyyy-MM-dd");
+        using var anonymous = factory.CreateClient();
+
+        var empty = await anonymous.GetAsync($"/api/branches/{branch.BranchId}/availability/slots?date={day}&partySize=2");
+
+        Assert.Equal(HttpStatusCode.OK, empty.StatusCode);
+
+        var answer = await empty.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(branch.BranchId, answer.GetProperty("branchId").GetGuid());
+        Assert.Equal(day, answer.GetProperty("date").GetString());
+        Assert.Equal(2, answer.GetProperty("partySize").GetInt32());
+        Assert.Equal(30, answer.GetProperty("stepMinutes").GetInt32());
+        Assert.False(answer.TryGetProperty("unavailableReason", out _), "a day with free times has no day-level reason");
+
+        var first = answer.GetProperty("slots")[0];
+
+        Assert.Equal("10:00", first.GetProperty("time").GetString());
+        Assert.True(first.GetProperty("isAvailable").GetBoolean());
+        Assert.False(first.GetProperty("requiresApproval").GetBoolean());
+        Assert.Equal(2, first.GetProperty("freeTableCount").GetInt32());
+        Assert.False(first.TryGetProperty("unavailableReason", out _));
+        Assert.Equal(DateTimeKind.Utc, first.GetProperty("startUtc").GetDateTime().Kind);
+
+        // Both tables taken at six.
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var mineId = (await (await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch)))
+            .Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch, tableId: branch.TableIds[1]))).StatusCode);
+
+        var full = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/availability/slots?date={day}&partySize=2");
+        var six = SlotAt(full, "18:00");
+
+        Assert.False(six.GetProperty("isAvailable").GetBoolean());
+        Assert.Equal(0, six.GetProperty("freeTableCount").GetInt32());
+        Assert.Equal((int)ReservationRejectionReason.TableAlreadyBooked, six.GetProperty("unavailableReason").GetInt32());
+
+        // The diner changing their own booking sees their table free, on both reads.
+        var mine = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/availability/slots?date={day}&partySize=2&excludeReservationId={mineId}");
+
+        Assert.True(SlotAt(mine, "18:00").GetProperty("isAvailable").GetBoolean());
+        Assert.Equal(1, SlotAt(mine, "18:00").GetProperty("freeTableCount").GetInt32());
+
+        var room = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/availability?date={day}&time=18:00&partySize=2&excludeReservationId={mineId}");
+        var tables = room.GetProperty("tables").EnumerateArray().ToList();
+
+        Assert.True(tables.Single(t => t.GetProperty("tableId").GetGuid() == branch.FirstTableId).GetProperty("isAvailable").GetBoolean());
+        Assert.False(tables.Single(t => t.GetProperty("tableId").GetGuid() == branch.TableIds[1]).GetProperty("isAvailable").GetBoolean());
+
+        // The public twin: the same answer behind the public gate.
+        var publicDay = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/public/branches/{branch.BranchId}/availability/slots?date={day}&partySize=2");
+
+        Assert.Equal(full.GetProperty("slots").ToString(), publicDay.GetProperty("slots").ToString());
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await anonymous.GetAsync($"/api/public/branches/{Guid.NewGuid()}/availability/slots?date={day}&partySize=2")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await anonymous.GetAsync($"/api/branches/{Guid.NewGuid()}/availability/slots?date={day}")).StatusCode);
+
+        // A day is the question: without one there is nothing to answer.
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            (await anonymous.GetAsync($"/api/branches/{branch.BranchId}/availability/slots?partySize=2")).StatusCode);
+    }
+
+    /// <summary>
+    /// Changing a booking through the real pipeline: the policy, the body's binding and the 404, 409
+    /// and 422 answers - which no service test can see.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_diner_changes_their_booking_and_keeps_its_code()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        using var stranger = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var created = await (await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var id = created.GetProperty("id").GetGuid();
+
+        var (date, _) = Slot(factory);
+        var change = new
+        {
+            date = date.ToString("yyyy-MM-dd"),
+            time = "20:00",
+            partySize = 3,
+            diningTableId = branch.TableIds[1],
+            clientCommandId = Guid.CreateVersion7(),
+        };
+
+        // Not theirs: the same answer as a booking that does not exist.
+        var theft = await stranger.PostAsJsonAsync($"/api/reservations/{id}/reschedule", change);
+
+        Assert.Equal(HttpStatusCode.NotFound, theft.StatusCode);
+        Assert.Equal("not-found", (await theft.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        var moved = await diner.PostAsJsonAsync($"/api/reservations/{id}/reschedule", change);
+
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+
+        var body = await moved.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(id, body.GetProperty("id").GetGuid());
+        Assert.Equal(created.GetProperty("code").GetString(), body.GetProperty("code").GetString());
+        Assert.Equal(branch.TableIds[1], body.GetProperty("tableId").GetGuid());
+        Assert.Equal("20:00:00", body.GetProperty("localStartTime").GetString());
+        Assert.Equal(3, body.GetProperty("partySize").GetInt32());
+        Assert.Equal((int)ReservationStatus.Confirmed, body.GetProperty("status").GetInt32());
+        Assert.Equal("Windows", body.GetProperty("roomName").GetString());
+        Assert.False(body.GetProperty("wasReplay").GetBoolean());
+        Assert.False(body.TryGetProperty("manageToken", out _));
+
+        // The phone retries: the same booking, moved once.
+        var retry = await diner.PostAsJsonAsync($"/api/reservations/{id}/reschedule", change);
+
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        Assert.True((await retry.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("wasReplay").GetBoolean());
+
+        // The table is required, as on a new booking, and named when it is missing.
+        var noTable = await diner.PostAsJsonAsync(
+            $"/api/reservations/{id}/reschedule",
+            new { date = change.date, time = "20:30", partySize = 2, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noTable.StatusCode);
+
+        var violation = await noTable.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("validation-failed", violation.GetProperty("code").GetString());
+        Assert.Equal("diningTableId", violation.GetProperty("context").GetProperty("field").GetString());
+
+        // A branch rule answers with its own code, as for a new booking.
+        var tooMany = await diner.PostAsJsonAsync(
+            $"/api/reservations/{id}/reschedule", change with { partySize = 6, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, tooMany.StatusCode);
+        Assert.Equal(
+            "reservation-party-exceeds-capacity",
+            (await tooMany.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        // Somebody else's booking in the way is the 409 a new booking gets.
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await stranger.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch))).StatusCode);
+
+        var taken = await diner.PostAsJsonAsync(
+            $"/api/reservations/{id}/reschedule",
+            change with { time = "18:00", diningTableId = branch.FirstTableId, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Conflict, taken.StatusCode);
+        Assert.Equal("table-already-booked", (await taken.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        // Once cancelled, it does not move.
+        Assert.Equal(HttpStatusCode.OK, (await diner.PostAsJsonAsync($"/api/reservations/{id}/cancel", new { })).StatusCode);
+
+        var cancelled = await diner.PostAsJsonAsync(
+            $"/api/reservations/{id}/reschedule", change with { time = "21:00", clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.Conflict, cancelled.StatusCode);
+
+        var problem = await cancelled.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("reservation-not-changeable", problem.GetProperty("code").GetString());
+        Assert.Equal((int)ReservationStatus.CancelledByDiner, problem.GetProperty("context").GetProperty("status").GetInt32());
+        Assert.Equal(id, problem.GetProperty("context").GetProperty("reservationId").GetGuid());
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private static JsonElement SlotAt(JsonElement day, string time) =>
+        day.GetProperty("slots").EnumerateArray().Single(s => s.GetProperty("time").GetString() == time);
 
     /// <summary>
     /// The free-cancellation deadline is stated before booking and on the booking, as an instant.

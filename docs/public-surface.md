@@ -17,7 +17,7 @@ Every active, non-suspended venue with its active branches. It is the web choose
 app's Explore screen too: the app used to call `/api/venues`, which never existed, and showed no
 restaurants at all.
 
-A venue card carries `venueSlug`, `name`, `type` (1 Cafe, 2 Restaurant) and `branches`. There is no
+A venue card carries `venueSlug`, `name`, `type` (1 Cafe, 2 Restaurant, 3 Bar) and `branches`. There is no
 venue id on the public surface; the slug is the public identity. Each branch card:
 
 | Field | Meaning |
@@ -54,9 +54,13 @@ whose `listing` is that same card. `/api/public/venues` is unchanged for the web
 
 - **Nothing is a constant.** `rating`/`reviewCount` come from `BranchReviews`; `badges` are
   `BranchBadgeRules` over sittings and reviews; `isOpenNow` is the same opening-hours rule the branch
-  page uses (`BranchOpenNow`); `cuisine`, `priceLevel`, `about`, `amenities`, `websiteUrl` and the
-  gallery are what the venue wrote through `PUT /api/branches/{id}/listing`. A field the venue never
-  set is **absent**, and an unreviewed branch has no `rating` at all rather than a zero.
+  page uses (`BranchOpenNow`); `cuisine`, `priceLevel`, `about`, `amenities`, `websiteUrl`, `district`
+  and the gallery are what the venue wrote through `PUT /api/branches/{id}/listing`. A field the venue
+  never set is **absent**, and an unreviewed branch has no `rating` at all rather than a zero.
+- **The district** - "Kentron", "Arabkir" - is the part of town the app prints after the venue type
+  and the cuisine, and search's `q` matches it. Free text the venue writes, never guessed from the
+  address: a street address names its district in no fixed place, and a guess prints the wrong
+  neighbourhood with confidence. A manager may set it like the cuisine line; it moves nobody's pin.
 - **Where a branch is** - its `address`, `latitude` and `longitude` - is the one part of that form a
   manager cannot change. Moving it is for an owner of the venue or a platform admin signed in to the
   admin panel, and is audited as `branch.relocate`. Anyone else sending a different location gets
@@ -324,7 +328,7 @@ else is elided.
 
 Notes for a mapper:
 
-- `venueType` (1 Cafe, 2 Restaurant) and `day` are **integers**, not strings. The whole API serialises
+- `venueType` (1 Cafe, 2 Restaurant, 3 Bar) and `day` are **integers**, not strings. The whole API serialises
   enums as numbers on purpose - see `docs/openapi.md` - and the schema carries `x-enum-varnames`
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.
@@ -380,9 +384,10 @@ in a WhatsApp thread should stop working once nobody could act on it.
 
 ### What the link shows
 
-Exactly what the confirmation screen renders: venue, branch, address, time zone, table label, local
-date and time, party size, status, the code quoted at the door, the cancellation deadline as an
-**instant**, and whether cancelling would still do anything.
+Exactly what the confirmation screen renders: venue, branch, address, time zone, table label and
+the room the table is in (`roomName`, absent for a table in no room), local date and time, party
+size, status, the code quoted at the door, the cancellation deadline as an **instant**, and whether
+cancelling would still do anything.
 
 **Nothing else.** No diner id, no phone number, no other bookings, no floor state, no table or
 branch id. `PublicBookingView` is its own record for the same reason `PublicReservationPolicy` is:

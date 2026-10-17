@@ -747,7 +747,298 @@ public class TabEndpointTests(SqlServerFixture fixture)
         Assert.Equal($"https://yalla.am/join/{Uri.EscapeDataString(token)}", body.GetProperty("shareUrl").GetString());
     }
 
+    // ------------------------------------------------------------ the pay sheet: a bill request with a tip
+
+    /// <summary>
+    /// The diner's pay sheet end to end: the server prices whole-bill and my-share requests from the
+    /// split, refuses what it should with the field named, hands the waiter the amount and the tip,
+    /// and the tip then shows on the tab - to who may see the total - outside the balance.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_bill_request_from_the_pay_sheet_is_priced_from_the_split_and_its_tip_lands_outside_the_balance()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+        var menu = await MenuAsync(branch);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host", hideTotalFromGuests: true);
+        var guest = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-guest");
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        using var guestClient = factory.CreateClientWithToken(guest.AccessToken);
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        // Two coffees for the host, a khachapuri for the guest: 2,400 + 3,200 = 5,600, service 560,
+        // total 6,160. Shares 2,640 and 3,520.
+        foreach (var (client, item, quantity) in new[] { (hostClient, menu.Coffee, 2), (guestClient, menu.Khachapuri, 1) })
+        {
+            (await client.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/orders",
+                new
+                {
+                    items = new[] { new { menuItemId = item, quantity } },
+                    clientCommandId = Guid.CreateVersion7(),
+                })).EnsureSuccessStatusCode();
+        }
+
+        // The whole bill, from the host who sees the total: the balance, and 10% of the subtotal.
+        var whole = await RaisedAsync(await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 1, tipPercent = 10 }));
+        Assert.Equal(1, whole.GetProperty("billScope").GetInt32());
+        Assert.Equal(6_160L, whole.GetProperty("billAmountAmd").GetInt64());
+        Assert.Equal(10, whole.GetProperty("tipPercent").GetInt32());
+        Assert.Equal(560L, whole.GetProperty("tipAmd").GetInt64());
+
+        // The guest's own share is what /shares tells them they owe, and the tip is on their items.
+        var shares = await ReadAsync(guestClient, $"/api/tabs/{host.TabId}/shares");
+        var myShare = shares.GetProperty("myShare");
+
+        var mine = await RaisedAsync(await guestClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 2, tipPercent = 5 }));
+        Assert.Equal(2, mine.GetProperty("billScope").GetInt32());
+        Assert.Equal(3_520L, mine.GetProperty("billAmountAmd").GetInt64());
+        Assert.Equal(
+            myShare.GetProperty("shareAmd").GetInt64() - myShare.GetProperty("paidAmd").GetInt64(),
+            mine.GetProperty("billAmountAmd").GetInt64());
+        Assert.Equal(160L, mine.GetProperty("tipAmd").GetInt64());
+
+        // The host hid the total from the guest, so the guest cannot read it back off a request.
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await guestClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 1 })).StatusCode);
+
+        // Wrong shapes are 422s naming the field - every field at once.
+        Assert.Equal(
+            ["billScope", "tipPercent"],
+            await RefusedFieldsAsync(await hostClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/service-requests", new { preset = 2, billScope = 1, tipPercent = 10 })));
+        Assert.Equal(
+            ["tipPercent"],
+            await RefusedFieldsAsync(await hostClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 2, tipPercent = 30 })));
+        Assert.Equal(
+            ["billScope"],
+            await RefusedFieldsAsync(await hostClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, tipPercent = 5 })));
+
+        // A plain "the bill, please" still works and carries no bill members at all.
+        var plain = await RaisedAsync(await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/service-requests", new { preset = 3 }));
+        Assert.False(plain.TryGetProperty("billAmountAmd", out _));
+        Assert.False(plain.TryGetProperty("tipAmd", out _));
+
+        // The waiter's list carries the amount and the tip - what the cash keypad opens with.
+        var open = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/service-requests");
+        var guestsAsk = open.EnumerateArray().Single(r => r.GetProperty("serviceRequestId").GetGuid()
+                                                          == mine.GetProperty("serviceRequestId").GetGuid());
+        Assert.Equal(2, guestsAsk.GetProperty("billScope").GetInt32());
+        Assert.Equal(3_520L, guestsAsk.GetProperty("billAmountAmd").GetInt64());
+        Assert.Equal(5, guestsAsk.GetProperty("tipPercent").GetInt32());
+        Assert.Equal(160L, guestsAsk.GetProperty("tipAmd").GetInt64());
+
+        // The tab's own stream says what was asked for and never how much. The guest the total is
+        // hidden from reads it too, and the host's whole-bill ask would otherwise hand them the
+        // balance.
+        var events = await ReadAsync(guestClient, $"/api/tabs/{host.TabId}/events");
+        var raised = events.GetProperty("events").EnumerateArray()
+            .Where(e => e.GetProperty("type").GetInt32() == (int)TabEventType.ServiceRequested)
+            .Select(e => e.GetProperty("payload"))
+            .ToList();
+
+        var hostsAsk = raised.Single(p => p.GetProperty("serviceRequestId").GetGuid()
+                                          == whole.GetProperty("serviceRequestId").GetGuid());
+        Assert.Equal(1, hostsAsk.GetProperty("billScope").GetInt32());
+        Assert.Equal(10, hostsAsk.GetProperty("tipPercent").GetInt32());
+        Assert.All(raised, p =>
+        {
+            Assert.False(p.TryGetProperty("billAmountAmd", out _));
+            Assert.False(p.TryGetProperty("tipAmd", out _));
+        });
+
+        // The waiter brings it and takes it, tip included.
+        var paid = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/payments/cash",
+            new { amountAmd = 3_520L, tabParticipantId = guest.ParticipantId, tipAmd = 160L, clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.Created, paid.StatusCode);
+
+        // Nothing of the guest's share is left to ask for.
+        Assert.Equal(
+            ["billScope"],
+            await RefusedFieldsAsync(await guestClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 2 })));
+
+        // The tip shows to the host beside the totals, never inside them.
+        var hostView = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+        Assert.Equal(160L, hostView.GetProperty("tipsAmd").GetInt64());
+        Assert.Equal(3_520L, hostView.GetProperty("tableTotal").GetProperty("paidAmd").GetInt64());
+        Assert.Equal(2_640L, hostView.GetProperty("tableTotal").GetProperty("remainingAmd").GetInt64());
+
+        // Absent for the guest the total is hidden from - even though the tip was theirs.
+        Assert.False((await ReadAsync(guestClient, $"/api/tabs/{host.TabId}")).TryGetProperty("tipsAmd", out _));
+
+        var staffView = await ReadAsync(waiter, $"/api/tabs/{host.TabId}/participants");
+        Assert.Equal(160L, staffView.GetProperty("tipsAmd").GetInt64());
+
+        // What is left of the whole bill is the host's part, and so is the tip: on the items still
+        // unpaid, 5,600 x 2,640 / 6,160 = 2,400 - the guest's khachapuri is paid for and tipped on.
+        var rest = await RaisedAsync(await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/service-requests", new { preset = 3, billScope = 1, tipPercent = 10 }));
+        Assert.Equal(2_640L, rest.GetProperty("billAmountAmd").GetInt64());
+        Assert.Equal(240L, rest.GetProperty("tipAmd").GetInt64());
+
+        // Asking again replaced the host's earlier asks for the bill on the waiter's list - the first
+        // whole bill and the plain one - and left the guest's own alone.
+        var stillOpen = (await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/service-requests"))
+            .EnumerateArray()
+            .Select(r => r.GetProperty("serviceRequestId").GetGuid())
+            .ToList();
+
+        Assert.Contains(rest.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.Contains(mine.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.DoesNotContain(whole.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+        Assert.DoesNotContain(plain.GetProperty("serviceRequestId").GetGuid(), stillOpen);
+    }
+
+    // ------------------------------------------------------------ faces on the roster
+
+    /// <summary>
+    /// A participant who scanned signed in to a diner account with a profile photo shows it on the
+    /// roster, on their own row and on the staff list; a guest without an account and an account
+    /// since deleted show none; and a pending joiner still sees only themselves.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_roster_shows_a_signed_in_diners_photo_and_nobody_elses()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+
+        var ani = await DinerFeedTestData.SignInDinerAsync(factory);
+        var gone = await DinerFeedTestData.SignInDinerAsync(factory);
+        var aniPhotoId = await GivePhotoAsync(factory, ani.DinerUserId);
+        await GivePhotoAsync(factory, gone.DinerUserId);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host");
+
+        // Ani scans signed in. Pending, she sees exactly one row - her own - with her face on it.
+        using var aniSignedIn = factory.CreateClientWithToken(ani.AccessToken);
+        var aniScan = await ScanAsync(aniSignedIn, qrTokens[0], "phone-ani");
+        var aniView = aniScan.GetProperty("tab");
+
+        Assert.Equal(aniPhotoId, aniView.GetProperty("me").GetProperty("photo").GetProperty("photoId").GetGuid());
+        var only = Assert.Single(aniView.GetProperty("participants").EnumerateArray());
+        Assert.Equal(aniPhotoId, only.GetProperty("photo").GetProperty("photoId").GetGuid());
+        Assert.Equal(
+            $"/api/photos/{aniPhotoId}/thumbnail",
+            only.GetProperty("photo").GetProperty("thumbnailUrl").GetString());
+
+        var aniId = aniView.GetProperty("me").GetProperty("participantId").GetGuid();
+
+        // A second diner scans signed in and then deletes the account. Their link has not been
+        // cleared yet in this case - the read must still show no face for an account that is gone.
+        using var goneSignedIn = factory.CreateClientWithToken(gone.AccessToken);
+        var goneId = (await ScanAsync(goneSignedIn, qrTokens[0], "phone-gone"))
+            .GetProperty("tab").GetProperty("me").GetProperty("participantId").GetGuid();
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            await db.DinerUsers
+                .Where(d => d.Id == gone.DinerUserId)
+                .ExecuteUpdateAsync(s => s.SetProperty(d => d.DeletedAtUtc, factory.Clock.UtcNow));
+        }
+
+        // The host sees everyone still on the tab; only Ani has a face.
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+        var roster = (await ReadAsync(hostClient, $"/api/tabs/{host.TabId}")).GetProperty("participants")
+            .EnumerateArray()
+            .ToDictionary(p => p.GetProperty("participantId").GetGuid());
+
+        Assert.Equal(3, roster.Count);
+        Assert.Equal(aniPhotoId, roster[aniId].GetProperty("photo").GetProperty("photoId").GetGuid());
+        Assert.False(roster[host.ParticipantId].TryGetProperty("photo", out _), "a guest who scanned without an account");
+        Assert.False(roster[goneId].TryGetProperty("photo", out _), "an account since deleted");
+
+        // Approving her answers with her row, face included, so the roster a client patches from it keeps it.
+        var approved = await hostClient.PostAsJsonAsync($"/api/tabs/{host.TabId}/participants/{aniId}/approve", new { });
+        Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
+        Assert.Equal(
+            aniPhotoId,
+            (await approved.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("photo").GetProperty("photoId").GetGuid());
+
+        // Staff see every phone on the table, with the same faces.
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        var staff = (await ReadAsync(waiter, $"/api/tabs/{host.TabId}/participants")).GetProperty("participants")
+            .EnumerateArray()
+            .ToDictionary(p => p.GetProperty("participantId").GetGuid());
+
+        Assert.Equal(aniPhotoId, staff[aniId].GetProperty("photo").GetProperty("photoId").GetGuid());
+        Assert.False(staff[goneId].TryGetProperty("photo", out _));
+    }
+
     // ------------------------------------------------------------ helpers
+
+    private static async Task<JsonElement> RaisedAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>A 422 <c>validation-failed</c>, and the fields it named, in order.</summary>
+    private static async Task<string[]> RefusedFieldsAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("validation-failed", problem.GetProperty("code").GetString());
+
+        return
+        [
+            .. problem.GetProperty("context").GetProperty("fields").EnumerateArray()
+                .Select(f => f.GetProperty("field").GetString()!),
+        ];
+    }
+
+    /// <summary>A table's QR code, scanned by whoever the client is signed in as.</summary>
+    private static async Task<JsonElement> ScanAsync(HttpClient client, string qrToken, string deviceId)
+    {
+        var response = await client.PostAsJsonAsync(
+            "/api/tabs/open",
+            new { qrToken, deviceId, clientCommandId = Guid.CreateVersion7(), displayName = deviceId });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    /// <summary>A profile photo on a diner account, as the upload would leave it.</summary>
+    private async Task<Guid> GivePhotoAsync(YallaApiFactory factory, Guid dinerUserId)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var photo = Yalla.Domain.Media.Photo.ForDiner(
+            dinerUserId,
+            Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"),
+            $"diner-{dinerUserId}/thumbnail.webp",
+            $"diner-{dinerUserId}/card.webp",
+            $"diner-{dinerUserId}/full.webp",
+            width: 640,
+            height: 640,
+            bytesStored: 12_345L,
+            factory.Clock.UtcNow);
+
+        db.Photos.Add(photo);
+        (await db.DinerUsers.FirstAsync(d => d.Id == dinerUserId)).SetPhoto(photo.Id);
+        await db.SaveChangesAsync();
+
+        return photo.Id;
+    }
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
 

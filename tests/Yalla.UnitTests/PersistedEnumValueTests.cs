@@ -204,6 +204,7 @@ public class PersistedEnumValueTests
     {
         Assert.Equal(1, (int)VenueType.Cafe);
         Assert.Equal(2, (int)VenueType.Restaurant);
+        Assert.Equal(3, (int)VenueType.Bar);
 
         Assert.Equal(1, (int)SubscriptionTier.Free);
         Assert.Equal(2, (int)SubscriptionTier.Paid);
@@ -307,7 +308,7 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActorType), nameof(AdjustmentKind), nameof(DerivedTableState), nameof(ParticipantRole),
+            nameof(ActorType), nameof(AdjustmentKind), nameof(BillScope), nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
@@ -336,6 +337,17 @@ public class PersistedEnumValueTests
         Assert.Equal(2, (int)ServiceRequestPreset.Water);
         Assert.Equal(3, (int)ServiceRequestPreset.TheBill);
         Assert.Equal(4, (int)ServiceRequestPreset.Other);
+    }
+
+    /// <summary>
+    /// Stored on a request for the bill, and the number <c>CK_ServiceRequests_Bill</c> reads the
+    /// preset by - so <c>TheBill</c> moving off 3 would break the constraint as well as the rows.
+    /// </summary>
+    [Fact]
+    public void Bill_scope_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)BillScope.WholeBill);
+        Assert.Equal(2, (int)BillScope.MyShare);
     }
 
     /// <summary>

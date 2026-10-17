@@ -84,6 +84,7 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
         builder.Property(b => b.WebsiteUrl).HasMaxLength(FieldLengths.Url);
         builder.Property(b => b.AmenityKeys).HasMaxLength(FieldLengths.AmenityKeys);
         builder.Ignore(b => b.Amenities);
+        builder.Property(b => b.District).HasMaxLength(FieldLengths.District);
 
         // Null until somebody saves the policy form. Not a flag: the timestamp answers "when did
         // anyone last look at this?", which is the question a venue that was onboarded eight months

@@ -28,6 +28,20 @@ public sealed record ReservationView
 
     public required string TableLabel { get; init; }
 
+    /// <summary>
+    /// The room the table is in - its <c>FloorArea</c>, the room a diner picked it from - or absent for
+    /// a table in no room.
+    /// </summary>
+    /// <remarks>
+    /// Read live from the table, like <see cref="TableLabel"/>: a booking names a table, not a room, so
+    /// a table a manager moves to another room takes its bookings with it - which is where the party
+    /// will actually sit.
+    /// </remarks>
+    public Guid? RoomId { get; init; }
+
+    /// <summary>The room's name - "Hall", "Terrace" - or absent with <see cref="RoomId"/>.</summary>
+    public string? RoomName { get; init; }
+
     public required int PartySize { get; init; }
 
     public required DateTime StartUtc { get; init; }
