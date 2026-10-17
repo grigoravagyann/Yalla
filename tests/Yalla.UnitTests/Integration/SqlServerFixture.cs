@@ -280,7 +280,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     /// <summary>Shares and the event stream, over one context.</summary>
     internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, CreateLedger(db, clock, actor), NullLogger<TabBillingQuery>.Instance);
+        new(db, CreateLedger(db, clock, actor), new TabQuery(db), NullLogger<TabBillingQuery>.Instance);
 
     /// <summary>The diner-facing menu read.</summary>
     internal static MenuQuery CreateMenuQuery(YallaDbContext db) => new(db);

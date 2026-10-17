@@ -91,11 +91,15 @@ public sealed record TabJoinTokenResult(
 /// Who is at the table. Everyone still on the tab for an approved participant; only the caller
 /// themself while they are pending, because a pending joiner may see their own state and nothing else.
 /// </param>
-/// <param name="MyLines">The caller's own items - placed by them, or shared with them. Always present.</param>
+/// <param name="MyLines">
+/// The caller's own items, always present: the lines <c>/shares</c> charges them for. One they
+/// ordered, or a waiter keyed in on their behalf; and a shared or table-attributed line they were at
+/// the table for. See <see cref="TabLineSnapshot.IsOnTheBillOf"/>.
+/// </param>
 /// <param name="MyItemsSubtotalAmd">
-/// What the caller's own unshared lines come to, in whole dram. Always present. Shared lines are
-/// listed in <paramref name="MyLines"/> with <c>isShared</c> set and are apportioned by the
-/// splitting task, not here.
+/// What the caller's own unsplit lines come to, in whole dram. Always present. Shared and
+/// table-attributed lines are listed in <paramref name="MyLines"/> with <c>isShared</c> or
+/// <c>isTableAttributed</c> set and are apportioned by <c>/shares</c>, not here.
 /// </param>
 /// <param name="TimeZoneId">
 /// The branch's IANA zone, e.g. <c>Asia/Yerevan</c>. <b>Every time on this response is to be
@@ -114,8 +118,12 @@ public sealed record TabJoinTokenResult(
 /// without a second call to <c>/events</c> purely to ask.
 /// </param>
 /// <param name="Adjustments">
-/// Comps and discounts, with the reason the manager typed. Present for everyone, for the same
-/// reason voided lines are: a total that drops with no visible cause makes people distrust the app.
+/// Comps and discounts, with the reason the manager typed, for the same reason voided lines are
+/// shown: a total that drops with no visible cause makes people distrust the app. <b>Every one when
+/// <paramref name="TableTotalVisible"/>; otherwise only those on one of
+/// <paramref name="MyLines"/></b>, whole. One off the whole tab, or off somebody else's line, is
+/// table money - a percentage off the whole tab and what it took off are the subtotal - and the
+/// caller's part of it reaches them through <c>/shares</c>.
 /// </param>
 /// <param name="TableTotalVisible">Whether the three members below are present.</param>
 /// <param name="TableTotal">The table aggregate. <b>Absent</b> when not visible - never zero, never null-as-free.</param>
@@ -226,6 +234,15 @@ public sealed record TabParticipantSummary(
 /// </param>
 /// <param name="VoidedAtUtc">When it was removed.</param>
 /// <param name="VoidReason">Why, in the waiter's own words.</param>
+/// <param name="OnBehalfOfParticipantId">
+/// Who a waiter keyed the order in for, when the waiter knew. The line is that person's - on their
+/// <c>myLines</c> and their share - though <paramref name="PlacedByParticipantId"/> is null.
+/// </param>
+/// <param name="IsTableAttributed">
+/// True when a waiter keyed it in for nobody in particular. It splits across the people at the table
+/// when it was ordered, exactly like a shared line, and <paramref name="SharedWithCount"/> says how
+/// many.
+/// </param>
 public sealed record TabLineView(
     Guid LineId,
     Guid OrderId,
@@ -242,7 +259,9 @@ public sealed record TabLineView(
     int SharedWithCount,
     bool IsVoided,
     DateTime? VoidedAtUtc,
-    string? VoidReason);
+    string? VoidReason,
+    Guid? OnBehalfOfParticipantId,
+    bool IsTableAttributed);
 
 /// <summary>
 /// One comp or discount, as the diner sees it.

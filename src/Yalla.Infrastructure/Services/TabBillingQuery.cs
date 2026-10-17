@@ -13,15 +13,23 @@ namespace Yalla.Infrastructure.Services;
 /// Who owes what, and what has happened on the tab.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Reads only. The arithmetic lives in <c>TabBilling</c> and the recomputation in
 /// <see cref="TabLedger"/>; this projects their output through whatever the caller is allowed to
 /// see, using the same <see cref="TabPermissions"/> functions the tab projection and the
 /// authorisation handler use. One rule, three readers, so a client is never shown a number the
 /// policy would refuse or refused a number the client was shown.
+/// </para>
+/// <para>
+/// The event stream goes through the same rule by a different road: the reader's own
+/// <see cref="TabView"/>, from <see cref="ITabQuery"/>, decides what <see cref="TabEventRedactor"/>
+/// leaves in each payload.
+/// </para>
 /// </remarks>
 internal sealed class TabBillingQuery(
     YallaDbContext db,
     TabLedger ledger,
+    ITabQuery tabs,
     ILogger<TabBillingQuery> logger) : ITabBillingQuery
 {
     /// <summary>The most events one catch-up will return. A client that wants more asks again.</summary>
@@ -98,6 +106,7 @@ internal sealed class TabBillingQuery(
 
     public async Task<TabEventPage> GetEventsAsync(
         Guid tabId,
+        Guid viewerParticipantId,
         long afterSequence,
         int limit,
         CancellationToken cancellationToken = default)
@@ -126,19 +135,36 @@ internal sealed class TabBillingQuery(
 
         var maxSequence = await ledger.MaxSequenceAsync(tabId, cancellationToken);
 
+        if (page.Count == 0)
+        {
+            // The three-second poll that found nothing new, which is most of them. Nothing to
+            // redact, so no reason to read the tab.
+            return new TabEventPage(tabId, afterSequence, maxSequence, hasMore, []);
+        }
+
+        // The reader's own view of the tab decides what the payloads may show them - the same
+        // projection GET /api/tabs/{tabId} answers with. Read AFTER the events on purpose: lines are
+        // never deleted, so every line an event on this page names is on this snapshot, and a
+        // reader's own order placed a moment ago is recognised as theirs rather than redacted as
+        // somebody else's.
+        var viewer = await tabs.GetForParticipantAsync(tabId, viewerParticipantId, cancellationToken)
+                     ?? throw new TabPermissionException("Reading the tab's events", "somebody on this tab");
+
+        var redactor = TabEventRedactor.For(viewer);
+
         return new TabEventPage(
             tabId,
             afterSequence,
             maxSequence,
             hasMore,
             [
-                .. page.Select(e => new TabEventView(
+                .. page.Select(e => redactor.Redact(new TabEventView(
                     e.Sequence,
                     e.Type,
                     JsonSerializer.Deserialize<JsonElement>(e.PayloadJson),
                     e.ActorType,
                     e.ActorId,
-                    e.AtUtc)),
+                    e.AtUtc))),
             ]);
     }
 }

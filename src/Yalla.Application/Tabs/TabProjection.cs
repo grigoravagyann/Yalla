@@ -28,7 +28,10 @@ public static class TabProjection
     /// <list type="number">
     /// <item>
     /// <b>Own items, always.</b> The viewer's own lines and their subtotal are present whatever
-    /// their status or flags. That is what settles "I didn't order that" at the table.
+    /// their status or flags. That is what settles "I didn't order that" at the table. "Own" is
+    /// what <c>/shares</c> charges them for - <see cref="TabLineSnapshot.IsOnTheBillOf"/> - so a
+    /// waiter's order keyed in on their behalf is theirs, and so is a table-attributed line they
+    /// were at the table for.
     /// </item>
     /// <item>
     /// <b>Nothing silently disappears.</b> A voided line stays on the tab and stays visible,
@@ -41,6 +44,10 @@ public static class TabProjection
     /// <b>The table aggregate and other people's items only with <c>CanSeeTableTotal</c>, and only
     /// once approved.</b> When hidden, the members are <i>absent</i> - not zero, not null - with
     /// <c>tableTotalVisible</c> false beside them so no client can mistake the gap for a free bill.
+    /// The adjustments follow: a viewer without the total gets only those on their own lines. A
+    /// comp off the whole tab, or off somebody else's dish, is table money - a percentage off the
+    /// whole tab and what it took off give the subtotal away - and their part of it is on
+    /// <c>/shares</c>.
     /// </item>
     /// <item>
     /// <b>The roster only once approved.</b> A pending joiner sees their own row and nothing else,
@@ -65,22 +72,25 @@ public static class TabProjection
 
         var names = tab.Participants.ToDictionary(p => p.ParticipantId, p => p.DisplayName);
 
-        // Rule 1 - own items, regardless of every other flag. A line is "mine" if I placed it or
-        // it is a shared item I was present for.
+        // Rule 1 - own items, regardless of every other flag. A line is "mine" when it is on my
+        // bill: one I ordered or a waiter keyed in for me, or a shared or table-attributed line I
+        // was at the table for. It used to be "placed from my phone or shared with me", which left
+        // a guest's own spoken order - and every table-attributed line - off their bill while
+        // /shares charged them for it.
         //
         // Rule 2 - voided lines are among them. They used to be filtered out of both arrays here,
         // which meant a diner never saw them in any form and the endpoint's own documentation said
         // the opposite. LineTotalAmd is already zero once voided, so including them changes no
         // arithmetic; it changes what the person watching the bill is told.
-        var myLines = tab.Lines
-            .Where(l => l.PlacedByParticipantId == me.ParticipantId
-                        || (l.IsShared && l.SharedWithParticipantIds.Contains(me.ParticipantId)))
-            .Select(l => ToView(l, names))
-            .ToList();
+        var mine = tab.Lines.Where(l => l.IsOnTheBillOf(me.ParticipantId)).ToList();
+        var myLines = mine.Select(l => ToView(l, names)).ToList();
+        var myLineIds = mine.Select(l => l.LineId).ToHashSet();
 
-        // Shared lines are apportioned by the splitting task; until then the honest own-subtotal
-        // is the unshared, unvoided lines, and the rest are listed with their flags set.
-        var myItemsSubtotalAmd = myLines.Where(l => !l.IsShared && !l.IsVoided).Sum(l => l.LineTotalAmd);
+        // Split lines are apportioned by /shares; the honest own-subtotal is the unsplit, unvoided
+        // lines, and the rest are listed with their flags set.
+        var myItemsSubtotalAmd = mine
+            .Where(l => !l.IsSplitAcrossParticipants && !l.IsVoided)
+            .Sum(l => l.LineTotalAmd);
 
         // Rule 3 - the aggregate and everyone else's items.
         var tableTotalVisible = TabPermissions.MaySeeTableTotal(me.Status, me.CanSeeTableTotal);
@@ -96,6 +106,14 @@ public static class TabProjection
         // Tips are money the table handed over, so they go where the table total goes. Outside
         // TableTotal all the same: a tip is not part of what is owed.
         long? tipsAmd = tableTotalVisible ? tab.TipsAmd : null;
+
+        // The comps and discounts go where the lines go. Dropped rather than shown without their
+        // amounts: the diner app draws every adjustment with what it took off, and a row with no
+        // number is not one it can draw.
+        var adjustments = tab.Adjustments
+            .Where(a => tableTotalVisible || (a.TabOrderLineId is { } lineId && myLineIds.Contains(lineId)))
+            .Select(ToView)
+            .ToList();
 
         // Rule 4 - the roster.
         var participants = TabPermissions.MaySeeRoster(me.Status)
@@ -130,7 +148,7 @@ public static class TabProjection
             Participants: participants,
             MyLines: myLines,
             MyItemsSubtotalAmd: myItemsSubtotalAmd,
-            Adjustments: [.. tab.Adjustments.Select(ToView)],
+            Adjustments: adjustments,
             TableTotalVisible: tableTotalVisible,
             TableTotal: tableTotal,
             TableLines: tableLines,
@@ -216,7 +234,9 @@ public static class TabProjection
             SharedWithCount: l.SharedWithParticipantIds.Count,
             l.IsVoided,
             l.VoidedAtUtc,
-            l.VoidReason);
+            l.VoidReason,
+            l.OnBehalfOfParticipantId,
+            l.IsTableAttributed);
 
     private static TabAdjustmentView ToView(TabAdjustmentSnapshot a) =>
         new(

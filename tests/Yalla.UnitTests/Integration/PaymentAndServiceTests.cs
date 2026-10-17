@@ -711,7 +711,9 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
         await using var readDb = fixture.CreateContext(world.Clock);
         var billing = fixture.CreateBillingQuery(readDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
 
-        var page = await billing.GetEventsAsync(world.TabId, afterSequence: 0L, limit: 0);
+        // As the host, who sees the total: the whole stream, as written. What a guest without the
+        // total reads is TabEventVisibilityTests'.
+        var page = await billing.GetEventsAsync(world.TabId, world.HostId, afterSequence: 0L, limit: 0);
 
         Assert.Equal(expected, page.Events.Select(e => e.Type));
 
@@ -725,7 +727,7 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
         // Catching up from the middle returns the rest and nothing else - the phone that was in a
         // lift when the wine was ordered.
         var middle = sequences[2];
-        var rest = await billing.GetEventsAsync(world.TabId, middle, 0);
+        var rest = await billing.GetEventsAsync(world.TabId, world.HostId, middle, 0);
 
         Assert.Equal(expected.Skip(3), rest.Events.Select(e => e.Type));
         Assert.All(rest.Events, e => Assert.True(e.Sequence > middle));

@@ -99,7 +99,10 @@ public static class OrderingEndpoints
                 + "dropping it: a partial order is a decision made on your behalf that you discover "
                 + "when the food arrives.\n\n"
                 + "`estimatedReadyAtUtc` comes from the longest prep time on the order, not the sum - "
-                + "a kitchen cooks an order together.")
+                + "a kitchen cooks an order together.\n\n"
+                + "`totals` is the tab's, so it follows `tableTotalVisible` on your tab: **absent**, "
+                + "with `tableTotalVisible: false` beside it, when the host hid the total from you. "
+                + "Read it as optional.")
             .Produces<OrderView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
             .ProducesProblem<MenuItemUnavailableProblem>(
@@ -140,7 +143,16 @@ public static class OrderingEndpoints
                 + "followed by the close, never the other way round. Keep the highest you have seen "
                 + "and ask for everything after it.\n\n"
                 + "**Ignore a `type` you do not recognise and keep your position**: new types will be "
-                + "added and an old build must not break on a tab that used one.")
+                + "added and an old build must not break on a tab that used one.\n\n"
+                + "**You read the stream you may see.** Every event is here - the sequence never has a "
+                + "hole - but without `tableTotalVisible` on your tab the payloads carry only your own "
+                + "money: `orderPlaced.lines` holds just your lines (your own, a waiter's on your "
+                + "behalf, and shared or table-attributed items you were at the table for), a void "
+                + "names only your own dish, an adjustment says what, how much and why only when it is "
+                + "off your line, a payment says how much only when it was yours, "
+                + "and `remainingAmd`, `totalAmd` and `writtenOffAmd` are never there. While you wait "
+                + "for the host, other people's `displayName` and `note` are left out too. Redacted "
+                + "members are **absent**, never null or zero. See `docs/tabs.md`, section 7.4.")
             .Produces<TabEventPage>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription);
     }
@@ -458,11 +470,22 @@ public static class OrderingEndpoints
 
     private static async Task<IResult> GetEventsAsync(
         Guid tabId,
+        HttpContext http,
         ITabBillingQuery billing,
         CancellationToken cancellationToken,
         long afterSequence = 0L,
-        int limit = 0) =>
-        Results.Ok(await billing.GetEventsAsync(tabId, afterSequence, limit, cancellationToken));
+        int limit = 0)
+    {
+        // Whose stream it is comes from the token, as on the tab read: the payloads are redacted to
+        // what this participant may see, so there is no reading it as anybody else.
+        if (Participant(http) is not { } participantId)
+        {
+            return Results.Forbid();
+        }
+
+        return Results.Ok(await billing.GetEventsAsync(
+            tabId, participantId, afterSequence, limit, cancellationToken));
+    }
 
     private static async Task<IResult> GetBranchOrdersAsync(
         Guid branchId,

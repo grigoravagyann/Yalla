@@ -129,8 +129,18 @@ public sealed record TabParticipantSnapshot(
 /// <param name="VoidedAtUtc">When.</param>
 /// <param name="VoidReason">Why, in the waiter's own words.</param>
 /// <param name="SharedWithParticipantIds">
-/// Who was at the table when a shared line was ordered. <b>Snapshotted, not current</b>: a friend
-/// who arrives ten minutes later is not on the bottle that has already been poured.
+/// Who was at the table when a shared or table-attributed line was ordered. <b>Snapshotted, not
+/// current</b>: a friend who arrives ten minutes later is not on the bottle that has already been
+/// poured.
+/// </param>
+/// <param name="OnBehalfOfParticipantId">
+/// Who a waiter keyed the order in for, when the waiter knew. The line is theirs exactly as if they
+/// had ordered it from their own phone - <c>TabBilling</c> charges it to them.
+/// </param>
+/// <param name="IsTableAttributed">
+/// True when a waiter keyed it in for nobody in particular. It splits across
+/// <paramref name="SharedWithParticipantIds"/> like a shared bottle; the flag keeps "we shared it"
+/// and "nobody said whose it was" apart.
 /// </param>
 public sealed record TabLineSnapshot(
     Guid LineId,
@@ -146,10 +156,33 @@ public sealed record TabLineSnapshot(
     bool IsVoided,
     DateTime? VoidedAtUtc,
     string? VoidReason,
-    IReadOnlyList<Guid> SharedWithParticipantIds)
+    IReadOnlyList<Guid> SharedWithParticipantIds,
+    Guid? OnBehalfOfParticipantId = null,
+    bool IsTableAttributed = false)
 {
     /// <summary>Unit price times quantity; zero once voided, as on the entity.</summary>
     public long LineTotalAmd => IsVoided ? 0L : UnitPriceAmd * Quantity;
+
+    /// <summary>A shared bottle or a table-attributed line: split across the snapshot, owned by nobody.</summary>
+    public bool IsSplitAcrossParticipants => IsShared || IsTableAttributed;
+
+    /// <summary>Whose line it is when it is not split: who ordered it, or who a waiter ordered it for.</summary>
+    public Guid? OwningParticipantId => PlacedByParticipantId ?? OnBehalfOfParticipantId;
+
+    /// <summary>
+    /// Whether this line is on <paramref name="participantId"/>'s bill - the rule <c>TabBilling</c>
+    /// charges by, written once for everything that shows a participant "their" items.
+    /// </summary>
+    /// <remarks>
+    /// A split line is theirs when they are on its snapshot; any other line when they own it, from
+    /// their own phone or through a waiter. <c>myLines</c>, the event stream's own lines and
+    /// <c>/shares</c> therefore agree on what is somebody's. The one thing <c>/shares</c> adds is a
+    /// removed participant's lines falling to the host, who is always shown every line anyway.
+    /// </remarks>
+    public bool IsOnTheBillOf(Guid participantId) =>
+        IsSplitAcrossParticipants
+            ? SharedWithParticipantIds.Contains(participantId)
+            : OwningParticipantId == participantId;
 }
 
 /// <summary>

@@ -92,12 +92,23 @@ public interface ITabBillingQuery
     /// Everything that happened on a tab after <paramref name="afterSequence"/>, oldest first.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The catch-up a phone does when it comes out of a lift. Without it the only options are
     /// re-fetching the whole tab on every reconnect - which is what makes a live bill flicker and
     /// disagree with itself - or missing the change entirely.
+    /// </para>
+    /// <para>
+    /// <b>As <paramref name="viewerParticipantId"/> may see it.</b> Every event is returned, so the
+    /// sequence stays contiguous, but a reader without the table total gets the payloads with the
+    /// table's money and other people's items taken out, and a pending reader without other people's
+    /// names either - by <see cref="Tabs.TabEventRedactor"/>, from the reader's own
+    /// <see cref="Tabs.TabView"/>. The stored stream is untouched. See <c>docs/tabs.md</c>, section 7.4.
+    /// </para>
     /// </remarks>
+    /// <exception cref="Domain.Tabs.TabPermissionException">The reader is not on this tab.</exception>
     Task<TabEventPage> GetEventsAsync(
         Guid tabId,
+        Guid viewerParticipantId,
         long afterSequence,
         int limit,
         CancellationToken cancellationToken = default);
