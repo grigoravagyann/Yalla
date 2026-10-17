@@ -189,6 +189,61 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
         Assert.Equal(0L, tab.RemainingAmd);
     }
 
+    /// <summary>
+    /// The tab's tips are the tips on payments that went through - a wallet hold still waiting, or
+    /// one that failed, put nothing in anybody's hand - shown with the table total and only there.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_tabs_tips_count_only_payments_that_went_through_and_show_only_with_the_total()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync(coffees: 2);
+        await using var db = world.Db;
+
+        var payments = fixture.CreatePaymentService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+
+        await payments.RecordCashAsync(new RecordCashPaymentCommand(
+            world.TabId, 1_000L, world.GuestId, TipAmd: 300L, Guid.CreateVersion7()));
+        await payments.RecordCashAsync(new RecordCashPaymentCommand(
+            world.TabId, 500L, null, TipAmd: 200L, Guid.CreateVersion7()));
+
+        await using (var seed = fixture.CreateContext(world.Clock))
+        {
+            var nowUtc = world.Clock.UtcNow;
+
+            seed.Payments.Add(Payment.Reserve(
+                world.TabId, 100L, PaymentMethod.Idram, nowUtc, world.GuestId, tipAmd: 5_000L));
+            seed.Payments.Add(new Payment(
+                world.TabId, 100L, PaymentMethod.Card, PaymentStatus.Failed, nowUtc, world.HostId,
+                completedAtUtc: nowUtc, tipAmd: 7_000L));
+
+            // And the host hides the total from the guest.
+            var guest = await seed.TabParticipants.FirstAsync(p => p.Id == world.GuestId);
+            guest.SetPermissions(canOrder: true, canSeeTableTotal: false, canPay: false);
+
+            await seed.SaveChangesAsync();
+        }
+
+        await using var read = fixture.CreateContext(world.Clock);
+        var query = fixture.CreateTabQuery(read);
+
+        var host = await query.GetForParticipantAsync(world.TabId, world.HostId);
+        Assert.Equal(500L, host!.TipsAmd);
+
+        // Outside the balance: 1,500 paid of 2,640, and the 500 in tips is in neither number.
+        Assert.Equal(1_500L, host.TableTotal!.PaidAmd);
+        Assert.Equal(1_140L, host.TableTotal.RemainingAmd);
+
+        // The guest tipped 300 of it, and still does not see the table's tips: they go with the total.
+        var guestView = await query.GetForParticipantAsync(world.TabId, world.GuestId);
+        Assert.False(guestView!.TableTotalVisible);
+        Assert.Null(guestView.TipsAmd);
+
+        var staff = await query.GetForStaffAsync(world.TabId);
+        Assert.Equal(500L, staff!.TipsAmd);
+    }
+
     [SkippableFact]
     public async Task A_replayed_cash_command_returns_the_original_and_takes_no_more_money()
     {

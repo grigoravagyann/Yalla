@@ -93,6 +93,10 @@ public static class TabProjection
             ? tab.Lines.Select(l => ToView(l, names)).ToList()
             : null;
 
+        // Tips are money the table handed over, so they go where the table total goes. Outside
+        // TableTotal all the same: a tip is not part of what is owed.
+        long? tipsAmd = tableTotalVisible ? tab.TipsAmd : null;
+
         // Rule 4 - the roster.
         var participants = TabPermissions.MaySeeRoster(me.Status)
             ? tab.Participants
@@ -129,7 +133,8 @@ public static class TabProjection
             Adjustments: [.. tab.Adjustments.Select(ToView)],
             TableTotalVisible: tableTotalVisible,
             TableTotal: tableTotal,
-            TableLines: tableLines);
+            TableLines: tableLines,
+            TipsAmd: tipsAmd);
     }
 
     /// <summary>
@@ -165,7 +170,8 @@ public static class TabProjection
             Lines: [.. tab.Lines.Select(l => ToView(l, names))],
             Adjustments: [.. tab.Adjustments.Select(ToView)],
             Totals: new TabTotalsView(
-                tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd));
+                tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd),
+            TipsAmd: tab.TipsAmd);
     }
 
     /// <summary>One participant with their flags applied to the moment.</summary>
@@ -182,11 +188,12 @@ public static class TabProjection
             p.CanSeeTableTotal,
             p.CanPay,
             CanOrderNow: TabPermissions.MayOrder(p.Status, p.CanOrder, tabStatus),
-            p.JoinedAtUtc);
+            p.JoinedAtUtc,
+            p.Photo);
     }
 
     private static TabParticipantSummary ToSummary(TabParticipantSnapshot p) =>
-        new(p.ParticipantId, p.DisplayName, p.Role, p.Status);
+        new(p.ParticipantId, p.DisplayName, p.Role, p.Status, p.Photo);
 
     private static TabLineView ToView(TabLineSnapshot l, IReadOnlyDictionary<Guid, string> names) =>
         new(

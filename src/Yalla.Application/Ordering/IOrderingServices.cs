@@ -107,12 +107,33 @@ public interface ITabBillingQuery
 public interface IServiceRequestService
 {
     /// <summary>A table asks for something. Presets only, rate limited per tab.</summary>
+    /// <remarks>
+    /// A request for the bill may name a <paramref name="billScope"/> and a
+    /// <paramref name="tipPercent"/>; the amount and the tip are then priced here, from the tab's own
+    /// arithmetic, and stored with the request. See <c>Domain.Billing.BillQuote</c>.
+    /// </remarks>
+    /// <param name="tabId">The tab.</param>
+    /// <param name="actingParticipantId">Who is asking.</param>
+    /// <param name="preset">What for.</param>
+    /// <param name="note">One short optional line.</param>
+    /// <param name="billScope">Whose part of the bill. Only with <see cref="ServiceRequestPreset.TheBill"/>.</param>
+    /// <param name="tipPercent">The tip, 0 to 25. Only with a <paramref name="billScope"/>.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
     /// <exception cref="Domain.Tabs.ServiceRequestRateLimitedException">Too many, too fast.</exception>
+    /// <exception cref="Domain.FieldValidationException">
+    /// Bill fields on a request that cannot carry them, a tip out of range, or a scope that leaves
+    /// nothing to pay.
+    /// </exception>
+    /// <exception cref="Domain.Tabs.TabPermissionException">
+    /// Not on the tab, or asking for the whole bill without being allowed to see the table total.
+    /// </exception>
     Task<ServiceRequestView> RaiseAsync(
         Guid tabId,
         Guid actingParticipantId,
         ServiceRequestPreset preset,
         string? note,
+        BillScope? billScope = null,
+        int? tipPercent = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>What is outstanding in this branch, newest first. <b>Waiter or above.</b></summary>

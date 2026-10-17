@@ -41,7 +41,9 @@ reservation rule (turn time, buffer, grace, lead time, booking window, cancellat
 auto-confirm, service charge, VAT, seat overhang, approval threshold) is a per-branch setting
 with a shipped default, never a constant in code. "How long do we hold a table?" has a different
 answer in a breakfast cafe and a tasting-menu restaurant, and the only default that varies by
-venue type is the turn time: 120 minutes for a cafe, 90 for a restaurant.
+venue type is the turn time: 120 minutes for a cafe or a bar, 90 for a restaurant. `Venue.Type` is
+`1 Cafe, 2 Restaurant, 3 Bar`, stored as an int with no check constraint, so a new type is a new
+member rather than a migration.
 
 **Listing fields**, for the diner app's browse screens, all nullable because "not said" must read
 as unknown rather than as a made-up default: `Cuisine` (free text, 120), `About` (2000),
@@ -218,6 +220,18 @@ question that will shape its own module. `Reserved` is the state that matters: t
 against the tab's remaining balance under the tab's row version *before* anything is sent to a
 provider, so two simultaneous payers cannot both claim the same dram and leave the venue
 refunding one of them.
+
+### ServiceRequest
+
+A table asking for something - napkins, water, the bill - from a fixed list of presets and one short
+note, never a chat. `BranchId` is denormalised from the tab so the waiter's open list is one read of
+the filtered index `IX_ServiceRequests_Open`. A request for the bill from the diner's pay sheet also
+carries **`BillScope`** (`1 WholeBill, 2 MyShare`), **`BillAmountAmd`**, **`TipPercent`** and
+**`TipAmd`** (migration `BillRequestTip`): the amount that scope left to pay when the diner asked,
+service charge in and tip out, priced by the server from the tab's lines, and the tip on top. A
+snapshot, not a live figure - the waiter brings the bill the diner was shown. `CK_ServiceRequests_Bill`
+keeps the four together: all null, or `Preset = 3` with a scope and a positive amount whose tip is a
+percentage and an amount or neither. See `docs/billing.md` section 6.
 
 ### MenuCategory and MenuItem
 

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Media;
 using Yalla.Domain.Messaging;
@@ -56,11 +57,26 @@ internal sealed class ServiceRequestConfiguration : EntityConfiguration<ServiceR
 {
     protected override void ConfigureEntity(EntityTypeBuilder<ServiceRequest> builder)
     {
-        builder.ToTable("ServiceRequests");
+        // The bill columns travel together, as the domain constructor has them: none at all, or a
+        // request for the bill with a scope and a positive amount, its tip a percentage and an
+        // amount or neither. Held here as well so a row written around the domain still reads as
+        // one thing to the waiter's screen.
+        builder.ToTable(
+            "ServiceRequests",
+            table => table.HasCheckConstraint(
+                "CK_ServiceRequests_Bill",
+                "([BillScope] IS NULL AND [BillAmountAmd] IS NULL AND [TipPercent] IS NULL AND [TipAmd] IS NULL) "
+                + $"OR ([Preset] = {(int)ServiceRequestPreset.TheBill} AND [BillScope] IS NOT NULL AND [BillAmountAmd] > 0 "
+                + "AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([TipPercent] >= 0 AND [TipAmd] >= 0)))"));
 
         builder.Property(r => r.Preset).IsRequired();
 
         builder.Property(r => r.Note).HasMaxLength(FieldLengths.ServiceNote);
+
+        builder.Property(r => r.BillScope);
+        builder.Property(r => r.BillAmountAmd);
+        builder.Property(r => r.TipPercent);
+        builder.Property(r => r.TipAmd);
 
         builder.Property(r => r.AcknowledgedAtUtc);
 

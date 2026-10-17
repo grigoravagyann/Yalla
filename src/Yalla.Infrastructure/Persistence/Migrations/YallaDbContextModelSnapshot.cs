@@ -1203,6 +1203,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("AcknowledgedByStaffId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<long?>("BillAmountAmd")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("BillScope")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1225,6 +1231,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("TabId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<long?>("TipAmd")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("TipPercent")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AcknowledgedByStaffId");
@@ -1239,7 +1251,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TabId", "CreatedAtUtc");
 
-                    b.ToTable("ServiceRequests", (string)null);
+                    b.ToTable("ServiceRequests", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ServiceRequests_Bill", "([BillScope] IS NULL AND [BillAmountAmd] IS NULL AND [TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([Preset] = 3 AND [BillScope] IS NOT NULL AND [BillAmountAmd] > 0 AND (([TipPercent] IS NULL AND [TipAmd] IS NULL) OR ([TipPercent] >= 0 AND [TipAmd] >= 0)))");
+                        });
                 });
 
             modelBuilder.Entity("Yalla.Domain.Tabs.Tab", b =>

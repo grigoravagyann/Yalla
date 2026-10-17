@@ -245,7 +245,7 @@ on the tab.
 | **`CanPay` ⇒ `CanSeeTableTotal`.** Nobody puts money toward a total they may not see. | `TabParticipant.SetPermissions`, the only writer of the three flags | Setting `canPay: true` with `canSeeTableTotal: false` is **refused with 400**, not silently corrected. A host who tapped one thing and got another has been surprised, and their next tap is made on the wrong assumption. Because the constructor calls the same method, no code path can build a participant that breaks it. |
 | **A participant always sees their own items**, whatever the flags. | `TabProjection.Project` | `myLines` and `myItemsSubtotalAmd` are present on every view — for a pending participant, for a guest with the total hidden, for the host. That is what settles "I didn't order that". |
 | **Hiding the total hides the table total and other people's items only.** | `TabProjection.Project` | Menu prices stay visible through the menu endpoints, so a guest can always work out what their own order costs. |
-| **The hidden aggregate is absent, not zero.** | `TabView` shape + JSON serialisation | When `tableTotalVisible` is `false` there is **no `tableTotal` and no `tableLines` member on the wire at all**. A zero would read as "nothing owed"; a `null` a client might render as free; an absent member beside an explicit `false` flag can only be read as "not shown to you". |
+| **The hidden aggregate is absent, not zero.** | `TabView` shape + JSON serialisation | When `tableTotalVisible` is `false` there is **no `tableTotal`, no `tableLines` and no `tipsAmd` member on the wire at all**. A zero would read as "nothing owed"; a `null` a client might render as free; an absent member beside an explicit `false` flag can only be read as "not shown to you". |
 | **Pending sees only themself.** | `TabPermissions.MaySeeRoster` / `MaySeeTableTotal` | A pending participant may read the menu and their own (empty) state. Not the total, not anyone else's items, not the roster — the next table must not learn who is sitting here by scanning the wrong code. |
 | **Pending cannot order.** | `TabPermissions.MayOrder`, used by both the projection (`canOrderNow`) and the `TabParticipantCanOrder` policy | Approved, allowed to order, and the tab still `Open`. |
 
@@ -264,6 +264,27 @@ projection uses to tell the client what they may do, so the app never draws a bu
 
 The view also names where the tab is - `venueName` and `branchName` beside `tableLabel` and
 `timeZoneId` - so a phone that has only scanned a code can head the bill without a second read.
+
+`tipsAmd` - the tips on the tab's succeeded payments - travels with the table total and outside it:
+present exactly when `tableTotal` is, never added into `paidAmd` or `remainingAmd`. Staff always get
+it on `GET /api/tabs/{tabId}/participants`. See `docs/billing.md` section 6, which also covers a
+request for the bill that names a scope and a tip.
+
+### Faces on the roster
+
+`participants[]` (`TabParticipantSummary`) and `me` / the staff list (`TabParticipantView`) carry
+`photo` (`PhotoView`: `photoId`, `thumbnailUrl`, `cardUrl`, `fullUrl`, `width`, `height`; the URLs
+relative to the API, served anonymously from `/api/photos/{photoId}/{variant}`) when the participant
+scanned on a phone signed in to a diner account that has a profile photo. Absent for everybody else -
+most guests scan without an account - and for an account that has since been deleted, even before its
+link on the participant is cleared. Draw initials then.
+
+The roster rules do not change: a pending joiner sees one row, their own, so one face; a removed
+participant is off the roster and their face with them. `TabQuery` reads the picture in the same
+statement as the participants (a correlated lookup on `DinerUsers` by `TabParticipant.UserId`), so a
+table of six costs the same five statements as a table of one. The participant commands - approve,
+reject, remove, leave, permissions, rename - answer with the same `photo`, so a client patching its
+roster from the response keeps the face.
 
 ## 5. Host and lifecycle
 

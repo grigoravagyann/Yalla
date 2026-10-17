@@ -150,10 +150,16 @@ public sealed class ReservationPolicy
 
     /// <summary>
     /// The policy a new branch ships with. Only the turn time varies by venue type: a cafe guest
-    /// lingers over one coffee, a restaurant sits a tighter 90-minute cover.
+    /// lingers over one coffee and a bar table over a round or two, so both get two hours; a
+    /// restaurant sits a tighter 90-minute cover.
     /// </summary>
     public static ReservationPolicy DefaultFor(VenueType venueType) => new(
-        turnTimeMinutes: venueType == VenueType.Cafe ? 120 : 90,
+        turnTimeMinutes: venueType switch
+        {
+            VenueType.Cafe => 120,
+            VenueType.Bar => 120,
+            _ => 90,
+        },
         bufferMinutes: 15,
         graceMinutes: 15,
         lateNudgeAfterMinutes: 10,

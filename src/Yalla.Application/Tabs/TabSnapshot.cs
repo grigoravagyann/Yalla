@@ -1,3 +1,4 @@
+using Yalla.Application.Media;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Tabs;
@@ -57,6 +58,9 @@ namespace Yalla.Application.Tabs;
 /// <param name="Participants">Everyone who has been on the tab, removed ones included.</param>
 /// <param name="Lines">Every line, voided ones included.</param>
 /// <param name="Adjustments">Every comp and discount, voided ones included.</param>
+/// <param name="TipsAmd">
+/// The tips on the tab's succeeded payments. Outside the balance, so outside the five cached totals.
+/// </param>
 public sealed record TabSnapshot(
     Guid TabId,
     Guid BranchId,
@@ -81,9 +85,22 @@ public sealed record TabSnapshot(
     long MaxEventSequence,
     IReadOnlyList<TabParticipantSnapshot> Participants,
     IReadOnlyList<TabLineSnapshot> Lines,
-    IReadOnlyList<TabAdjustmentSnapshot> Adjustments);
+    IReadOnlyList<TabAdjustmentSnapshot> Adjustments,
+    long TipsAmd = 0L);
 
 /// <summary>One participant, every flag, no filtering.</summary>
+/// <param name="ParticipantId">The participant row.</param>
+/// <param name="DisplayName">Their name on the tab.</param>
+/// <param name="Role">Host or guest.</param>
+/// <param name="Status">Pending, approved or removed.</param>
+/// <param name="CanOrder">Whether the host allows them to add items.</param>
+/// <param name="CanSeeTableTotal">Whether they may see the aggregate.</param>
+/// <param name="CanPay">Whether they may settle against the tab.</param>
+/// <param name="JoinedAtUtc">When they scanned or joined.</param>
+/// <param name="Photo">
+/// The profile picture of the diner account they scanned with, when it is still an account and has
+/// one. Null for everybody else.
+/// </param>
 public sealed record TabParticipantSnapshot(
     Guid ParticipantId,
     string DisplayName,
@@ -92,7 +109,8 @@ public sealed record TabParticipantSnapshot(
     bool CanOrder,
     bool CanSeeTableTotal,
     bool CanPay,
-    DateTime JoinedAtUtc);
+    DateTime JoinedAtUtc,
+    PhotoView? Photo = null);
 
 /// <summary>
 /// One order line with who placed it and, for a shared item, who was present.

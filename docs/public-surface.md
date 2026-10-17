@@ -17,7 +17,7 @@ Every active, non-suspended venue with its active branches. It is the web choose
 app's Explore screen too: the app used to call `/api/venues`, which never existed, and showed no
 restaurants at all.
 
-A venue card carries `venueSlug`, `name`, `type` (1 Cafe, 2 Restaurant) and `branches`. There is no
+A venue card carries `venueSlug`, `name`, `type` (1 Cafe, 2 Restaurant, 3 Bar) and `branches`. There is no
 venue id on the public surface; the slug is the public identity. Each branch card:
 
 | Field | Meaning |
@@ -328,7 +328,7 @@ else is elided.
 
 Notes for a mapper:
 
-- `venueType` (1 Cafe, 2 Restaurant) and `day` are **integers**, not strings. The whole API serialises
+- `venueType` (1 Cafe, 2 Restaurant, 3 Bar) and `day` are **integers**, not strings. The whole API serialises
   enums as numbers on purpose - see `docs/openapi.md` - and the schema carries `x-enum-varnames`
   so a generated client gets the names.
 - `phoneE164` is **absent** when there is none, not null.

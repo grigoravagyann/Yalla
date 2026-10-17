@@ -29,7 +29,7 @@ public sealed class Venue : Entity
     public string Name { get; private set; } = null!;
 
     /// <summary>
-    /// Cafe or restaurant. Selects the shipped <see cref="ReservationPolicy"/> defaults for
+    /// Cafe, restaurant or bar. Selects the shipped <see cref="ReservationPolicy"/> defaults for
     /// new branches.
     /// </summary>
     public VenueType Type { get; private set; }

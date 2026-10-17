@@ -8,6 +8,7 @@ public class ReservationPolicyTests
     [Theory]
     [InlineData(VenueType.Restaurant, 90)]
     [InlineData(VenueType.Cafe, 120)]
+    [InlineData(VenueType.Bar, 120)]
     public void DefaultFor_uses_the_shipped_turn_time_for_the_venue_type(VenueType venueType, int expectedTurnTime)
     {
         var policy = ReservationPolicy.DefaultFor(venueType);

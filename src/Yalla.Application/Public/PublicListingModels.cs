@@ -17,7 +17,7 @@ namespace Yalla.Application.Public;
 /// <param name="BranchSlug">The branch half.</param>
 /// <param name="VenueName">The brand name, what the card is titled with.</param>
 /// <param name="BranchName">Which location, e.g. "Cascade".</param>
-/// <param name="VenueType">1 Cafe, 2 Restaurant.</param>
+/// <param name="VenueType">1 Cafe, 2 Restaurant, 3 Bar.</param>
 /// <param name="Cuisine">Free text from the venue, or absent when not set.</param>
 /// <param name="PriceLevel">1-4, or absent when not set.</param>
 /// <param name="Address">Street address.</param>

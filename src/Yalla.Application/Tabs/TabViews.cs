@@ -1,4 +1,5 @@
 ﻿using Yalla.Application.Auth;
+using Yalla.Application.Media;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Tabs;
@@ -64,7 +65,8 @@ public sealed record TabJoinTokenResult(
 /// </para>
 /// <para>
 /// <b>The table aggregate is omitted, not zeroed.</b> When <see cref="TableTotalVisible"/> is false
-/// there is no <see cref="TableTotal"/> and no <see cref="TableLines"/> member on the wire at all.
+/// there is no <see cref="TableTotal"/>, no <see cref="TableLines"/> and no <see cref="TipsAmd"/>
+/// member on the wire at all.
 /// A zero would read as "nothing owed" and a null as "free"; an absent member with an explicit
 /// flag beside it can only be read as "not shown to you".
 /// </para>
@@ -115,9 +117,15 @@ public sealed record TabJoinTokenResult(
 /// Comps and discounts, with the reason the manager typed. Present for everyone, for the same
 /// reason voided lines are: a total that drops with no visible cause makes people distrust the app.
 /// </param>
-/// <param name="TableTotalVisible">Whether the two members below are present.</param>
+/// <param name="TableTotalVisible">Whether the three members below are present.</param>
 /// <param name="TableTotal">The table aggregate. <b>Absent</b> when not visible - never zero, never null-as-free.</param>
 /// <param name="TableLines">Every line on the tab with who placed it, voided ones included. Absent when the total is hidden.</param>
+/// <param name="TipsAmd">
+/// The tips handed over with the tab's succeeded payments, in whole dram. <b>Outside the balance</b>:
+/// not in <c>tableTotal.paidAmd</c> or <c>remainingAmd</c>, which is why it is here and not in
+/// <paramref name="TableTotal"/>. Absent with the table total, because a tip is money the table
+/// paid.
+/// </param>
 public sealed record TabView(
     Guid TabId,
     Guid BranchId,
@@ -141,7 +149,8 @@ public sealed record TabView(
     IReadOnlyList<TabAdjustmentView> Adjustments,
     bool TableTotalVisible,
     TabTotalsView? TableTotal,
-    IReadOnlyList<TabLineView>? TableLines);
+    IReadOnlyList<TabLineView>? TableLines,
+    long? TipsAmd);
 
 /// <summary>One person on a tab, with their flags. Not an account - see <c>docs/auth.md</c>.</summary>
 /// <param name="ParticipantId">The participant row.</param>
@@ -156,6 +165,11 @@ public sealed record TabView(
 /// what the ordering endpoints will enforce, computed by the same rule.
 /// </param>
 /// <param name="JoinedAtUtc">When they scanned or joined.</param>
+/// <param name="Photo">
+/// Their profile picture, when the phone that scanned was signed in to a diner account that has
+/// one. Absent for a guest who scanned without an account - most of them - and for an account
+/// since deleted. The URLs are relative to the API.
+/// </param>
 public sealed record TabParticipantView(
     Guid ParticipantId,
     string DisplayName,
@@ -165,18 +179,24 @@ public sealed record TabParticipantView(
     bool CanSeeTableTotal,
     bool CanPay,
     bool CanOrderNow,
-    DateTime JoinedAtUtc);
+    DateTime JoinedAtUtc,
+    PhotoView? Photo);
 
-/// <summary>Who is at the table, as the other diners see them: a name and whether they are in yet.</summary>
+/// <summary>Who is at the table, as the other diners see them: a name, a face, and whether they are in yet.</summary>
 /// <param name="ParticipantId">The participant row.</param>
 /// <param name="DisplayName">Their name on the tab.</param>
 /// <param name="Role">1 Host, 2 Guest.</param>
 /// <param name="Status">1 PendingApproval, 2 Approved.</param>
+/// <param name="Photo">
+/// Their diner account's profile picture, when they scanned signed in and have one. Absent
+/// otherwise; draw initials. The URLs are relative to the API.
+/// </param>
 public sealed record TabParticipantSummary(
     Guid ParticipantId,
     string DisplayName,
     ParticipantRole Role,
-    ParticipantStatus Status);
+    ParticipantStatus Status,
+    PhotoView? Photo);
 
 /// <summary>One item on the tab, as snapshotted when it was ordered.</summary>
 /// <param name="LineId">The order line.</param>
@@ -265,6 +285,11 @@ public sealed record TabTotalsView(
 /// A tab as staff see it: every phone on the table, with roles and flags, and the money. Staff are
 /// not participants and are not subject to the host's visibility flags.
 /// </summary>
+/// <remarks>
+/// <c>TipsAmd</c> is the tips handed over with the tab's succeeded payments - what the drawer holds
+/// beyond the bill. It sits beside <c>Totals</c> rather than inside it, because a tip is not part of
+/// what the table owes.
+/// </remarks>
 public sealed record TabStaffView(
     Guid TabId,
     Guid BranchId,
@@ -282,7 +307,8 @@ public sealed record TabStaffView(
     IReadOnlyList<TabParticipantView> Participants,
     IReadOnlyList<TabLineView> Lines,
     IReadOnlyList<TabAdjustmentView> Adjustments,
-    TabTotalsView Totals);
+    TabTotalsView Totals,
+    long TipsAmd);
 
 /// <summary>Reads a tab for whoever is looking at it.</summary>
 public interface ITabQuery

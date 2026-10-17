@@ -81,7 +81,18 @@ public sealed record ParticipantShare(
     long PersonalAmd,
     long ServiceChargeAmd,
     long ShareAmd,
-    long PaidAmd);
+    long PaidAmd)
+{
+    /// <summary>
+    /// What is still owed of this share: the share less what this person has paid, never below zero.
+    /// </summary>
+    /// <remarks>
+    /// The share itself is never netted - <see cref="PaidAmd"/> is reported beside it - so this is the
+    /// one place the subtraction is written. A guest who overpaid their own share has paid toward
+    /// somebody else's, which is the table's business, not a negative balance of theirs.
+    /// </remarks>
+    public long RemainingAmd => Math.Max(0L, ShareAmd - PaidAmd);
+}
 
 /// <summary>The bill, computed.</summary>
 /// <param name="SubtotalAmd">Lines less adjustments.</param>

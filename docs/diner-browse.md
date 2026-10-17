@@ -45,7 +45,7 @@ These apply to everything below.
 
 - JSON camelCase. **Null fields are omitted**, not written as `null` - treat a missing key as null.
 - Enums are **integers**:
-  - `venueType`: 1 Cafe, 2 Restaurant.
+  - `venueType`: 1 Cafe, 2 Restaurant, 3 Bar.
   - `state` (`DerivedTableState`): 1 Free, 2 ReservedSoon, 3 Held, 4 Occupied, 5 OutOfService.
   - `kitchenStatus` (`TabOrderStatus`): 1 New, 2 InKitchen, 3 Ready, 4 Served, 5 Voided.
   - `day` (`DayOfWeek`): 0 Sunday … 6 Saturday.
@@ -69,7 +69,7 @@ These apply to everything below.
 | Query | Type | Notes |
 | --- | --- | --- |
 | `q` | string | Search only. Contains-match on venue name, branch name, cuisine and address; case-insensitive; blank means all; at most 100 characters |
-| `category` | int | 1 Cafe, 2 Restaurant |
+| `category` | int | 1 Cafe, 2 Restaurant, 3 Bar |
 | `lat`, `lng` | double | Together or neither. Adds `distanceKm` and sorts nearest first. Without them: best rated first |
 
 `q` matches the branch's `district` too, so "Arabkir" finds the places a venue says are in Arabkir.
@@ -904,7 +904,7 @@ The specification as first written:
 | `id` | `listing.branchId` |
 | `venueId` | `listing.venueId` |
 | `name` | `listing.venueName` (the card title; `listing.branchName` is the location - show "Venue · Branch" when a venue has several) |
-| `type` | `listing.venueType`: 1 → `'cafe'`, 2 → `'restaurant'` |
+| `type` | `listing.venueType`: 1 → `'cafe'`, 2 → `'restaurant'`, 3 → `'bar'` |
 | `cuisine` | `listing.cuisine` - absent → `''`, hide the line |
 | `distanceKm` | `listing.distanceKm` when `lat`/`lng` were sent; else computed from `latitude`/`longitude` and the device position; no position → unknown, hide |
 | `rating` | `listing.rating` - absent → no rating yet |

@@ -13,7 +13,7 @@ namespace Yalla.Application.Public;
 /// </remarks>
 /// <param name="VenueSlug">The public identity. Half of a printed link.</param>
 /// <param name="Name">The venue's name.</param>
-/// <param name="Type">1 Cafe, 2 Restaurant.</param>
+/// <param name="Type">1 Cafe, 2 Restaurant, 3 Bar.</param>
 /// <param name="Branches">Its active branches.</param>
 public sealed record PublicVenueCard(
     string VenueSlug,
@@ -56,7 +56,7 @@ public sealed record PublicBranchCard(
 /// <param name="BranchId">The id the menu and availability routes take.</param>
 /// <param name="VenueName">The venue's name.</param>
 /// <param name="BranchName">The branch's name.</param>
-/// <param name="VenueType">1 Cafe, 2 Restaurant.</param>
+/// <param name="VenueType">1 Cafe, 2 Restaurant, 3 Bar.</param>
 /// <param name="Address">Street address, as a person would read it.</param>
 /// <param name="Latitude">For the map pin.</param>
 /// <param name="Longitude">For the map pin.</param>
