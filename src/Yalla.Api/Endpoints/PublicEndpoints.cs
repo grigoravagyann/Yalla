@@ -173,7 +173,7 @@ public static class PublicEndpoints
     {
         const string listingFields =
             "Each entry is a `PublicBranchListing`: ids and slugs, `venueName`, `branchName`, `venueType` "
-            + "(1 Cafe, 2 Restaurant), `cuisine` and `priceLevel` (absent until the venue sets them), "
+            + "(1 Cafe, 2 Restaurant, 3 Bar), `cuisine` and `priceLevel` (absent until the venue sets them), "
             + "`address`, `latitude`, `longitude`, `timeZoneId`, `isOpenNow`, `freeTableCount`, `rating` "
             + "(average to one decimal, **absent with no reviews**), `reviewCount`, `badges` and "
             + "`coverPhoto`.\n\n"
@@ -196,7 +196,7 @@ public static class PublicEndpoints
             .WithSummary("Search published branches by name, cuisine or address")
             .WithDescription(
                 "`q` matches venue name, branch name, cuisine and address, contains and case-insensitive; "
-                + "blank matches everything. `category` narrows to one venue type (1 Cafe, 2 Restaurant). "
+                + "blank matches everything. `category` narrows to one venue type (1 Cafe, 2 Restaurant, 3 Bar). "
                 + "`q` is at most 100 characters.\n\n" + listingFields)
             .Produces<IReadOnlyList<PublicBranchListing>>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`q` too long, or a half or out-of-range position.")

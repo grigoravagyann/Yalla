@@ -48,7 +48,7 @@ public sealed record CreateVenueCommand(
         {
             violations.Add(new FieldViolation(
                 "type",
-                "Not a defined venue type. 1 Restaurant, 2 Cafe, 3 Bar.",
+                "Not a defined venue type. 1 Cafe, 2 Restaurant, 3 Bar.",
                 FieldBounds.Required,
                 Value: (int)Type));
         }
@@ -123,7 +123,7 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSi
 /// </summary>
 /// <param name="VenueId">The venue.</param>
 /// <param name="Name">Its name.</param>
-/// <param name="Type">1 Cafe, 2 Restaurant. Selects the shipped policy defaults for a new branch.</param>
+/// <param name="Type">1 Cafe, 2 Restaurant, 3 Bar. Selects the shipped policy defaults for a new branch.</param>
 /// <param name="Slug">Unique URL segment for the brand.</param>
 /// <param name="IsActive">Whether the venue is switched on at all.</param>
 /// <param name="IsSuspended">Suspended venues keep every row but disappear from diner browsing.</param>

@@ -5,6 +5,7 @@ public enum VenueType
 {
     Cafe = 1,
     Restaurant = 2,
+    Bar = 3,
 }
 
 /// <summary>

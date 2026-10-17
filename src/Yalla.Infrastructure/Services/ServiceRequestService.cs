@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
@@ -44,8 +45,14 @@ internal sealed class ServiceRequestService(
         Guid actingParticipantId,
         ServiceRequestPreset preset,
         string? note,
+        BillScope? billScope = null,
+        int? tipPercent = null,
         CancellationToken cancellationToken = default)
     {
+        // The shape first, every field at once, before anything is read: a tip on a request for
+        // napkins is wrong whoever sends it.
+        ServiceRequest.ValidateBillFields(preset, billScope, tipPercent);
+
         var tab = await db.Tabs
             .Include(t => t.Participants)
             .Include(t => t.DiningTable)
@@ -77,17 +84,27 @@ internal sealed class ServiceRequestService(
             throw new ServiceRequestRateLimitedException(tabId, RateLimit, RateWindowMinutes);
         }
 
+        var bill = billScope is { } scope
+            ? await QuoteAsync(tab, participant, scope, tipPercent, cancellationToken)
+            : null;
+
         var request = new ServiceRequest(
-            tab.Id, tab.BranchId, tab.DiningTableId, participant.Id, preset, nowUtc, note);
+            tab.Id, tab.BranchId, tab.DiningTableId, participant.Id, preset, nowUtc, note, bill);
 
         db.ServiceRequests.Add(request);
 
+        // The bill fields ride on the event too, so the other phones at the table and a staff
+        // screen following the stream see the same request the waiter's list does.
         ledger.Append(tab.Id, TabEventType.ServiceRequested, new
         {
             serviceRequestId = request.Id,
             preset = (int)request.Preset,
             note = request.Note,
             requestedByParticipantId = participant.Id,
+            billScope = (int?)request.BillScope,
+            billAmountAmd = request.BillAmountAmd,
+            tipPercent = request.TipPercent,
+            tipAmd = request.TipAmd,
         });
 
         await ledger.SaveAppendedAsync(cancellationToken);
@@ -162,6 +179,41 @@ internal sealed class ServiceRequestService(
             await ledger.MaxSequenceAsync(request.TabId, cancellationToken));
     }
 
+    /// <summary>
+    /// Prices a request for the bill against the tab as it stands, from its lines.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same <see cref="TabLedger.Compute"/> the shares view and the cash endpoint read, so the
+    /// amount on the waiter's screen is the amount the diner's split showed and the amount the cash
+    /// keypad will accept. Read-only: nothing on the tab row changes, so raising a request still
+    /// cannot collide with a payment.
+    /// </para>
+    /// <para>
+    /// <b>The whole bill needs sight of the total.</b> A guest the host has hidden the total from
+    /// would otherwise read it back off their own request, which is the leak the projection exists to
+    /// prevent - so they may ask for their own share, and only that.
+    /// </para>
+    /// </remarks>
+    private async Task<BillQuote> QuoteAsync(
+        Tab tab,
+        TabParticipant participant,
+        BillScope scope,
+        int? tipPercent,
+        CancellationToken cancellationToken)
+    {
+        if (scope == BillScope.WholeBill
+            && !TabPermissions.MaySeeTableTotal(participant.Status, participant.CanSeeTableTotal))
+        {
+            throw new TabPermissionException(
+                "Asking for the whole bill", "somebody who can see the table total");
+        }
+
+        var loaded = await ledger.LoadForWriteAsync(tab.Id, cancellationToken);
+
+        return BillQuote.For(ledger.Compute(loaded), participant.Id, scope, tipPercent);
+    }
+
     private static ServiceRequestView ToView(
         ServiceRequest request,
         string tableLabel,
@@ -177,7 +229,11 @@ internal sealed class ServiceRequestService(
             request.CreatedAtUtc,
             (int)Math.Max(0d, ((request.AcknowledgedAtUtc ?? nowUtc) - request.CreatedAtUtc).TotalMinutes),
             request.AcknowledgedAtUtc,
-            tabEventSequence);
+            tabEventSequence,
+            request.BillScope,
+            request.BillAmountAmd,
+            request.TipPercent,
+            request.TipAmd);
 
     private Guid RequireStaff(string operation) =>
         actor.Type == ActorType.Staff && actor.StaffMemberId is { } id

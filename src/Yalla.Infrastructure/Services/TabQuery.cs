@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Media;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
 
@@ -45,10 +47,10 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
     }
 
     /// <summary>
-    /// Five reads on one connection: the tab and its table, the participants, the lines with
-    /// their shares, the adjustments, and the stream's high-water mark. Untracked throughout -
-    /// this is a read model, and the service that may have just written these rows reads them back
-    /// through here after its own SaveChanges.
+    /// Five reads on one connection: the tab and its table with its tips, the participants with
+    /// their pictures, the lines with their shares, the adjustments, and the stream's high-water
+    /// mark. Untracked throughout - this is a read model, and the service that may have just written
+    /// these rows reads them back through here after its own SaveChanges.
     /// </summary>
     private async Task<TabSnapshot?> LoadSnapshotAsync(Guid tabId, CancellationToken cancellationToken)
     {
@@ -84,6 +86,13 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 t.TotalAmd,
                 t.PaidAmd,
                 t.RemainingAmd,
+
+                // Outside the balance and so outside the cached totals; summed here, in the same
+                // statement, from the payments that actually went through. A hold that is still
+                // Reserved, or one that failed, put nothing in anybody's hand.
+                TipsAmd = t.Payments
+                    .Where(p => p.Status == PaymentStatus.Succeeded)
+                    .Sum(p => (long?)p.TipAmd) ?? 0L,
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -93,19 +102,46 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
         }
 
         // A free branch has no tabs to read. Same answer the service gives on write.
-        if (tab.Tier != Yalla.Domain.Enums.SubscriptionTier.Paid)
+        if (tab.Tier != SubscriptionTier.Paid)
         {
             throw new Yalla.Domain.Venues.FeatureNotEnabledException("Tabs and ordering", tab.BranchId, tab.Tier);
         }
 
         // Removed participants included: a line they placed still names them, and the projection
         // is what keeps them out of the roster.
+        //
+        // The picture comes from the diner account the phone was signed in to when it scanned, in
+        // the same statement - one correlated lookup per row, never a query per participant. There
+        // is no navigation to follow (identity is its own module, and UserId is only an id), and an
+        // account that has been deleted shows no face even if its link has not been cleared yet.
         var participants = await db.TabParticipants
             .AsNoTracking()
             .Where(p => p.TabId == tabId)
             .OrderBy(p => p.JoinedAtUtc)
-            .Select(p => new TabParticipantSnapshot(
-                p.Id, p.DisplayName, p.Role, p.Status, p.CanOrder, p.CanSeeTableTotal, p.CanPay, p.JoinedAtUtc))
+            .Select(p => new
+            {
+                p.Id,
+                p.DisplayName,
+                p.Role,
+                p.Status,
+                p.CanOrder,
+                p.CanSeeTableTotal,
+                p.CanPay,
+                p.JoinedAtUtc,
+                Photo = db.DinerUsers
+                    .Where(d => d.Id == p.UserId && d.DeletedAtUtc == null && d.PhotoId != null)
+                    .Select(d => new
+                    {
+                        d.Photo!.Id,
+                        d.Photo.IsExternallyHosted,
+                        d.Photo.ThumbnailPath,
+                        d.Photo.CardPath,
+                        d.Photo.FullPath,
+                        d.Photo.Width,
+                        d.Photo.Height,
+                    })
+                    .FirstOrDefault(),
+            })
             .ToListAsync(cancellationToken);
 
         var lines = await db.TabOrderLines
@@ -186,7 +222,27 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             tab.PaidAmd,
             tab.RemainingAmd,
             maxSequence,
-            participants,
+            [
+                .. participants.Select(p => new TabParticipantSnapshot(
+                    p.Id,
+                    p.DisplayName,
+                    p.Role,
+                    p.Status,
+                    p.CanOrder,
+                    p.CanSeeTableTotal,
+                    p.CanPay,
+                    p.JoinedAtUtc,
+                    p.Photo is { } photo
+                        ? PhotoView.From(
+                            photo.Id,
+                            photo.IsExternallyHosted,
+                            photo.ThumbnailPath,
+                            photo.CardPath,
+                            photo.FullPath,
+                            photo.Width,
+                            photo.Height)
+                        : null)),
+            ],
             [
                 .. lines.Select(l => new TabLineSnapshot(
                     l.Id,
@@ -217,7 +273,8 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     a.Reason,
                     a.CreatedAtUtc,
                     IsVoided: a.VoidedAtUtc is not null)),
-            ]);
+            ],
+            tab.TipsAmd);
     }
 
     /// <summary>

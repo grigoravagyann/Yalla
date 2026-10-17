@@ -1,4 +1,5 @@
-﻿using Yalla.Application.Tabs;
+﻿using Yalla.Application.Media;
+using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests;
@@ -261,6 +262,90 @@ public class TabProjectionTests
         Assert.NotEqual(Guid.Empty, line.MenuItemId);
         Assert.Equal("no onions", line.Note);
     }
+
+    // ------------------------------------------------------------ tips
+
+    /// <summary>
+    /// Tips are money the table handed over, so they reach exactly who the table total reaches - and
+    /// staff, always - and they stay outside the totals either way.
+    /// </summary>
+    [Fact]
+    public void Tips_go_where_the_table_total_goes_and_never_into_it()
+    {
+        var tab = Tab(aniSeesTotal: false) with { PaidAmd = 9_900L, RemainingAmd = 0L, TipsAmd = 1_500L };
+
+        var host = TabProjection.Project(tab, HostId)!;
+        Assert.Equal(1_500L, host.TipsAmd);
+        Assert.Equal(9_900L, host.TableTotal!.PaidAmd);
+        Assert.Equal(0L, host.TableTotal.RemainingAmd);
+
+        // Hidden with the total: absent, not zero.
+        Assert.Null(TabProjection.Project(tab, AniId)!.TipsAmd);
+        Assert.Null(TabProjection.Project(tab, PendingId)!.TipsAmd);
+
+        var staff = TabProjection.ProjectForStaff(tab);
+        Assert.Equal(1_500L, staff.TipsAmd);
+        Assert.Equal(9_900L, staff.Totals.PaidAmd);
+    }
+
+    // ------------------------------------------------------------ faces on the roster
+
+    [Fact]
+    public void A_participants_photo_rides_on_the_roster_me_and_the_staff_list_and_a_pending_viewer_sees_only_their_own()
+    {
+        var aniPhoto = Photo();
+        var pendingPhoto = Photo();
+
+        var tab = Tab() with
+        {
+            Participants =
+            [
+                .. Tab().Participants.Select(p => p.ParticipantId == AniId
+                    ? p with { Photo = aniPhoto }
+                    : p.ParticipantId == PendingId ? p with { Photo = pendingPhoto } : p),
+            ],
+        };
+
+        // The host sees Ani's face and the waiting guest's, and has none of their own.
+        var host = TabProjection.Project(tab, HostId)!;
+        Assert.Null(host.Me.Photo);
+        Assert.Equal(aniPhoto, host.Participants.Single(p => p.ParticipantId == AniId).Photo);
+        Assert.Equal(pendingPhoto, host.Participants.Single(p => p.ParticipantId == PendingId).Photo);
+        Assert.Null(host.Participants.Single(p => p.ParticipantId == HostId).Photo);
+
+        // Ani sees her own on "me".
+        Assert.Equal(aniPhoto, TabProjection.Project(tab, AniId)!.Me.Photo);
+
+        // The pending guest sees one face: their own. Nobody else's row, so nobody else's picture.
+        var pending = TabProjection.Project(tab, PendingId)!;
+        var only = Assert.Single(pending.Participants);
+        Assert.Equal(pendingPhoto, only.Photo);
+        Assert.Equal(pendingPhoto, pending.Me.Photo);
+
+        // Staff see every phone on the table, with its face.
+        var staff = TabProjection.ProjectForStaff(tab);
+        Assert.Equal(aniPhoto, staff.Participants.Single(p => p.ParticipantId == AniId).Photo);
+    }
+
+    [Fact]
+    public void A_removed_participant_takes_their_photo_off_the_roster_with_them()
+    {
+        var tab = Tab() with
+        {
+            Participants =
+            [
+                .. Tab().Participants.Select(p => p.ParticipantId == AniId
+                    ? p with { Status = ParticipantStatus.Removed, Photo = Photo() }
+                    : p),
+            ],
+        };
+
+        Assert.DoesNotContain(TabProjection.Project(tab, HostId)!.Participants, p => p.ParticipantId == AniId);
+        Assert.DoesNotContain(TabProjection.ProjectForStaff(tab).Participants, p => p.ParticipantId == AniId);
+    }
+
+    private static PhotoView Photo() =>
+        PhotoView.From(Guid.CreateVersion7(), isExternallyHosted: false, "t", "c", "f", width: 640, height: 640);
 
     /// <summary>One ordinary line. Overridden per test with a <c>with</c> expression.</summary>
     private static TabLineSnapshot Line(Guid? placedBy, string name, long unitPriceAmd) =>

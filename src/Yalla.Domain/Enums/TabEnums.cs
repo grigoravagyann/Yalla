@@ -103,6 +103,24 @@ public enum ServiceRequestPreset
 }
 
 /// <summary>
+/// How much of the tab a request for the bill is about. Only a <see cref="ServiceRequestPreset.TheBill"/>
+/// request carries one.
+/// </summary>
+/// <remarks>
+/// Persisted on <c>ServiceRequest</c> and pinned like every other enum here. The amount it stands
+/// for is priced by the server when the request is raised and stored beside it, so the waiter walks
+/// over with the number the diner was shown - see <c>docs/billing.md</c>.
+/// </remarks>
+public enum BillScope
+{
+    /// <summary>Everything still owed on the tab, service charge included.</summary>
+    WholeBill = 1,
+
+    /// <summary>What the person asking still owes of their own share, service charge included.</summary>
+    MyShare = 2,
+}
+
+/// <summary>
 /// What happened on a tab, for the catch-up stream.
 /// </summary>
 /// <remarks>

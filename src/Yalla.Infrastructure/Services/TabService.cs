@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Application.Media;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Application.Messaging;
@@ -754,7 +755,7 @@ internal sealed class TabService(
             "Participant {ParticipantId} left tab {TabId}; the host is now {HostParticipantId}.",
             leaving.Id, tab.Id, tab.HostParticipantId);
 
-        return ToView(leaving, tab.Status);
+        return await ToViewAsync(leaving, tab.Status, cancellationToken);
     }
 
     /// <summary>
@@ -795,7 +796,7 @@ internal sealed class TabService(
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
-        return ToView(participant, tab.Status);
+        return await ToViewAsync(participant, tab.Status, cancellationToken);
     }
 
     private async Task<TabParticipantView> ChangeParticipantAsync(
@@ -856,7 +857,7 @@ internal sealed class TabService(
             "{Operation} on tab {TabId}: participant {ParticipantId} is now {Status}.",
             operation, tab.Id, target.Id, target.Status);
 
-        return ToView(target, tab.Status);
+        return await ToViewAsync(target, tab.Status, cancellationToken);
     }
 
     // ---------------------------------------------------------------- settlement mode
@@ -1257,8 +1258,28 @@ internal sealed class TabService(
         await query.GetForStaffAsync(tabId, cancellationToken)
         ?? throw new InvalidOperationException($"Tab {tabId} was just written but cannot be read back.");
 
-    private static TabParticipantView ToView(TabParticipant participant, TabStatus tabStatus) =>
-        TabProjection.ToParticipantView(
+    /// <summary>
+    /// One participant as the command that just changed them answers, picture included.
+    /// </summary>
+    /// <remarks>
+    /// The same face the tab read shows - the profile photo of a live diner account the phone
+    /// scanned with - so a client that updates its roster from this answer does not blank an avatar
+    /// the next read would draw. One indexed read, on a path a host taps a few times an evening.
+    /// </remarks>
+    private async Task<TabParticipantView> ToViewAsync(
+        TabParticipant participant,
+        TabStatus tabStatus,
+        CancellationToken cancellationToken)
+    {
+        var photo = participant.UserId is { } userId
+            ? await db.DinerUsers
+                .AsNoTracking()
+                .Where(d => d.Id == userId && d.DeletedAtUtc == null && d.PhotoId != null)
+                .Select(d => d.Photo!)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+        return TabProjection.ToParticipantView(
             new TabParticipantSnapshot(
                 participant.Id,
                 participant.DisplayName,
@@ -1267,8 +1288,10 @@ internal sealed class TabService(
                 participant.CanOrder,
                 participant.CanSeeTableTotal,
                 participant.CanPay,
-                participant.JoinedAtUtc),
+                participant.JoinedAtUtc,
+                photo is null ? null : PhotoView.From(photo)),
             tabStatus);
+    }
 
     private static string RequireDevice(string? deviceId) =>
         string.IsNullOrWhiteSpace(deviceId)

@@ -25,7 +25,7 @@ namespace Yalla.Application.Venues;
 /// </remarks>
 /// <param name="VenueId">The venue.</param>
 /// <param name="Name">Its display name.</param>
-/// <param name="Type">Cafe, restaurant or bar.</param>
+/// <param name="Type">1 Cafe, 2 Restaurant, 3 Bar.</param>
 /// <param name="Slug">The URL-safe handle its public page lives under.</param>
 /// <param name="IsSuspended">The platform has suspended it for non-payment; diners cannot book, staff can still configure.</param>
 /// <param name="IsDeleted">Soft-deleted by the platform; nothing can be changed.</param>

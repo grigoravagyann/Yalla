@@ -265,9 +265,28 @@ public static class OrderingEndpoints
                 "Presets and one short optional note. **Not a chat**: a message box creates the "
                 + "expectation of a reply, and during the Friday rush nobody answers it.\n\n"
                 + "Rate limited **per tab**, not per person - the list a waiter is looking at is the "
-                + "table's, and one bored guest must not be able to bury another table's request.")
+                + "table's, and one bored guest must not be able to bury another table's request.\n\n"
+                + "**Asking for the bill from the pay sheet.** With `preset` 3 a request may carry "
+                + "`billScope` (1 WholeBill, 2 MyShare) and `tipPercent` (0 to 25). The server prices "
+                + "it from the tab's own arithmetic - the same numbers `/shares` reports - and the "
+                + "response, the waiter's list and the `ServiceRequested` event all carry "
+                + "`billAmountAmd` and `tipAmd`:\n"
+                + "- WholeBill: the tab's remaining balance; the tip is on the tab subtotal. Only for "
+                + "somebody who can see the table total - otherwise 403.\n"
+                + "- MyShare: what the asker still owes of their own share (`shareAmd` less `paidAmd`), "
+                + "never more than the tab owes; the tip is on their `personalAmd`.\n\n"
+                + "The service charge is inside `billAmountAmd`; the tip is **outside** it, as a cash "
+                + "payment's `tipAmd` is outside the balance. Either field on another preset, a tip "
+                + "with no scope, or a tip outside 0 to 25 is a 422 naming the field; a scope with "
+                + "nothing left to pay is a 422 on `billScope`.")
             .Produces<ServiceRequestView>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                NotOnTabDescription + " Or `billScope` 1 WholeBill from somebody the table total is hidden from.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`billScope` or `tipPercent` refused - on a preset other than 3, a tip with no scope, "
+                + "a tip outside 0 to 25, or a scope that leaves nothing to pay. `context.fields` names each.")
             .ProducesProblem<ServiceRequestRateLimitedProblem>(
                 StatusCodes.Status429TooManyRequests,
                 "`service-request-rate-limited`: too many, too fast. `context.windowMinutes` says "
@@ -281,7 +300,10 @@ public static class OrderingEndpoints
             .WithDescription(
                 "Open requests, newest first, with the table label and how long they have been "
                 + "waiting. Newest first because on a busy floor the screen is glanced at, and the "
-                + "thing that just came in is the one nobody has walked to yet.")
+                + "thing that just came in is the one nobody has walked to yet.\n\n"
+                + "A request for the bill from the diner's pay sheet carries `billScope`, "
+                + "`billAmountAmd`, `tipPercent` and `tipAmd`: the amount to bring, priced when the "
+                + "diner asked, and the tip to expect on top of it - what the cash keypad opens with.")
             .Produces<IReadOnlyList<ServiceRequestView>>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.");
 
@@ -465,7 +487,8 @@ public static class OrderingEndpoints
                             ?? throw new UnauthorizedAccessException("This token carries no participant.");
 
         var view = await requests.RaiseAsync(
-            tabId, participantId, request.Preset, request.Note, cancellationToken);
+            tabId, participantId, request.Preset, request.Note, request.BillScope, request.TipPercent,
+            cancellationToken);
 
         return Results.Created($"/api/service-requests/{view.ServiceRequestId}", view);
     }
