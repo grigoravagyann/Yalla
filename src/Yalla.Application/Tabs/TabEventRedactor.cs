@@ -7,9 +7,9 @@ namespace Yalla.Application.Tabs;
 
 /// <summary>How much of a tab's event stream one participant may read.</summary>
 /// <remarks>
-/// Not a fourth set of flags. It is read off the participant's own <see cref="TabView"/> - see
-/// <see cref="TabEventRedactor.For"/> - so the stream and the bill cannot disagree about who may see
-/// the money.
+/// Not a fourth set of flags. It is decided by the two <see cref="TabPermissions"/> functions the
+/// participant's own <see cref="TabView"/> is decided by - see <see cref="TabEventRedactor.AudienceFor"/>
+/// - so the stream and the bill cannot disagree about who may see the money.
 /// </remarks>
 public enum TabEventAudience
 {
@@ -41,12 +41,13 @@ public enum TabEventAudience
 /// hiding it on the bill hid nothing.
 /// </para>
 /// <para>
-/// <b>Driven by the projection, not beside it.</b> The audience is the viewer's
-/// <see cref="TabView.TableTotalVisible"/> and <see cref="TabPermissions.MaySeeRoster"/>, "my line"
-/// is a line on <see cref="TabView.MyLines"/> and "my adjustment" one on
-/// <see cref="TabView.Adjustments"/> - the same answers <c>GET /api/tabs/{tabId}</c> gives that
-/// viewer. A second derivation here would be a second place to decide visibility, and the
-/// day the two disagreed would be the leak.
+/// <b>Driven by the projection, not beside it.</b> The audience is
+/// <see cref="TabPermissions.MaySeeTableTotal"/> and <see cref="TabPermissions.MaySeeRoster"/> on
+/// the reader's own row - the functions behind <see cref="TabView.TableTotalVisible"/> and the
+/// roster - and "my line" is a line on <see cref="TabView.MyLines"/> and "my adjustment" one on
+/// <see cref="TabView.Adjustments"/>: the same answers <c>GET /api/tabs/{tabId}</c> gives that
+/// reader. A second derivation here would be a second place to decide visibility, and the day the
+/// two disagreed would be the leak.
 /// </para>
 /// <para>
 /// <b>Every event stays; only payload members go.</b> A client keeps the highest sequence it has
@@ -102,10 +103,9 @@ public sealed class TabEventRedactor
         [TabEventType.SettlementModeChanged] = new(
             Subject.None, null, Public: ["settlementMode", "lockedAtUtc"]),
 
-        // Who placed it and when it will be ready, for everyone; the lines, only those that are the
-        // reader's own - their own order, or a shared item they were at the table for. Another
-        // person's line goes whole, name and quantity with its price: the menu is public, so a name
-        // and a quantity are a price.
+        // Who placed it and when it will be ready, for everyone; the lines, only those on the
+        // reader's own lines (TabProjection.IsOwnLine). Any other line goes whole, name and quantity
+        // with its price: the menu is public, so a name and a quantity are a price.
         [TabEventType.OrderPlaced] = new(
             Subject.None,
             null,
@@ -193,30 +193,39 @@ public sealed class TabEventRedactor
     public TabEventAudience Audience { get; }
 
     /// <summary>
-    /// The redactor for whoever <paramref name="viewer"/> is - their own projection of the tab.
+    /// How much of the stream a participant with this status and flag gets.
     /// </summary>
     /// <remarks>
-    /// Pass the view <see cref="TabProjection.Project"/> built for the reader, from a snapshot read
-    /// <b>after</b> the events: every line an event names then exists on it, so a reader's own new
-    /// line is never mistaken for somebody else's.
+    /// Cheap enough to ask before anything else is read: the reader's own row says whether they get
+    /// <see cref="TabEventAudience.Everything"/>, in which case nothing more is needed. The same two
+    /// <see cref="TabPermissions"/> functions decide <see cref="TabView.TableTotalVisible"/> and the
+    /// roster on the tab read, so the stream cannot reach a different answer from the bill.
     /// </remarks>
-    public static TabEventRedactor For(TabView viewer)
-    {
-        ArgumentNullException.ThrowIfNull(viewer);
-
-        var mayReadRoster = TabPermissions.MaySeeRoster(viewer.Me.Status);
-
-        var audience = (viewer.TableTotalVisible, mayReadRoster) switch
+    public static TabEventAudience AudienceFor(ParticipantStatus status, bool canSeeTableTotal) =>
+        (TabPermissions.MaySeeTableTotal(status, canSeeTableTotal), TabPermissions.MaySeeRoster(status)) switch
         {
             (true, true) => TabEventAudience.Everything,
             (_, true) => TabEventAudience.WithoutTableMoney,
             _ => TabEventAudience.OnlyThemself,
         };
 
-        // For a reader without the total the projection lists only the adjustments on their own
-        // lines, so "on the view" is "theirs".
+    /// <summary>
+    /// The redactor for whoever <paramref name="viewer"/> is - their own projection of the tab.
+    /// </summary>
+    /// <remarks>
+    /// Needed only for a reader <see cref="AudienceFor"/> restricts. Pass the view
+    /// <see cref="TabProjection.Project"/> built for them from a snapshot read <b>after</b> the
+    /// events: every line and adjustment an event names then exists on it, so a reader's own order
+    /// placed a moment ago is never mistaken for somebody else's.
+    /// </remarks>
+    public static TabEventRedactor For(TabView viewer)
+    {
+        ArgumentNullException.ThrowIfNull(viewer);
+
+        // "On the view" is "theirs": the projection lists a restricted reader's own lines in MyLines
+        // and, of the comps, only those on them.
         return new TabEventRedactor(
-            audience,
+            AudienceFor(viewer.Me.Status, viewer.Me.CanSeeTableTotal),
             viewer.Me.ParticipantId,
             [.. viewer.MyLines.Select(line => line.LineId)],
             [.. viewer.Adjustments.Select(adjustment => adjustment.AdjustmentId)]);

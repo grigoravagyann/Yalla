@@ -170,16 +170,25 @@ public sealed record TabLineSnapshot(
     public Guid? OwningParticipantId => PlacedByParticipantId ?? OnBehalfOfParticipantId;
 
     /// <summary>
-    /// Whether this line is on <paramref name="participantId"/>'s bill - the rule <c>TabBilling</c>
-    /// charges by, written once for everything that shows a participant "their" items.
+    /// Whether <c>TabBilling</c> charges <paramref name="participantId"/> for this line, whole or in
+    /// part - the arithmetic's rule, not the bill's.
     /// </summary>
     /// <remarks>
-    /// A split line is theirs when they are on its snapshot; any other line when they own it, from
-    /// their own phone or through a waiter. <c>myLines</c>, the event stream's own lines and
-    /// <c>/shares</c> therefore agree on what is somebody's. The one thing <c>/shares</c> adds is a
-    /// removed participant's lines falling to the host, who is always shown every line anyway.
+    /// <para>
+    /// A split line is charged to everyone on its snapshot; any other line to its owner, who ordered
+    /// it from their own phone or had a waiter key it in for them. (<c>/shares</c> also hands a
+    /// removed participant's lines to the host, who is always shown every line.)
+    /// </para>
+    /// <para>
+    /// <b>Not the same question as "is it on my lines".</b> That is
+    /// <see cref="TabProjection.IsOwnLine"/>, and the two differ in exactly one place: a
+    /// table-attributed line is charged to everybody at the table, but itemised only for a reader
+    /// allowed the table total. A waiter who keys everything in unattributed would otherwise hand a
+    /// guest the host hid the total from every line on the tab, price and all. Their part of it still
+    /// reaches them, as money, through <c>/shares</c>.
+    /// </para>
     /// </remarks>
-    public bool IsOnTheBillOf(Guid participantId) =>
+    public bool IsChargedTo(Guid participantId) =>
         IsSplitAcrossParticipants
             ? SharedWithParticipantIds.Contains(participantId)
             : OwningParticipantId == participantId;

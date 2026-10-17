@@ -5,6 +5,7 @@ using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -21,9 +22,10 @@ namespace Yalla.Infrastructure.Services;
 /// policy would refuse or refused a number the client was shown.
 /// </para>
 /// <para>
-/// The event stream goes through the same rule by a different road: the reader's own
-/// <see cref="TabView"/>, from <see cref="ITabQuery"/>, decides what <see cref="TabEventRedactor"/>
-/// leaves in each payload.
+/// The event stream goes through the same rule by a different road. The reader's own row decides
+/// the audience, by the same <see cref="TabPermissions"/> functions; for a restricted reader with
+/// something on the page, their own <see cref="TabView"/>, from <see cref="ITabQuery"/>, decides
+/// what <see cref="TabEventRedactor"/> leaves in each payload.
 /// </para>
 /// </remarks>
 internal sealed class TabBillingQuery(
@@ -113,6 +115,32 @@ internal sealed class TabBillingQuery(
     {
         var capped = Math.Clamp(limit <= 0 ? MaxEventPageSize : limit, 1, MaxEventPageSize);
 
+        // Who is reading, and whether the branch has tabs at all: one statement, before the stream.
+        // The tier first, so a branch below Paid answers every page the same - an empty poll used to
+        // pass where a page with something on it was refused - and the same way the tab read does.
+        var reader = await db.TabParticipants
+            .AsNoTracking()
+            .Where(p => p.TabId == tabId && p.Id == viewerParticipantId)
+            .Select(p => new
+            {
+                p.Status,
+                p.CanSeeTableTotal,
+                p.Tab.BranchId,
+                Tier = p.Tab.Branch.SubscriptionTier,
+            })
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new TabPermissionException("Reading the tab's events", "somebody on this tab");
+
+        if (reader.Tier != SubscriptionTier.Paid)
+        {
+            throw new FeatureNotEnabledException("Tabs and ordering", reader.BranchId, reader.Tier);
+        }
+
+        // Decided by the same two TabPermissions functions as the reader's tab read. Somebody who may
+        // see everything - the host, at nearly every table - gets the stream as stored, and nobody
+        // reads the tab to find that out.
+        var audience = TabEventRedactor.AudienceFor(reader.Status, reader.CanSeeTableTotal);
+
         // One more than asked for, so "is there another page" is answered without a second count.
         var rows = await db.TabEvents
             .AsNoTracking()
@@ -135,36 +163,33 @@ internal sealed class TabBillingQuery(
 
         var maxSequence = await ledger.MaxSequenceAsync(tabId, cancellationToken);
 
-        if (page.Count == 0)
+        var events = page
+            .Select(e => new TabEventView(
+                e.Sequence,
+                e.Type,
+                JsonSerializer.Deserialize<JsonElement>(e.PayloadJson),
+                e.ActorType,
+                e.ActorId,
+                e.AtUtc))
+            .ToList();
+
+        // The three-second poll that found nothing new, which is most of them, and any page for a
+        // reader who may see everything: nothing to redact, so no reason to read the tab.
+        if (events.Count == 0 || audience == TabEventAudience.Everything)
         {
-            // The three-second poll that found nothing new, which is most of them. Nothing to
-            // redact, so no reason to read the tab.
-            return new TabEventPage(tabId, afterSequence, maxSequence, hasMore, []);
+            return new TabEventPage(tabId, afterSequence, maxSequence, hasMore, events);
         }
 
-        // The reader's own view of the tab decides what the payloads may show them - the same
-        // projection GET /api/tabs/{tabId} answers with. Read AFTER the events on purpose: lines are
-        // never deleted, so every line an event on this page names is on this snapshot, and a
-        // reader's own order placed a moment ago is recognised as theirs rather than redacted as
-        // somebody else's.
+        // A restricted reader's own view of the tab decides what the payloads may show them - the
+        // projection GET /api/tabs/{tabId} answers with. Read AFTER the events on purpose: lines and
+        // adjustments are never deleted, so everything an event on this page names is on this
+        // snapshot, and a reader's own order placed a moment ago is recognised as theirs rather than
+        // redacted as somebody else's.
         var viewer = await tabs.GetForParticipantAsync(tabId, viewerParticipantId, cancellationToken)
                      ?? throw new TabPermissionException("Reading the tab's events", "somebody on this tab");
 
         var redactor = TabEventRedactor.For(viewer);
 
-        return new TabEventPage(
-            tabId,
-            afterSequence,
-            maxSequence,
-            hasMore,
-            [
-                .. page.Select(e => redactor.Redact(new TabEventView(
-                    e.Sequence,
-                    e.Type,
-                    JsonSerializer.Deserialize<JsonElement>(e.PayloadJson),
-                    e.ActorType,
-                    e.ActorId,
-                    e.AtUtc))),
-            ]);
+        return new TabEventPage(tabId, afterSequence, maxSequence, hasMore, [.. events.Select(redactor.Redact)]);
     }
 }

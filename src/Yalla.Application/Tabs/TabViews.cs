@@ -92,14 +92,15 @@ public sealed record TabJoinTokenResult(
 /// themself while they are pending, because a pending joiner may see their own state and nothing else.
 /// </param>
 /// <param name="MyLines">
-/// The caller's own items, always present: the lines <c>/shares</c> charges them for. One they
-/// ordered, or a waiter keyed in on their behalf; and a shared or table-attributed line they were at
-/// the table for. See <see cref="TabLineSnapshot.IsOnTheBillOf"/>.
+/// The caller's own items, always present: one they ordered, or a waiter keyed in on their behalf,
+/// and a shared item they were at the table for - and a table-attributed line they were at the table
+/// for only with <paramref name="TableTotalVisible"/>, because those can be the whole bill. See
+/// <see cref="TabProjection.IsOwnLine"/>.
 /// </param>
 /// <param name="MyItemsSubtotalAmd">
 /// What the caller's own unsplit lines come to, in whole dram. Always present. Shared and
-/// table-attributed lines are listed in <paramref name="MyLines"/> with <c>isShared</c> or
-/// <c>isTableAttributed</c> set and are apportioned by <c>/shares</c>, not here.
+/// table-attributed lines on <paramref name="MyLines"/> carry <c>isShared</c> or
+/// <c>isTableAttributed</c> and are apportioned by <c>/shares</c>, not here.
 /// </param>
 /// <param name="TimeZoneId">
 /// The branch's IANA zone, e.g. <c>Asia/Yerevan</c>. <b>Every time on this response is to be

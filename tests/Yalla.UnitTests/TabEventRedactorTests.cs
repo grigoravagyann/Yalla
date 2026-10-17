@@ -20,8 +20,8 @@ namespace Yalla.UnitTests;
 /// The table: the host (sees everything), Ani (approved, the host hid the total from her), and a
 /// pending joiner. The host ordered a coffee and a bottle of wine shared with Ani, in one order; Ani
 /// ordered tea; a waiter keyed in bread for the table before Ani was let on, a jug of water for the
-/// table after, and soup on Ani's behalf. A manager comped the whole tab, the coffee, the tea and the
-/// wine.
+/// table after, and soup on Ani's behalf. A manager comped the whole tab, the coffee, the tea, the
+/// wine and the jug.
 /// </para>
 /// </remarks>
 public class TabEventRedactorTests
@@ -47,11 +47,13 @@ public class TabEventRedactorTests
     private static readonly Guid JugLineId = Guid.CreateVersion7();
     private static readonly Guid SoupLineId = Guid.CreateVersion7();
 
-    // A comp off the whole tab, one off the host's coffee, one off Ani's tea, one off the wine.
+    // A comp off the whole tab, one off the host's coffee, one off Ani's tea, one off the wine, and
+    // one off the jug of water a waiter keyed in for the table.
     private static readonly Guid TabCompId = Guid.CreateVersion7();
     private static readonly Guid CoffeeCompId = Guid.CreateVersion7();
     private static readonly Guid TeaCompId = Guid.CreateVersion7();
     private static readonly Guid WineCompId = Guid.CreateVersion7();
+    private static readonly Guid JugCompId = Guid.CreateVersion7();
 
     // ------------------------------------------------------------ who gets what
 
@@ -222,10 +224,11 @@ public class TabEventRedactorTests
     }
 
     [Fact]
-    public void OrderPlaced_by_a_waiter_for_the_table_shows_the_reader_the_lines_split_with_them()
+    public void OrderPlaced_by_a_waiter_for_the_table_itemises_nothing_for_a_reader_without_the_total()
     {
         // The bread went on before Ani was let on, so it splits without her; the jug after, so it
-        // splits with her - and /shares charges her for the jug and not the bread.
+        // splits with her and /shares charges her a part. Neither is itemised for her: a waiter's
+        // lines for nobody in particular can be the whole bill.
         var read = For(AniId).Redact(Event(TabEventType.OrderPlaced, new
         {
             orderId = WaiterOrderId,
@@ -240,21 +243,49 @@ public class TabEventRedactorTests
             },
         }));
 
-        // The order is still named - the diner app's "added by staff" marker needs nothing else.
+        // The order is still named - the diner app's "added by staff" marker needs nothing else -
+        // and the lines member is there, empty, rather than missing from an order.
         Assert.Equal(WaiterOrderId, read.Payload.GetProperty("orderId").GetGuid());
         Assert.Equal(WaiterId, read.Payload.GetProperty("placedByStaffId").GetGuid());
+        Assert.Equal(0, read.Payload.GetProperty("lines").GetArrayLength());
 
-        var line = Assert.Single(read.Payload.GetProperty("lines").EnumerateArray());
-        Assert.Equal(JugLineId, line.GetProperty("lineId").GetGuid());
-
-        // The host's own view of the bread does not reach the pending stranger either way, and the
-        // lines member is there, empty, rather than missing from an order.
         var stranger = For(PendingId).Redact(Event(TabEventType.OrderPlaced, new
         {
             orderId = WaiterOrderId,
-            lines = new[] { OrderLine(BreadLineId, "Lavash", 800L) with { IsTableAttributed = true } },
+            lines = new[] { OrderLine(JugLineId, "Water, jug", 600L) with { IsTableAttributed = true } },
         }));
         Assert.Equal(0, stranger.Payload.GetProperty("lines").GetArrayLength());
+    }
+
+    /// <summary>
+    /// The stream asks the same two questions as the bill. For every status and flag, the audience
+    /// read off the row is the one read off the view, and it gives everything exactly when the view
+    /// shows the table total.
+    /// </summary>
+    [Theory]
+    [InlineData(ParticipantStatus.PendingApproval, false)]
+    [InlineData(ParticipantStatus.PendingApproval, true)]
+    [InlineData(ParticipantStatus.Approved, false)]
+    [InlineData(ParticipantStatus.Approved, true)]
+    [InlineData(ParticipantStatus.Removed, false)]
+    [InlineData(ParticipantStatus.Removed, true)]
+    public void The_audience_off_the_row_is_the_audience_off_the_view(ParticipantStatus status, bool canSeeTableTotal)
+    {
+        var tab = Tab() with
+        {
+            Participants =
+            [
+                .. Tab().Participants.Select(p => p.ParticipantId == AniId
+                    ? p with { Status = status, CanSeeTableTotal = canSeeTableTotal }
+                    : p),
+            ],
+        };
+
+        var view = TabProjection.Project(tab, AniId)!;
+        var fromRow = TabEventRedactor.AudienceFor(status, canSeeTableTotal);
+
+        Assert.Equal(fromRow, TabEventRedactor.For(view).Audience);
+        Assert.Equal(view.TableTotalVisible, fromRow == TabEventAudience.Everything);
     }
 
     [Fact]
@@ -336,10 +367,11 @@ public class TabEventRedactorTests
     [Fact]
     public void AdjustmentAdded_says_what_how_much_and_why_only_when_it_is_off_the_readers_own_line()
     {
-        // Off the whole tab, and off the host's coffee: that something came off, and nothing else.
-        // The flat amount is the table's money and a percentage of the whole tab is the subtotal's
-        // shadow; neither is on her bill, so neither is on her stream.
-        foreach (var (adjustmentId, lineId) in new[] { (TabCompId, (Guid?)null), (CoffeeCompId, CoffeeLineId) })
+        // Off the whole tab, off the host's coffee and off the jug the waiter keyed in for the table:
+        // that something came off, and nothing else. The flat amount is the table's money and a
+        // percentage of the whole tab is the subtotal's shadow; the jug is not itemised for her, so
+        // neither is a comp on it. None is on her bill, so none is on her stream.
+        foreach (var (adjustmentId, lineId) in new[] { (TabCompId, (Guid?)null), (CoffeeCompId, CoffeeLineId), (JugCompId, JugLineId) })
         {
             var notHers = For(AniId).Redact(Event(TabEventType.AdjustmentAdded, AdjustmentPayload(adjustmentId, lineId, amountAmd: 1_000L)));
 
@@ -668,6 +700,7 @@ public class TabEventRedactorTests
                 Adjustment(CoffeeCompId, CoffeeLineId, 500L),
                 Adjustment(TeaCompId, TeaLineId, 400L),
                 Adjustment(WineCompId, WineLineId, 1_500L),
+                Adjustment(JugCompId, JugLineId, 100L),
             ]);
 
     private static TabAdjustmentSnapshot Adjustment(Guid adjustmentId, Guid? lineId, long amountAmd) =>

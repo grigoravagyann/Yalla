@@ -29,9 +29,9 @@ public static class TabProjection
     /// <item>
     /// <b>Own items, always.</b> The viewer's own lines and their subtotal are present whatever
     /// their status or flags. That is what settles "I didn't order that" at the table. "Own" is
-    /// what <c>/shares</c> charges them for - <see cref="TabLineSnapshot.IsOnTheBillOf"/> - so a
-    /// waiter's order keyed in on their behalf is theirs, and so is a table-attributed line they
-    /// were at the table for.
+    /// <see cref="IsOwnLine"/>: what they ordered, what a waiter keyed in on their behalf, and a
+    /// shared item they were at the table for - and a table-attributed line they were at the table
+    /// for only when they may see the table total.
     /// </item>
     /// <item>
     /// <b>Nothing silently disappears.</b> A voided line stays on the tab and stays visible,
@@ -72,17 +72,17 @@ public static class TabProjection
 
         var names = tab.Participants.ToDictionary(p => p.ParticipantId, p => p.DisplayName);
 
-        // Rule 1 - own items, regardless of every other flag. A line is "mine" when it is on my
-        // bill: one I ordered or a waiter keyed in for me, or a shared or table-attributed line I
-        // was at the table for. It used to be "placed from my phone or shared with me", which left
-        // a guest's own spoken order - and every table-attributed line - off their bill while
-        // /shares charged them for it.
+        // Rule 3 decides rule 1 in one place, so it is worked out first.
+        var tableTotalVisible = TabPermissions.MaySeeTableTotal(me.Status, me.CanSeeTableTotal);
+
+        // Rule 1 - own items, regardless of every other flag. See IsOwnLine for which those are, and
+        // for the one line /shares charges somebody for that is not itemised on their bill.
         //
         // Rule 2 - voided lines are among them. They used to be filtered out of both arrays here,
         // which meant a diner never saw them in any form and the endpoint's own documentation said
         // the opposite. LineTotalAmd is already zero once voided, so including them changes no
         // arithmetic; it changes what the person watching the bill is told.
-        var mine = tab.Lines.Where(l => l.IsOnTheBillOf(me.ParticipantId)).ToList();
+        var mine = tab.Lines.Where(l => IsOwnLine(l, me.ParticipantId, tableTotalVisible)).ToList();
         var myLines = mine.Select(l => ToView(l, names)).ToList();
         var myLineIds = mine.Select(l => l.LineId).ToHashSet();
 
@@ -93,8 +93,6 @@ public static class TabProjection
             .Sum(l => l.LineTotalAmd);
 
         // Rule 3 - the aggregate and everyone else's items.
-        var tableTotalVisible = TabPermissions.MaySeeTableTotal(me.Status, me.CanSeeTableTotal);
-
         var tableTotal = tableTotalVisible
             ? new TabTotalsView(tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd)
             : null;
@@ -153,6 +151,44 @@ public static class TabProjection
             TableTotal: tableTotal,
             TableLines: tableLines,
             TipsAmd: tipsAmd);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="line"/> is on <paramref name="participantId"/>'s own lines - itemised
+    /// on their bill, price and all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A line they ordered; one a waiter keyed in on their behalf (<c>/shares</c> charges it to them
+    /// whole, and it used to be nobody's on the bill); and a shared item they were at the table for -
+    /// a bottle somebody at the table chose to split with the people there.
+    /// </para>
+    /// <para>
+    /// <b>A table-attributed line only with <paramref name="tableTotalVisible"/>.</b> A waiter's line
+    /// for nobody in particular is charged to everybody who was at the table
+    /// (<see cref="TabLineSnapshot.IsChargedTo"/>), and at a table where the waiter keys everything
+    /// in unattributed it is the whole bill: itemising it for a guest the host hid the total from
+    /// would hand them the total, line by line. They still pay their part, and still see it as
+    /// money - <c>sharedItemsAmd</c> on <c>/shares</c> - without the lines it came from. A reader
+    /// with the total sees those lines here and in the table's lines both.
+    /// </para>
+    /// <para>
+    /// Everything that shows a participant "their" items reads this: the projection's
+    /// <c>myLines</c>, the comps that follow them, and so the event stream's own lines.
+    /// </para>
+    /// </remarks>
+    public static bool IsOwnLine(TabLineSnapshot line, Guid participantId, bool tableTotalVisible)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        if (line.PlacedByParticipantId == participantId)
+        {
+            return true;
+        }
+
+        return line.IsTableAttributed
+            ? tableTotalVisible && line.IsChargedTo(participantId)
+            : line.IsChargedTo(participantId);
     }
 
     /// <summary>

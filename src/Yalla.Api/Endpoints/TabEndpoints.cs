@@ -1,5 +1,6 @@
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Tabs;
 using Yalla.Infrastructure.Identity;
 
@@ -195,9 +196,11 @@ public static class TabEndpoints
                 "Projected through the caller's own flags by one function, so every rule applies "
                 + "the same way everywhere:\n"
                 + "- The caller's **own items and own subtotal are always present**, whatever the flags. "
-                + "Own means what `/shares` charges them for: their own orders, a waiter's keyed in "
-                + "with `onBehalfOfParticipantId` for them, and the shared and `isTableAttributed` "
-                + "lines they were at the table for.\n"
+                + "Own means their own orders, a waiter's keyed in with `onBehalfOfParticipantId` for "
+                + "them, and the shared lines they were at the table for - and, only with "
+                + "`tableTotalVisible`, the `isTableAttributed` lines they were at the table for: a "
+                + "waiter's lines for nobody in particular can be the whole bill. `/shares` charges a "
+                + "part of those either way.\n"
                 + "- The **table total and other people's items appear only with `canSeeTableTotal`**, and "
                 + "only once approved. When hidden they are **absent from the body** - not zero, not "
                 + "null - with `tableTotalVisible: false` beside the gap, so no client can render a "
@@ -280,9 +283,15 @@ public static class TabEndpoints
             .WithDescription(
                 "`canOrder`, `canSeeTableTotal` and `canPay`, together. **`canPay` requires "
                 + "`canSeeTableTotal`** - nobody puts money toward a total they may not see - and the "
-                + "combination that breaks that is refused with 400 rather than silently corrected.")
+                + "combination that breaks that is refused with 400 rather than silently corrected.\n\n"
+                + "**The host always sees the total.** `canSeeTableTotal: false` on the host's own row is "
+                + "`422 validation-failed` with `context.field` `canSeeTableTotal`: only the host sets "
+                + "flags, so nobody could ever turn it back on.")
             .ProducesProblemDetails(
-                StatusCodes.Status400BadRequest, "`canPay` is true while `canSeeTableTotal` is false.");
+                StatusCodes.Status400BadRequest, "`canPay` is true while `canSeeTableTotal` is false.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`canSeeTableTotal` is false on the host's own row. `context.field` is `canSeeTableTotal`.");
 
         mutating.MapPost("/settlement-mode", SetSettlementModeAsync)
             .WithName("setTabSettlementMode")

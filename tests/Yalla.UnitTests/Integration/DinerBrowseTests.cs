@@ -539,10 +539,20 @@ public sealed class DinerBrowseTests(SqlServerFixture fixture)
             ownOrder.AddLine(menu.Coffee, "Flat white", TestMenu.CoffeeAmd, 2, note: "oat milk");
             db.TabOrders.Add(ownOrder);
 
-            // Keyed in by the waiter for the whole table: the diner is on the tab, so it is theirs too.
+            // Keyed in by the waiter for the whole table while the diner was at it: split across them
+            // and the other guest approved at the time, as the service snapshots it, so theirs too.
             var forTable = TabOrder.PlacedByStaffMember(tab.TabId, mine.WaiterId, now.AddMinutes(1));
-            forTable.AddLine(menu.Wine, "Areni red, bottle", TestMenu.WineAmd, 1, isTableAttributed: true);
+            var bottle = forTable.AddLine(menu.Wine, "Areni red, bottle", TestMenu.WineAmd, 1, isTableAttributed: true);
+            bottle.AddShare(participant.Id);
+            bottle.AddShare(hidden.Id);
             db.TabOrders.Add(forTable);
+
+            // And one the diner was not at the table for - split across somebody else alone. It is
+            // not on their bill, so it is not on their list either, though they may see the total.
+            var beforeThem = TabOrder.PlacedByStaffMember(tab.TabId, mine.WaiterId, now.AddMinutes(2));
+            beforeThem.AddLine(menu.Coffee, "Flat white", TestMenu.CoffeeAmd, 1, isTableAttributed: true)
+                .AddShare(hidden.Id);
+            db.TabOrders.Add(beforeThem);
 
             await db.SaveChangesAsync();
             ownOrderId = ownOrder.Id;

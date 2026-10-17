@@ -231,7 +231,7 @@ Three flags per participant, set together by the host, with a table default for 
 | Flag | Default for a guest | Host |
 | --- | --- | --- |
 | `CanOrder` | `true` | `true` |
-| `CanSeeTableTotal` | `!tab.HideTotalFromGuests`, copied onto the row at join time | `true` |
+| `CanSeeTableTotal` | `!tab.HideTotalFromGuests`, copied onto the row at join time | `true`, always - see below |
 | `CanPay` | **`false`** — the host is often treating | `true` |
 
 `HideTotalFromGuests` is the *table default*, chosen when the tab opens. Changing a person's flag
@@ -243,7 +243,8 @@ on the tab.
 | Rule | Where it lives | Consequence |
 | --- | --- | --- |
 | **`CanPay` ⇒ `CanSeeTableTotal`.** Nobody puts money toward a total they may not see. | `TabParticipant.SetPermissions`, the only writer of the three flags | Setting `canPay: true` with `canSeeTableTotal: false` is **refused with 400**, not silently corrected. A host who tapped one thing and got another has been surprised, and their next tap is made on the wrong assumption. Because the constructor calls the same method, no code path can build a participant that breaks it. |
-| **A participant always sees their own items**, whatever the flags. | `TabProjection.Project`, by `TabLineSnapshot.IsOnTheBillOf` | `myLines` and `myItemsSubtotalAmd` are present on every view — for a pending participant, for a guest with the total hidden, for the host. That is what settles "I didn't order that". Own means what `/shares` charges them for: their phone's orders, a waiter's on their behalf, and the shared and table-attributed lines they were at the table for (section 7.1). |
+| **A participant always sees their own items**, whatever the flags. | `TabProjection.Project`, by `TabProjection.IsOwnLine` | `myLines` and `myItemsSubtotalAmd` are present on every view — for a pending participant, for a guest with the total hidden, for the host. That is what settles "I didn't order that". Own means their phone's orders, a waiter's on their behalf, and the shared lines they were at the table for - and the table-attributed lines they were there for only with the total, because those can be the whole bill (section 7.1). |
+| **The host always sees the total.** | `TabParticipant.SetPermissions` | Setting `canSeeTableTotal: false` on the host's own row is **refused with 422 `validation-failed`, field `canSeeTableTotal`**. The host approves joiners, chooses the split and usually pays; hidden from their own bottom line, nobody could ever turn it back on, because only the host sets flags. A host who hands the tab over is a guest like any other. |
 | **Hiding the total hides the table total and other people's items only.** | `TabProjection.Project` | Menu prices stay visible through the menu endpoints, so a guest can always work out what their own order costs. The comps follow the items: only those on their own lines (section 7.2). |
 | **The hidden aggregate is absent, not zero.** | `TabView` shape + JSON serialisation | When `tableTotalVisible` is `false` there is **no `tableTotal`, no `tableLines` and no `tipsAmd` member on the wire at all**. A zero would read as "nothing owed"; a `null` a client might render as free; an absent member beside an explicit `false` flag can only be read as "not shown to you". |
 | **Pending sees only themself.** | `TabPermissions.MaySeeRoster` / `MaySeeTableTotal` | A pending participant may read the menu and their own (empty) state. Not the total, not anyone else's items, not the roster — the next table must not learn who is sitting here by scanning the wrong code. |
@@ -330,37 +331,61 @@ Hiding the total on the bill hid nothing while three other diner reads still car
 stream (every line's price, every payment with the balance left after it, the total the tab closed
 on), the bill's own list of comps (a percentage off the whole tab beside what it took off *is* the
 subtotal), and the answer to placing an order (the whole tab's `totals`). And the bill's idea of
-"my items" disagreed with what `/shares` charged. All four now follow one decision, the projection's.
+"my items" left out lines `/shares` charged. All four now follow one decision, the projection's - and
+where the bill and the arithmetic still differ, for a waiter's lines for the whole table, they differ
+on purpose (7.1).
 
 ### 7.1 Whose line it is
 
-One rule, `TabLineSnapshot.IsOnTheBillOf`, and it is the rule `TabBilling` charges by, so `myLines`,
-the stream's own lines and `/shares` agree on what is somebody's:
+Two questions, and they are deliberately not the same one.
 
-| Line | On whose `myLines` | Because `/shares` |
+- **Charged for** - `TabLineSnapshot.IsChargedTo`, the rule `TabBilling` and `/shares` use. A split
+  line (shared or table-attributed) is charged to everyone on its snapshot - the participants approved
+  at the moment it was ordered, not anyone who arrived later; any other line to its owner, who ordered
+  it or had a waiter key it in for them (`PlacedBy ?? OnBehalfOf`).
+- **On my lines** - `TabProjection.IsOwnLine`, what the bill itemises as yours, price and all. The
+  same, with **one exception**: a table-attributed line only for a reader allowed the table total.
+
+| Line | On `myLines` of | `/shares` charges |
 | --- | --- | --- |
-| Ordered from their phone | theirs | charges it to them |
-| Keyed in by a waiter with `onBehalfOfParticipantId` | that person's, though `placedByParticipantId` is null | charges it to them (the owner is `PlacedBy ?? OnBehalfOf`) |
-| Shared (`isShared`) | everyone on its snapshot | splits it across the snapshot |
-| Table-attributed (a waiter's, for nobody in particular) | everyone on its snapshot - the people approved at the moment it was ordered, not anyone who arrived later | splits it across the snapshot, exactly like a shared bottle |
-| A removed participant's | nobody's own | gives it to the host - who is always shown every line |
+| Ordered from their phone | the person who ordered it | them |
+| Keyed in by a waiter with `onBehalfOfParticipantId` | that person, though `placedByParticipantId` is null | them (it used to be nobody's on the bill) |
+| Shared (`isShared`) - a bottle split with the people at the table | everyone on its snapshot, as it always was | everyone on its snapshot |
+| Table-attributed - a waiter's line for nobody in particular | everyone on its snapshot **who may see the table total** | everyone on its snapshot, total or not |
+| A removed participant's | nobody's own | the host - who is always shown every line |
 
-It used to be "placed from my phone, or shared with me", which left a guest's own spoken order and
-every table-attributed line off their bill while `/shares` charged them for both.
-`myItemsSubtotalAmd` is the unsplit, unvoided own lines; split ones are listed with `isShared` or
-`isTableAttributed` set and apportioned by `/shares`. Every line on the wire now carries
+**Why the exception.** At a table where the waiter keys everything in unattributed, the
+table-attributed lines are the whole bill. Itemising the ones a guest was at the table for would hand
+a guest the host hid the total from every line on the tab, price and all - the total, added up. So a
+reader without the total gets none of them on `myLines`, nor on the stream's `orderPlaced.lines`, nor
+any comp on them (7.2). They are still charged their part, and still see it **as money**: it is in
+`sharedItemsAmd` on their `/shares`, which the pay sheet shows as "shared items". A reader with the
+total sees those lines on `myLines` (the ones they were there for, flagged `isTableAttributed`) and in
+`tableLines`.
+
+`myItemsSubtotalAmd` is the unsplit, unvoided own lines; split ones on `myLines` carry `isShared` or
+`isTableAttributed` and are apportioned by `/shares`. Every line on the wire carries
 `onBehalfOfParticipantId` and `isTableAttributed`. Pinned by
-`TabProjectionTests.Own_items_are_exactly_what_the_split_charges_each_person_for`, and over HTTP by
-`ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines`.
+`TabProjectionTests.Own_items_are_what_the_split_charges_each_person_for` (with the total and without),
+and over HTTP by `ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines` and
+`sharedItemsAmd = half the bottle + half the table's khachapuri after its comp`.
+
+**The Orders tab agrees.** `GET /api/diner/orders` (`DinerOrderQuery`) lists an order the diner
+placed, one keyed in on their behalf, and a waiter's order for the whole table only when they may see
+the table total **and** were on the snapshot of one of its lines - the tab read's condition for
+itemising it. One difference is deliberate: a waiter's whole-table order may also carry a shared line,
+which the tab shows a guest without the total like any shared item; the Orders tab lists orders, not
+lines, and that order's table-attributed lines are what such a guest may not see itemised, so the
+order stays off their list and the bottle stays on their bill.
 
 ### 7.2 The bill's comps and discounts
 
 `adjustments[]` on `GET /api/tabs/{tabId}`: **every one** with `tableTotalVisible`; otherwise only
-those on one of the reader's `myLines`, whole. One off the whole tab, or off somebody else's dish, is
-**dropped**, not shown without its amounts - the diner app draws every adjustment it is given with
-`formatDram(reductionDram)`, which asserts a whole number, so a row without one would break the bill.
-The reader's part of a comp off the whole tab still reaches them: it is in their `/shares`, which the
-pay sheet shows as a discount line.
+those on one of the reader's `myLines`, whole. One off the whole tab, off somebody else's dish, or off
+a table-attributed line (not itemised for them, 7.1) is **dropped**, not shown without its amounts -
+the diner app draws every adjustment it is given with `formatDram(reductionDram)`, which asserts a
+whole number, so a row without one would break the bill. The reader's part of a comp off the whole tab
+still reaches them: it is in their `/shares`, which the pay sheet shows as a discount line.
 
 ### 7.3 The answer to an order
 
@@ -374,10 +399,14 @@ the rule behind `tableTotalVisible` on their tab. Without it `totals` is **absen
 it **as their own view of the tab allows**.
 
 **Who gets what is the projection's decision, not a second one.** `TabBillingQuery.GetEventsAsync`
-builds the reader's `TabView` with `ITabQuery` - the very answer `GET /api/tabs/{tabId}` gives them -
-and `TabEventRedactor.For(view)` reads four things off it: `tableTotalVisible`,
-`TabPermissions.MaySeeRoster(me.status)`, the line ids on `myLines` and the adjustment ids on
-`adjustments`. "My line" and "my adjustment" therefore mean exactly what they mean on the bill.
+first reads the reader's own row, and `TabEventRedactor.AudienceFor(status, canSeeTableTotal)` asks
+the two functions the tab read asks - `TabPermissions.MaySeeTableTotal` and `MaySeeRoster`. A reader
+who gets `Everything` (the host, at nearly every table) gets the page as stored, and the tab is never
+read. For a restricted reader with something on the page, it builds their `TabView` with `ITabQuery` -
+the very answer `GET /api/tabs/{tabId}` gives them - and `TabEventRedactor.For(view)` takes the line
+ids on `myLines` and the adjustment ids on `adjustments` from it. "My line" and "my adjustment"
+therefore mean exactly what they mean on the bill. `The_audience_off_the_row_is_the_audience_off_the_view`
+pins that the two reads agree for every status and flag.
 
 | Reader | Audience | Gets |
 | --- | --- | --- |
@@ -400,10 +429,14 @@ and `TabEventRedactor.For(view)` reads four things off it: `tableTotalVisible`,
 - **Absent, not null.** A redacted member is not on the wire, for the projection's reason (section 4):
   absent beside a hidden total reads as "not shown to you", where a null or a zero could be drawn as
   free.
-- **The snapshot is read after the events**, so every line and adjustment an event on the page names
-  is on it, and a reader's own order placed a moment ago is never mistaken for someone else's. A poll
-  that finds no new events reads no snapshot at all. A page that does read it answers like the tab
-  read on a branch no longer on the paid tier: feature not enabled.
+- **What a poll costs.** One statement for the reader's row and the branch's tier, the page, and the
+  stream's high-water mark. Only a restricted reader with something on the page pays for the tab
+  read on top (`TabEventReadPathTests` counts them), and that snapshot is read **after** the events,
+  so every line and adjustment an event names is on it and a reader's own order placed a moment ago
+  is never mistaken for someone else's.
+- **The tier is checked first.** A branch below Paid answers every page the way the tab read does -
+  409 `feature-not-enabled` - whether or not there is anything on it. An empty poll used to pass
+  where a full one was refused.
 
 #### What a reader without the table total gets, by type
 
@@ -422,7 +455,7 @@ them.
 | 7 | `ParticipantRenamed` | `participantId` | | | `displayName` |
 | 8 | `HostReassigned` | `fromParticipantId`, `toParticipantId` | | | |
 | 9 | `SettlementModeChanged` | `settlementMode`, `lockedAtUtc` | | | |
-| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each of their lines (section 7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`) | every other line, **whole** - the menu is public, so a name and a quantity are a price | |
+| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each line on their `myLines` (7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`) | every other line, **whole** - the menu is public, so a name and a quantity are a price - and so every table-attributed line | |
 | 11 | `OrderStatusChanged` | `orderId`, `fromStatus`, `toStatus`, `byStaffId` | | | |
 | 12 | `LineVoided` | `lineId`, `orderId`, `voidedByStaffId` | `name`, `reason` | | |
 | 13 | `AdjustmentAdded` | `adjustmentId`, `tabOrderLineId` | `kind`, `percent`, `amountAmd`, `reason` (an adjustment on their own line) | all four, off the whole tab or another person's line | |
@@ -439,23 +472,27 @@ projection shows a pending reader `hostParticipantId` already, and the clients k
 
 ### 7.5 What the clients do with it
 
+Checked read-only against the frontend's `fix/tab-events-visibility` branch, which maps
+`onBehalfOfParticipantId` and `isTableAttributed` and treats a table-attributed line as shared.
+
 - **The stream.** The diner app folds it into "refetch, and say what changed"
   (`apps/diner/src/tab/events.ts`): it reads `lineId`, `orderId` and `serviceRequestId`, each guarded
   by `typeof`, and takes every number from the refetched tab and `/shares`. None of those are
   redacted, so a redacted payload changes nothing it shows. A waiter's order whose lines are hidden
   from the reader already falls back to the plain "added by staff" marker.
-- **The bill.** The two new line members are ignored by today's mapper. Until the app reads them, a
-  line keyed in on the reader's behalf is labelled "for the table" rather than "yours" (`isMine` reads
-  `placedByParticipantId` only), and a table-attributed line shows no "split N ways"; the money is
-  right either way. Dropped adjustments need nothing.
-- **The order answer.** The app's `placeOrderResult` maps `totals` unconditionally, so it throws on a
-  hidden-total guest's order, after the order has gone through. It has to read `totals` as optional
-  (`TabTotals | null`) **before or with** this backend.
+- **The bill.** A line keyed in on the reader's behalf is "yours"; a table-attributed line, where it
+  is itemised at all, is drawn as split. For a reader without the total those lines are simply not
+  there, which the app needs nothing to handle; their money is in `/shares`. Dropped adjustments need
+  nothing.
+- **The order answer.** `placeOrderResult` reads `totals` as optional (`TabTotals | null`), so a
+  hidden-total guest's order answer maps.
+- **The host's own flags.** The people screen offers flags for everybody but the caller, so the
+  host-sees-the-total refusal (section 4) is not reachable from the app; it holds for any client.
 
 Pinned by `TabEventRedactorTests` (each type, each audience, failing closed), `TabProjectionTests`
-(whose line, which adjustments) and `TabEventVisibilityTests` (a whole evening over HTTP, read by the
-host, a hidden-total guest and a pending stranger, through the stream, the tab, the order answers and
-`/shares`).
+(whose line, which adjustments), `TabEventReadPathTests` (what a poll reads, and the tier) and
+`TabEventVisibilityTests` (a whole evening over HTTP, read by the host, a hidden-total guest and a
+pending stranger, through the stream, the tab, the order answers and `/shares`).
 
 ## Out of scope here
 

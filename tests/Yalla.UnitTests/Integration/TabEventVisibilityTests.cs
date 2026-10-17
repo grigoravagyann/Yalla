@@ -25,8 +25,8 @@ namespace Yalla.UnitTests.Integration;
 /// The evening: the host hides the total. A waiter keys in a coffee for the table while the host is
 /// alone on it. The guest is let on; the host orders two coffees and a bottle shared with the guest,
 /// the guest a khachapuri, the waiter two more for the guest on their behalf and one for the table.
-/// The waiter voids the first coffee; a manager comps the whole tab, the guest's khachapuri and the
-/// host's coffees. A stranger scans the wrong code and waits. The guest asks for water with a note,
+/// The waiter voids the first coffee; a manager comps the whole tab, the guest's khachapuri, the
+/// host's coffees and the table's khachapuri. A stranger scans the wrong code and waits. The guest asks for water with a note,
 /// the host for the whole bill with a tip; the waiter marks the tab closing, takes the guest's cash
 /// with a tip, then the rest from the host, which closes it.
 /// </para>
@@ -42,6 +42,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
     private const long TabCompAmd = 1_000L;
     private const long GuestsCompAmd = 200L;
     private const long HostsCompAmd = 250L;
+    private const long TableCompAmd = 150L;
 
     private static readonly TabEventType[] TheEvening =
     [
@@ -52,6 +53,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         TabEventType.OrderPlaced,
         TabEventType.OrderPlaced,
         TabEventType.LineVoided,
+        TabEventType.AdjustmentAdded,
         TabEventType.AdjustmentAdded,
         TabEventType.AdjustmentAdded,
         TabEventType.AdjustmentAdded,
@@ -99,9 +101,12 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.False(guestView.GetProperty("tableTotalVisible").GetBoolean());
 
         // Exactly the lines their bill shows them - their khachapuri, the two the waiter keyed in for
-        // them, the one for the table after they were let on, and the shared bottle - out of six.
+        // them, and the shared bottle - out of six. Not the waiter's khachapuri for the table, though
+        // they are charged a part of it: lines for nobody in particular are not itemised without the
+        // total.
         var guestsLines = LineIds(guestView.GetProperty("myLines"));
-        Assert.Equal(4, guestsLines.Count);
+        Assert.Equal(3, guestsLines.Count);
+        Assert.DoesNotContain(evening.TableKhachapuriLineId, guestsLines);
         Assert.Equal(guestsLines, LinesOn(guestStream).Order());
 
         Assert.DoesNotContain(TableMoney, member => Contains(guestStream, member));
@@ -114,13 +119,14 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.False(theHosts.TryGetProperty("tipAmd", out _));
         Assert.Equal(evening.Host.ParticipantId, theHosts.GetProperty("tabParticipantId").GetGuid());
 
-        // Off the whole tab and off the host's coffees: that something came off, and nothing more.
-        // Off the guest's own khachapuri: all of it.
+        // Off the whole tab, off the host's coffees and off the table's khachapuri: that something
+        // came off, and nothing more. Off the guest's own khachapuri: all of it.
         var comps = Payloads(guestStream, TabEventType.AdjustmentAdded);
         Assert.Equal(["adjustmentId", "tabOrderLineId"], Members(comps[0]));
         Assert.Equal(GuestsCompAmd, comps[1].GetProperty("amountAmd").GetInt64());
         Assert.Equal("sorry about the wait", comps[1].GetProperty("reason").GetString());
         Assert.Equal(["adjustmentId", "tabOrderLineId"], Members(comps[2]));
+        Assert.Equal(["adjustmentId", "tabOrderLineId"], Members(comps[3]));
 
         // The coffee went on before the guest did, so its void is not theirs to read about.
         var voided = Payloads(guestStream, TabEventType.LineVoided).Single();
@@ -143,6 +149,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.DoesNotContain(TestMenu.CoffeeAmd, guestNumbers);
         Assert.DoesNotContain(TabCompAmd, guestNumbers);
         Assert.DoesNotContain(HostsCompAmd, guestNumbers);
+        Assert.DoesNotContain(TableCompAmd, guestNumbers);
 
         // ---- The stranger: no lines, no money, no names, no notes, no reasons.
         Assert.Empty(LinesOn(pendingStream));
@@ -177,21 +184,21 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.True(evening.WaitersOrder.GetProperty("tableTotalVisible").GetBoolean());
         Assert.True(evening.WaitersOrder.TryGetProperty("totals", out _));
 
-        // ---- The tab: their four lines, and of the three comps only the one off their own dish.
+        // ---- The tab: their three lines, and of the four comps only the one off their own dish.
         var guestView = await ReadAsync(guestClient, $"/api/tabs/{evening.TabId}");
         var myLines = guestView.GetProperty("myLines").EnumerateArray().ToList();
 
         Assert.Equal(
-            new[] { evening.WineLineId, evening.GuestsLineId, evening.ForTheGuestLineId, evening.TableKhachapuriLineId }.Order(),
+            new[] { evening.WineLineId, evening.GuestsLineId, evening.ForTheGuestLineId }.Order(),
             myLines.Select(l => l.GetProperty("lineId").GetGuid()).Order());
 
         var forThem = myLines.Single(l => l.GetProperty("lineId").GetGuid() == evening.ForTheGuestLineId);
         Assert.Equal(JsonValueKind.Null, ValueKindOf(forThem, "placedByParticipantId"));
         Assert.Equal(evening.Guest.ParticipantId, forThem.GetProperty("onBehalfOfParticipantId").GetGuid());
 
-        var forTheTable = myLines.Single(l => l.GetProperty("lineId").GetGuid() == evening.TableKhachapuriLineId);
-        Assert.True(forTheTable.GetProperty("isTableAttributed").GetBoolean());
-        Assert.Equal(2, forTheTable.GetProperty("sharedWithCount").GetInt32());
+        // The table's khachapuri is not itemised for them; the host, who sees the total, has it on
+        // their own lines - they were at the table for it too - flagged and split two ways.
+        Assert.DoesNotContain(myLines, l => l.GetProperty("isTableAttributed").GetBoolean());
 
         // Their own unsplit lines, whole: one khachapuri of their own and two the waiter keyed in.
         var myItemsAmd = guestView.GetProperty("myItemsSubtotalAmd").GetInt64();
@@ -202,15 +209,23 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.Equal(GuestsCompAmd, adjustment.GetProperty("reductionAmd").GetInt64());
 
         var hostView = await ReadAsync(hostClient, $"/api/tabs/{evening.TabId}");
-        Assert.Equal(3, hostView.GetProperty("adjustments").GetArrayLength());
+        Assert.Equal(4, hostView.GetProperty("adjustments").GetArrayLength());
         Assert.Equal(6, hostView.GetProperty("tableLines").GetArrayLength());
 
+        var hostsTableLine = hostView.GetProperty("myLines").EnumerateArray()
+            .Single(l => l.GetProperty("lineId").GetGuid() == evening.TableKhachapuriLineId);
+        Assert.True(hostsTableLine.GetProperty("isTableAttributed").GetBoolean());
+        Assert.Equal(2, hostsTableLine.GetProperty("sharedWithCount").GetInt32());
+
         // ---- The split agrees: what their bill calls their own items is what they are charged for
-        // them, less the comp they can see on them, and the split lines they see are where their
-        // share of the shared items comes from.
+        // them, less the comp they can see on them. And the table's khachapuri is charged all the
+        // same: their half of the shared items is half the bottle and half that khachapuri after its
+        // comp - money, without the line it came from.
         var myShare = (await ReadAsync(guestClient, $"/api/tabs/{evening.TabId}/shares")).GetProperty("myShare");
         Assert.Equal(myItemsAmd - GuestsCompAmd, myShare.GetProperty("ownItemsAmd").GetInt64());
-        Assert.True(myShare.GetProperty("sharedItemsAmd").GetInt64() > 0L);
+        Assert.Equal(
+            (TestMenu.WineAmd / 2) + ((TestMenu.KhachapuriAmd - TableCompAmd) / 2),
+            myShare.GetProperty("sharedItemsAmd").GetInt64());
     }
 
     /// <summary>
@@ -341,10 +356,12 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
             .Single(l => l.GetProperty("isShared").GetBoolean()).GetProperty("lineId").GetGuid();
         var guestsLineId = FirstLine(guestsOrder);
 
-        // A comp off the whole tab, one off the guest's own khachapuri, one off the host's coffees.
+        // A comp off the whole tab, one off the guest's own khachapuri, one off the host's coffees,
+        // and one off the khachapuri the waiter keyed in for the table.
         foreach (var (lineId, amountAmd) in new (Guid?, long)[]
                  {
                      (null, TabCompAmd), (guestsLineId, GuestsCompAmd), (hostsCoffeeLineId, HostsCompAmd),
+                     (FirstLine(tableKhachapuri), TableCompAmd),
                  })
         {
             Assert.Equal(HttpStatusCode.Created, (await manager.PostAsJsonAsync($"/api/tabs/{tabId}/adjustments", new
