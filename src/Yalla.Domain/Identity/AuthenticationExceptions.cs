@@ -40,8 +40,12 @@ public sealed class AccountLockedException(DateTime? lockedUntilUtc, string mess
 /// The attempt limit on a one-time credential is spent, so nothing will be checked against it
 /// again. Ask for a new code.
 /// </summary>
-public sealed class TooManyAttemptsException(string message)
-    : AuthenticationFailedException("too-many-attempts", message);
+public sealed class TooManyAttemptsException(string message, TimeSpan? retryAfter = null)
+    : AuthenticationFailedException("too-many-attempts", message)
+{
+    /// <summary>How long until another attempt will be looked at, when that is known; the response's <c>Retry-After</c>.</summary>
+    public TimeSpan? RetryAfter { get; } = retryAfter;
+}
 
 /// <summary>
 /// A one-time code was not accepted, and how many tries are left on the number's live code.

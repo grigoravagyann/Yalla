@@ -48,13 +48,18 @@ public sealed class OutboxOptions
 /// <param name="DeadLettered">Given up on. These need a person.</param>
 /// <param name="SentLastDay">Sent in the last twenty-four hours, so "nothing is sending" is visible.</param>
 /// <param name="DeadLetters">The dead-lettered messages themselves, newest first.</param>
+/// <param name="DeadLetteredLastDay">
+/// Given up on in the last twenty-four hours: the messages that recently failed to reach somebody, which
+/// is what the console's Home alert counts. <paramref name="DeadLettered"/> is every one ever.
+/// </param>
 public sealed record OutboxHealthView(
     int Pending,
     int Due,
     int Failed,
     int DeadLettered,
     int SentLastDay,
-    IReadOnlyList<DeadLetterView> DeadLetters);
+    IReadOnlyList<DeadLetterView> DeadLetters,
+    int DeadLetteredLastDay);
 
 /// <summary>One message nobody is going to retry.</summary>
 /// <param name="Id">The message.</param>

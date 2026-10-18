@@ -52,8 +52,9 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
         var second = await service.AddBranchAsync(venueId, Branch("second"));
         await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.create");
 
+        // A tier change is its own entry - the one the console's activity feed says in a sentence.
         await service.UpdateBranchAsync(second.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
-        await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.update");
+        await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.tier-change");
 
         await service.DeleteVenueAsync(venueId);
         await AssertAuditAsync(db, admin.StaffMemberId, venueId, "venue.delete");

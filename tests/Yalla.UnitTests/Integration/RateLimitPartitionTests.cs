@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
@@ -225,7 +225,7 @@ public class RateLimitPartitionTests(SqlServerFixture fixture)
                 Guid.CreateVersion7(), StaffRole.Waiter).Token,
 
             PrincipalType.VenueUser => issuer.IssueVenueUserToken(
-                subject, Guid.CreateVersion7(), branchId: null, StaffRole.Manager).Token,
+                subject, Guid.CreateVersion7(), branchId: null, StaffRole.Manager, sessionGeneration: 0).Token,
 
             _ => throw new NotSupportedException(
                 $"{type} has no token here, so nothing knows what budget it should get. Decide that "

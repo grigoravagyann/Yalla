@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -211,6 +211,10 @@ public class DinerSessionGenerationTests
 
             return Task.FromResult(State);
         }
+
+        public Task<VenueUserSessionState?> GetVenueUserSessionStateAsync(
+            Guid staffMemberId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public Task<TabParticipantAccess?> GetTabParticipantAccessAsync(
             Guid tabId, Guid participantId, CancellationToken cancellationToken = default) =>

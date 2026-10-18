@@ -32,6 +32,13 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<string>("ActorDisplay")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ActorRole")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("ActorStaffMemberId")
                         .HasColumnType("uniqueidentifier");
 
@@ -45,6 +52,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("TargetDisplay")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<Guid>("TargetId")
                         .HasColumnType("uniqueidentifier");
 
@@ -53,9 +64,16 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<Guid?>("VenueId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
 
+                    b.HasIndex("AtUtc");
+
                     b.HasIndex("ActorStaffMemberId", "AtUtc");
+
+                    b.HasIndex("VenueId", "AtUtc");
 
                     b.HasIndex("TargetType", "TargetId", "AtUtc");
 
@@ -1155,6 +1173,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("Role")
                         .HasColumnType("int");
 
+                    b.Property<int>("SessionGeneration")
+                        .HasColumnType("int");
+
                     b.Property<Guid?>("VenueId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1901,6 +1922,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("DinerUserId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("DismissedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DismissedByStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Note")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
@@ -2088,6 +2115,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool?>("ActiveBeforeDeletion")
+                        .HasColumnType("bit");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");

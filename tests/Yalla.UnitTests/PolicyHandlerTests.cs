@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -538,5 +538,9 @@ public class PolicyHandlerTests
         public Task<DinerSessionState?> GetDinerSessionStateAsync(
             Guid dinerUserId, CancellationToken cancellationToken = default) =>
             Task.FromResult<DinerSessionState?>(new DinerSessionState(IsActive: true, IsDeleted: false, SessionGeneration: 0));
+
+        public Task<VenueUserSessionState?> GetVenueUserSessionStateAsync(
+            Guid staffMemberId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<VenueUserSessionState?>(new VenueUserSessionState(SessionGeneration: 0));
     }
 }

@@ -25,6 +25,7 @@ internal sealed class VenueUserAuthService(
     SecretHasher hasher,
     IPasswordResetSender resetSender,
     IOptions<AuthOptions> authOptions,
+    ITokenAuthorityCheck authority,
     ILogger<VenueUserAuthService> logger) : IVenueUserAuthService
 {
     private readonly AuthOptions _options = authOptions.Value;
@@ -71,10 +72,12 @@ internal sealed class VenueUserAuthService(
             staff!.SetPasswordHash(hasher.Hash(password));
         }
 
-        var (accessToken, _) = tokens.IssueVenueUserToken(
-            staff!.Id, staff.VenueId, staff.BranchId, staff.Role);
+        // The refresh token first, so the access token can name its chain - which is how a password
+        // change made from this sign-in keeps it and signs every other one out.
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.VenueUser, staff!.Id);
 
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.VenueUser, staff.Id);
+        var (accessToken, _) = tokens.IssueVenueUserToken(
+            staff.Id, staff.VenueId, staff.BranchId, staff.Role, staff.SessionGeneration, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -149,12 +152,17 @@ internal sealed class VenueUserAuthService(
         token.Consume(nowUtc);
         token.StaffMember.SetPasswordHash(hasher.Hash(newPassword!));
 
-        // Everything the account was signed in on is now signed out. The usual reason to reset a
-        // password is that somebody else might have had it.
+        // Everything the account was signed in on is now signed out - its refresh tokens revoked and,
+        // by the generation, every access token it holds ended now rather than in fifteen minutes. The
+        // usual reason to reset a password is that somebody else might have had it.
+        token.StaffMember.EndSessions();
         await refreshTokens.RevokeAllForSubjectAsync(
             RefreshTokenSubject.VenueUser, token.StaffMemberId, "password-changed", cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+
+        // After the commit, so no other request re-reads the old generation into the cache.
+        authority.InvalidateVenueUser(token.StaffMemberId);
 
         logger.LogInformation("Password reset completed for staff member {StaffMemberId}.", token.StaffMemberId);
     }

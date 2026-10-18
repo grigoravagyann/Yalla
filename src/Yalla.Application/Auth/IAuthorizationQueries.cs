@@ -44,6 +44,13 @@ public sealed record TabParticipantAccess(
 public interface IAuthorizationQueries
 {
     /// <summary>
+    /// The admin-panel session generation of one staff member, or null when there is no such row.
+    /// </summary>
+    Task<VenueUserSessionState?> GetVenueUserSessionStateAsync(
+        Guid staffMemberId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Everything the tab policies need about one participant. Null when the participant does not
     /// exist, or does not belong to that tab - which is the case a stolen or swapped token hits.
     /// </summary>

@@ -355,8 +355,8 @@ The venue's review moderation (K8 extension). Same policies and K4 guard as ever
 platform's twins are `GET /api/platform/branches/{branchId}/reviews` and
 `PUT /api/platform/reviews/{reviewId}/visibility` (`PlatformAdminOnly`); both call one service.
 
-`filter`: `all` (default; newest written first), `reported` (at least one report; most recently
-reported first) or `hidden`. `page` from 1, `pageSize` 1-100, default 20. Out of range → 400
+`filter`: `all` (default; newest written first), `reported` (still visible, with at least one
+undismissed report; most recently reported first - hiding a review answers its reports) or `hidden`. `page` from 1, `pageSize` 1-100, default 20. Out of range → 400
 `invalid-request` naming `page`, `pageSize` or `filter`. 404 for an unknown branch.
 
 ```json

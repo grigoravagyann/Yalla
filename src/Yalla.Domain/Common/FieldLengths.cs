@@ -101,4 +101,10 @@ public static class FieldLengths
 
     /// <summary>The entity type a platform audit row is about, e.g. <c>Venue</c>.</summary>
     public const int AuditTargetType = 100;
+
+    /// <summary>
+    /// What a platform audit row's target was called - a venue, branch or person name, a table label.
+    /// The widest of those is <see cref="Name"/>.
+    /// </summary>
+    public const int AuditTargetDisplay = 200;
 }

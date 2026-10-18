@@ -154,11 +154,27 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     /// row never does, so their token is venue-wide; a branch manager's always does, so theirs names
     /// the one branch <c>BranchScoped</c> lets them act on. An owner's normally names none.
     /// </remarks>
+    /// <param name="staffMemberId">The stored row.</param>
+    /// <param name="venueId">The row's venue; null for a platform admin.</param>
+    /// <param name="branchId">The row's branch, when it names one.</param>
+    /// <param name="role">The row's role.</param>
+    /// <param name="sessionGeneration">
+    /// The row's <c>SessionGeneration</c> as it will be <b>after</b> the caller saves, carried as
+    /// <see cref="YallaClaims.SessionGeneration"/>. Required for the diner token's reason: a default
+    /// is exactly the value that looks right in a test and is wrong after the first password change.
+    /// </param>
+    /// <param name="refreshChainId">
+    /// The refresh-token chain issued alongside, carried as <see cref="YallaClaims.RefreshChainId"/> -
+    /// the diner token's claim, for the same reason: a platform admin changing their password keeps
+    /// this sign-in and ends every other.
+    /// </param>
     public (string Token, DateTime ExpiresAtUtc) IssueVenueUserToken(
         Guid staffMemberId,
         Guid? venueId,
         Guid? branchId,
-        StaffRole role)
+        StaffRole role,
+        int sessionGeneration,
+        Guid? refreshChainId = null)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -168,6 +184,7 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
             new(YallaClaims.StaffMemberId, staffMemberId.ToString()),
             new(YallaClaims.Role, role.ToString()),
             new(JwtRegisteredClaimNames.Sub, staffMemberId.ToString()),
+            new(YallaClaims.SessionGeneration, sessionGeneration.ToString(CultureInfo.InvariantCulture)),
         };
 
         // A platform admin has no venue. The scope handlers recognise the role and pass them for
@@ -180,6 +197,11 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         if (branchId is { } branch)
         {
             claims.Add(new Claim(YallaClaims.BranchId, branch.ToString()));
+        }
+
+        if (refreshChainId is { } chainId)
+        {
+            claims.Add(new Claim(YallaClaims.RefreshChainId, chainId.ToString()));
         }
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);
