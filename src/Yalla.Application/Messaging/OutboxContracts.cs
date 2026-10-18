@@ -136,6 +136,9 @@ public static class OutboxMessageTypes
 
     public const string ParticipantApproved = "tab.participant-approved";
 
+    /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>
+    public const string JoinRequested = "tab.join-requested";
+
     public const string OrderReady = "tab.order-ready";
 
     /// <summary>The key that names what caused a message, so cancelling the cause can find it.</summary>

@@ -87,7 +87,8 @@ public sealed class TabEventRedactor
         // Never written today. Nothing to keep until somebody decides what it carries.
         [TabEventType.TabOpened] = new(Subject.None, null, Public: []),
 
-        // Never written today either; when it is, it is a participant event like the others.
+        // Somebody landed pending. A participant event like the others, so a phone pending on the
+        // wrong table's tab learns that somebody joined and not who.
         [TabEventType.ParticipantJoined] = ParticipantRule,
         [TabEventType.ParticipantApproved] = ParticipantRule,
         [TabEventType.ParticipantRejected] = ParticipantRule,

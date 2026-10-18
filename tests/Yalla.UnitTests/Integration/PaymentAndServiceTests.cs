@@ -619,11 +619,11 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
         var world = await ArrangeAsync(coffees: 0);
         await using var db = world.Db;
 
-        // The host approving the guest happened during setup and is itself a mutation, so the
-        // stream starts with it. Listing it here rather than filtering it out is the point: the
-        // assertion is that EVERY mutation writes exactly one event, including the ones a test was
-        // not thinking about.
-        var expected = new List<TabEventType> { TabEventType.ParticipantApproved };
+        // The guest joining and the host approving them happened during setup and are mutations
+        // too, so the stream starts with them. Listing them here rather than filtering them out is
+        // the point: the assertion is that EVERY mutation writes exactly one event, including the
+        // ones a test was not thinking about.
+        var expected = new List<TabEventType> { TabEventType.ParticipantJoined, TabEventType.ParticipantApproved };
 
         // An order.
         var diner = fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId));
