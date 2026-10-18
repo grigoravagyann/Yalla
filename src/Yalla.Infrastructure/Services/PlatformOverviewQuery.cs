@@ -254,9 +254,16 @@ internal sealed class PlatformOverviewQuery(
             })
             .ToListAsync(cancellationToken);
 
+        // Two rows written at the same instant (a test clock, or one request that audits twice)
+        // need a tiebreak that follows the order they were written. The ids are version-7 GUIDs,
+        // time-ordered as .NET compares them but not as SQL Server sorts uniqueidentifier - so
+        // the database picks the page and the final order is settled here.
         return new ActivityFeed(
         [
-            .. rows.Select(r => new ActivityEntry(
+            .. rows
+                .OrderByDescending(r => r.AtUtc)
+                .ThenByDescending(r => r.Id)
+                .Select(r => new ActivityEntry(
                 r.Id,
                 r.AtUtc,
                 r.Action,
