@@ -43,7 +43,7 @@ internal sealed class TokenRefreshService(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
-        var (_, successor, staffMemberId) =
+        var (successorEntity, successor, staffMemberId) =
             await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.VenueUser, cancellationToken);
 
         var staff = await db.StaffMembers.FirstOrDefaultAsync(s => s.Id == staffMemberId, cancellationToken);
@@ -54,8 +54,9 @@ internal sealed class TokenRefreshService(
                 "account-inactive", "This account is no longer active.");
         }
 
+        // Named for the chain it continues, as a diner's is.
         var (accessToken, _) = tokens.IssueVenueUserToken(
-            staff.Id, staff.VenueId, staff.BranchId, staff.Role);
+            staff.Id, staff.VenueId, staff.BranchId, staff.Role, staff.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

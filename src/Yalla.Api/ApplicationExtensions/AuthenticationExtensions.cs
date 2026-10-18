@@ -115,7 +115,9 @@ public static class AuthenticationExtensions
     /// <para>
     /// Diner tokens pay it too, through the same five-second cache: a squatter evicted by the
     /// number's owner, a deactivated account and a deleted one must stop working now, and fifteen
-    /// minutes of a token that can set a password is not "short". Venue-user tokens still do not.
+    /// minutes of a token that can set a password is not "short". Venue-user (admin-panel) tokens pay
+    /// it as well, for their session generation only: a changed or reset password ends every one of
+    /// them now. A token minted before the claim existed reads as generation 0, where every row starts.
     /// </para>
     /// </remarks>
     private static async Task RejectRevokedDevicesAsync(TokenValidatedContext context)
@@ -144,6 +146,38 @@ public static class AuthenticationExtensions
             {
                 refused = await authority.CheckDinerSessionAsync(
                     dinerUserId.Value, generation, context.HttpContext.RequestAborted);
+            }
+
+            if (refused is not null)
+            {
+                context.HttpContext.Items[RevokedSessionItem] = refused;
+                context.Fail(refused.Message);
+            }
+
+            return;
+        }
+
+        // An admin-panel session that has ended: the password was changed or reset since the token
+        // was minted. Every owner, manager and platform admin token, not only the platform's routes -
+        // the reason to end a session is the same whichever door the token is used on.
+        if (principalType == PrincipalType.VenueUser)
+        {
+            var staffMemberId = context.Principal?.Guid(YallaClaims.StaffMemberId);
+
+            TokenRevoked? refused;
+
+            if (staffMemberId is null)
+            {
+                refused = new TokenRevoked(TokenRevoked.SessionRevoked, "Admin-panel token carries no staff member.");
+            }
+            else if (!YallaClaims.TryReadSessionGeneration(context.Principal, out var generation))
+            {
+                refused = new TokenRevoked(TokenRevoked.SessionRevoked, "Admin-panel token carries an unreadable session.");
+            }
+            else
+            {
+                refused = await authority.CheckVenueUserSessionAsync(
+                    staffMemberId.Value, generation, context.HttpContext.RequestAborted);
             }
 
             if (refused is not null)

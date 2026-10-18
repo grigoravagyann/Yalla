@@ -30,6 +30,14 @@ internal sealed class StaffManagementService(
     IOptions<AuthOptions> authOptions,
     ILogger<StaffManagementService> logger) : IStaffManagementService
 {
+    /// <summary>The audit action for adding somebody to a venue's staff.</summary>
+    public const string CreateAuditAction = "staff.create";
+
+    /// <summary>The audit action for handing somebody a sign-in link.</summary>
+    public const string SignInIssuedAuditAction = "staff.sign-in-issued";
+
+    private const string StaffTargetType = "StaffMember";
+
     private readonly AuthOptions _options = authOptions.Value;
 
     public async Task<IReadOnlyList<StaffMemberView>> ListAsync(Guid venueId, CancellationToken cancellationToken = default)
@@ -101,6 +109,24 @@ internal sealed class StaffManagementService(
         }
 
         db.StaffMembers.Add(staff);
+
+        // Whoever adds them - an owner, a manager or the platform - so the console's activity feed can
+        // say "Aram Hakobyan added Mariam Avetisyan as branch manager". Who and where, never the PIN,
+        // the password or its hash.
+        await PlatformAudit.RecordAsync(
+            db,
+            actor,
+            clock,
+            CreateAuditAction,
+            new AuditTarget(StaffTargetType, staff.Id, staff.FullName, venueId),
+            new
+            {
+                role = staff.Role,
+                branchId = staff.BranchId,
+                canSignIn = staff.HasPasswordCredentials,
+            },
+            cancellationToken);
+
         await SaveAsync(cancellationToken);
 
         logger.LogInformation(
@@ -312,13 +338,20 @@ internal sealed class StaffManagementService(
 
         // Who gave whom a way in, and to which address - never the link, its token or the hash.
         // The row is the durable record; production logs at Error and keep none of the lines below.
-        PlatformAudit.Record(db, actor, clock, "staff.sign-in-issued", "StaffMember", staff.Id, new
-        {
-            email = staff.Email,
-            emailBefore,
-            expiresAtUtc = issued.ExpiresAtUtc,
-            replacedExistingSignIn = hadPassword,
-        });
+        await PlatformAudit.RecordAsync(
+            db,
+            actor,
+            clock,
+            SignInIssuedAuditAction,
+            new AuditTarget(StaffTargetType, staff.Id, staff.FullName, staff.VenueId),
+            new
+            {
+                email = staff.Email,
+                emailBefore,
+                expiresAtUtc = issued.ExpiresAtUtc,
+                replacedExistingSignIn = hadPassword,
+            },
+            cancellationToken);
 
         await SaveAsync(cancellationToken);
 

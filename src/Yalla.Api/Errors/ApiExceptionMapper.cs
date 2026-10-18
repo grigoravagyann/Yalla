@@ -23,13 +23,15 @@ namespace Yalla.Api.Errors;
 /// Field-level complaints, keyed by the wire name of the field. Present only for the failures that
 /// are about the payload; RFC 7807's <c>errors</c> member is where generic tooling looks for them.
 /// </param>
+/// <param name="RetryAfterSeconds">Written as the <c>Retry-After</c> header when known.</param>
 public readonly record struct MappedError(
     int Status,
     string Code,
     string Message,
     bool LogAsError,
     IReadOnlyDictionary<string, object?>? Context = null,
-    IReadOnlyDictionary<string, string[]>? Errors = null);
+    IReadOnlyDictionary<string, string[]>? Errors = null,
+    int? RetryAfterSeconds = null);
 
 /// <summary>
 /// Translates exceptions into <see cref="UnifiedErrorEnvelope"/> values.
@@ -44,6 +46,9 @@ internal static class ApiExceptionMapper
     /// <summary>Message returned for anything unhandled. Internals never reach a client.</summary>
     private const string InternalErrorMessage =
         "The request could not be completed. Quote the traceId when reporting this.";
+
+    /// <summary>Whole seconds, rounded up and never below one: a client told 0 retries at once.</summary>
+    private static int RetryAfterSeconds(TimeSpan wait) => Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds));
 
     public static MappedError Map(Exception exception) => exception switch
     {
@@ -268,7 +273,11 @@ internal static class ApiExceptionMapper
             StatusCodes.Status429TooManyRequests,
             ErrorCodes.TooManyAttempts,
             e.Message,
-            LogAsError: false),
+            LogAsError: false,
+            Context: e.RetryAfter is { } wait
+                ? new Dictionary<string, object?> { ["retryAfterSeconds"] = RetryAfterSeconds(wait) }
+                : null,
+            RetryAfterSeconds: e.RetryAfter is { } after ? RetryAfterSeconds(after) : null),
 
         // A one-time code not accepted, with what is left on it. Must stay ABOVE the general
         // authentication arm it derives from, which carries no context: the app read a count the

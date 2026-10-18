@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
@@ -35,6 +35,10 @@ internal sealed class StaffMemberConfiguration : EntityConfiguration<StaffMember
             .IsRequired();
 
         builder.Property(s => s.PinFailedAttempts).IsRequired();
+
+        // Starts at 0 for every row, existing ones included (the migration fills them with 0) - the
+        // value a token minted before the claim existed reads as - and only goes up.
+        builder.Property(s => s.SessionGeneration).IsRequired();
 
         // Null for the many staff who only ever tap a PIN: an email sign-in is for owners and
         // managers working in the admin panel.

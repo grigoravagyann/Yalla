@@ -67,6 +67,10 @@ public static class DependencyInjection
         // the API instead of by hand in SQL.
         services.AddScoped<IPlatformService, PlatformService>();
 
+        // The platform console's Home, a venue's booking counts and the activity feed - read models
+        // over what the rest already stores, aggregates only.
+        services.AddScoped<IPlatformOverviewQuery, PlatformOverviewQuery>();
+
         // The venue read for the people who work there. Separate from the platform service on
         // purpose: that one is PlatformAdminOnly and carries fields the platform keeps to itself.
         services.AddScoped<IManagedVenueQuery, ManagedVenueQuery>();
@@ -274,6 +278,9 @@ public static class DependencyInjection
         services.AddScoped<IDinerAuthService, DinerAuthService>();
         services.AddScoped<IStaffAuthService, StaffAuthService>();
         services.AddScoped<IVenueUserAuthService, VenueUserAuthService>();
+
+        // The platform admin's own name and password. The address is configuration's, not theirs.
+        services.AddScoped<IPlatformAdminAccountService, PlatformAdminAccountService>();
         services.AddScoped<ITokenRefreshService, TokenRefreshService>();
 
         // Identity type 1 has no sign-in flow of its own: the tab-scoped token is minted by the tab

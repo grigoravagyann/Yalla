@@ -13,7 +13,8 @@ namespace Yalla.Domain.Venues;
 /// A venue is <b>never hard-deleted</b>. Reservations, tabs and payments hang off its branches,
 /// and those are financial and occupancy records that must outlive the customer relationship.
 /// <see cref="SoftDelete"/> stamps <see cref="DeletedAtUtc"/> and switches the venue off; the
-/// rows stay.
+/// rows stay. <see cref="Restore"/> undoes it, putting the venue back as it was - switched on or off,
+/// suspended or not - because a deletion that kept every row has nothing to rebuild.
 /// </para>
 /// <para>
 /// <see cref="Suspend"/> is the lighter state, for a venue that has stopped paying: it disappears
@@ -42,8 +43,15 @@ public sealed class Venue : Entity
     /// <summary>Set while the venue is suspended - typically for non-payment. Cleared by <see cref="Reactivate"/>.</summary>
     public DateTime? SuspendedAtUtc { get; private set; }
 
-    /// <summary>Set when the venue was soft-deleted. Never cleared.</summary>
+    /// <summary>Set when the venue was soft-deleted. Cleared only by <see cref="Restore"/>.</summary>
     public DateTime? DeletedAtUtc { get; private set; }
+
+    /// <summary>
+    /// Whether the venue was switched on when it was deleted - what <see cref="Restore"/> puts back.
+    /// Null for a live venue, and for one deleted before this was recorded, which restores switched
+    /// <b>off</b>: when nobody knows, a venue comes back hidden rather than in front of diners.
+    /// </summary>
+    public bool? ActiveBeforeDeletion { get; private set; }
 
     public bool IsSuspended => SuspendedAtUtc is not null;
 
@@ -117,13 +125,35 @@ public sealed class Venue : Entity
 
     /// <summary>
     /// Marks the venue deleted. The row and everything under it stay; the venue stops being
-    /// browsable and stops being active. Irreversible.
+    /// browsable and stops being active. <see cref="Restore"/> is the only way back.
     /// </summary>
     public void SoftDelete(DateTime atUtc)
     {
         RequireNotDeleted();
         DeletedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        ActiveBeforeDeletion = IsActive;
         IsActive = false;
+    }
+
+    /// <summary>
+    /// Undoes <see cref="SoftDelete"/>: the venue comes back as it was before - switched on or off as
+    /// it was then, and still suspended if it was suspended, because deleting never touched the
+    /// suspension. Nothing under it was removed, so nothing needs rebuilding. A venue deleted before
+    /// that was recorded comes back switched off, for somebody to switch on on purpose.
+    /// </summary>
+    /// <returns>True when it was deleted and is now restored; false when it was not deleted.</returns>
+    public bool Restore()
+    {
+        if (!IsDeleted)
+        {
+            return false;
+        }
+
+        IsActive = ActiveBeforeDeletion ?? false;
+        DeletedAtUtc = null;
+        ActiveBeforeDeletion = null;
+
+        return true;
     }
 
     private void RequireNotDeleted()

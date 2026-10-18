@@ -20,7 +20,10 @@ namespace Yalla.Infrastructure.Identity;
 /// <para>
 /// <see cref="SeedOnStartup"/> is what the test host switches off. Nothing else about seeding is
 /// configurable, and the row is created only when no account has the address yet - an existing
-/// admin's password is never reset from configuration.
+/// admin's password is never reset from configuration, and neither is their name. Both are the
+/// admin's to change from the console (<c>PATCH /api/platform/me</c>, <c>POST /api/platform/me/password</c>);
+/// <see cref="FullName"/> and <see cref="Password"/> name the account the first time and never again.
+/// The address is the one thing configuration keeps: it is how this seed finds the account.
 /// </para>
 /// </remarks>
 public sealed class PlatformAdminOptions
@@ -41,7 +44,7 @@ public sealed class PlatformAdminOptions
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Email) && !string.IsNullOrWhiteSpace(Password);
 }
 
-/// <summary>Creates the configured platform admin if no account holds that address.</summary>
+/// <summary>Creates the configured platform admin if no account holds that address; otherwise writes nothing.</summary>
 internal sealed class PlatformAdminSeeder(
     YallaDbContext db,
     SecretHasher hasher,

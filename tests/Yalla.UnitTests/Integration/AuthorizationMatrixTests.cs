@@ -124,6 +124,47 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             (w, c) => c.PutAsJsonAsync(
                 $"/api/platform/reviews/{w.ReviewId}/visibility", new { hidden = true, reason = "Names a member of staff." }),
             Platform),
+
+        // The platform console's reads, and the report dismissal. Platform only: a venue's owner sees
+        // their own guests and their own reports through the venue routes, never these.
+        ["GET /api/platform/overview"] = new(
+            (_, c) => c.GetAsync("/api/platform/overview"),
+            Platform),
+
+        ["GET /api/platform/activity"] = new(
+            (w, c) => c.GetAsync($"/api/platform/activity?venueId={w.Branch.VenueId}"),
+            Platform),
+
+        ["GET /api/platform/venues/{venueId}/bookings-summary"] = new(
+            (w, c) => c.GetAsync($"/api/platform/venues/{w.Branch.VenueId}/bookings-summary"),
+            Platform),
+
+        ["POST /api/platform/reviews/{reviewId}/dismiss-reports"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/reviews/{w.ReviewId}/dismiss-reports", new { }),
+            Platform),
+
+        // Restoring a venue that is not deleted is answered as it is, so every admitted call is valid.
+        ["POST /api/platform/venues/{venueId}/restore"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/venues/{w.Branch.VenueId}/restore", new { }),
+            Platform),
+
+        ["GET /api/platform/me"] = new(
+            (_, c) => c.GetAsync("/api/platform/me"),
+            Platform),
+
+        // The admin's own account: no venue token of any rank reaches it.
+        ["PATCH /api/platform/me"] = new(
+            (_, c) => c.PatchAsJsonAsync("/api/platform/me", new { fullName = "Matrix Admin" }),
+            Platform),
+
+        ["POST /api/platform/me/password"] = new(
+            (w, c) => c.PostAsJsonAsync(
+                "/api/platform/me/password", new { currentPassword = w.AdminPassword, newPassword = "a-matrix-password-long-enough" }),
+            Platform),
+
+        ["POST /api/platform/reviews/{reviewId}/restore-reports"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/reviews/{w.ReviewId}/restore-reports", new { }),
+            Platform),
     };
 
     private static readonly Dictionary<string, MatrixRoute> DinerRoutes = new(StringComparer.Ordinal)
@@ -299,6 +340,9 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
 
         public required Guid DinerUserId { get; init; }
 
+        /// <summary>The platform admin's password, for the route that changes it.</summary>
+        public required string AdminPassword { get; init; }
+
         public required string DinerPhone { get; init; }
 
         public required IReadOnlyDictionary<Caller, HttpClient> Clients { get; init; }
@@ -368,6 +412,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             CoverPhotoId = coverPhotoId,
             ReviewId = reviewId,
             DinerUserId = dinerUserId,
+            AdminPassword = admin.Password,
             DinerPhone = dinerPhone,
             Clients = clients,
         };

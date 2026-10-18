@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -46,12 +46,14 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
 
                 // That schema still has the drawn plan's canvas, NOT NULL and with no default, which
                 // today's Branch no longer writes. A default stands in for what the old code sent. And
-                // today's Branch reads and writes a column a later migration adds (BranchDistrict), so
-                // it is put in place for the entity to find.
+                // today's Branch and Venue read and write columns later migrations add (BranchDistrict,
+                // VenueRestore), so they are put in place for the entities to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorWidth DEFAULT 1000 FOR FloorWidth; "
                     + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight; "
-                    + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL;");
+                    + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL; "
+                    + "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
+                    + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;");
 
                 branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
                 cover = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);

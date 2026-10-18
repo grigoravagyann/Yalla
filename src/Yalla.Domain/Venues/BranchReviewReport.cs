@@ -33,6 +33,19 @@ public sealed class BranchReviewReport : Entity
     /// <summary>Optional detail, at most <see cref="FieldLengths.Reason"/> characters.</summary>
     public string? Note { get; private set; }
 
+    /// <summary>
+    /// When a platform admin looked at the report and left the review up. A dismissed report is kept -
+    /// it is still somebody's word about the review - but it no longer counts: the moderation lists'
+    /// <c>reportCount</c> and the <c>reported</c> filter read only the reports nobody has dismissed.
+    /// </summary>
+    public DateTime? DismissedAtUtc { get; private set; }
+
+    /// <summary>The platform admin who dismissed it. No foreign key - the audit log is the record of who acted.</summary>
+    public Guid? DismissedByStaffMemberId { get; private set; }
+
+    /// <summary>Whether a platform admin has dismissed this report.</summary>
+    public bool IsDismissed => DismissedAtUtc is not null;
+
     private BranchReviewReport()
     {
     }
@@ -44,6 +57,39 @@ public sealed class BranchReviewReport : Entity
         DinerUserId = Guard.NotEmpty(dinerUserId, nameof(dinerUserId));
         (Reason, Note) = Check(reason, note);
         StampCreatedAt(atUtc);
+    }
+
+    /// <summary>
+    /// Sets the report aside without touching the review. Once only: a report already dismissed keeps
+    /// the first dismissal, so dismissing twice is the same as dismissing once.
+    /// </summary>
+    /// <returns>True when this call dismissed it; false when it already was.</returns>
+    public bool Dismiss(Guid staffMemberId, DateTime atUtc)
+    {
+        if (IsDismissed)
+        {
+            return false;
+        }
+
+        DismissedByStaffMemberId = Guard.NotEmpty(staffMemberId, nameof(staffMemberId));
+        DismissedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        return true;
+    }
+
+    /// <summary>Undoes <see cref="Dismiss"/>: the report counts again.</summary>
+    /// <returns>True when it was dismissed and now is not; false when it was not dismissed.</returns>
+    public bool Undismiss()
+    {
+        if (!IsDismissed)
+        {
+            return false;
+        }
+
+        DismissedAtUtc = null;
+        DismissedByStaffMemberId = null;
+
+        return true;
     }
 
     /// <summary>Both fields checked at once, so a request breaking both hears about both.</summary>

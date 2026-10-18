@@ -220,7 +220,11 @@ public static class VenueAdminEndpoints
                 + "The console used to render this from a client-side guess, which meant the console "
                 + "and the server had two different ideas of ready - and only the server's decides "
                 + "whether the branch may be switched to `Paid`. `incompleteMenuItemCount` is the line "
-                + "that gate enforces, and `incompleteMenuItemIds` says which items to finish.")
+                + "that gate enforces, and `incompleteMenuItemIds` says which items to finish.\n\n"
+                + "`blockers` says what is left in sentences; `issues` says the same lines, one for one "
+                + "and in the same order, as stable codes - `no-tables`, `tables-unlabelled`, `no-menu`, "
+                + "`menu-empty`, `incomplete-dishes` (with `count`), `no-hours`, "
+                + "`policy-not-reviewed`, `no-staff`, `no-device`.")
             .Produces<BranchReadinessView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 

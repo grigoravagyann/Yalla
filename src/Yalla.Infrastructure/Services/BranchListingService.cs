@@ -116,11 +116,18 @@ internal sealed class BranchListingService(
             branch.Relocate(address!, command.Latitude!.Value, command.Longitude!.Value);
 
             // Added to this unit of work, so the move and its record commit together or not at all.
-            PlatformAudit.Record(db, actor, clock, RelocateAuditAction, "Branch", branch.Id, new
-            {
-                old = before,
-                @new = new { address = branch.Address, latitude = branch.Latitude, longitude = branch.Longitude },
-            });
+            await PlatformAudit.RecordAsync(
+                db,
+                actor,
+                clock,
+                RelocateAuditAction,
+                new AuditTarget("Branch", branch.Id, branch.Name, branch.VenueId),
+                new
+                {
+                    old = before,
+                    @new = new { address = branch.Address, latitude = branch.Latitude, longitude = branch.Longitude },
+                },
+                cancellationToken);
         }
 
         if (gallery is not null)

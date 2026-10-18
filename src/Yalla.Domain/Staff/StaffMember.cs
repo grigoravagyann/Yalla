@@ -83,6 +83,19 @@ public sealed class StaffMember : Entity
     /// <summary>Hash of the admin-panel password. Null when the person has no email sign-in.</summary>
     public string? PasswordHash { get; private set; }
 
+    /// <summary>
+    /// The admin-panel session generation. Every admin-panel access token carries the value it was
+    /// minted under (<c>sgen</c>); a token whose value differs from this one is refused with
+    /// <c>session-revoked</c>.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="EndSessions"/> moves it, which ends every admin-panel access token the person holds
+    /// at once - what a changed or reset password needs, because the reason to change one is that
+    /// somebody else may have it. A token minted before the claim existed reads as generation 0, which
+    /// is where every row starts, so those keep working until they expire unless a bump ends them.
+    /// </remarks>
+    public int SessionGeneration { get; private set; }
+
     /// <summary>Whether this person can sign in to the admin panel with email and password.</summary>
     public bool HasPasswordCredentials => Email is not null && PasswordHash is not null;
 
@@ -248,6 +261,12 @@ public sealed class StaffMember : Entity
 
         PasswordHash = Guard.NotBlank(passwordHash, nameof(passwordHash), FieldLengths.PasswordHash);
     }
+
+    /// <summary>
+    /// Ends every admin-panel access token this person holds, by moving <see cref="SessionGeneration"/>
+    /// on. Refresh tokens are the caller's to revoke beside it.
+    /// </summary>
+    public void EndSessions() => SessionGeneration++;
 
     /// <summary>Whether PIN sign-in is currently refused for this person.</summary>
     public bool IsPinLockedAt(DateTime atUtc) => PinLockedUntilUtc is { } until && atUtc < until;

@@ -254,7 +254,9 @@ refused too, sign out. After a password change the refresh succeeds on the devic
 the app carries on; on every other device, and after a displacement or a deletion, it cannot.
 
 **Which sign-in made the change.** A diner access token carries **`rch`**, the refresh-token chain it
-was issued with - at sign-in, registration, code verification and every refresh. A password change
+was issued with - at sign-in, registration, code verification and every refresh. An admin-panel
+(`VenueUser`) token carries it too, from sign-in and every refresh; the admin-panel password change
+does not need it, because it answers the caller a fresh pair instead (§4). A password change
 revokes every refresh token of the account except that chain's, so a refresh token somebody else holds
 (a lost phone, a copied backup) cannot mint a token under the new generation. A token minted before the
 claim existed names no chain, and then nothing is kept: that device signs in again as well.
@@ -428,7 +430,8 @@ its year-long token expires. Every request carrying a device or session token co
 a primary key to check that row. That is the price of statelessness, paid deliberately and only
 where it is owed. Participant tokens pay it against their tab, and diner tokens against their
 account's session generation - a displaced squatter's token showed that fifteen minutes is not short
-(see [Ending a diner's sessions](#ending-a-diners-sessions)). Venue-user tokens still do not.
+(see [Ending a diner's sessions](#ending-a-diners-sessions)). Venue-user tokens pay it against the staff
+row's session generation (§4, "Ending admin-panel sessions").
 
 The device token can do exactly one thing: offer a PIN. It names a branch but no person, so an
 enrolled tablet with nobody signed in cannot seat a table.
@@ -478,6 +481,23 @@ clash, and duplicates already in the data are left alone. Moving a person to ano
 re-check their PIN; two PINs set at the same instant are not serialised against each other.
 
 ## 4. Venue owner and manager — email and password
+
+### Ending admin-panel sessions
+
+Every admin-panel (`VenueUser`) access token - owner, general manager, branch manager, platform admin -
+carries **`sgen`**, the staff row's `SessionGeneration` when it was minted, at sign-in and every refresh.
+**Every request with such a token** compares it with the row, through the same five-second cache as a
+diner's (bypassed for a token newer than the cached read), and a token on an older generation - or whose
+row is gone - is refused with `401 session-revoked`. All of them rather than only the platform's routes:
+the reason to end a session is the same whichever door the token is used on. Deactivation is not part of
+this check; the services still refuse an inactive staff member from the stored row, with 403.
+
+The generation moves (`StaffMember.EndSessions`) when the password is **reset** from a link and when the
+platform admin **changes** theirs. Both also revoke every refresh token; the change spends any reset link
+still unused and answers the caller a fresh pair under the new generation, so the console carries on
+(`docs/platform-admin.md` §5). A rehash at sign-in does not move it. **A token minted before `sgen`
+existed reads as generation 0**, which is where every row starts (migration `StaffSessionGeneration`), so
+those keep working until they expire unless a bump ends them first.
 
 ### The roles, and who reaches which branch
 

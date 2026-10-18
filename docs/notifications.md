@@ -296,6 +296,8 @@ Read it in this order:
 - **`sentLastDay` of zero on a live venue** means the channel is broken, whatever the other numbers
   say. Nothing else on the page is as informative.
 - **`deadLettered`** is the number that needs a person. Those will never be retried.
+  **`deadLetteredLastDay`** is how many of them were given up on in the last 24 hours - what the
+  console's Home alert counts; Home's `GET /api/platform/overview` carries the same numbers.
 - **`idempotencyKey`** names the cause, so a dead reminder traces straight back to its booking.
 - **`lastError`** is why.
 
