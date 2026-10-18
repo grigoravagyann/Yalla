@@ -121,17 +121,19 @@ public static class PlatformEndpoints
 
         group.MapGet("/venues/{venueId:guid}/bookings-summary", GetVenueBookingsSummaryAsync)
             .WithName("getVenueBookingsSummary")
-            .WithSummary("One venue's bookings as counts, for the last 7 and 30 days")
+            .WithSummary("One venue's bookings as counts, for the last 7 or 30 days")
             .WithDescription(
                 "**Aggregates only**: the restaurant sees its guests; the platform sees numbers.\n\n"
-                + "`last7Days` and `last30Days` count the bookings whose visit falls in the window - today "
-                + "and the days before it, on each branch's own calendar - in every status: `byStatus` "
-                + "splits the `total` into `completed` (seated or completed), `confirmed` (not yet seated), "
-                + "`pendingApproval`, `cancelled` and `noShow`; `byBranch` is every branch of the venue; "
-                + "`byWeekday` is Monday (1) to Sunday (7); `averagePartySize` is over the bookings not "
-                + "cancelled. `today` is each branch's bookings for today, cancelled ones left out. "
-                + "`pendingApprovalUpcoming` counts the requests still waiting whose visit is ahead.")
+                + "`days` is `7` or `30` (default 30). The window is each branch's own today and the days "
+                + "before it, by the branch's local date of the visit, in **every** status: `byStatus` "
+                + "splits the `total` into `completed` (seated or completed), `upcoming` (confirmed, not yet "
+                + "seated), `pendingApproval`, `cancelled` (either side, rejections included) and `noShow`. "
+                + "`byWeekday` is all seven days by the weekday of the visit, `dayOfWeek` 0 Sunday to 6 "
+                + "Saturday. `averagePartySize` is over the bookings not cancelled, to one decimal, and absent "
+                + "with none. `byBranch` is every branch of the venue, by name, with the same split flat and "
+                + "`todayCount` - its bookings for today, cancelled ones left out.")
             .Produces<VenueBookingsSummary>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`days` is not 7 or 30; `context.field` names it.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such venue.");
 
         group.MapGet("/venues/{venueId:guid}", GetVenueAsync)
@@ -320,8 +322,9 @@ public static class PlatformEndpoints
     private static async Task<IResult> GetVenueBookingsSummaryAsync(
         Guid venueId,
         IPlatformOverviewQuery overview,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await overview.GetVenueBookingsSummaryAsync(venueId, cancellationToken));
+        CancellationToken cancellationToken,
+        int days = VenueBookingsSummaryWindows.Default) =>
+        Results.Ok(await overview.GetVenueBookingsSummaryAsync(venueId, days, cancellationToken));
 
     private static async Task<IResult> DismissReviewReportsAsync(
         Guid reviewId,

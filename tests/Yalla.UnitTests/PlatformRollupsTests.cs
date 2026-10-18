@@ -101,18 +101,9 @@ public class PlatformRollupsTests
             });
     }
 
-    [Fact]
-    public void Weekdays_run_Monday_one_to_Sunday_seven()
-    {
-        Assert.Equal(1, PlatformRollups.IsoDay(DayOfWeek.Monday));
-        Assert.Equal(5, PlatformRollups.IsoDay(DayOfWeek.Friday));
-        Assert.Equal(6, PlatformRollups.IsoDay(DayOfWeek.Saturday));
-        Assert.Equal(7, PlatformRollups.IsoDay(DayOfWeek.Sunday));
-    }
-
     [Theory]
     [InlineData(ReservationStatus.PendingApproval, BookingBucket.PendingApproval)]
-    [InlineData(ReservationStatus.Confirmed, BookingBucket.Confirmed)]
+    [InlineData(ReservationStatus.Confirmed, BookingBucket.Upcoming)]
     [InlineData(ReservationStatus.Seated, BookingBucket.Completed)]
     [InlineData(ReservationStatus.Completed, BookingBucket.Completed)]
     [InlineData(ReservationStatus.CancelledByDiner, BookingBucket.Cancelled)]

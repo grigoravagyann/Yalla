@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Yalla.Application.BranchSettings;
 using Yalla.Domain.Enums;
 
@@ -112,19 +113,32 @@ public static class PlatformRollups
         return issues;
     }
 
-    /// <summary>ISO weekday: 1 Monday through 7 Sunday - the week as Armenia writes it.</summary>
-    public static int IsoDay(DayOfWeek day) => day == DayOfWeek.Sunday ? 7 : (int)day;
-
     /// <summary>Which bucket of the bookings summary a booking in this status falls into.</summary>
     public static BookingBucket BucketOf(ReservationStatus status) => status switch
     {
         ReservationStatus.PendingApproval => BookingBucket.PendingApproval,
-        ReservationStatus.Confirmed => BookingBucket.Confirmed,
+        ReservationStatus.Confirmed => BookingBucket.Upcoming,
         ReservationStatus.Seated or ReservationStatus.Completed => BookingBucket.Completed,
         ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue => BookingBucket.Cancelled,
         ReservationStatus.NoShow => BookingBucket.NoShow,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Not a booking status this summary knows."),
     };
+}
+
+/// <summary>The windows a venue's bookings summary is asked for.</summary>
+public static class VenueBookingsSummaryWindows
+{
+    /// <summary>A week.</summary>
+    public const int Week = 7;
+
+    /// <summary>A month - the default.</summary>
+    public const int Month = 30;
+
+    /// <summary>What an unasked window is.</summary>
+    public const int Default = Month;
+
+    /// <summary>The accepted values.</summary>
+    public static readonly IReadOnlyList<int> Accepted = [Week, Month];
 }
 
 /// <summary>The buckets the platform's booking numbers are counted in.</summary>
@@ -134,7 +148,7 @@ public enum BookingBucket
     PendingApproval = 1,
 
     /// <summary>Confirmed and not yet seated: still ahead, or late and not yet marked.</summary>
-    Confirmed = 2,
+    Upcoming = 2,
 
     /// <summary>Seated or completed - the booking took place.</summary>
     Completed = 3,
@@ -282,68 +296,68 @@ public sealed record OverviewOutbox(
 // ------------------------------------------------------------------ a venue's bookings
 
 /// <summary>
-/// One venue's bookings as counts, for the venue page. <b>Aggregates only</b>: no guest's name, phone
-/// or code.
+/// One venue's bookings over the last 7 or 30 days, as counts, for the venue page. <b>Aggregates
+/// only</b>: no guest's name, phone or code.
 /// </summary>
+/// <remarks>
+/// A booking is in the window when its visit falls on the branch's own today or one of the
+/// <c>days - 1</c> days before it, by the branch's local date, in <b>every</b> status - cancelled ones
+/// included, so <see cref="ByStatus"/> adds up to <see cref="Total"/>.
+/// </remarks>
 /// <param name="VenueId">The venue.</param>
-/// <param name="GeneratedAtUtc">When this was worked out.</param>
-/// <param name="PendingApprovalUpcoming">
-/// Requests waiting for the venue to approve them whose visit is still ahead - the number the venue
-/// page's card shows. A request whose time has passed is not counted here.
-/// </param>
-/// <param name="Today">Every branch with today's bookings, cancelled ones left out, on its own calendar.</param>
-/// <param name="Last7Days">The last seven days, today included.</param>
-/// <param name="Last30Days">The last thirty days, today included.</param>
-public sealed record VenueBookingsSummary(
-    Guid VenueId,
-    DateTime GeneratedAtUtc,
-    int PendingApprovalUpcoming,
-    IReadOnlyList<BranchBookingsToday> Today,
-    BookingWindowSummary Last7Days,
-    BookingWindowSummary Last30Days);
-
-/// <summary>One branch's bookings today.</summary>
-/// <param name="BranchId">The branch.</param>
-/// <param name="Name">Its name.</param>
-/// <param name="LocalDate">Today at the branch.</param>
-/// <param name="Bookings">Bookings for today, cancelled ones left out.</param>
-public sealed record BranchBookingsToday(Guid BranchId, string Name, DateOnly LocalDate, int Bookings);
-
-/// <summary>
-/// Bookings whose visit falls in the window - each branch's own local dates, today and the days before
-/// it - in <b>every</b> status, cancelled ones included, so the split adds up to the total.
-/// </summary>
-/// <param name="Days">How many days: 7 or 30.</param>
+/// <param name="Days">7 or 30.</param>
 /// <param name="Total">Every booking in the window.</param>
 /// <param name="ByStatus">The total, split by outcome.</param>
-/// <param name="ByBranch">Each branch of the venue, by name, every one listed even with none.</param>
-/// <param name="ByWeekday">Seven entries, Monday (1) to Sunday (7), by the weekday of the visit.</param>
-/// <param name="AveragePartySize">
-/// The average party of the bookings that were not cancelled, to one decimal; absent with none.
+/// <param name="ByWeekday">
+/// All seven days, Sunday (0) to Saturday (6) as <see cref="System.DayOfWeek"/> numbers, by the weekday
+/// of the visit at the branch.
 /// </param>
-public sealed record BookingWindowSummary(
+/// <param name="AveragePartySize">The average party of the bookings not cancelled, to one decimal; absent with none.</param>
+/// <param name="ByBranch">Every branch of the venue, by name, each listed even with none.</param>
+public sealed record VenueBookingsSummary(
+    Guid VenueId,
     int Days,
     int Total,
     BookingStatusCounts ByStatus,
-    IReadOnlyList<BranchBookingCounts> ByBranch,
     IReadOnlyList<WeekdayCount> ByWeekday,
-    double? AveragePartySize);
+
+    // Written as null rather than left out, which is what the console binds to.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] double? AveragePartySize,
+    IReadOnlyList<BranchBookingCounts> ByBranch);
 
 /// <summary>Bookings by outcome. See <see cref="BookingBucket"/> for which statuses each counts.</summary>
 /// <param name="Completed">Seated or completed: they came.</param>
-/// <param name="Confirmed">Confirmed and not seated - still ahead, or late and not yet marked.</param>
+/// <param name="Upcoming">Confirmed and not seated - still ahead, or late and not yet marked.</param>
 /// <param name="PendingApproval">Still waiting for the venue to approve.</param>
 /// <param name="Cancelled">Cancelled by either side, rejections included.</param>
 /// <param name="NoShow">Nobody came.</param>
-public sealed record BookingStatusCounts(int Completed, int Confirmed, int PendingApproval, int Cancelled, int NoShow);
+public sealed record BookingStatusCounts(int Completed, int Upcoming, int PendingApproval, int Cancelled, int NoShow);
 
-/// <summary>One branch's share of a window.</summary>
-public sealed record BranchBookingCounts(Guid BranchId, string Name, int Total, BookingStatusCounts ByStatus);
+/// <summary>One branch's share of the window, and its bookings today.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="Name">Its name.</param>
+/// <param name="Total">Its bookings in the window.</param>
+/// <param name="Completed">Seated or completed.</param>
+/// <param name="Upcoming">Confirmed and not seated.</param>
+/// <param name="PendingApproval">Waiting for approval.</param>
+/// <param name="Cancelled">Cancelled by either side.</param>
+/// <param name="NoShow">Nobody came.</param>
+/// <param name="TodayCount">Bookings for the branch's today, cancelled ones left out - the venue page's branch table.</param>
+public sealed record BranchBookingCounts(
+    Guid BranchId,
+    string Name,
+    int Total,
+    int Completed,
+    int Upcoming,
+    int PendingApproval,
+    int Cancelled,
+    int NoShow,
+    int TodayCount);
 
 /// <summary>One weekday's count.</summary>
-/// <param name="IsoDay">1 Monday … 7 Sunday.</param>
+/// <param name="DayOfWeek">0 Sunday … 6 Saturday, as <see cref="System.DayOfWeek"/>.</param>
 /// <param name="Count">Bookings whose visit fell on that weekday.</param>
-public sealed record WeekdayCount(int IsoDay, int Count);
+public sealed record WeekdayCount(DayOfWeek DayOfWeek, int Count);
 
 // ------------------------------------------------------------------ activity
 
@@ -408,10 +422,14 @@ public interface IPlatformOverviewQuery
     /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not a platform admin.</exception>
     Task<PlatformOverview> GetOverviewAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>One venue's bookings for the last 7 and 30 days.</summary>
+    /// <summary>One venue's bookings for the last <paramref name="days"/> days: 7 or 30.</summary>
     /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not a platform admin.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="days"/> is not 7 or 30; the parameter is <c>days</c>.</exception>
     /// <exception cref="KeyNotFoundException">No such venue.</exception>
-    Task<VenueBookingsSummary> GetVenueBookingsSummaryAsync(Guid venueId, CancellationToken cancellationToken = default);
+    Task<VenueBookingsSummary> GetVenueBookingsSummaryAsync(
+        Guid venueId,
+        int days = VenueBookingsSummaryWindows.Default,
+        CancellationToken cancellationToken = default);
 
     /// <summary>The newest audit rows written by staff, newest first.</summary>
     /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not a platform admin.</exception>

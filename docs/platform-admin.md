@@ -330,7 +330,7 @@ its guests; the platform sees numbers.
 | Route | What it answers |
 | --- | --- |
 | `GET /api/platform/overview` | Home in one read |
-| `GET /api/platform/venues/{venueId}/bookings-summary` | One venue's bookings as counts, 7 and 30 days |
+| `GET /api/platform/venues/{venueId}/bookings-summary?days=7\|30` | One venue's bookings as counts, for 7 or 30 days |
 | `GET /api/platform/activity?limit=&venueId=` | The newest audit rows, newest first |
 | `POST /api/platform/reviews/{reviewId}/dismiss-reports` | Leave a reported review up and set its reports aside |
 | `POST /api/platform/venues/{venueId}/restore` | Undo a soft delete (§2, "Suspended versus deleted") |
@@ -435,33 +435,31 @@ the console's gateway maps them:
 kept only for its history is not one the room has, which is the checklist's rule. Each branch of
 `GET /api/platform/venues/{id}` also carries `openTabCount` and `district`.
 
-### `GET /api/platform/venues/{venueId}/bookings-summary`
+### `GET /api/platform/venues/{venueId}/bookings-summary?days=7|30`
 
 ```json
 {
-  "venueId": "…", "generatedAtUtc": "…",
-  "pendingApprovalUpcoming": 3,
-  "today": [ { "branchId": "…", "name": "Kaskad", "localDate": "2026-10-18", "bookings": 18 } ],
-  "last7Days": {
-    "days": 7, "total": 115,
-    "byStatus": { "completed": 89, "confirmed": 9, "pendingApproval": 3, "cancelled": 10, "noShow": 4 },
-    "byBranch": [ { "branchId": "…", "name": "Kaskad", "total": 74, "byStatus": { "…": 0 } } ],
-    "byWeekday": [ { "isoDay": 1, "count": 11 }, "… Monday 1 to Sunday 7" ],
-    "averagePartySize": 3.2
-  },
-  "last30Days": { "days": 30, "…": "the same shape" }
+  "venueId": "…",
+  "days": 7,
+  "total": 115,
+  "byStatus": { "completed": 89, "upcoming": 9, "pendingApproval": 3, "cancelled": 10, "noShow": 4 },
+  "byWeekday": [ { "dayOfWeek": 0, "count": 15 }, "… all seven, 0 Sunday to 6 Saturday" ],
+  "averagePartySize": 3.2,
+  "byBranch": [ { "branchId": "…", "name": "Kaskad", "total": 74, "completed": 57, "upcoming": 5,
+                  "pendingApproval": 2, "cancelled": 7, "noShow": 3, "todayCount": 18 } ]
 }
 ```
 
-Unlike Home, a window counts **every status, cancelled ones included**, so `byStatus` adds up to
-`total`: `completed` is Seated or Completed (they came), `confirmed` is confirmed and not seated -
-still ahead, or late and not yet marked - `pendingApproval`, `cancelled` (either side, rejections
-included) and `noShow`. The window is each branch's own today and the days before it, by the day of
-the visit. `byBranch` lists every branch of the venue, by name, even with none; `byWeekday` is the
-weekday of the visit; `averagePartySize` is over the bookings that were not cancelled, to one decimal,
-absent with none. `today` is each branch's bookings for its today, cancelled ones left out, and
-`pendingApprovalUpcoming` the requests still waiting whose visit is ahead. A deleted venue's numbers
-are still readable; an unknown venue is 404.
+`days` is `7` or `30` (default 30; anything else is a 400 naming `days`). Unlike Home, the window
+counts **every status, cancelled ones included**, so `byStatus` adds up to `total`: `completed` is
+Seated or Completed (they came), `upcoming` is confirmed and not seated - still ahead, or late and not
+yet marked - `pendingApproval`, `cancelled` (either side, rejections included) and `noShow`. The window
+is each branch's own today and the `days - 1` days before it, by the branch's local date of the visit,
+and `byWeekday` is that date's weekday as `System.DayOfWeek` (0 Sunday … 6 Saturday), all seven listed.
+`averagePartySize` is over the bookings that were not cancelled, to one decimal, and **written as
+`null`** with none. `byBranch` lists every branch of the venue, by name, even with none, with the same
+split flat and `todayCount` - its bookings for its today, cancelled ones left out - for the venue
+page's branch table. A deleted venue's numbers are still readable; an unknown venue is 404.
 
 ### The activity feed: `GET /api/platform/activity`
 

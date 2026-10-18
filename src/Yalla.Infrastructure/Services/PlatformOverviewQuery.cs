@@ -124,9 +124,16 @@ internal sealed class PlatformOverviewQuery(
 
     public async Task<VenueBookingsSummary> GetVenueBookingsSummaryAsync(
         Guid venueId,
+        int days = VenueBookingsSummaryWindows.Default,
         CancellationToken cancellationToken = default)
     {
         RequirePlatformAdmin("Read a venue's bookings summary");
+
+        if (!VenueBookingsSummaryWindows.Accepted.Contains(days))
+        {
+            throw new ArgumentOutOfRangeException(
+                "days", days, $"days is one of: {string.Join(", ", VenueBookingsSummaryWindows.Accepted)}.");
+        }
 
         var nowUtc = clock.UtcNow;
 
@@ -145,13 +152,11 @@ internal sealed class PlatformOverviewQuery(
 
         var today = branches.ToDictionary(b => b.Id, b => TodayAt(b.TimeZoneId, nowUtc));
         var branchIds = branches.Select(b => b.Id).ToList();
-
         var rows = new List<BookingGroup>();
-        var pending = 0;
 
         if (branches.Count > 0)
         {
-            var from = today.Values.Min().AddDays(-(SeriesDays - 1));
+            var from = today.Values.Min().AddDays(-(days - 1));
             var to = today.Values.Max();
 
             // Grouped in SQL: a count and a party total per branch, day and status. No row of a booking
@@ -169,29 +174,44 @@ internal sealed class PlatformOverviewQuery(
                     PartySum = g.Sum(r => (long)r.PartySize),
                 })
                 .ToListAsync(cancellationToken);
-
-            pending = await db.Reservations
-                .AsNoTracking()
-                .CountAsync(
-                    r => branchIds.Contains(r.BranchId)
-                         && r.Status == ReservationStatus.PendingApproval
-                         && r.StartUtc > nowUtc,
-                    cancellationToken);
         }
 
-        var names = branches.Select(b => (b.Id, b.Name)).ToList();
+        // Each branch's own window: its today and the days before it.
+        var inWindow = rows
+            .Where(r => today[r.BranchId].DayNumber - r.LocalDate.DayNumber is >= 0 and var daysAgo && daysAgo < days)
+            .ToList();
+
+        var weekdays = new int[7];
+
+        foreach (var row in inWindow)
+        {
+            weekdays[(int)row.LocalDate.DayOfWeek] += row.Count;
+        }
+
+        var kept = inWindow.Where(r => !IsCancelled(r.Status)).ToList();
 
         return new VenueBookingsSummary(
             venueId,
-            nowUtc,
-            pending,
-            [.. branches.Select(b => new BranchBookingsToday(
-                b.Id,
-                b.Name,
-                today[b.Id],
-                rows.Where(r => r.BranchId == b.Id && r.LocalDate == today[b.Id] && !IsCancelled(r.Status)).Sum(r => r.Count)))],
-            Window(7, names, today, rows),
-            Window(SeriesDays, names, today, rows));
+            days,
+            inWindow.Sum(r => r.Count),
+            StatusCounts(inWindow),
+            [.. weekdays.Select((count, day) => new WeekdayCount((DayOfWeek)day, count))],
+            PlatformRollups.Average(kept.Sum(r => r.PartySum), kept.Sum(r => r.Count)),
+            [.. branches.Select(b =>
+            {
+                var own = StatusCounts([.. inWindow.Where(r => r.BranchId == b.Id)]);
+
+                return new BranchBookingCounts(
+                    b.Id,
+                    b.Name,
+                    own.Completed + own.Upcoming + own.PendingApproval + own.Cancelled + own.NoShow,
+                    own.Completed,
+                    own.Upcoming,
+                    own.PendingApproval,
+                    own.Cancelled,
+                    own.NoShow,
+                    rows.Where(r => r.BranchId == b.Id && r.LocalDate == today[b.Id] && !IsCancelled(r.Status)).Sum(r => r.Count));
+            })]);
     }
 
     public async Task<ActivityFeed> GetActivityAsync(ActivityQuery query, CancellationToken cancellationToken = default)
@@ -412,41 +432,7 @@ internal sealed class PlatformOverviewQuery(
                 .Select(x => new NotReadyBranch(x.Venue.VenueId, x.Venue.Name, x.Branch.BranchId, x.Branch.Name, x.Issues))]);
     }
 
-    // ---------------------------------------------------------------- a venue's windows
-
-    private static BookingWindowSummary Window(
-        int days,
-        List<(Guid Id, string Name)> branches,
-        Dictionary<Guid, DateOnly> today,
-        List<BookingGroup> rows)
-    {
-        var inWindow = rows
-            .Where(r => today.TryGetValue(r.BranchId, out var branchToday)
-                        && branchToday.DayNumber - r.LocalDate.DayNumber is >= 0 and var daysAgo
-                        && daysAgo < days)
-            .ToList();
-
-        var weekdays = new int[7];
-
-        foreach (var row in inWindow)
-        {
-            weekdays[PlatformRollups.IsoDay(row.LocalDate.DayOfWeek) - 1] += row.Count;
-        }
-
-        var kept = inWindow.Where(r => !IsCancelled(r.Status)).ToList();
-
-        return new BookingWindowSummary(
-            days,
-            inWindow.Sum(r => r.Count),
-            StatusCounts(inWindow),
-            [.. branches.Select(b =>
-            {
-                var own = inWindow.Where(r => r.BranchId == b.Id).ToList();
-                return new BranchBookingCounts(b.Id, b.Name, own.Sum(r => r.Count), StatusCounts(own));
-            })],
-            [.. weekdays.Select((count, i) => new WeekdayCount(i + 1, count))],
-            PlatformRollups.Average(kept.Sum(r => r.PartySum), kept.Sum(r => r.Count)));
-    }
+    // ---------------------------------------------------------------- a venue's window
 
     private static BookingStatusCounts StatusCounts(List<BookingGroup> rows)
     {
@@ -454,7 +440,7 @@ internal sealed class PlatformOverviewQuery(
 
         return new BookingStatusCounts(
             Of(BookingBucket.Completed),
-            Of(BookingBucket.Confirmed),
+            Of(BookingBucket.Upcoming),
             Of(BookingBucket.PendingApproval),
             Of(BookingBucket.Cancelled),
             Of(BookingBucket.NoShow));

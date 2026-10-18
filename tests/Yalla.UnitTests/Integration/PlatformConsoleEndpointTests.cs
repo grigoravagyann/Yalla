@@ -57,10 +57,12 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
         Assert.Equal(30, overview.GetProperty("bookings").GetProperty("perDay").GetArrayLength());
         Assert.True(overview.GetProperty("outbox").TryGetProperty("deadLetteredLastDay", out _));
 
-        var summary = await (await platform.GetAsync($"/api/platform/venues/{branch.VenueId}/bookings-summary")).Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(7, summary.GetProperty("last7Days").GetProperty("days").GetInt32());
-        Assert.Equal(30, summary.GetProperty("last30Days").GetProperty("days").GetInt32());
-        Assert.Equal(7, summary.GetProperty("last30Days").GetProperty("byWeekday").GetArrayLength());
+        var summary = await (await platform.GetAsync($"/api/platform/venues/{branch.VenueId}/bookings-summary?days=7")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(7, summary.GetProperty("days").GetInt32());
+        Assert.Equal(7, summary.GetProperty("byWeekday").GetArrayLength());
+
+        // No bookings: the average is written as null, not left out.
+        Assert.Equal(JsonValueKind.Null, summary.GetProperty("averagePartySize").ValueKind);
 
         Assert.Equal(HttpStatusCode.NotFound, (await platform.GetAsync($"/api/platform/venues/{Guid.NewGuid()}/bookings-summary")).StatusCode);
 
