@@ -66,8 +66,8 @@ public static class YallaClaims
     public const string SessionGeneration = "sgen";
 
     /// <summary>
-    /// The refresh-token chain - the sign-in - a diner access token was minted for. Present only on a
-    /// diner token issued with a refresh token.
+    /// The refresh-token chain - the sign-in - a diner or admin-panel access token was minted for.
+    /// Present on those two token types when issued with a refresh token.
     /// </summary>
     /// <remarks>
     /// What lets a password change end every <i>other</i> sign-in's refresh tokens while the app that
@@ -101,8 +101,8 @@ public static class YallaClaims
             : null;
 
     /// <summary>
-    /// Reads <see cref="RefreshChainId"/> off a diner token, or null when the token has none (minted
-    /// before the claim existed) or it is not a GUID.
+    /// Reads <see cref="RefreshChainId"/> off a diner or admin-panel token, or null when the token has
+    /// none (minted before the claim existed) or it is not a GUID.
     /// </summary>
     public static Guid? ReadRefreshChainId(ClaimsPrincipal? principal) =>
         Guid.TryParse(principal?.FindFirst(RefreshChainId)?.Value, out var chainId) && chainId != Guid.Empty

@@ -68,6 +68,7 @@ internal sealed class Outbox(YallaDbContext db, IClock clock, ILogger<Outbox> lo
                 Failed = g.Count(m => m.SentAtUtc == null && m.DeadLetteredAtUtc == null && m.AttemptCount > 0),
                 DeadLettered = g.Count(m => m.DeadLetteredAtUtc != null),
                 SentLastDay = g.Count(m => m.SentAtUtc != null && m.SentAtUtc >= dayAgo),
+                DeadLetteredLastDay = g.Count(m => m.DeadLetteredAtUtc != null && m.DeadLetteredAtUtc >= dayAgo),
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -86,6 +87,7 @@ internal sealed class Outbox(YallaDbContext db, IClock clock, ILogger<Outbox> lo
             counts?.Failed ?? 0,
             counts?.DeadLettered ?? 0,
             counts?.SentLastDay ?? 0,
-            deadLetters);
+            deadLetters,
+            counts?.DeadLetteredLastDay ?? 0);
     }
 }

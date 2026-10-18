@@ -71,10 +71,12 @@ internal sealed class VenueUserAuthService(
             staff!.SetPasswordHash(hasher.Hash(password));
         }
 
-        var (accessToken, _) = tokens.IssueVenueUserToken(
-            staff!.Id, staff.VenueId, staff.BranchId, staff.Role);
+        // The refresh token first, so the access token can name its chain - which is how a password
+        // change made from this sign-in keeps it and signs every other one out.
+        var (refreshEntity, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.VenueUser, staff!.Id);
 
-        var (_, refreshToken) = refreshTokens.Issue(RefreshTokenSubject.VenueUser, staff.Id);
+        var (accessToken, _) = tokens.IssueVenueUserToken(
+            staff.Id, staff.VenueId, staff.BranchId, staff.Role, refreshEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

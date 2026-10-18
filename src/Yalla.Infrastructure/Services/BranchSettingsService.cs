@@ -1248,12 +1248,25 @@ internal sealed class BranchSettingsService(
         // lets someone answer "which code stopped working". The NEW token is a live credential:
         // anyone who can read it can open a tab on that table anonymously, so it does not go into
         // an append-only log that reporting and backups can reach.
-        PlatformAudit.Record(db, actor, clock, "table.regenerate-qr", "DiningTable", table.Id, new
-        {
-            table.BranchId,
-            table.Label,
-            previousQrToken = previous,
-        });
+        var venueId = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == table.BranchId)
+            .Select(b => b.VenueId)
+            .FirstAsync(cancellationToken);
+
+        await PlatformAudit.RecordAsync(
+            db,
+            actor,
+            clock,
+            "table.regenerate-qr",
+            new AuditTarget("DiningTable", table.Id, table.Label, venueId),
+            new
+            {
+                table.BranchId,
+                table.Label,
+                previousQrToken = previous,
+            },
+            cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 

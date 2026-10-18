@@ -1,4 +1,4 @@
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -46,12 +46,13 @@ public sealed class GeneralManagerMigrationTests(SqlServerFixture fixture)
                 // That schema still has the drawn floor plan's canvas, NOT NULL and with no default,
                 // and today's Branch no longer writes it (RoomsWithPhotos). A default stands in for the
                 // value the old code would have sent; no tables and no room photo, which that schema
-                // cannot hold either. And today's Branch reads and writes a column a later migration
-                // adds (BranchDistrict), so it is put in place for the entity to find.
+                // cannot hold either. And today's Branch and Venue read and write columns later migrations
+                // add (BranchDistrict, VenueRestore), so they are put in place for the entities to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorWidth DEFAULT 1000 FOR FloorWidth; "
                     + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight; "
-                    + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL;");
+                    + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL; "
+                    + "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL;");
 
                 // The fixture branch's manager names the branch. A second person is made a branchless
                 // manager the only way today's entity allows - as somebody else, then rewritten - which

@@ -44,6 +44,9 @@ internal sealed class ReviewModerationService(
     /// <summary>The audit action for putting one back.</summary>
     public const string UnhideAuditAction = "review.unhide";
 
+    /// <summary>The audit action for setting a review's reports aside without hiding it.</summary>
+    public const string DismissReportsAuditAction = "review.dismiss-reports";
+
     /// <summary>The largest page the list serves.</summary>
     public const int MaxPageSize = 100;
 
@@ -112,6 +115,78 @@ internal sealed class ReviewModerationService(
         await transaction.CommitAsync(cancellationToken);
 
         return view;
+    }
+
+    public async Task<ModeratedReviewView> DismissReportsForPlatformAsync(
+        Guid reviewId,
+        CancellationToken cancellationToken = default)
+    {
+        var staffId = await RequirePlatformAdminAsync("Dismissing a review's reports", cancellationToken);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The same lock a visibility change takes, so two admins dismissing at once serialise: the
+        // second reads the reports the first already set aside, finds none open, and writes nothing.
+        var review = await LockedReview(reviewId).FirstOrDefaultAsync(cancellationToken)
+                     ?? throw ReviewNotFound(reviewId);
+
+        var open = await db.BranchReviewReports
+            .Where(p => p.ReviewId == review.Id && p.DismissedAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        if (open.Count > 0)
+        {
+            var nowUtc = clock.UtcNow;
+
+            foreach (var report in open)
+            {
+                report.Dismiss(staffId, nowUtc);
+            }
+
+            // Added to this unit of work, so the dismissal and its record commit together or not at all.
+            await PlatformAudit.RecordAsync(
+                db,
+                actor,
+                clock,
+                DismissReportsAuditAction,
+                await ReviewTargetAsync(review, cancellationToken),
+                new
+                {
+                    actorType = "platform",
+                    branchId = review.BranchId,
+                    dismissed = open.Count,
+                    reasons = open
+                        .GroupBy(p => p.Reason, StringComparer.Ordinal)
+                        .OrderBy(g => g.Key, StringComparer.Ordinal)
+                        .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal),
+                },
+                cancellationToken);
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Platform admin {StaffMemberId} dismissed {Count} report(s) on review {ReviewId}.",
+                staffId, open.Count, review.Id);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return await ViewAsync(review.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// What a review's audit rows are about: the review, named by the branch it is about - the
+    /// reviewer is a diner and is not copied into the log - and the branch's venue.
+    /// </summary>
+    private async Task<AuditTarget> ReviewTargetAsync(BranchReview review, CancellationToken cancellationToken)
+    {
+        var branch = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == review.BranchId)
+            .Select(b => new { b.Name, b.VenueId })
+            .FirstAsync(cancellationToken);
+
+        return new AuditTarget(nameof(BranchReview), review.Id, branch.Name, branch.VenueId);
     }
 
     /// <summary>
@@ -195,20 +270,20 @@ internal sealed class ReviewModerationService(
         if (changed)
         {
             // Added to this unit of work, so the change and its record commit together or not at all.
-            PlatformAudit.Record(
+            await PlatformAudit.RecordAsync(
                 db,
                 actor,
                 clock,
                 hide ? HideAuditAction : UnhideAuditAction,
-                nameof(BranchReview),
-                review.Id,
+                await ReviewTargetAsync(review, cancellationToken),
                 new
                 {
                     actorType = asPlatform ? "platform" : "venue",
                     branchId = review.BranchId,
                     reason = hide ? reason : null,
                     before,
-                });
+                },
+                cancellationToken);
 
             await db.SaveChangesAsync(cancellationToken);
 
@@ -291,10 +366,11 @@ internal sealed class ReviewModerationService(
         }
 
         var reviews = db.BranchReviews.AsNoTracking().Where(r => r.BranchId == branchId);
+        var openReports = OpenReports();
 
         reviews = filter switch
         {
-            ReviewModerationFilters.Reported => reviews.Where(r => db.BranchReviewReports.Any(p => p.ReviewId == r.Id)),
+            ReviewModerationFilters.Reported => reviews.Where(r => openReports.Any(p => p.ReviewId == r.Id)),
             ReviewModerationFilters.Hidden => reviews.Where(r => r.HiddenAtUtc != null),
             _ => reviews,
         };
@@ -305,7 +381,7 @@ internal sealed class ReviewModerationService(
         // the same order as the public list.
         var ordered = filter == ReviewModerationFilters.Reported
             ? reviews
-                .OrderByDescending(r => db.BranchReviewReports.Where(p => p.ReviewId == r.Id).Max(p => (DateTime?)p.CreatedAtUtc))
+                .OrderByDescending(r => openReports.Where(p => p.ReviewId == r.Id).Max(p => (DateTime?)p.CreatedAtUtc))
                 .ThenByDescending(r => r.CreatedAtUtc)
                 .ThenByDescending(r => r.Id)
             : reviews
@@ -327,8 +403,11 @@ internal sealed class ReviewModerationService(
     }
 
     /// <summary>One query: the review, the author's public name and the report count and latest.</summary>
-    private IQueryable<Row> Project(IQueryable<BranchReview> reviews) =>
-        reviews.Select(r => new Row
+    private IQueryable<Row> Project(IQueryable<BranchReview> reviews)
+    {
+        var openReports = OpenReports();
+
+        return reviews.Select(r => new Row
         {
             ReviewId = r.Id,
             BranchId = r.BranchId,
@@ -341,11 +420,19 @@ internal sealed class ReviewModerationService(
             HiddenAtUtc = r.HiddenAtUtc,
             HiddenReason = r.HiddenReason,
             HiddenByPlatform = r.HiddenByPlatform,
-            ReportCount = db.BranchReviewReports.Count(p => p.ReviewId == r.Id),
-            LastReportedAtUtc = db.BranchReviewReports
+            ReportCount = openReports.Count(p => p.ReviewId == r.Id),
+            LastReportedAtUtc = openReports
                 .Where(p => p.ReviewId == r.Id)
                 .Max(p => (DateTime?)p.CreatedAtUtc),
         });
+    }
+
+    /// <summary>
+    /// The reports nobody has dismissed - the only ones that count, for both tiers. A dismissed report
+    /// is kept as the diner's word, and is set aside.
+    /// </summary>
+    private IQueryable<BranchReviewReport> OpenReports() =>
+        db.BranchReviewReports.Where(p => p.DismissedAtUtc == null);
 
     private static ModeratedReviewView ToView(Row row) =>
         new(

@@ -60,25 +60,27 @@ dotnet user-secrets set "PlatformAdmin:Password" "<long random value>"      --pr
 In Development the host **fails startup** when either is missing, with the commands above in the
 message. Silently creating `admin / admin` is how a default account ends up in production. The
 seed creates the row only when no account holds that address; it never resets an existing
-admin's password. `PlatformAdmin:SeedOnStartup=false` switches the seed off, which is what the
-test host does.
+admin's password - nor their name: both are the admin's to change from the console (§5).
+`PlatformAdmin:SeedOnStartup=false` switches the seed off, which is what the test host does.
 
 ## 2. What the platform tier can do that a venue owner cannot
 
 Everything under `/api/platform` is `PlatformAdminOnly`, and **every action writes a
-`PlatformAuditLog` row in the same transaction as the change** — actor, action slug, target
-type and id, a JSON snapshot of what changed, timestamp. This is the tier that can delete a venue
+`PlatformAuditLog` row in the same transaction as the change** — actor (id, role and name), action
+slug, target (type, id and name), the venue it concerns, a JSON snapshot of what changed,
+timestamp. The console reads it as its activity feed (§5). This is the tier that can delete a venue
 and change what a customer pays; a change without its log entry cannot land, and a log entry for
 a change that rolled back cannot either.
 
 | Action | Endpoint | Notes |
 | --- | --- | --- |
 | Create a venue **with its first branch** | `POST /api/platform/venues` | A venue with no branch is useless. One `SaveChanges`: venue, branch and both audit rows commit together or not at all. `type` is `1` Cafe, `2` Restaurant or `3` Bar; the first branch ships that type's reservation-policy defaults (a 120-minute turn for a cafe or a bar, 90 for a restaurant). |
-| List venues | `GET /api/platform/venues?search=&page=&pageSize=&includeDeleted=` | Branch count, table count, paid-branch count, tier rollup. Deleted venues are hidden unless `includeDeleted=true`. |
+| List venues | `GET /api/platform/venues?search=&page=&pageSize=&status=&tier=&sort=&dir=` | The console's venue table: counts, `tierMix` and every branch's tier, rating, open tabs, the first readiness issue, the cover thumbnail - see §5. Deleted venues are hidden unless `status=deleted` or `all` (or the older `includeDeleted=true`). |
 | Read one venue | `GET /api/platform/venues/{id}` | The venue and every branch under it. |
 | Edit a venue | `PATCH /api/platform/venues/{id}` | Name, type (`1` Cafe, `2` Restaurant, `3` Bar), slug, active flag. Changing the type does not touch the policies existing branches already have. |
 | **Suspend** / reactivate | `POST .../suspend`, `.../reactivate` | What non-payment does. The venue disappears from diner browsing but keeps every row and stays visible to its owner. |
 | **Soft-delete** | `DELETE /api/platform/venues/{id}` | Never a hard delete. Refused, naming the blockers, while any tab is open or any confirmed booking is still in the future. |
+| **Restore** | `POST /api/platform/venues/{id}/restore` | Undoes a soft delete; the venue comes back as it was - see below. |
 | Add a branch | `POST /api/platform/venues/{id}/branches` | |
 | Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, active flag, **subscription tier**. Refused for a branch of a deleted venue, and a downgrade to `Free` is refused while any tab is open (see below). |
 
@@ -111,7 +113,7 @@ venue with an open tab. Upgrades are never blocked.
 | | Diner browsing | New bookings and tabs | Existing tabs | Owner's admin surface | Data | Reversible |
 | --- | --- | --- | --- | --- | --- | --- |
 | **Suspended** | gone (availability answers 404) | refused, `409 branch-unavailable` | readable and settleable | intact | intact | yes, `reactivate` |
-| **Deleted** | gone | refused | readable and settleable | venue refuses every change | intact, `DeletedAtUtc` stamped | no |
+| **Deleted** | gone | refused | readable and settleable | venue refuses every change | intact, `DeletedAtUtc` stamped | yes, `restore` |
 
 **Hiding the venue is not the whole lever.** A diner's app caches branch ids and the QR sticker
 stays on the table long after the invoice stops being paid, so the *entry points* refuse as well:
@@ -128,6 +130,17 @@ A deleted venue refuses **every** change — name, type, slug, active flag, addi
 editing any branch it owns. Reservations, tabs and payments hang off a venue's branches and are
 financial and occupancy records. They outlive the customer relationship, which is why there is no
 hard delete anywhere.
+
+**Restoring** (`POST /api/platform/venues/{id}/restore`) is the one change a deleted venue takes, and it
+undoes the delete completely, because the delete removed nothing. The venue comes back **as it was
+before**: `Venue.SoftDelete` records whether the venue was switched on (`ActiveBeforeDeletion`) and
+`Venue.Restore` puts that back, and since deleting never touched the suspension, a venue that was
+suspended comes back suspended. A venue deleted before that was recorded comes back switched on.
+Restoring a venue that is not deleted answers it as it is and writes nothing, so the console's undo
+toast firing twice is harmless; a real restore is audited as `venue.restore`. The venue's slug stays
+reserved while it is deleted - the unique index covers deleted venues, so nobody can take the address -
+which is why a restore never finds it taken; should that ever change, the restore is refused with a
+409 naming the venue that holds it.
 
 ## 3. Configuring a venue — what an owner or manager does
 
@@ -306,7 +319,240 @@ our fault, and the caller was told to quote a `traceId` instead of which field t
 
 The mapper is unchanged. The throw site is what moved.
 
+## 5. The platform console's reads
+
+The console redesign (Home, the venue table, a venue's bookings, the activity feed, Settings) reads
+these. Every one is `PlatformAdminOnly` and checked again inside the service. **Booking numbers are
+aggregates only**: no response here carries a guest's name, number or booking code at any depth -
+the queries group and count, so nothing about a guest ever leaves the database. The restaurant sees
+its guests; the platform sees numbers.
+
+| Route | What it answers |
+| --- | --- |
+| `GET /api/platform/overview` | Home in one read |
+| `GET /api/platform/venues/{venueId}/bookings-summary` | One venue's bookings as counts, 7 and 30 days |
+| `GET /api/platform/activity?limit=&venueId=` | The newest audit rows, newest first |
+| `POST /api/platform/reviews/{reviewId}/dismiss-reports` | Leave a reported review up and set its reports aside |
+| `POST /api/platform/venues/{venueId}/restore` | Undo a soft delete (§2, "Suspended versus deleted") |
+| `GET` / `PATCH /api/platform/me`, `POST /api/platform/me/password` | The admin's own name and password |
+| `GET /api/platform/venues` (extended) | The venue table's rows, filters and sorts |
+
+There is **no outbox retry endpoint**, by decision: a dead letter is a decision to stop (see
+`docs/notifications.md` §5). Home's alert links to `GET /api/platform/outbox` for the details.
+
+### The tier is per branch; the console shows a mix
+
+`Branch.SubscriptionTier` stays the real flag, set with `PATCH /api/platform/branches/{id}`. Every
+venue-level answer derives a **`tierMix`** from its branches - `1` Free (no branch paid, and a venue
+with no branch at all), `2` Mixed (some), `3` Paid (every one) - alongside `paidBranchCount` and
+`branchCount`, which is everything "Paid" or "Mixed · 1/2" needs. The venue row also lists every
+branch's own tier in `branches`. The older `subscriptionTier` rollup on a venue row is kept for the
+callers that read it; it reads `Free` for a mixed venue. A button that changes a whole venue's tier
+is the console sending one `PATCH` per branch; each is refused on its own terms (`branch-not-ready`
+going Paid, open tabs going Free).
+
+### `GET /api/platform/overview`
+
+```json
+{
+  "generatedAtUtc": "2026-10-18T10:32:00Z",
+  "venues": { "total": 8, "paid": 4, "mixed": 1, "free": 3, "active": 6, "suspended": 1, "inactive": 1,
+              "deleted": 1, "branches": 10, "paidBranches": 6 },
+  "bookings": { "last7Days": 312, "previous7Days": 278, "changePercent": 12.2,
+                "labelTimeZoneId": "Asia/Yerevan",
+                "perDay": [ { "date": "2026-09-19", "count": 31 }, "… 30 entries, today last" ] },
+  "pendingApprovals": { "total": 7, "venues": [ { "venueId": "…", "name": "Cascade Cafe", "count": 3 } ] },
+  "openTabs": { "total": 41, "venues": [ { "venueId": "…", "name": "Cascade Cafe", "count": 15 } ] },
+  "notReady": { "total": 4, "branches": [ { "venueId": "…", "venueName": "Riverside Restaurant",
+                "branchId": "…", "branchName": "Main", "issues": [ { "code": "incomplete-dishes", "count": 3 } ] } ] },
+  "recentVenues": [ { "venueId": "…", "name": "Riverside Restaurant", "slug": "riverside-restaurant", "type": 2,
+                      "status": 1, "tierMix": 3, "branchCount": 1, "paidBranchCount": 1, "createdAtUtc": "…" } ],
+  "outbox": { "pending": 0, "due": 0, "failed": 0, "deadLettered": 2, "sentLastDay": 118, "deadLetteredLastDay": 2 }
+}
+```
+
+| Part | Rule |
+| --- | --- |
+| `venues` | Venues not deleted, split by `tierMix` and by `status` (1 Active, 2 Suspended, 3 Inactive - switched off); `deleted` is counted apart and is in no other number. `branches` and `paidBranches` are the branches of the venues in `total`. |
+| `bookings` | Bookings by the **day of the visit** (`Reservation.LocalDate`, the branch's own date), **cancelled ones left out** (diner, venue, and a rejected request, which is a venue cancellation). Each branch counts on its own calendar - "so many days before that branch's today" - and the `date` labels are in the zone most branches share. `perDay` is 30 entries, oldest first, today last; **the 14-day chart is the last fourteen**. `last7Days` is today and the six days before it; `previous7Days` the seven before those - a rolling week, so "this week" on a Monday is not one day long. `changePercent` is to one decimal and absent when the previous week had none. Deleted venues are left out. |
+| `pendingApprovals` | Requests still `PendingApproval` **whose visit is ahead** - one whose time has passed is not something anybody can approve. Per venue, the most first. |
+| `openTabs` | Tabs `Open` or `Closing` right now, per venue, the most first. |
+| `notReady` | Branches a diner can reach (venue switched on, not suspended, not deleted; branch switched on) that a guest would find unfinished - the guest-facing codes below. The newest venues first - those are the ones somebody is setting up - at most 20, with the `total`. |
+| `recentVenues` | The five newest venues not deleted. |
+| `outbox` | The same numbers `GET /api/platform/outbox` serves, plus **`deadLetteredLastDay`**: messages given up on in the last 24 hours, which is what Home's "N messages did not reach guests" counts. The outbox endpoint now carries that number too. |
+
+### Readiness issue codes
+
+The readiness checklist (`GET /api/branches/{id}/readiness`) now returns **`issues`** beside its
+`blockers` sentences - one code per sentence, in the same order, from the same place in
+`BranchReadinessQuery`, so they cannot drift. A count rides on the one line that has one.
+
+| Code | Line |
+| --- | --- |
+| `no-tables` / `tables-unlabelled` | The floor plan has no active table / some table has no label |
+| `no-menu` / `menu-empty` | No menu category / categories and no dishes |
+| `incomplete-dishes` (`count`) | Dishes missing a photo, description, ingredients, allergens, portion or prep time |
+| `no-hours` | No opening hours on any day |
+| `policy-not-reviewed` | Nobody has saved the reservation policy |
+| `no-staff` | No active staff member works at the branch (a venue-wide owner counts) |
+| `no-device` | No tablet enrolled |
+| `no-photo` | **The platform console only, never a checklist blocker**: the branch has no cover photo |
+
+**The console shows what a guest would find unfinished**, and nothing else
+(`PlatformRollups.GuestFacingIssues`): `no-tables` (with `tables-unlabelled` folded in), `no-menu`
+(with `menu-empty` folded in), `incomplete-dishes`, `no-hours`, then `no-photo`. An unsaved
+reservation policy, no staff or no tablet are the venue's own work - on the branch's readiness page,
+not in the venue table or on Home. The checklist for many branches is
+`IBranchReadinessQuery.GetManyAsync`, a fixed handful of grouped queries however many branches there
+are; the single-branch read is that call with one id.
+
+### The venue table: `GET /api/platform/venues`
+
+New query parameters, all optional: `status` = `live` (default: every venue not deleted), `all`,
+`active`, `suspended`, `inactive` or `deleted` - the older `includeDeleted=true` means `all` when no
+`status` is sent, and a `status` wins when both are; `tier` = `free`, `mixed` or `paid` (the
+`tierMix`); `sort` = `name` (default), `rating`, `tables` or `created`; `dir` = `asc` (default) or
+`desc` - a venue with no rating sorts below every rated one. Name and id break every tie. `search` now
+also matches each branch's name and district. A value it does not know is a **400** naming the
+parameter in `context.field`.
+
+Each row (`VenueSummary`, also the `venue` of `GET /api/platform/venues/{id}`) gained these, named as
+the console's gateway maps them:
+
+| Field | Meaning |
+| --- | --- |
+| `status` | 1 Active, 2 Suspended, 3 Inactive, 4 Deleted |
+| `tierMix`, `branches` | See above; `branches` is every branch - `branchId`, `name`, `subscriptionTier`, and also `isActive` and its `issues` - active ones first, then by name. With `paidBranchCount` and `branchCount` it is "Paid" or "Mixed · 1/2" |
+| `averageRating`, `reviewCount` | Over the **published** reviews of every branch - the public pages' rule, venue-wide. `averageRating` is absent with none |
+| `openTabCount` | Tabs open or closing now |
+| `readinessIssue` | `{ code, count, branchName }`: the first thing a guest would find missing, at the first branch in `branches` that has one - `no-tables`, `no-menu`, `incomplete-dishes` (with `count`), `no-hours` or `no-photo`. Absent when nothing is; never worked out for a deleted venue |
+| `notReadyBranchCount` | How many branches have any such issue |
+| `coverThumbnailUrl` | The first branch's cover thumbnail (in `branches` order): root-relative `/api/photos/{id}/thumbnail` for an uploaded photo, absolute for a migrated one |
+| `district`, `cuisine` | The first branch's that has one, as the listing form saved it |
+| `createdAtUtc` | When the venue was created |
+
+`tableCount` now counts **active** tables only, here and on each branch of a venue's detail - a table
+kept only for its history is not one the room has, which is the checklist's rule. Each branch of
+`GET /api/platform/venues/{id}` also carries `openTabCount` and `district`.
+
+### `GET /api/platform/venues/{venueId}/bookings-summary`
+
+```json
+{
+  "venueId": "…", "generatedAtUtc": "…",
+  "pendingApprovalUpcoming": 3,
+  "today": [ { "branchId": "…", "name": "Kaskad", "localDate": "2026-10-18", "bookings": 18 } ],
+  "last7Days": {
+    "days": 7, "total": 115,
+    "byStatus": { "completed": 89, "confirmed": 9, "pendingApproval": 3, "cancelled": 10, "noShow": 4 },
+    "byBranch": [ { "branchId": "…", "name": "Kaskad", "total": 74, "byStatus": { "…": 0 } } ],
+    "byWeekday": [ { "isoDay": 1, "count": 11 }, "… Monday 1 to Sunday 7" ],
+    "averagePartySize": 3.2
+  },
+  "last30Days": { "days": 30, "…": "the same shape" }
+}
+```
+
+Unlike Home, a window counts **every status, cancelled ones included**, so `byStatus` adds up to
+`total`: `completed` is Seated or Completed (they came), `confirmed` is confirmed and not seated -
+still ahead, or late and not yet marked - `pendingApproval`, `cancelled` (either side, rejections
+included) and `noShow`. The window is each branch's own today and the days before it, by the day of
+the visit. `byBranch` lists every branch of the venue, by name, even with none; `byWeekday` is the
+weekday of the visit; `averagePartySize` is over the bookings that were not cancelled, to one decimal,
+absent with none. `today` is each branch's bookings for its today, cancelled ones left out, and
+`pendingApprovalUpcoming` the requests still waiting whose visit is ahead. A deleted venue's numbers
+are still readable; an unknown venue is 404.
+
+### The activity feed: `GET /api/platform/activity`
+
+`PlatformAuditLog` - the log every platform action already wrote in the same transaction as the
+change - gained the four columns a feed needs, copied **when the row is written** so a history reads
+with the names things had then: `ActorRole` and `ActorDisplay` (from the actor's stored row, not the
+token), `TargetDisplay`, and `VenueId`, the venue the row concerns. Migration
+`PlatformActivityAndReportDismissal` fills them for the rows already there from what their ids name
+today. A review's row is named by **its branch, never its author**; the diner deleting their own
+account writes the diner's id as the actor and keeps a null role and name, which is how the feed
+leaves it out.
+
+```json
+{ "items": [ {
+  "id": "…", "atUtc": "2026-10-18T08:10:00Z", "action": "branch.tier-change",
+  "actor": { "staffMemberId": "…", "role": 5, "displayName": "Grigor Avagyan" },
+  "target": { "type": "Branch", "id": "…", "displayName": "Kaskad" },
+  "venue": { "venueId": "…", "name": "Luna Cafe" },
+  "detail": { "venueId": "…", "from": 1, "to": 2 }
+} ] }
+```
+
+`limit` is 1-100 (default 20; out of range is 400 naming `limit`); `venueId` narrows it to one venue.
+The feed is every row a member of staff wrote - the platform admin's (`role` 5) and the venues' own
+teams' - so Home can say "Aram Hakobyan · Cascade Cafe added Mariam Avetisyan as branch manager".
+`venue` is the venue's **current** name (the link goes there); the actor and target names are the
+ones they had then. `detail` is the row's JSON as written:
+
+| Action | Written by | `detail` |
+| --- | --- | --- |
+| `venue.create`, `venue.update` | platform | `after` (and `before`): name, type, slug, active flag |
+| `venue.suspend`, `venue.reactivate`, `venue.delete` | platform | the timestamps; `snapshot` on delete |
+| `venue.restore` | platform | `wasDeletedAtUtc`, `after` (active flag, suspended) |
+| `branch.create`, `branch.update` | platform | `after` (and `before`): the branch's fields, tier included |
+| `branch.tier-change` | platform | `venueId`, `from`, `to` (1 Free, 2 Paid) |
+| `branch.relocate` | owner or platform | `old`, `new` address and coordinates |
+| `staff.create` | owner, manager or platform | `role`, `branchId`, `canSignIn` - never a PIN or password |
+| `staff.sign-in-issued` | owner, manager or platform | `email`, `emailBefore`, `expiresAtUtc`, `replacedExistingSignIn` - never the link |
+| `review.hide`, `review.unhide` | venue or platform | `actorType`, `branchId`, `reason`, `before` |
+| `review.dismiss-reports` | platform | `actorType`, `branchId`, `dismissed`, `reasons` (count per report reason) |
+| `table.regenerate-qr` | manager or platform | `branchId`, `label`, `previousQrToken` (dead the moment it was replaced) |
+| `admin.rename` | platform | `before`, `after` |
+| `admin.password-change` | platform | `otherSignInsEnded`, `thisSignInKept` - nothing about either password |
+
+**A tier change is its own entry.** `PATCH /api/platform/branches/{id}` that moves the tier writes
+`branch.tier-change`; anything else the same request changed is a `branch.update` beside it; a request
+that changes nothing still writes the `branch.update` it always has.
+
+### Dismissing review reports
+
+`POST /api/platform/reviews/{reviewId}/dismiss-reports` (no body) is the platform looking at a
+reported review and finding nothing wrong. The review stays exactly as it is - shown or hidden - and
+**stops counting as reported** for both tiers: `BranchReviewReport` gained `DismissedAtUtc` and
+`DismissedByStaffMemberId`, and the moderation lists' `reportCount`, `lastReportedAtUtc` and the
+`reported` filter read only the reports nobody has dismissed. The reports are kept - each is still a
+diner's word - and a report filed afterwards counts again. **Idempotent**: under the same row lock a
+visibility change takes, a review with no open report is answered as it is and nothing is written.
+Audited as `review.dismiss-reports`. Platform only; a venue cannot dismiss reports. Answers the review
+as the moderation list shows it. (An undo is the console deferring the call until its toast closes;
+nothing un-dismisses.)
+
+### The admin's own account
+
+`GET /api/platform/me` answers `{ staffMemberId, fullName, email }` for the signed-in admin, checked
+from the token and the stored row (active, platform admin). `PATCH /api/platform/me` with
+`{ fullName }` renames them (1-200 characters after trimming; 422 naming `fullName` otherwise; an
+unchanged name writes nothing; audited `admin.rename`). **The email is fixed**: it is
+`PlatformAdmin:Email`, the address the seed finds the account by, and nothing here changes it.
+
+`POST /api/platform/me/password` with `{ currentPassword, newPassword }` answers **204**. The new
+password follows the one rule every console password follows - at least `Auth:MinimumPasswordLength`
+(12) characters, length only. Everything wrong is one **422** naming each field in `context.fields`:
+`currentPassword` missing (`required`) or wrong (`conflict`), `newPassword` missing or too short
+(`min`). A wrong current password is a form error, **not a 401**, so the console stays signed in and
+shows it under the field. On success every other sign-in's refresh tokens are revoked
+(`password-changed`) and the sign-in the request came from keeps its chain, named by the token's
+`rch` claim - admin-panel tokens now carry it, as diner tokens do (`docs/auth.md`); a token from before
+the claim names none, and then every sign-in ends. Other sessions' access tokens run out within their
+15 minutes. Audited `admin.password-change`, with nothing about either password.
+
+### The seed never overwrites the admin
+
+`PlatformAdminSeeder` runs on every start and **only creates**: when an account already holds the
+configured `PlatformAdmin:Email` it returns that account's id and writes nothing. So a name changed in
+Settings and a password changed in Settings both survive every restart; `PlatformAdmin:FullName` and
+`PlatformAdmin:Password` name the account the first time and never again. To reset a forgotten
+admin password, use the reset link (`POST /api/auth/venue/request-password-reset`), not the
+configuration. Changing `PlatformAdmin:Email` itself would make the next start create a second
+admin, which is why the console cannot change the address.
+
 ## Out of scope
 
 Billing, invoicing or payment collection from venues; photo storage; analytics and reports;
-ordering; the late-nudge scheduler; SignalR.
+ordering; the late-nudge scheduler; SignalR; retrying dead letters.

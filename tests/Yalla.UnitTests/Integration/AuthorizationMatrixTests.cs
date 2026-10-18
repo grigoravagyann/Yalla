@@ -124,6 +124,33 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             (w, c) => c.PutAsJsonAsync(
                 $"/api/platform/reviews/{w.ReviewId}/visibility", new { hidden = true, reason = "Names a member of staff." }),
             Platform),
+
+        // The platform console's reads, and the report dismissal. Platform only: a venue's owner sees
+        // their own guests and their own reports through the venue routes, never these.
+        ["GET /api/platform/overview"] = new(
+            (_, c) => c.GetAsync("/api/platform/overview"),
+            Platform),
+
+        ["GET /api/platform/activity"] = new(
+            (w, c) => c.GetAsync($"/api/platform/activity?venueId={w.Branch.VenueId}"),
+            Platform),
+
+        ["GET /api/platform/venues/{venueId}/bookings-summary"] = new(
+            (w, c) => c.GetAsync($"/api/platform/venues/{w.Branch.VenueId}/bookings-summary"),
+            Platform),
+
+        ["POST /api/platform/reviews/{reviewId}/dismiss-reports"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/reviews/{w.ReviewId}/dismiss-reports", new { }),
+            Platform),
+
+        // Restoring a venue that is not deleted is answered as it is, so every admitted call is valid.
+        ["POST /api/platform/venues/{venueId}/restore"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/venues/{w.Branch.VenueId}/restore", new { }),
+            Platform),
+
+        ["GET /api/platform/me"] = new(
+            (_, c) => c.GetAsync("/api/platform/me"),
+            Platform),
     };
 
     private static readonly Dictionary<string, MatrixRoute> DinerRoutes = new(StringComparer.Ordinal)

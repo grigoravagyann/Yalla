@@ -154,11 +154,21 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
     /// row never does, so their token is venue-wide; a branch manager's always does, so theirs names
     /// the one branch <c>BranchScoped</c> lets them act on. An owner's normally names none.
     /// </remarks>
+    /// <param name="staffMemberId">The stored row.</param>
+    /// <param name="venueId">The row's venue; null for a platform admin.</param>
+    /// <param name="branchId">The row's branch, when it names one.</param>
+    /// <param name="role">The row's role.</param>
+    /// <param name="refreshChainId">
+    /// The refresh-token chain issued alongside, carried as <see cref="YallaClaims.RefreshChainId"/> -
+    /// the diner token's claim, for the same reason: a platform admin changing their password keeps
+    /// this sign-in and ends every other.
+    /// </param>
     public (string Token, DateTime ExpiresAtUtc) IssueVenueUserToken(
         Guid staffMemberId,
         Guid? venueId,
         Guid? branchId,
-        StaffRole role)
+        StaffRole role,
+        Guid? refreshChainId = null)
     {
         var expiresAtUtc = clock.UtcNow.AddMinutes(_options.AccessTokenMinutes);
 
@@ -180,6 +190,11 @@ internal sealed class TokenIssuer(IOptions<JwtOptions> options, IClock clock)
         if (branchId is { } branch)
         {
             claims.Add(new Claim(YallaClaims.BranchId, branch.ToString()));
+        }
+
+        if (refreshChainId is { } chainId)
+        {
+            claims.Add(new Claim(YallaClaims.RefreshChainId, chainId.ToString()));
         }
 
         return (Write(claims, expiresAtUtc), expiresAtUtc);

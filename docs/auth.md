@@ -254,7 +254,10 @@ refused too, sign out. After a password change the refresh succeeds on the devic
 the app carries on; on every other device, and after a displacement or a deletion, it cannot.
 
 **Which sign-in made the change.** A diner access token carries **`rch`**, the refresh-token chain it
-was issued with - at sign-in, registration, code verification and every refresh. A password change
+was issued with - at sign-in, registration, code verification and every refresh. An admin-panel
+(`VenueUser`) token carries it too, from sign-in and every refresh, for the platform admin's own
+password change (`POST /api/platform/me/password`, `docs/platform-admin.md` §5), which keeps that chain
+and revokes the account's others the same way. A password change
 revokes every refresh token of the account except that chain's, so a refresh token somebody else holds
 (a lost phone, a copied backup) cannot mint a token under the new generation. A token minted before the
 claim existed names no chain, and then nothing is kept: that device signs in again as well.

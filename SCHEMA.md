@@ -30,7 +30,10 @@ Two facts shape everything below:
 
 A brand. Owns branches and the staff accounts that work across them. Nothing is operated or
 billed here: the venue exists so a chain has one identity, one slug, and one place for
-`StaffMember` rows whose `BranchId` is null (an owner works everywhere). `Slug` is unique.
+`StaffMember` rows whose `BranchId` is null (an owner works everywhere). `Slug` is unique - deleted
+venues included, so a deleted venue keeps its address. Soft delete stamps `DeletedAtUtc`, switches the
+venue off and records `ActiveBeforeDeletion`; a restore clears both and puts the active flag back
+(`SuspendedAtUtc` is never touched by either, so a suspended venue comes back suspended).
 
 ### Branch
 
@@ -91,6 +94,12 @@ One diner flagging somebody else's review: `ReviewId`, `DinerUserId`, `Reason` (
 one report per diner per review, so a count is a count of people. Cascades from its review (a report is
 about that review), Restrict from the reporter. A report takes nothing down; the moderation list counts
 them. Deleting an account deletes the reports it filed and the reports about its reviews.
+
+A platform admin can **dismiss** a review's reports without hiding it: `DismissedAtUtc` and
+`DismissedByStaffMemberId` (no foreign key - the audit log is the record of who acted) are stamped on
+every report not yet dismissed. The row is kept, and stops counting: the moderation lists' report count,
+latest report and `reported` filter read only `DismissedAtUtc IS NULL`. A report filed afterwards counts
+again; a diner whose report was dismissed cannot file a second, by the unique index above.
 
 ### OpeningHours
 
@@ -347,6 +356,20 @@ deleting an account deletes them.
 Note what is **not** here: there is no table for a tab participant's identity, because a walk-in
 who scans a QR code has no account. They get a `TabParticipant` row and a token scoped to that one
 tab, and that is the whole of it.
+
+### PlatformAuditLog
+
+One thing a member of staff did on the platform tier, written in the same `SaveChanges` as the change:
+`ActorStaffMemberId`, `Action` (a stable slug, 100), `TargetType` (100) and `TargetId`, `ChangesJson`
+(`nvarchar(max)`, the action's own shape) and `AtUtc`. No foreign keys: the log outlives what it names.
+The console's activity feed reads it, so the row also **copies the names at the time**: `ActorRole` and
+`ActorDisplay` (200) from the actor's stored row, `TargetDisplay` (200) - a venue's, branch's or person's
+name, a table's label, and for a review the branch's name, never the reviewer's - and `VenueId`, the
+venue the row concerns (null for the platform admin's own account). The diner deleting their own account
+writes the diner's id as the actor and leaves the role and name null; the feed leaves those rows out.
+Indexed on `(TargetType, TargetId, AtUtc)`, `(ActorStaffMemberId, AtUtc)`, `AtUtc` (the feed) and
+`(VenueId, AtUtc)` (one venue's feed). Rows from before `PlatformActivityAndReportDismissal` were named
+by that migration from what their ids named then. See `docs/platform-admin.md` §5.
 
 ### TableStateChange
 

@@ -309,6 +309,32 @@ public sealed class SqlServerFixture : IAsyncLifetime
         new(db, clock, actor, CreateReadinessQuery(db), NullLogger<PlatformService>.Instance);
 
     /// <summary>
+    /// The platform console's read models over one context - Home, a venue's bookings, the activity
+    /// feed - with the real checklist and the real outbox composed in, so Home's numbers are the ones
+    /// those answer.
+    /// </summary>
+    internal PlatformOverviewQuery CreatePlatformOverviewQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, CreateReadinessQuery(db), CreateOutbox(db, clock));
+
+    /// <summary>Review moderation over one context, with the real branch guard.</summary>
+    internal ReviewModerationService CreateReviewModerationService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, actor, CreateBranchGuard(db, actor), NullLogger<ReviewModerationService>.Instance);
+
+    /// <summary>
+    /// The platform admin's own account over one context: the real hasher and the real token store,
+    /// so a changed password is the hash sign-in checks and a revoked token is the row refresh reads.
+    /// </summary>
+    internal PlatformAdminAccountService CreatePlatformAdminAccountService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(
+            db,
+            clock,
+            actor,
+            new SecretHasher(),
+            new RefreshTokenStore(db, clock),
+            Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            NullLogger<PlatformAdminAccountService>.Instance);
+
+    /// <summary>
     /// The onboarding checklist over one context.
     /// </summary>
     /// <remarks>

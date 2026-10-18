@@ -1,4 +1,6 @@
-﻿using Yalla.Domain;
+﻿using Yalla.Application.BranchSettings;
+using Yalla.Application.Media;
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Platform;
@@ -113,8 +115,87 @@ public sealed record UpdateBranchCommand(
     bool? IsActive = null,
     SubscriptionTier? SubscriptionTier = null);
 
-/// <summary>Search and paging for the venue list.</summary>
-public sealed record VenueListQuery(string? Search = null, int Page = 1, int PageSize = 20, bool IncludeDeleted = false);
+/// <summary>Search, filters, sorting and paging for the venue list.</summary>
+/// <param name="Search">
+/// Matched against the venue's name and slug and each branch's name and district.
+/// </param>
+/// <param name="Page">1-based.</param>
+/// <param name="PageSize">1 to 200.</param>
+/// <param name="IncludeDeleted">
+/// The older switch, kept for callers that send it: true is <c>status=all</c>. A <paramref name="Status"/>
+/// wins when both are sent.
+/// </param>
+/// <param name="Status">One of <see cref="VenueListFilters.Statuses"/>; <c>live</c> (every venue not deleted) by default.</param>
+/// <param name="Tier">One of <see cref="VenueListFilters.Tiers"/>, matched against <see cref="VenueSummary.TierMix"/>; every tier by default.</param>
+/// <param name="Sort">One of <see cref="VenueListFilters.Sorts"/>; <c>name</c> by default.</param>
+/// <param name="Dir"><c>asc</c> (default) or <c>desc</c>. A venue with no rating sorts below every rated one.</param>
+public sealed record VenueListQuery(
+    string? Search = null,
+    int Page = 1,
+    int PageSize = 20,
+    bool IncludeDeleted = false,
+    string? Status = null,
+    string? Tier = null,
+    string? Sort = null,
+    string? Dir = null);
+
+/// <summary>The values the venue list's query parameters accept. Stable; the console sends them.</summary>
+public static class VenueListFilters
+{
+    /// <summary>Every venue that is not deleted - active, suspended and switched off alike. The default.</summary>
+    public const string Live = "live";
+
+    /// <summary>Everything, deleted venues included.</summary>
+    public const string All = "all";
+
+    /// <summary>Not deleted, not suspended, switched on.</summary>
+    public const string Active = "active";
+
+    /// <summary>Suspended and not deleted.</summary>
+    public const string Suspended = "suspended";
+
+    /// <summary>Switched off (<c>isActive</c> false), neither suspended nor deleted.</summary>
+    public const string Inactive = "inactive";
+
+    /// <summary>Soft-deleted.</summary>
+    public const string Deleted = "deleted";
+
+    /// <summary>Every branch on the Free tier (and a venue with no branch).</summary>
+    public const string Free = "free";
+
+    /// <summary>Some branches paid, some not.</summary>
+    public const string Mixed = "mixed";
+
+    /// <summary>Every branch on the Paid tier.</summary>
+    public const string Paid = "paid";
+
+    public const string SortName = "name";
+
+    /// <summary>The average of the published reviews across every branch.</summary>
+    public const string SortRating = "rating";
+
+    /// <summary>Active tables across every branch.</summary>
+    public const string SortTables = "tables";
+
+    /// <summary>When the venue was created.</summary>
+    public const string SortCreated = "created";
+
+    public const string Ascending = "asc";
+
+    public const string Descending = "desc";
+
+    /// <summary>The accepted <c>status</c> values.</summary>
+    public static readonly IReadOnlyList<string> Statuses = [Live, All, Active, Suspended, Inactive, Deleted];
+
+    /// <summary>The accepted <c>tier</c> values.</summary>
+    public static readonly IReadOnlyList<string> Tiers = [Free, Mixed, Paid];
+
+    /// <summary>The accepted <c>sort</c> values.</summary>
+    public static readonly IReadOnlyList<string> Sorts = [SortName, SortRating, SortTables, SortCreated];
+
+    /// <summary>The accepted <c>dir</c> values.</summary>
+    public static readonly IReadOnlyList<string> Directions = [Ascending, Descending];
+}
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSize, int TotalCount);
 
@@ -131,12 +212,46 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSi
 /// <param name="SuspendedAtUtc">When it was suspended, if it is.</param>
 /// <param name="DeletedAtUtc">When it was deleted, if it was. Never cleared.</param>
 /// <param name="BranchCount">How many branches it has.</param>
-/// <param name="TableCount">How many tables across all of them.</param>
+/// <param name="TableCount">
+/// How many <b>active</b> tables across all of them. A table kept only for its history is not one the
+/// room has, the same rule the readiness checklist counts by.
+/// </param>
 /// <param name="PaidBranchCount">How many of those branches are on the paid tier.</param>
 /// <param name="SubscriptionTier">
-/// The rollup: <c>Paid</c> when every branch is paid, otherwise <c>Free</c>. The real flag is per
-/// branch - see <paramref name="PaidBranchCount"/>.
+/// The older rollup: <c>Paid</c> when every branch is paid, otherwise <c>Free</c> - a mixed venue reads
+/// Free here. <paramref name="TierMix"/> says which it is; the real flag is per branch, in
+/// <paramref name="Branches"/>.
 /// </param>
+/// <param name="Status">
+/// The four booleans above as one value: 4 Deleted, else 2 Suspended, else 3 Inactive (switched off),
+/// else 1 Active.
+/// </param>
+/// <param name="TierMix">
+/// 1 Free (no branch paid, or no branch at all), 2 Mixed (some), 3 Paid (every one) - what the list's
+/// tier column shows, with <paramref name="PaidBranchCount"/> of <paramref name="BranchCount"/>.
+/// </param>
+/// <param name="Branches">Every branch with its own tier, active ones first, then by name.</param>
+/// <param name="AverageRating">
+/// The average of the published reviews across every branch, to one decimal; absent with none. The
+/// same rule the public pages use, over the whole venue.
+/// </param>
+/// <param name="ReviewCount">Published reviews across every branch.</param>
+/// <param name="OpenTabCount">Tabs open or closing right now, across every branch.</param>
+/// <param name="ReadinessIssue">
+/// The first thing a guest would find missing at the first branch that has one, in the order of
+/// <paramref name="Branches"/> - with that branch's name - or absent when nothing is. Codes:
+/// <c>no-tables</c>, <c>no-menu</c>, <c>incomplete-dishes</c> (with <c>count</c>), <c>no-hours</c>,
+/// <c>no-photo</c>. Never set for a deleted venue.
+/// </param>
+/// <param name="NotReadyBranchCount">How many branches have at least one such issue.</param>
+/// <param name="CoverThumbnailUrl">
+/// The thumbnail of the first branch's cover photo, in the order of <paramref name="Branches"/>:
+/// root-relative (<c>/api/photos/{id}/thumbnail</c>) for an uploaded photo, absolute for a migrated
+/// one. Absent when no branch has a cover.
+/// </param>
+/// <param name="District">The first branch's district, as the listing form saved it.</param>
+/// <param name="Cuisine">The first branch's cuisine, as the listing form saved it.</param>
+/// <param name="CreatedAtUtc">When the venue was created.</param>
 public sealed record VenueSummary(
     Guid VenueId,
     string Name,
@@ -150,8 +265,58 @@ public sealed record VenueSummary(
     int BranchCount,
     int TableCount,
     int PaidBranchCount,
-    SubscriptionTier SubscriptionTier);
+    SubscriptionTier SubscriptionTier,
+    VenueStatus Status,
+    TierMix TierMix,
+    IReadOnlyList<BranchTierView> Branches,
+    double? AverageRating,
+    int ReviewCount,
+    int OpenTabCount,
+    VenueReadinessIssue? ReadinessIssue,
+    int NotReadyBranchCount,
+    string? CoverThumbnailUrl,
+    string? District,
+    string? Cuisine,
+    DateTime CreatedAtUtc);
 
+/// <summary>One branch's tier and what it still lacks, as the venue list shows it.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="Name">Its name.</param>
+/// <param name="SubscriptionTier">1 Free, 2 Paid. Set per branch with <c>PATCH /api/platform/branches/{id}</c>.</param>
+/// <param name="IsActive">Whether the branch is switched on.</param>
+/// <param name="Issues">
+/// What a guest would find missing at the branch, in checklist order: <c>no-tables</c>, <c>no-menu</c>,
+/// <c>incomplete-dishes</c> (with <c>count</c>), <c>no-hours</c>, then <c>no-photo</c>. Empty when there
+/// is nothing to do. Always empty for a deleted venue, which is not worked out. The full checklist is
+/// <c>GET /api/branches/{id}/readiness</c>.
+/// </param>
+public sealed record BranchTierView(
+    Guid BranchId,
+    string Name,
+    SubscriptionTier SubscriptionTier,
+    bool IsActive,
+    IReadOnlyList<ReadinessIssue> Issues);
+
+/// <summary>The one issue the venue table shows, and the branch it is at.</summary>
+/// <param name="Code"><c>no-tables</c>, <c>no-menu</c>, <c>incomplete-dishes</c>, <c>no-hours</c> or <c>no-photo</c>.</param>
+/// <param name="Count">How many, for <c>incomplete-dishes</c>; absent otherwise.</param>
+/// <param name="BranchName">The branch it is at.</param>
+public sealed record VenueReadinessIssue(string Code, int? Count, string BranchName);
+
+/// <summary>One branch as the platform's venue page shows it.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="VenueId">Its venue.</param>
+/// <param name="Name">Its name.</param>
+/// <param name="Slug">URL segment, unique within the venue.</param>
+/// <param name="Address">Street address.</param>
+/// <param name="Latitude">The map pin.</param>
+/// <param name="Longitude">The map pin.</param>
+/// <param name="TimeZoneId">IANA zone; every local time at the branch is in it.</param>
+/// <param name="IsActive">Whether the branch is switched on.</param>
+/// <param name="SubscriptionTier">1 Free, 2 Paid.</param>
+/// <param name="TableCount">Active tables. A table kept only for its history is not counted.</param>
+/// <param name="OpenTabCount">Tabs open or closing at the branch right now.</param>
+/// <param name="District">As the listing form saved it.</param>
 public sealed record BranchSummary(
     Guid BranchId,
     Guid VenueId,
@@ -163,7 +328,9 @@ public sealed record BranchSummary(
     string TimeZoneId,
     bool IsActive,
     SubscriptionTier SubscriptionTier,
-    int TableCount);
+    int TableCount,
+    int OpenTabCount,
+    string? District);
 
 public sealed record VenueDetail(VenueSummary Venue, IReadOnlyList<BranchSummary> Branches);
 
@@ -190,6 +357,13 @@ public interface IPlatformService
     Task<VenueDetail> SuspendVenueAsync(Guid venueId, CancellationToken cancellationToken = default);
 
     Task<VenueDetail> ReactivateVenueAsync(Guid venueId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Undoes a soft delete: the venue comes back as it was before - switched on or off, suspended or
+    /// not. A venue that is not deleted is answered as it is and nothing is written.
+    /// </summary>
+    /// <exception cref="DomainStateException">The venue's web address is now another venue's.</exception>
+    Task<VenueDetail> RestoreVenueAsync(Guid venueId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Soft delete. Refused, naming the blockers, while any tab is open or any confirmed booking

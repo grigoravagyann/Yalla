@@ -23,6 +23,12 @@ internal sealed class BranchReviewReportConfiguration : EntityConfiguration<Bran
 
         builder.Property(r => r.Note).HasMaxLength(FieldLengths.Reason);
 
+        // A platform admin's "nothing wrong here": the report stays, and stops counting. No foreign
+        // key to the admin - the audit log is the record of who acted, as for a hidden review.
+        builder.Property(r => r.DismissedAtUtc);
+
+        builder.Property(r => r.DismissedByStaffMemberId);
+
         // Cascade from the review: a report is about that review and means nothing without it, and
         // deleting an account deletes its reviews in one statement. The only cascade into this table,
         // so SQL Server has one path and no cycle.

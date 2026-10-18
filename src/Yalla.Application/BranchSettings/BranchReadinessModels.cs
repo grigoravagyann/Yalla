@@ -64,6 +64,11 @@ namespace Yalla.Application.BranchSettings;
 /// is for the places that need to say what is wrong without reimplementing the list - a log line,
 /// a support answer, an email to the venue.
 /// </param>
+/// <param name="Issues">
+/// The same unsatisfied lines as <paramref name="Blockers"/>, one for one and in the same order, as
+/// stable codes a client can switch on - <see cref="ReadinessIssueCodes"/> - with the count behind
+/// the ones that have one. The platform console's venue list and Home show the first of these.
+/// </param>
 public sealed record BranchReadinessView(
     Guid BranchId,
     bool IsReadyForDiners,
@@ -84,7 +89,61 @@ public sealed record BranchReadinessView(
     bool DeviceEnrolled,
     int DeviceCount,
     bool AcceptsWebBookings,
-    IReadOnlyList<string> Blockers);
+    IReadOnlyList<string> Blockers,
+    IReadOnlyList<ReadinessIssue> Issues);
+
+/// <summary>One thing a branch still lacks, as a code and, where it has one, the count behind it.</summary>
+/// <param name="Code">One of <see cref="ReadinessIssueCodes"/>.</param>
+/// <param name="Count">
+/// How many, when the line counts something - the unfinished dishes for
+/// <c>incomplete-dishes</c>. Absent for a line that is simply missing.
+/// </param>
+public sealed record ReadinessIssue(string Code, int? Count = null);
+
+/// <summary>
+/// The codes <see cref="BranchReadinessView.Issues"/> uses. Stable: clients branch on them and show
+/// their own words.
+/// </summary>
+/// <remarks>
+/// Every code but <see cref="NoPhoto"/> is a line of the readiness checklist and blocks
+/// <see cref="BranchReadinessView.IsReadyForDiners"/>. The cover photo is a listing check the platform
+/// console adds beside them - a branch with no picture still takes diners, but it is the first thing
+/// they see missing - and the checklist itself never reports it. The console shows only the lines a
+/// guest would notice: <c>no-tables</c>, <c>no-menu</c>, <c>incomplete-dishes</c>, <c>no-hours</c> and
+/// <c>no-photo</c> (see <c>PlatformRollups.GuestFacingIssues</c>).
+/// </remarks>
+public static class ReadinessIssueCodes
+{
+    /// <summary>No active table at the branch.</summary>
+    public const string NoTables = "no-tables";
+
+    /// <summary>Some active table has no label.</summary>
+    public const string TablesUnlabelled = "tables-unlabelled";
+
+    /// <summary>The menu has no categories.</summary>
+    public const string NoMenu = "no-menu";
+
+    /// <summary>The menu has categories and no dishes.</summary>
+    public const string MenuEmpty = "menu-empty";
+
+    /// <summary>Dishes not fit to show a diner; the count is how many.</summary>
+    public const string IncompleteDishes = "incomplete-dishes";
+
+    /// <summary>No opening hours on any day.</summary>
+    public const string NoHours = "no-hours";
+
+    /// <summary>Nobody has saved the reservation policy; it is still the defaults.</summary>
+    public const string PolicyNotReviewed = "policy-not-reviewed";
+
+    /// <summary>No active staff member works at the branch.</summary>
+    public const string NoStaff = "no-staff";
+
+    /// <summary>No tablet is enrolled at the branch.</summary>
+    public const string NoDevice = "no-device";
+
+    /// <summary>The branch has no cover photo. Reported by the platform console only; never a checklist blocker.</summary>
+    public const string NoPhoto = "no-photo";
+}
 
 /// <summary>Reads how far along a branch's setup is.</summary>
 /// <remarks>
@@ -97,6 +156,15 @@ public interface IBranchReadinessQuery
 {
     /// <exception cref="KeyNotFoundException">No such branch.</exception>
     Task<BranchReadinessView> GetAsync(Guid branchId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The same checklist for many branches at once, in a fixed number of queries however many there
+    /// are. <see cref="GetAsync"/> is this for one branch, so the two cannot disagree.
+    /// </summary>
+    /// <returns>One view per branch that exists; an id with no branch behind it is left out.</returns>
+    Task<IReadOnlyDictionary<Guid, BranchReadinessView>> GetManyAsync(
+        IReadOnlyCollection<Guid> branchIds,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// How many of a branch's menu items are not fit to show a diner, and which.

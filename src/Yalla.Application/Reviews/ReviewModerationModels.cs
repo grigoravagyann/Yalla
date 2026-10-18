@@ -6,7 +6,7 @@ public static class ReviewModerationFilters
     /// <summary>Every review, published or hidden.</summary>
     public const string All = "all";
 
-    /// <summary>Reviews with at least one report, most recently reported first.</summary>
+    /// <summary>Reviews with at least one report nobody has dismissed, most recently reported first.</summary>
     public const string Reported = "reported";
 
     /// <summary>Reviews that are taken down.</summary>
@@ -35,8 +35,12 @@ public static class ReviewModerationFilters
 /// Taken down by the platform rather than the venue. A venue cannot put these back; the console
 /// shows them as the platform's decision.
 /// </param>
-/// <param name="ReportCount">How many diners reported it.</param>
-/// <param name="LastReportedAtUtc">The newest report, or absent when there is none.</param>
+/// <param name="ReportCount">
+/// How many diners reported it and nobody has dismissed. A platform admin dismissing the reports
+/// (<c>POST /api/platform/reviews/{id}/dismiss-reports</c>) brings this to zero for both tiers; a report
+/// filed after that counts again.
+/// </param>
+/// <param name="LastReportedAtUtc">The newest of those reports, or absent when there is none.</param>
 public sealed record ModeratedReviewView(
     Guid ReviewId,
     Guid BranchId,
@@ -129,5 +133,16 @@ public interface IReviewModerationService
     Task<ModeratedReviewView> SetVisibilityForPlatformAsync(
         Guid reviewId,
         SetReviewVisibilityCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sets aside every report on a review without hiding it, as the platform: the review stays as it
+    /// is and stops counting as reported. Idempotent - a review with no open report is answered as it
+    /// is and nothing is written. Audited as <c>review.dismiss-reports</c>.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not an active platform admin.</exception>
+    /// <exception cref="KeyNotFoundException">No such review.</exception>
+    Task<ModeratedReviewView> DismissReportsForPlatformAsync(
+        Guid reviewId,
         CancellationToken cancellationToken = default);
 }

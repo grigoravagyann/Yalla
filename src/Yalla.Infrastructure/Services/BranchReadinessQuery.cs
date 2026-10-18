@@ -25,107 +25,213 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
 {
     public async Task<BranchReadinessView> GetAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
-        var branch = await db.Branches
+        var views = await GetManyAsync([branchId], cancellationToken);
+
+        return views.TryGetValue(branchId, out var view)
+            ? view
+            : throw new KeyNotFoundException($"Branch {branchId} was not found.");
+    }
+
+    /// <remarks>
+    /// <para>
+    /// The same small counts as ever, each grouped by branch rather than filtered to one, so the
+    /// platform's venue list and Home pay for the same handful of queries whether they ask about one
+    /// branch or two hundred. <see cref="GetAsync"/> is a call to this with one id, which is what keeps
+    /// the checklist a manager reads and the platform's "not ready" column one definition.
+    /// </para>
+    /// <para>
+    /// Every row the grouped queries return is a few columns about a branch that was asked about; the
+    /// largest is the incomplete-dish ids, which the checklist has always returned in full.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<Guid, BranchReadinessView>> GetManyAsync(
+        IReadOnlyCollection<Guid> branchIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(branchIds);
+
+        var ids = branchIds.Distinct().ToList();
+
+        if (ids.Count == 0)
+        {
+            return new Dictionary<Guid, BranchReadinessView>();
+        }
+
+        var branches = await db.Branches
             .AsNoTracking()
-            .Where(b => b.Id == branchId)
+            .Where(b => ids.Contains(b.Id))
             .Select(b => new { b.Id, b.VenueId, b.ReservationPolicyReviewedAtUtc, b.AcceptsWebBookings })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+            .ToListAsync(cancellationToken);
+
+        if (branches.Count == 0)
+        {
+            return new Dictionary<Guid, BranchReadinessView>();
+        }
+
+        var found = branches.Select(b => b.Id).ToList();
+        var venueIds = branches.Select(b => b.VenueId).Distinct().ToList();
 
         // Inactive tables are excluded: a table that was deleted-but-kept for its history is not a
         // table the room has, and counting it would tick "floor plan drawn" for an empty room.
-        var tables = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.BranchId == branchId && t.IsActive)
-            .Select(t => t.Label)
-            .ToListAsync(cancellationToken);
+        var tables = (await db.DiningTables
+                .AsNoTracking()
+                .Where(t => found.Contains(t.BranchId) && t.IsActive)
+                .Select(t => new { t.BranchId, t.Label })
+                .ToListAsync(cancellationToken))
+            .ToLookup(t => t.BranchId, t => t.Label);
 
-        var categoryCount = await db.MenuCategories
+        var categoryCounts = await db.MenuCategories
             .AsNoTracking()
-            .CountAsync(c => c.BranchId == branchId, cancellationToken);
+            .Where(c => found.Contains(c.BranchId))
+            .GroupBy(c => c.BranchId)
+            .Select(g => new { BranchId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.BranchId, g => g.Count, cancellationToken);
 
-        var itemCount = await db.MenuItems
+        var itemCounts = await db.MenuItems
             .AsNoTracking()
-            .CountAsync(i => i.MenuCategory.BranchId == branchId, cancellationToken);
+            .Where(i => found.Contains(i.MenuCategory.BranchId))
+            .GroupBy(i => i.MenuCategory.BranchId)
+            .Select(g => new { BranchId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.BranchId, g => g.Count, cancellationToken);
 
-        var incomplete = await IncompleteMenuItemIdsAsync(branchId, cancellationToken);
+        var incomplete = (await IncompleteItems(found)
+                .Select(i => new { i.MenuCategory.BranchId, i.Id })
+                .ToListAsync(cancellationToken))
+            .ToLookup(i => i.BranchId, i => i.Id);
 
-        var openDays = await db.OpeningHours
-            .AsNoTracking()
-            .Where(h => h.BranchId == branchId)
-            .Select(h => h.Day)
-            .Distinct()
-            .CountAsync(cancellationToken);
+        var openDays = (await db.OpeningHours
+                .AsNoTracking()
+                .Where(h => found.Contains(h.BranchId))
+                .Select(h => new { h.BranchId, h.Day })
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .GroupBy(h => h.BranchId)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         // Staff belong to the venue and may be branch-scoped or venue-wide, so somebody assigned to
         // no particular branch counts for every branch of their venue - which is what an owner is.
         // Platform admins are excluded: they run Yalla, they do not staff a floor.
-        var staffCount = await db.StaffMembers
+        var staff = await db.StaffMembers
             .AsNoTracking()
-            .CountAsync(
-                s => s.IsActive
-                     && s.Role != StaffRole.PlatformAdmin
-                     && s.VenueId == branch.VenueId
-                     && (s.BranchId == null || s.BranchId == branchId),
-                cancellationToken);
+            .Where(s => s.IsActive
+                        && s.Role != StaffRole.PlatformAdmin
+                        && s.VenueId != null
+                        && venueIds.Contains(s.VenueId.Value))
+            .GroupBy(s => new { s.VenueId, s.BranchId })
+            .Select(g => new { g.Key.VenueId, g.Key.BranchId, Count = g.Count() })
+            .ToListAsync(cancellationToken);
 
-        var deviceCount = await db.StaffDevices
+        var deviceCounts = await db.StaffDevices
             .AsNoTracking()
-            .CountAsync(d => d.BranchId == branchId && d.RevokedAtUtc == null, cancellationToken);
+            .Where(d => found.Contains(d.BranchId) && d.RevokedAtUtc == null)
+            .GroupBy(d => d.BranchId)
+            .Select(g => new { BranchId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(g => g.BranchId, g => g.Count, cancellationToken);
 
+        var views = new Dictionary<Guid, BranchReadinessView>(branches.Count);
+
+        foreach (var branch in branches)
+        {
+            var staffCount = staff
+                .Where(s => s.VenueId == branch.VenueId && (s.BranchId == null || s.BranchId == branch.Id))
+                .Sum(s => s.Count);
+
+            views[branch.Id] = Compose(
+                branch.Id,
+                [.. tables[branch.Id]],
+                categoryCounts.GetValueOrDefault(branch.Id),
+                itemCounts.GetValueOrDefault(branch.Id),
+                [.. incomplete[branch.Id]],
+                openDays.GetValueOrDefault(branch.Id),
+                branch.ReservationPolicyReviewedAtUtc is not null,
+                staffCount,
+                deviceCounts.GetValueOrDefault(branch.Id),
+                branch.AcceptsWebBookings);
+        }
+
+        return views;
+    }
+
+    /// <summary>
+    /// The checklist from its counts. One place writes both the sentences and the codes, line for
+    /// line, so <see cref="BranchReadinessView.Blockers"/> and <see cref="BranchReadinessView.Issues"/>
+    /// cannot drift apart.
+    /// </summary>
+    private static BranchReadinessView Compose(
+        Guid branchId,
+        List<string> tables,
+        int categoryCount,
+        int itemCount,
+        List<Guid> incomplete,
+        int openDays,
+        bool policyReviewed,
+        int staffCount,
+        int deviceCount,
+        bool acceptsWebBookings)
+    {
         var floorPlanDrawn = tables.Count > 0;
         var tablesLabelled = floorPlanDrawn && tables.TrueForAll(label => !string.IsNullOrWhiteSpace(label));
         var categoriesPresent = categoryCount > 0;
         var menuComplete = categoriesPresent && itemCount > 0 && incomplete.Count == 0;
         var hoursSet = openDays > 0;
-        var policyReviewed = branch.ReservationPolicyReviewedAtUtc is not null;
         var staffEnrolled = staffCount > 0;
         var deviceEnrolled = deviceCount > 0;
 
         var blockers = new List<string>();
+        var issues = new List<ReadinessIssue>();
+
+        void Block(string sentence, string code, int? count = null)
+        {
+            blockers.Add(sentence);
+            issues.Add(new ReadinessIssue(code, count));
+        }
 
         if (!floorPlanDrawn)
         {
-            blockers.Add("The floor plan has no tables on it yet.");
+            Block("The floor plan has no tables on it yet.", ReadinessIssueCodes.NoTables);
         }
         else if (!tablesLabelled)
         {
-            blockers.Add("Some tables have no label printed on them.");
+            Block("Some tables have no label printed on them.", ReadinessIssueCodes.TablesUnlabelled);
         }
 
         if (!categoriesPresent)
         {
-            blockers.Add("The menu has no categories yet.");
+            Block("The menu has no categories yet.", ReadinessIssueCodes.NoMenu);
         }
         else if (itemCount == 0)
         {
-            blockers.Add("The menu has categories but no items.");
+            Block("The menu has categories but no items.", ReadinessIssueCodes.MenuEmpty);
         }
         else if (incomplete.Count > 0)
         {
-            blockers.Add(
+            Block(
                 $"{incomplete.Count} menu item(s) are missing a photo, a description, ingredients, "
-                + "allergens, a portion size or a prep time, and are hidden from diners until they are finished.");
+                + "allergens, a portion size or a prep time, and are hidden from diners until they are finished.",
+                ReadinessIssueCodes.IncompleteDishes,
+                incomplete.Count);
         }
 
         if (!hoursSet)
         {
-            blockers.Add("Opening hours have not been set.");
+            Block("Opening hours have not been set.", ReadinessIssueCodes.NoHours);
         }
 
         if (!policyReviewed)
         {
-            blockers.Add("Nobody has reviewed the reservation policy; it is still on the defaults.");
+            Block(
+                "Nobody has reviewed the reservation policy; it is still on the defaults.",
+                ReadinessIssueCodes.PolicyNotReviewed);
         }
 
         if (!staffEnrolled)
         {
-            blockers.Add("No staff work at this branch yet.");
+            Block("No staff work at this branch yet.", ReadinessIssueCodes.NoStaff);
         }
 
         if (!deviceEnrolled)
         {
-            blockers.Add("No tablet has been enrolled at this branch.");
+            Block("No tablet has been enrolled at this branch.", ReadinessIssueCodes.NoDevice);
         }
 
         return new BranchReadinessView(
@@ -151,8 +257,9 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
             // Reported, never a blocker - see BranchReadinessView. It is deliberately absent from
             // the blockers list above, and adding it there would stop every venue that does not
             // want web bookings from ever reading as ready.
-            AcceptsWebBookings: branch.AcceptsWebBookings,
-            Blockers: blockers);
+            AcceptsWebBookings: acceptsWebBookings,
+            Blockers: blockers,
+            Issues: issues);
     }
 
     /// <summary>
@@ -166,11 +273,15 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
     public async Task<IReadOnlyList<Guid>> IncompleteMenuItemIdsAsync(
         Guid branchId,
         CancellationToken cancellationToken = default) =>
-        await db.MenuItems
-            .AsNoTracking()
-            .Where(i => i.MenuCategory.BranchId == branchId)
-            .Where(MenuItemCompleteness.Incomplete)
-            .OrderBy(i => i.Id)
+        await IncompleteItems([branchId])
             .Select(i => i.Id)
             .ToListAsync(cancellationToken);
+
+    /// <summary>The unfinished dishes of these branches, oldest first - one filter for both reads.</summary>
+    private IQueryable<MenuItem> IncompleteItems(List<Guid> branchIds) =>
+        db.MenuItems
+            .AsNoTracking()
+            .Where(i => branchIds.Contains(i.MenuCategory.BranchId))
+            .Where(MenuItemCompleteness.Incomplete)
+            .OrderBy(i => i.Id);
 }
