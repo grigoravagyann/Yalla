@@ -352,11 +352,13 @@ internal sealed class PlatformOverviewQuery(
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        // A request whose time has passed is no longer one anybody can approve.
+        // A request whose time has passed, or whose answer window has closed, is no longer one anybody
+        // can approve - the same predicate the venue's own approval queue lists by.
         var counts = await db.Reservations
             .AsNoTracking()
             .Where(r => r.Status == ReservationStatus.PendingApproval
                         && r.StartUtc > nowUtc
+                        && (r.ApprovalExpiresAtUtc == null || r.ApprovalExpiresAtUtc > nowUtc)
                         && r.Branch.Venue.DeletedAtUtc == null)
             .GroupBy(r => r.Branch.VenueId)
             .Select(g => new { VenueId = g.Key, Count = g.Count() })

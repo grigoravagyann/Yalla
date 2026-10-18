@@ -1,9 +1,10 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
+using Yalla.Application.Auth;
 using Yalla.Application.Platform;
 using Yalla.Application.Reviews;
-using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.Endpoints;
 
@@ -71,13 +72,14 @@ public static class PlatformEndpoints
                 + "venue is Mixed when only some branches pay) and `branches`, every branch with its own "
                 + "tier and `issues`; `status` (1 Active, 2 Suspended, 3 Inactive, 4 Deleted); "
                 + "`averageRating` and `reviewCount` over the published reviews of every branch; `openTabCount`; "
-                + "`readinessIssue` (`code`, `count`, `branchName`), the first thing a guest would find missing - "
+                + "`readinessIssue` (`code`, `count`, `branchName`), the first thing a guest would find missing at an "
+                + "active branch - setup progress, so suspended venues count and switched-off branches never do - "
                 + "`no-tables`, `no-menu`, `incomplete-dishes`, `no-hours` or `no-photo`; `coverThumbnailUrl`, the "
                 + "first branch's cover thumbnail; `district`, `cuisine` and `createdAtUtc`.\n\n"
                 + "`search` matches the venue's name and slug and each branch's name and district. "
                 + "`status`: `live` (default: every venue not deleted), `all`, `active`, `suspended`, "
                 + "`inactive` or `deleted`; the older `includeDeleted=true` is `all` when no `status` is "
-                + "sent. `tier`: `free`, `mixed` or `paid`. `sort`: `name` (default), `rating`, `tables` or "
+                + "sent. `tier`: `free`, `mixed` or `paid`; blank is every tier. `sort`: `name` (default), `rating`, `tables` or "
                 + "`created`; `dir`: `asc` (default) or `desc` - a venue with no rating sorts below every "
                 + "rated one. `page` from 1, `pageSize` 1-200 (default 20).")
             .Produces<PagedResult<VenueSummary>>()
@@ -172,7 +174,7 @@ public static class PlatformEndpoints
                 + "was then, and **still suspended if it was suspended** - deleting never touched the "
                 + "suspension. Nothing under it was removed, so nothing is rebuilt; its branches, tables, "
                 + "staff and history are all where they were, and it accepts changes again. A venue "
-                + "deleted before this was recorded comes back switched on.\n\n"
+                + "deleted before this was recorded comes back switched off, for somebody to switch on on purpose.\n\n"
                 + "A venue that is not deleted is answered as it is and nothing is written, so an undo "
                 + "that arrives twice is harmless. Refused with **409** when its web address now belongs "
                 + "to another venue - which the unique slug index, covering deleted venues, keeps from "
@@ -267,6 +269,21 @@ public static class PlatformEndpoints
             .Produces<ModeratedReviewView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such review.");
 
+        group.MapPost("/reviews/{reviewId:guid}/restore-reports", RestoreReviewReportsAsync)
+            .WithName("restorePlatformReviewReports")
+            .WithSummary("Undo the last dismissal of a review's reports")
+            .WithDescription(
+                "The console's undo for `dismiss-reports`: the reports the **most recent** dismissal of this "
+                + "review set aside count again - exactly those, recognised by the dismissal's instant, which "
+                + "every report it dismissed shares. Reports dismissed by an earlier dismissal stay dismissed; "
+                + "reports filed since are untouched. The review itself is not changed.\n\n"
+                + "**One dismissal, once**: when the review was already restored after its latest dismissal - "
+                + "or nothing was ever dismissed - it is answered as it is and nothing is written; a second "
+                + "undo never reaches back to an older dismissal. **Audited** as `review.restore-reports`, "
+                + "with how many came back. Answers the review as the moderation list shows it.")
+            .Produces<ModeratedReviewView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such review.");
+
         group.MapGet("/me", GetMeAsync)
             .WithName("getPlatformAdminProfile")
             .WithSummary("The signed-in platform admin's own account")
@@ -296,14 +313,26 @@ public static class PlatformEndpoints
                 + "every console password follows. Everything wrong is reported in one 422: a wrong current "
                 + "password is `context.fields` naming `currentPassword`, not a 401, so the console stays "
                 + "signed in and shows it under the field.\n\n"
-                + "**Every other sign-in is signed out**: their refresh tokens are revoked, and their access "
-                + "tokens run out within their 15 minutes. The sign-in this request came from keeps its "
-                + "refresh token and carries on. The seed never resets a password changed here. "
+                + "**Answers a fresh token pair - store it.** The change ends every session the account has, "
+                + "at once: the session generation moves, so every admin-panel access token it holds - the one "
+                + "this request was sent with included - is refused from now on with `401 session-revoked`, "
+                + "every refresh token is revoked and every unused reset link is spent. The body "
+                + "(`accessToken`, `refreshToken`, `expiresInSeconds`, the refresh endpoint's shape) is how "
+                + "the sign-in that made the change carries on.\n\n"
+                + "**Wrong current passwords are counted per account**: each is audited as "
+                + "`admin.password-change-failed`, and after 10 inside 15 minutes the route answers "
+                + "`429 too-many-attempts` with `Retry-After` (and `context.retryAfterSeconds`) until the oldest "
+                + "leaves the window - right password or not. A successful change starts the count again. The "
+                + "route is also under the `auth` rate limit. The seed never resets a password changed here. "
                 + "**Audited** as `admin.password-change`, with nothing about either password.")
-            .Produces(StatusCodes.Status204NoContent)
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy)
+            .Produces<RefreshResult>()
             .ProducesProblem<ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity,
                 "`currentPassword` missing or wrong, or `newPassword` missing or too short - every one at once.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests,
+                "Too many wrong current passwords, or the `auth` rate limit; `Retry-After` says how long to wait.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Platform admin only.");
 
         return app;
@@ -344,18 +373,16 @@ public static class PlatformEndpoints
     private static async Task<IResult> ChangeMyPasswordAsync(
         ChangePlatformAdminPasswordRequest request,
         IPlatformAdminAccountService account,
-        HttpContext http,
-        CancellationToken cancellationToken)
-    {
-        await account.ChangePasswordAsync(
-            new ChangePlatformAdminPasswordCommand(
-                request.CurrentPassword,
-                request.NewPassword,
-                YallaClaims.ReadRefreshChainId(http.User)),
-            cancellationToken);
+        CancellationToken cancellationToken) =>
+        Results.Ok(await account.ChangePasswordAsync(
+            new ChangePlatformAdminPasswordCommand(request.CurrentPassword, request.NewPassword),
+            cancellationToken));
 
-        return Results.NoContent();
-    }
+    private static async Task<IResult> RestoreReviewReportsAsync(
+        Guid reviewId,
+        IReviewModerationService moderation,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await moderation.RestoreReportsForPlatformAsync(reviewId, cancellationToken));
 
     private static async Task<IResult> ListBranchReviewsAsync(
         Guid branchId,

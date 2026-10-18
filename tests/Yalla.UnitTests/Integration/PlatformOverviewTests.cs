@@ -157,11 +157,18 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
 
         var before = await query.GetOverviewAsync();
 
-        // Two requests still waiting for a visit ahead; one whose time has gone; one already confirmed.
+        // Two requests still waiting for a visit ahead; one whose time has gone; one already confirmed;
+        // and one ahead whose answer window has closed - the sweep is about to decline it.
         await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(1), ReservationStatus.PendingApproval);
-        await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(2), ReservationStatus.PendingApproval, tableIndex: 1);
+        var withDeadline = await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(2), ReservationStatus.PendingApproval, tableIndex: 1);
         await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(-2), ReservationStatus.PendingApproval, tableIndex: 2);
         await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(1), ReservationStatus.Confirmed, tableIndex: 3);
+        var lapsed = await ConsoleTestData.AddBookingAsync(db, branch, today.AddDays(3), ReservationStatus.PendingApproval, tableIndex: 2);
+
+        var deadline = clock.UtcNow.AddHours(1);
+        var gone = clock.UtcNow.AddMinutes(-1);
+        await db.Database.ExecuteSqlAsync($"UPDATE dbo.Reservations SET ApprovalExpiresAtUtc = {deadline} WHERE Id = {withDeadline.Id}");
+        await db.Database.ExecuteSqlAsync($"UPDATE dbo.Reservations SET ApprovalExpiresAtUtc = {gone} WHERE Id = {lapsed.Id}");
 
         // A tab open, one closing, one closed.
         await ConsoleTestData.AddTabAsync(db, branch, 0, clock.UtcNow, TabStatus.Open);

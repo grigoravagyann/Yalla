@@ -48,7 +48,8 @@ public sealed class Venue : Entity
 
     /// <summary>
     /// Whether the venue was switched on when it was deleted - what <see cref="Restore"/> puts back.
-    /// Null for a live venue, and for one deleted before this was recorded, which restores switched on.
+    /// Null for a live venue, and for one deleted before this was recorded, which restores switched
+    /// <b>off</b>: when nobody knows, a venue comes back hidden rather than in front of diners.
     /// </summary>
     public bool? ActiveBeforeDeletion { get; private set; }
 
@@ -137,7 +138,8 @@ public sealed class Venue : Entity
     /// <summary>
     /// Undoes <see cref="SoftDelete"/>: the venue comes back as it was before - switched on or off as
     /// it was then, and still suspended if it was suspended, because deleting never touched the
-    /// suspension. Nothing under it was removed, so nothing needs rebuilding.
+    /// suspension. Nothing under it was removed, so nothing needs rebuilding. A venue deleted before
+    /// that was recorded comes back switched off, for somebody to switch on on purpose.
     /// </summary>
     /// <returns>True when it was deleted and is now restored; false when it was not deleted.</returns>
     public bool Restore()
@@ -147,7 +149,7 @@ public sealed class Venue : Entity
             return false;
         }
 
-        IsActive = ActiveBeforeDeletion ?? true;
+        IsActive = ActiveBeforeDeletion ?? false;
         DeletedAtUtc = null;
         ActiveBeforeDeletion = null;
 

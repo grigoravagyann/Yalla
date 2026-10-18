@@ -74,6 +74,13 @@ internal sealed class UnifiedExceptionHandler(
         // The schema promised application/problem+json and the wire delivered application/json.
         httpContext.Response.ContentType = ProblemMediaType;
 
+        // When the refusal knows how long to wait, it says so the way the rate limiter does.
+        if (mapped.RetryAfterSeconds is { } retryAfter)
+        {
+            httpContext.Response.Headers.RetryAfter =
+                retryAfter.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         // A 401 that does not say how to authenticate is not a 401 a client can act on.
         if (mapped.Status == StatusCodes.Status401Unauthorized
             && !httpContext.Response.Headers.ContainsKey("WWW-Authenticate"))

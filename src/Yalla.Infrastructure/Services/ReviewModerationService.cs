@@ -47,6 +47,9 @@ internal sealed class ReviewModerationService(
     /// <summary>The audit action for setting a review's reports aside without hiding it.</summary>
     public const string DismissReportsAuditAction = "review.dismiss-reports";
 
+    /// <summary>The audit action for undoing the last dismissal.</summary>
+    public const string RestoreReportsAuditAction = "review.restore-reports";
+
     /// <summary>The largest page the list serves.</summary>
     public const int MaxPageSize = 100;
 
@@ -167,6 +170,69 @@ internal sealed class ReviewModerationService(
             logger.LogInformation(
                 "Platform admin {StaffMemberId} dismissed {Count} report(s) on review {ReviewId}.",
                 staffId, open.Count, review.Id);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return await ViewAsync(review.Id, cancellationToken);
+    }
+
+    public async Task<ModeratedReviewView> RestoreReportsForPlatformAsync(
+        Guid reviewId,
+        CancellationToken cancellationToken = default)
+    {
+        var staffId = await RequirePlatformAdminAsync("Restoring a review's reports", cancellationToken);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The lock a dismissal takes, so an undo and a second dismissal cannot interleave.
+        var review = await LockedReview(reviewId).FirstOrDefaultAsync(cancellationToken)
+                     ?? throw ReviewNotFound(reviewId);
+
+        // One dismissal stamps every report it sets aside with the same instant, so the latest instant
+        // names the latest dismissal - and only its reports come back.
+        var latest = await db.BranchReviewReports
+            .Where(p => p.ReviewId == review.Id && p.DismissedAtUtc != null)
+            .MaxAsync(p => p.DismissedAtUtc, cancellationToken);
+
+        // An undo undoes one dismissal, once: when this review was last restored after its latest
+        // dismissal, that dismissal is already undone and an earlier one is not this call's to undo.
+        var lastRestore = await db.PlatformAuditLogs
+            .AsNoTracking()
+            .Where(l => l.TargetId == review.Id && l.Action == RestoreReportsAuditAction)
+            .MaxAsync(l => (DateTime?)l.AtUtc, cancellationToken);
+
+        if (latest is { } dismissedAtUtc && !(lastRestore is { } restoredAt && restoredAt >= dismissedAtUtc))
+        {
+            var batch = await db.BranchReviewReports
+                .Where(p => p.ReviewId == review.Id && p.DismissedAtUtc == dismissedAtUtc)
+                .ToListAsync(cancellationToken);
+
+            foreach (var report in batch)
+            {
+                report.Undismiss();
+            }
+
+            await PlatformAudit.RecordAsync(
+                db,
+                actor,
+                clock,
+                RestoreReportsAuditAction,
+                await ReviewTargetAsync(review, cancellationToken),
+                new
+                {
+                    actorType = "platform",
+                    branchId = review.BranchId,
+                    restored = batch.Count,
+                    dismissedAtUtc = DateTime.SpecifyKind(dismissedAtUtc, DateTimeKind.Utc),
+                },
+                cancellationToken);
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Platform admin {StaffMemberId} restored {Count} dismissed report(s) on review {ReviewId}.",
+                staffId, batch.Count, review.Id);
         }
 
         await transaction.CommitAsync(cancellationToken);

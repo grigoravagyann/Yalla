@@ -52,7 +52,8 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
                     "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorWidth DEFAULT 1000 FOR FloorWidth; "
                     + "ALTER TABLE dbo.Branches ADD CONSTRAINT DF_Test_FloorHeight DEFAULT 700 FOR FloorHeight; "
                     + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL; "
-                    + "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL;");
+                    + "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
+                    + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;");
 
                 branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
                 cover = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);

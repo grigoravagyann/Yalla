@@ -48,9 +48,12 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
 
                 // The tables these rows name have not changed in this migration, so today's entities
-                // write them as the old code did - but for the column a later migration (VenueRestore)
-                // gives Venues, which today's Venue writes and is put in place for it to find.
-                await db.Database.ExecuteSqlRawAsync("ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL;");
+                // write them as the old code did - but for the columns later migrations (VenueRestore,
+                // StaffSessionGeneration) give Venues and StaffMembers, which today's entities write and
+                // are put in place for them to find.
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
+                    + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;");
 
                 branch = await TestBranchBuilder.CreateAsync(db);
                 admin = await AuthTestData.CreatePlatformAdminAsync(db);

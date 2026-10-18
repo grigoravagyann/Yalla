@@ -101,6 +101,7 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
         Assert.Equal(branch.BranchId, listed.GetProperty("branchId").GetGuid());
         Assert.Equal(2, listed.GetProperty("subscriptionTier").GetInt32());
         Assert.True(listed.TryGetProperty("name", out _));
+        Assert.False(listed.TryGetProperty("district", out _), "a branch with no district leaves it out");
         Assert.Equal(1, row.GetProperty("paidBranchCount").GetInt32());
         Assert.Equal(0, row.GetProperty("openTabCount").GetInt32());
         Assert.Equal(0, row.GetProperty("reviewCount").GetInt32());
@@ -111,13 +112,18 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
         Assert.False(issue.TryGetProperty("count", out _));
         Assert.StartsWith("Test Branch", issue.GetProperty("branchName").GetString(), StringComparison.Ordinal);
 
+        // A blank tier is every tier, as an empty select sends it - not the first tier there is.
+        var blankTier = await (await platform.GetAsync($"/api/platform/venues?search={marker}&tier="))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(branch.VenueId, Assert.Single(blankTier.GetProperty("items").EnumerateArray()).GetProperty("venueId").GetGuid());
+
         var refused = await platform.GetAsync("/api/platform/venues?status=gone");
         Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
         Assert.Equal("status", (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("context").GetProperty("field").GetString());
     }
 
     [SkippableFact]
-    public async Task The_admin_renames_themself_and_changes_the_password_keeping_this_sign_in_and_ending_the_other()
+    public async Task The_admin_renames_themself_and_a_password_change_ends_every_session_but_answers_this_one_a_fresh_pair()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -130,9 +136,10 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
         }
 
         var (hereToken, hereRefresh) = await SignInAsync(factory, admin.Email, admin.Password);
-        var (_, elsewhereRefresh) = await SignInAsync(factory, admin.Email, admin.Password);
+        var (elsewhereToken, elsewhereRefresh) = await SignInAsync(factory, admin.Email, admin.Password);
 
         using var here = factory.CreateClientWithToken(hereToken);
+        using var elsewhere = factory.CreateClientWithToken(elsewhereToken);
 
         // ---- the name
         var blank = await here.PatchAsJsonAsync("/api/platform/me", new { fullName = "  " });
@@ -158,23 +165,107 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
 
         const string newPassword = "a-much-better-password-now";
         var changed = await here.PostAsJsonAsync("/api/platform/me/password", new { currentPassword = admin.Password, newPassword });
-        Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+
+        var pair = await changed.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(["accessToken", "refreshToken", "expiresInSeconds"], pair.EnumerateObject().Select(p => p.Name));
+
+        // Every access token from before is dead now - this one and the other sign-in's - with the
+        // answer a client knows to refresh or sign in on.
+        foreach (var stale in new[] { here, elsewhere })
+        {
+            var refused = await stale.GetAsync("/api/platform/me");
+            Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
+            Assert.Equal("session-revoked", (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        }
+
+        // The fresh pair carries on.
+        using var fresh = factory.CreateClientWithToken(pair.GetProperty("accessToken").GetString()!);
+        Assert.Equal(HttpStatusCode.OK, (await fresh.GetAsync("/api/platform/me")).StatusCode);
 
         using var anonymous = factory.CreateClient();
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await anonymous.PostAsJsonAsync("/api/auth/venue/refresh", new { refreshToken = pair.GetProperty("refreshToken").GetString() })).StatusCode);
 
-        // The old password no longer signs in; the new one does.
+        // Neither old refresh token mints anything, and the old password no longer signs in.
+        foreach (var stale in new[] { hereRefresh, elsewhereRefresh })
+        {
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await anonymous.PostAsJsonAsync("/api/auth/venue/refresh", new { refreshToken = stale })).StatusCode);
+        }
+
         Assert.Equal(
             HttpStatusCode.Unauthorized,
             (await anonymous.PostAsJsonAsync("/api/auth/venue/sign-in", new { email = admin.Email, password = admin.Password })).StatusCode);
         await SignInAsync(factory, admin.Email, newPassword);
+    }
 
-        // This sign-in refreshes and carries on; the other one is signed out.
-        Assert.Equal(
-            HttpStatusCode.OK,
-            (await anonymous.PostAsJsonAsync("/api/auth/venue/refresh", new { refreshToken = hereRefresh })).StatusCode);
-        Assert.Equal(
-            HttpStatusCode.Unauthorized,
-            (await anonymous.PostAsJsonAsync("/api/auth/venue/refresh", new { refreshToken = elsewhereRefresh })).StatusCode);
+    [SkippableFact]
+    public async Task Wrong_current_passwords_lock_the_route_with_Retry_After()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        using var platform = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin));
+
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.Equal(
+                HttpStatusCode.UnprocessableEntity,
+                (await platform.PostAsJsonAsync("/api/platform/me/password", new { currentPassword = $"wrong-{i}-password", newPassword = "a-new-password-long-enough" })).StatusCode);
+        }
+
+        var locked = await platform.PostAsJsonAsync("/api/platform/me/password", new { currentPassword = admin.Password, newPassword = "a-new-password-long-enough" });
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
+        Assert.True(locked.Headers.RetryAfter?.Delta is { TotalSeconds: > 0 and <= 900 }, $"Retry-After was {locked.Headers.RetryAfter}");
+
+        var problem = await locked.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("too-many-attempts", problem.GetProperty("code").GetString());
+        Assert.True(problem.GetProperty("context").GetProperty("retryAfterSeconds").GetInt32() > 0);
+    }
+
+    [SkippableFact]
+    public async Task The_password_route_is_under_the_auth_rate_limit()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:GlobalPermitLimit", "10000")
+            .With("RateLimiting:AuthPermitLimit", "3")
+            .With("RateLimiting:AuthWindowSeconds", "600");
+        PlatformAdminAccount admin;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        }
+
+        // Signing in spends the address's auth budget, the password route the admin's own.
+        using var platform = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin));
+
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(
+                HttpStatusCode.UnprocessableEntity,
+                (await platform.PostAsJsonAsync("/api/platform/me/password", new { currentPassword = admin.Password, newPassword = "short" })).StatusCode);
+        }
+
+        var limited = await platform.PostAsJsonAsync("/api/platform/me/password", new { currentPassword = admin.Password, newPassword = "short" });
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+
+        // The rest of the console is not on that budget.
+        Assert.Equal(HttpStatusCode.OK, (await platform.GetAsync("/api/platform/me")).StatusCode);
     }
 
     [SkippableFact]
@@ -219,9 +310,23 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
             .Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(0, reported.GetProperty("total").GetInt32());
 
-        // The feed has it, under the admin and the branch.
+        // The console's undo: the reports count again.
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await manager.PostAsJsonAsync($"/api/platform/reviews/{reviewId}/restore-reports", new { })).StatusCode);
+
+        var undone = await platform.PostAsJsonAsync($"/api/platform/reviews/{reviewId}/restore-reports", new { });
+        Assert.Equal(HttpStatusCode.OK, undone.StatusCode);
+        Assert.Equal(2, (await undone.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("reportCount").GetInt32());
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await platform.PostAsJsonAsync($"/api/platform/reviews/{Guid.NewGuid()}/restore-reports", new { })).StatusCode);
+
+        // The feed has both, the undo newest, under the admin and the branch.
         var feed = await (await platform.GetAsync($"/api/platform/activity?venueId={branch.VenueId}")).Content.ReadFromJsonAsync<JsonElement>();
-        var entry = Assert.Single(feed.GetProperty("items").EnumerateArray());
+        var entries = feed.GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(["review.restore-reports", "review.dismiss-reports"], entries.Select(e => e.GetProperty("action").GetString()));
+        var entry = entries[1];
         Assert.Equal("review.dismiss-reports", entry.GetProperty("action").GetString());
         Assert.Equal(5, entry.GetProperty("actor").GetProperty("role").GetInt32());
         Assert.Equal(reviewId, entry.GetProperty("target").GetProperty("id").GetGuid());

@@ -77,6 +77,21 @@ public sealed class BranchReviewReport : Entity
         return true;
     }
 
+    /// <summary>Undoes <see cref="Dismiss"/>: the report counts again.</summary>
+    /// <returns>True when it was dismissed and now is not; false when it was not dismissed.</returns>
+    public bool Undismiss()
+    {
+        if (!IsDismissed)
+        {
+            return false;
+        }
+
+        DismissedAtUtc = null;
+        DismissedByStaffMemberId = null;
+
+        return true;
+    }
+
     /// <summary>Both fields checked at once, so a request breaking both hears about both.</summary>
     /// <exception cref="FieldValidationException">
     /// <c>reason</c> missing (bound <c>required</c>) or not one of the five (bound <c>range</c>);

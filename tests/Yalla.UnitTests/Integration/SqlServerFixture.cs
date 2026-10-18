@@ -331,6 +331,13 @@ public sealed class SqlServerFixture : IAsyncLifetime
             actor,
             new SecretHasher(),
             new RefreshTokenStore(db, clock),
+            new TokenIssuer(
+                Microsoft.Extensions.Options.Options.Create(new JwtOptions
+                {
+                    SigningKey = "test-signing-key-that-is-comfortably-longer-than-thirty-two-bytes",
+                }),
+                clock),
+            CreateTokenAuthority(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
             NullLogger<PlatformAdminAccountService>.Instance);
 
@@ -403,6 +410,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new SecretHasher(),
             new SilentPasswordResetSender(),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            CreateTokenAuthority(db, clock),
             NullLogger<VenueUserAuthService>.Instance);
     }
 

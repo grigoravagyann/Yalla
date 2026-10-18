@@ -90,6 +90,9 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         // by name. The main branch's checklist is done but for its cover; the second has nothing yet -
         // and a missing tablet or policy is the venue's own work, not something a guest sees.
         Assert.Equal([main.BranchId, secondId], row.Branches.Select(b => b.BranchId));
+
+        // Each branch's own district, so the console can search every branch's; absent when it has none.
+        Assert.Equal(["Kentron", null], row.Branches.Select(b => b.District));
         Assert.Equal([SubscriptionTier.Paid, SubscriptionTier.Free], row.Branches.Select(b => b.SubscriptionTier));
         Assert.Equal([ReadinessIssueCodes.NoPhoto], row.Branches[0].Issues.Select(i => i.Code));
         Assert.Equal(
@@ -148,6 +151,35 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         Assert.Null(gone.ReadinessIssue);
         Assert.Equal(0, gone.NotReadyBranchCount);
         Assert.All(gone.Branches, b => Assert.Empty(b.Issues));
+    }
+
+    [SkippableFact]
+    public async Task The_list_never_names_a_switched_off_branch_but_still_counts_a_suspended_venues_setup()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        await using var db = fixture.CreateContext(clock);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+        var marker = Marker();
+
+        // A finished branch beside a switched-off one that has nothing: nothing to name.
+        var ready = await ConsoleTestData.ReadyBranchAsync(db, clock.UtcNow, $"Ready {marker}");
+        var off = await ConsoleTestData.AddBranchAsync(db, ready.VenueId, "Aaa Closed for works", SubscriptionTier.Free, isActive: false);
+
+        var row = Assert.Single((await platform.ListVenuesAsync(new VenueListQuery(Search: $"Ready {marker}"))).Items);
+        Assert.Null(row.ReadinessIssue);
+        Assert.Equal(0, row.NotReadyBranchCount);
+        Assert.Empty(Assert.Single(row.Branches, b => b.BranchId == off).Issues);
+
+        // A suspended venue is still being set up: the list shows what is left, Home does not.
+        var suspended = await TestBranchBuilder.CreateAsync(db);
+        await ConsoleTestData.RenameVenueAsync(db, suspended.VenueId, $"Paused {marker}");
+        await platform.SuspendVenueAsync(suspended.VenueId);
+
+        var paused = Assert.Single((await platform.ListVenuesAsync(new VenueListQuery(Search: $"Paused {marker}"))).Items);
+        Assert.Equal(ReadinessIssueCodes.NoMenu, paused.ReadinessIssue!.Code);
     }
 
     [SkippableFact]
@@ -214,6 +246,10 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         Assert.Equal([paid.VenueId], await Ids("paid"));
         Assert.Equal([free.VenueId], await Ids("free"));
         Assert.Equal([mixed.VenueId], await Ids("Mixed"));
+
+        // Blank is every tier - the empty select - not the first value the parameter takes.
+        Assert.Equal([free.VenueId, mixed.VenueId, paid.VenueId], await Ids(""));
+        Assert.Equal([free.VenueId, mixed.VenueId, paid.VenueId], await Ids("  "));
 
         // The search finds a venue by a branch's name and by a branch's district.
         var branchName = $"Terrace {Marker()}";

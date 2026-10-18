@@ -1173,6 +1173,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("Role")
                         .HasColumnType("int");
 
+                    b.Property<int>("SessionGeneration")
+                        .HasColumnType("int");
+
                     b.Property<Guid?>("VenueId")
                         .HasColumnType("uniqueidentifier");
 

@@ -178,6 +178,87 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
         await Assert.ThrowsAsync<KeyNotFoundException>(() => platform.DismissReportsForPlatformAsync(Guid.NewGuid()));
     }
 
+    [SkippableFact]
+    public async Task Restoring_undoes_the_last_dismissal_once_and_nothing_older()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        await using var db = fixture.CreateContext(clock);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var (reviewId, _) = await ReportedReviewAsync(db, branch.BranchId, clock, reports: 2);
+        var moderation = fixture.CreateReviewModerationService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+
+        // Dismissed, then reported again by somebody new, and dismissed again.
+        await moderation.DismissReportsForPlatformAsync(reviewId);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var late = await ReviewTestData.SeedDinerAsync(db, "Late Reporter", clock.UtcNow);
+        db.BranchReviewReports.Add(new BranchReviewReport(reviewId, late, ReviewReportReasons.Spam, null, clock.UtcNow));
+        await db.SaveChangesAsync();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await moderation.DismissReportsForPlatformAsync(reviewId);
+
+        // The undo brings back the last dismissal's one report, not the first dismissal's two.
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var restored = await moderation.RestoreReportsForPlatformAsync(reviewId);
+        Assert.Equal(1, restored.ReportCount);
+        Assert.Equal(1, Assert.Single((await moderation.ListForPlatformAsync(branch.BranchId, new ReviewModerationQuery(Filter: "reported"))).Items).ReportCount);
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            var rows = await verify.BranchReviewReports.AsNoTracking().Where(r => r.ReviewId == reviewId).ToListAsync();
+            Assert.Null(Assert.Single(rows, r => r.DinerUserId == late).DismissedAtUtc);
+            Assert.All(rows.Where(r => r.DinerUserId != late), r => Assert.NotNull(r.DismissedAtUtc));
+
+            var audit = await verify.PlatformAuditLogs.AsNoTracking()
+                .SingleAsync(l => l.TargetId == reviewId && l.Action == ReviewModerationService.RestoreReportsAuditAction);
+            Assert.Contains("\"restored\":1", audit.ChangesJson, StringComparison.Ordinal);
+            Assert.Equal(branch.VenueId, audit.VenueId);
+        }
+
+        // Once: a second undo does not reach back to the first dismissal.
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, (await moderation.RestoreReportsForPlatformAsync(reviewId)).ReportCount);
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.Equal(1, await verify.PlatformAuditLogs.CountAsync(
+                l => l.TargetId == reviewId && l.Action == ReviewModerationService.RestoreReportsAuditAction));
+        }
+
+        // A dismissal after the undo is undoable in its turn.
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, (await moderation.DismissReportsForPlatformAsync(reviewId)).ReportCount);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, (await moderation.RestoreReportsForPlatformAsync(reviewId)).ReportCount);
+    }
+
+    [SkippableFact]
+    public async Task Restoring_a_review_nobody_dismissed_writes_nothing_and_only_the_platform_may()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        await using var db = fixture.CreateContext(clock);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId);
+        var (reviewId, _) = await ReportedReviewAsync(db, branch.BranchId, clock, reports: 2);
+
+        var platform = fixture.CreateReviewModerationService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+        Assert.Equal(2, (await platform.RestoreReportsForPlatformAsync(reviewId)).ReportCount);
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.False(await verify.PlatformAuditLogs.AnyAsync(l => l.TargetId == reviewId));
+        }
+
+        var asOwner = fixture.CreateReviewModerationService(db, clock, TestActor.Owner(owner.StaffMemberId));
+        await Assert.ThrowsAsync<StaffPermissionException>(() => asOwner.RestoreReportsForPlatformAsync(reviewId));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => platform.RestoreReportsForPlatformAsync(Guid.NewGuid()));
+    }
+
     /// <summary>A published review at the branch with <paramref name="reports"/> diners' reports on it.</summary>
     internal static async Task<(Guid ReviewId, List<Guid> Reporters)> ReportedReviewAsync(
         Yalla.Infrastructure.Persistence.YallaDbContext db,

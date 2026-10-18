@@ -455,11 +455,9 @@ public sealed record UpdatePlatformAdminProfileCommand(string? FullName);
 /// <summary>Change the signed-in platform admin's password.</summary>
 /// <param name="CurrentPassword">Required, and must be right.</param>
 /// <param name="NewPassword">At least <c>Auth:MinimumPasswordLength</c> characters (12) - the one rule every console password follows.</param>
-/// <param name="KeepRefreshChainId">The sign-in this request came from, which stays signed in. Every other is signed out.</param>
 public sealed record ChangePlatformAdminPasswordCommand(
     string? CurrentPassword,
-    string? NewPassword,
-    Guid? KeepRefreshChainId);
+    string? NewPassword);
 
 /// <summary>
 /// The platform admin's own name and password. <b>Platform admin only</b>, and only their own row.
@@ -474,11 +472,19 @@ public interface IPlatformAdminAccountService
     Task<PlatformAdminProfile> UpdateAsync(UpdatePlatformAdminProfileCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Replaces the password after checking the current one, and signs every other sign-in out.
-    /// Audited as <c>admin.password-change</c>, with nothing about either password.
+    /// Replaces the password after checking the current one and ends every session the account has -
+    /// every access token, by the session generation, and every refresh token - then answers a fresh
+    /// pair for the caller to carry on with. Audited as <c>admin.password-change</c>, a wrong current
+    /// password as <c>admin.password-change-failed</c>, with nothing about either password.
     /// </summary>
+    /// <returns>The caller's new access and refresh tokens; the ones it sent with are dead.</returns>
     /// <exception cref="Yalla.Domain.FieldValidationException">
     /// <c>currentPassword</c> missing or wrong, or <c>newPassword</c> missing or too short - every one at once.
     /// </exception>
-    Task ChangePasswordAsync(ChangePlatformAdminPasswordCommand command, CancellationToken cancellationToken = default);
+    /// <exception cref="Yalla.Domain.Identity.TooManyAttemptsException">
+    /// Too many wrong current passwords inside the window; carries how long to wait.
+    /// </exception>
+    Task<Yalla.Application.Auth.RefreshResult> ChangePasswordAsync(
+        ChangePlatformAdminPasswordCommand command,
+        CancellationToken cancellationToken = default);
 }

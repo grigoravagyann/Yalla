@@ -73,7 +73,8 @@ public sealed class ClaimsCurrentActorContractTests : CurrentActorContract
                 identity.StaffMemberId!.Value,
                 identity.VenueId,
                 branchId: null,
-                identity.Role!.Value).Token,
+                identity.Role!.Value,
+                sessionGeneration: 0).Token,
 
             _ => throw new NotSupportedException($"{identity.Principal} is not an identity that acts."),
         };

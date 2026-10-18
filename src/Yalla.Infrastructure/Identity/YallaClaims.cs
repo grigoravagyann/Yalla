@@ -59,9 +59,10 @@ public static class YallaClaims
     public const string Role = "role";
 
     /// <summary>
-    /// The diner account's <c>DinerUser.SessionGeneration</c> when the token was minted, as a
-    /// string. Present only on a diner token; a token whose value no longer matches the row is
-    /// refused with <c>session-revoked</c>.
+    /// The account's session generation when the token was minted, as a string -
+    /// <c>DinerUser.SessionGeneration</c> on a diner token, <c>StaffMember.SessionGeneration</c> on an
+    /// admin-panel token. A token whose value no longer matches the row is refused with
+    /// <c>session-revoked</c>; an admin-panel token from before the claim existed reads as 0.
     /// </summary>
     public const string SessionGeneration = "sgen";
 

@@ -61,6 +61,15 @@ internal sealed class AuthorizationQueries(YallaDbContext db) : IAuthorizationQu
             .AsNoTracking()
             .AnyAsync(d => d.Id == deviceId && d.RevokedAtUtc == null, cancellationToken);
 
+    public Task<VenueUserSessionState?> GetVenueUserSessionStateAsync(
+        Guid staffMemberId,
+        CancellationToken cancellationToken = default) =>
+        db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.Id == staffMemberId)
+            .Select(s => new VenueUserSessionState(s.SessionGeneration))
+            .FirstOrDefaultAsync(cancellationToken);
+
     public Task<DinerSessionState?> GetDinerSessionStateAsync(
         Guid dinerUserId,
         CancellationToken cancellationToken = default) =>

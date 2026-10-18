@@ -7,7 +7,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
     /// <summary>
     /// <c>Venues.ActiveBeforeDeletion</c>: whether a venue was switched on when it was soft-deleted, which
     /// is what restoring it puts back. Null for every live venue; null too for a venue deleted before this
-    /// migration, which restores switched on - the state nearly every deleted venue was in. Down drops it.
+    /// migration, which restores switched off - nobody knows, so it comes back hidden. Down drops it.
     /// </summary>
     public partial class VenueRestore : Migration
     {

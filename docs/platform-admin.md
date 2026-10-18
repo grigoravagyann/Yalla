@@ -135,7 +135,8 @@ hard delete anywhere.
 undoes the delete completely, because the delete removed nothing. The venue comes back **as it was
 before**: `Venue.SoftDelete` records whether the venue was switched on (`ActiveBeforeDeletion`) and
 `Venue.Restore` puts that back, and since deleting never touched the suspension, a venue that was
-suspended comes back suspended. A venue deleted before that was recorded comes back switched on.
+suspended comes back suspended. A venue deleted before that was recorded comes back **switched off**:
+nobody knows how it was, so it comes back hidden and somebody switches it on on purpose.
 Restoring a venue that is not deleted answers it as it is and writes nothing, so the console's undo
 toast firing twice is harmless; a real restore is audited as `venue.restore`. The venue's slug stays
 reserved while it is deleted - the unique index covers deleted venues, so nobody can take the address -
@@ -335,6 +336,7 @@ its guests; the platform sees numbers.
 | `POST /api/platform/reviews/{reviewId}/dismiss-reports` | Leave a reported review up and set its reports aside |
 | `POST /api/platform/venues/{venueId}/restore` | Undo a soft delete (§2, "Suspended versus deleted") |
 | `GET` / `PATCH /api/platform/me`, `POST /api/platform/me/password` | The admin's own name and password |
+| `POST /api/platform/reviews/{reviewId}/restore-reports` | Undo the last dismissal of a review's reports |
 | `GET /api/platform/venues` (extended) | The venue table's rows, filters and sorts |
 
 There is **no outbox retry endpoint**, by decision: a dead letter is a decision to stop (see
@@ -375,9 +377,9 @@ going Paid, open tabs going Free).
 | --- | --- |
 | `venues` | Venues not deleted, split by `tierMix` and by `status` (1 Active, 2 Suspended, 3 Inactive - switched off); `deleted` is counted apart and is in no other number. `branches` and `paidBranches` are the branches of the venues in `total`. |
 | `bookings` | Bookings by the **day of the visit** (`Reservation.LocalDate`, the branch's own date), **cancelled ones left out** (diner, venue, and a rejected request, which is a venue cancellation). Each branch counts on its own calendar - "so many days before that branch's today" - and the `date` labels are in the zone most branches share. `perDay` is 30 entries, oldest first, today last; **the 14-day chart is the last fourteen**. `last7Days` is today and the six days before it; `previous7Days` the seven before those - a rolling week, so "this week" on a Monday is not one day long. `changePercent` is to one decimal and absent when the previous week had none. Deleted venues are left out. |
-| `pendingApprovals` | Requests still `PendingApproval` **whose visit is ahead** - one whose time has passed is not something anybody can approve. Per venue, the most first. |
+| `pendingApprovals` | Requests still `PendingApproval` **whose visit is ahead and whose answer window is open** (`ApprovalExpiresAtUtc` null or ahead) - the predicate the venue's own approval queue lists by; one whose time or window has passed is not something anybody can approve. Per venue, the most first. |
 | `openTabs` | Tabs `Open` or `Closing` right now, per venue, the most first. |
-| `notReady` | Branches a diner can reach (venue switched on, not suspended, not deleted; branch switched on) that a guest would find unfinished - the guest-facing codes below. The newest venues first - those are the ones somebody is setting up - at most 20, with the `total`. |
+| `notReady` | Branches **a diner can reach** (venue switched on, not suspended, not deleted; branch switched on) that a guest would find unfinished - the guest-facing codes below. The newest venues first - those are the ones somebody is setting up - at most 20, with the `total`. Not the venue table's set; see below. |
 | `recentVenues` | The five newest venues not deleted. |
 | `outbox` | The same numbers `GET /api/platform/outbox` serves, plus **`deadLetteredLastDay`**: messages given up on in the last 24 hours, which is what Home's "N messages did not reach guests" counts. The outbox endpoint now carries that number too. |
 
@@ -398,6 +400,14 @@ The readiness checklist (`GET /api/branches/{id}/readiness`) now returns **`issu
 | `no-device` | No tablet enrolled |
 | `no-photo` | **The platform console only, never a checklist blocker**: the branch has no cover photo |
 
+**Home and the venue table ask different questions, deliberately.** Home's `notReady` is "what are
+diners seeing unfinished right now", so it is only the branches a diner can reach: the venue switched
+on, not suspended, not deleted, and the branch switched on. The venue table's `readinessIssue`,
+`notReadyBranchCount` and `branches[].issues` are **setup progress**: every *active* branch of a venue
+that is not deleted - a suspended or switched-off venue included, because somebody is still finishing
+it. Neither ever names a switched-off branch: its `issues` are empty and it is skipped when the first
+issue is chosen. A deleted venue has none at all.
+
 **The console shows what a guest would find unfinished**, and nothing else
 (`PlatformRollups.GuestFacingIssues`): `no-tables` (with `tables-unlabelled` folded in), `no-menu`
 (with `menu-empty` folded in), `incomplete-dishes`, `no-hours`, then `no-photo`. An unsaved
@@ -413,8 +423,8 @@ New query parameters, all optional: `status` = `live` (default: every venue not 
 `status` is sent, and a `status` wins when both are; `tier` = `free`, `mixed` or `paid` (the
 `tierMix`); `sort` = `name` (default), `rating`, `tables` or `created`; `dir` = `asc` (default) or
 `desc` - a venue with no rating sorts below every rated one. Name and id break every tie. `search` now
-also matches each branch's name and district. A value it does not know is a **400** naming the
-parameter in `context.field`.
+also matches each branch's name and district. A blank value (`tier=`, as an empty select sends it) is
+no filter. A value it does not know is a **400** naming the parameter in `context.field`.
 
 Each row (`VenueSummary`, also the `venue` of `GET /api/platform/venues/{id}`) gained these, named as
 the console's gateway maps them:
@@ -422,7 +432,7 @@ the console's gateway maps them:
 | Field | Meaning |
 | --- | --- |
 | `status` | 1 Active, 2 Suspended, 3 Inactive, 4 Deleted |
-| `tierMix`, `branches` | See above; `branches` is every branch - `branchId`, `name`, `subscriptionTier`, and also `isActive` and its `issues` - active ones first, then by name. With `paidBranchCount` and `branchCount` it is "Paid" or "Mixed · 1/2" |
+| `tierMix`, `branches` | See above; `branches` is every branch - `branchId`, `name`, `subscriptionTier`, and also `isActive`, its `issues` and its own `district` (absent when it has none, so the console can search every branch's) - active ones first, then by name. With `paidBranchCount` and `branchCount` it is "Paid" or "Mixed · 1/2" |
 | `averageRating`, `reviewCount` | Over the **published** reviews of every branch - the public pages' rule, venue-wide. `averageRating` is absent with none |
 | `openTabCount` | Tabs open or closing now |
 | `readinessIssue` | `{ code, count, branchName }`: the first thing a guest would find missing, at the first branch in `branches` that has one - `no-tables`, `no-menu`, `incomplete-dishes` (with `count`), `no-hours` or `no-photo`. Absent when nothing is; never worked out for a deleted venue |
@@ -500,9 +510,11 @@ ones they had then. `detail` is the row's JSON as written:
 | `staff.sign-in-issued` | owner, manager or platform | `email`, `emailBefore`, `expiresAtUtc`, `replacedExistingSignIn` - never the link |
 | `review.hide`, `review.unhide` | venue or platform | `actorType`, `branchId`, `reason`, `before` |
 | `review.dismiss-reports` | platform | `actorType`, `branchId`, `dismissed`, `reasons` (count per report reason) |
+| `review.restore-reports` | platform | `actorType`, `branchId`, `restored`, `dismissedAtUtc` (the dismissal it undid) |
 | `table.regenerate-qr` | manager or platform | `branchId`, `label`, `previousQrToken` (dead the moment it was replaced) |
 | `admin.rename` | platform | `before`, `after` |
-| `admin.password-change` | platform | `otherSignInsEnded`, `thisSignInKept` - nothing about either password |
+| `admin.password-change` | platform | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |
+| `admin.password-change-failed` | platform | `reason` (`current-password-wrong`) - never what was typed; these rows are the lockout's counter |
 
 **A tier change is its own entry.** `PATCH /api/platform/branches/{id}` that moves the tier writes
 `branch.tier-change`; anything else the same request changed is a `branch.update` beside it; a request
@@ -518,8 +530,16 @@ reported review and finding nothing wrong. The review stays exactly as it is - s
 diner's word - and a report filed afterwards counts again. **Idempotent**: under the same row lock a
 visibility change takes, a review with no open report is answered as it is and nothing is written.
 Audited as `review.dismiss-reports`. Platform only; a venue cannot dismiss reports. Answers the review
-as the moderation list shows it. (An undo is the console deferring the call until its toast closes;
-nothing un-dismisses.)
+as the moderation list shows it.
+
+**Undo: `POST /api/platform/reviews/{reviewId}/restore-reports`** (no body). The console dismisses at
+once and undoes with this. One dismissal stamps every report it sets aside with the same
+`DismissedAtUtc`, so the latest instant names the latest dismissal, and exactly its reports count again
+(`DismissedAtUtc` and `DismissedByStaffMemberId` cleared); reports an earlier dismissal set aside stay
+dismissed, and reports filed since are untouched. It undoes one dismissal, **once**: when the review was
+last restored after its latest dismissal, a second call writes nothing - it never reaches back to an
+older one. A dismissal after the undo is undoable in its turn. Same row lock, platform only, audited as
+`review.restore-reports`, answers the review as the list shows it.
 
 ### The admin's own account
 
@@ -529,16 +549,31 @@ from the token and the stored row (active, platform admin). `PATCH /api/platform
 unchanged name writes nothing; audited `admin.rename`). **The email is fixed**: it is
 `PlatformAdmin:Email`, the address the seed finds the account by, and nothing here changes it.
 
-`POST /api/platform/me/password` with `{ currentPassword, newPassword }` answers **204**. The new
-password follows the one rule every console password follows - at least `Auth:MinimumPasswordLength`
-(12) characters, length only. Everything wrong is one **422** naming each field in `context.fields`:
-`currentPassword` missing (`required`) or wrong (`conflict`), `newPassword` missing or too short
-(`min`). A wrong current password is a form error, **not a 401**, so the console stays signed in and
-shows it under the field. On success every other sign-in's refresh tokens are revoked
-(`password-changed`) and the sign-in the request came from keeps its chain, named by the token's
-`rch` claim - admin-panel tokens now carry it, as diner tokens do (`docs/auth.md`); a token from before
-the claim names none, and then every sign-in ends. Other sessions' access tokens run out within their
-15 minutes. Audited `admin.password-change`, with nothing about either password.
+`POST /api/platform/me/password` with `{ currentPassword, newPassword }` answers **200 with a fresh
+token pair** - `{ accessToken, refreshToken, expiresInSeconds }`, the refresh endpoint's shape. **The
+console must store it**: the change ends every session the account has, the one it was sent from
+included.
+
+- **Rules.** The new password follows the one rule every console password follows - at least
+  `Auth:MinimumPasswordLength` (12) characters, length only. Everything wrong is one **422** naming
+  each field in `context.fields`: `currentPassword` missing (`required`) or wrong (`conflict`),
+  `newPassword` missing or too short (`min`). A wrong current password is a form error, **not a 401**,
+  so the console stays signed in and shows it under the field.
+- **Every session ends, now.** `StaffMember.SessionGeneration` moves on, so every admin-panel access
+  token the account holds is refused from its next request with `401 session-revoked` (`docs/auth.md`
+  §4); every refresh token is revoked (`password-changed`); every reset link not yet used is spent. The
+  response's pair is minted under the new generation on a new refresh chain, and is how the sign-in
+  that made the change carries on.
+- **Wrong passwords are counted per account.** Each one is audited as `admin.password-change-failed`,
+  and those rows are the counter: with `Auth:PasswordAttemptsPerIdentifier` (10) of them inside
+  `Auth:PasswordAttemptWindowMinutes` (15) and since the last successful change, the route answers
+  **429 `too-many-attempts`** with a `Retry-After` header and `context.retryAfterSeconds` - until the
+  oldest of them leaves the window - before the password is looked at, so a right one does not get
+  through either. Stored, so it holds across restarts and instances. A successful change starts the
+  count again.
+- **Rate limited** by the `auth` policy as well (per account, since the caller is signed in), on top of
+  the counter.
+- Audited `admin.password-change`, with nothing about either password.
 
 ### The seed never overwrites the admin
 

@@ -86,6 +86,31 @@ public sealed class VenueRestoreTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_venue_deleted_before_its_state_was_recorded_comes_back_switched_off()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        await using var db = fixture.CreateContext(clock);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+        var branch = await TestBranchBuilder.CreateAsync(db);
+
+        await platform.DeleteVenueAsync(branch.VenueId);
+
+        // What a deletion from before VenueRestore looks like: nobody recorded whether it was on.
+        await db.Database.ExecuteSqlAsync($"UPDATE dbo.Venues SET ActiveBeforeDeletion = NULL WHERE Id = {branch.VenueId}");
+
+        await using var fresh = fixture.CreateContext(clock);
+        var restored = (await fixture.CreatePlatformService(fresh, clock, TestActor.PlatformAdmin(admin.StaffMemberId))
+            .RestoreVenueAsync(branch.VenueId)).Venue;
+
+        Assert.False(restored.IsDeleted);
+        Assert.False(restored.IsActive);
+        Assert.Equal(VenueStatus.Inactive, restored.Status);
+    }
+
+    [SkippableFact]
     public async Task Restoring_a_venue_that_is_not_deleted_writes_nothing()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);

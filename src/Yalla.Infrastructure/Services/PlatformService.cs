@@ -93,7 +93,8 @@ internal sealed class PlatformService(
         var pageSize = Math.Clamp(query.PageSize, 1, 200);
 
         var status = Pick(query.Status, query.IncludeDeleted ? VenueListFilters.All : VenueListFilters.Live, VenueListFilters.Statuses, "status");
-        var tier = query.Tier is null ? null : Pick(query.Tier, null, VenueListFilters.Tiers, "tier");
+        // Blank is "every tier", as an empty select sends it - not the first value Pick falls back to.
+        var tier = string.IsNullOrWhiteSpace(query.Tier) ? null : Pick(query.Tier, null, VenueListFilters.Tiers, "tier");
         var sort = Pick(query.Sort, VenueListFilters.SortName, VenueListFilters.Sorts, "sort");
         var descending = Pick(query.Dir, VenueListFilters.Ascending, VenueListFilters.Directions, "dir") == VenueListFilters.Descending;
 
@@ -572,11 +573,13 @@ internal sealed class PlatformService(
             .ThenBy(b => b.BranchId)
             .ToLookup(b => b.VenueId);
 
-        // A deleted venue is not worked out: nobody is going to finish setting it up.
+        // Setup progress: every active branch of a venue that is not deleted - suspended and switched-off
+        // venues included, because somebody is still finishing them. A deleted venue is not worked out,
+        // nobody is going to finish it; a switched-off branch is not either, so the list never names one.
         var deleted = rows.Where(r => r.DeletedAtUtc is not null).Select(r => r.VenueId).ToHashSet();
 
         var checklists = await readiness.GetManyAsync(
-            [.. branches.SelectMany(g => g).Where(b => !deleted.Contains(b.VenueId)).Select(b => b.BranchId)],
+            [.. branches.SelectMany(g => g).Where(b => b.IsActive && !deleted.Contains(b.VenueId)).Select(b => b.BranchId)],
             cancellationToken);
 
         return [.. rows.Select(row => Summary(row, [.. branches[row.VenueId]], checklists))];
@@ -596,7 +599,8 @@ internal sealed class PlatformService(
                 b.Name,
                 b.SubscriptionTier,
                 b.IsActive,
-                isDeleted ? [] : IssuesOf(b, checklists)))
+                isDeleted || !b.IsActive ? [] : IssuesOf(b, checklists),
+                b.District))
             .ToList();
 
         var cover = branches.FirstOrDefault(b => b.CoverPhotoId is not null);

@@ -145,4 +145,16 @@ public interface IReviewModerationService
     Task<ModeratedReviewView> DismissReportsForPlatformAsync(
         Guid reviewId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Undoes the most recent dismissal of a review's reports, as the platform: the reports that one
+    /// dismissal set aside - every one stamped with its instant - count again; an earlier dismissal's
+    /// stay dismissed. Once: a review already restored after its latest dismissal, or never dismissed,
+    /// is answered as it is and nothing is written. Audited as <c>review.restore-reports</c>.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not an active platform admin.</exception>
+    /// <exception cref="KeyNotFoundException">No such review.</exception>
+    Task<ModeratedReviewView> RestoreReportsForPlatformAsync(
+        Guid reviewId,
+        CancellationToken cancellationToken = default);
 }

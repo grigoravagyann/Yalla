@@ -151,6 +151,20 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
         ["GET /api/platform/me"] = new(
             (_, c) => c.GetAsync("/api/platform/me"),
             Platform),
+
+        // The admin's own account: no venue token of any rank reaches it.
+        ["PATCH /api/platform/me"] = new(
+            (_, c) => c.PatchAsJsonAsync("/api/platform/me", new { fullName = "Matrix Admin" }),
+            Platform),
+
+        ["POST /api/platform/me/password"] = new(
+            (w, c) => c.PostAsJsonAsync(
+                "/api/platform/me/password", new { currentPassword = w.AdminPassword, newPassword = "a-matrix-password-long-enough" }),
+            Platform),
+
+        ["POST /api/platform/reviews/{reviewId}/restore-reports"] = new(
+            (w, c) => c.PostAsJsonAsync($"/api/platform/reviews/{w.ReviewId}/restore-reports", new { }),
+            Platform),
     };
 
     private static readonly Dictionary<string, MatrixRoute> DinerRoutes = new(StringComparer.Ordinal)
@@ -326,6 +340,9 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
 
         public required Guid DinerUserId { get; init; }
 
+        /// <summary>The platform admin's password, for the route that changes it.</summary>
+        public required string AdminPassword { get; init; }
+
         public required string DinerPhone { get; init; }
 
         public required IReadOnlyDictionary<Caller, HttpClient> Clients { get; init; }
@@ -395,6 +412,7 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             CoverPhotoId = coverPhotoId,
             ReviewId = reviewId,
             DinerUserId = dinerUserId,
+            AdminPassword = admin.Password,
             DinerPhone = dinerPhone,
             Clients = clients,
         };

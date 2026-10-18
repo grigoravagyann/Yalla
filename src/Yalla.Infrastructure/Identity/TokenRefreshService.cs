@@ -56,7 +56,7 @@ internal sealed class TokenRefreshService(
 
         // Named for the chain it continues, as a diner's is.
         var (accessToken, _) = tokens.IssueVenueUserToken(
-            staff.Id, staff.VenueId, staff.BranchId, staff.Role, successorEntity.ChainId);
+            staff.Id, staff.VenueId, staff.BranchId, staff.Role, staff.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
 

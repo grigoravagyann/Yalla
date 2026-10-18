@@ -290,12 +290,14 @@ public sealed record VenueSummary(
 /// is nothing to do. Always empty for a deleted venue, which is not worked out. The full checklist is
 /// <c>GET /api/branches/{id}/readiness</c>.
 /// </param>
+/// <param name="District">The branch's district as the listing form saved it; absent when it has none.</param>
 public sealed record BranchTierView(
     Guid BranchId,
     string Name,
     SubscriptionTier SubscriptionTier,
     bool IsActive,
-    IReadOnlyList<ReadinessIssue> Issues);
+    IReadOnlyList<ReadinessIssue> Issues,
+    string? District);
 
 /// <summary>The one issue the venue table shows, and the branch it is at.</summary>
 /// <param name="Code"><c>no-tables</c>, <c>no-menu</c>, <c>incomplete-dishes</c>, <c>no-hours</c> or <c>no-photo</c>.</param>

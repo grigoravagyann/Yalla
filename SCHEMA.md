@@ -32,8 +32,9 @@ A brand. Owns branches and the staff accounts that work across them. Nothing is 
 billed here: the venue exists so a chain has one identity, one slug, and one place for
 `StaffMember` rows whose `BranchId` is null (an owner works everywhere). `Slug` is unique - deleted
 venues included, so a deleted venue keeps its address. Soft delete stamps `DeletedAtUtc`, switches the
-venue off and records `ActiveBeforeDeletion`; a restore clears both and puts the active flag back
-(`SuspendedAtUtc` is never touched by either, so a suspended venue comes back suspended).
+venue off and records `ActiveBeforeDeletion`; a restore clears both and puts the active flag back -
+switched off when the flag is null, a venue deleted before it was recorded (`SuspendedAtUtc` is never
+touched by either, so a suspended venue comes back suspended).
 
 ### Branch
 
@@ -292,6 +293,11 @@ owner types into the admin panel; a manager uses both, on the same day. Splittin
 tables would give one human two identities and quietly break the audit log that answers "who gave
 away my reserved table". Both are optional in practice — a kitchen hand has no email — and `Email`
 carries a unique index filtered on non-null rows, since most staff have none.
+
+`SessionGeneration` (int, 0 for every row to begin with) is the admin-panel session generation: every
+admin-panel access token carries the value it was minted under as `sgen`, and a token on an older one
+is refused. A reset or changed password moves it, which ends every admin-panel token the person holds
+at once. See `docs/auth.md` §4.
 
 ### Identity tables
 

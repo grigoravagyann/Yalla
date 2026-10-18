@@ -33,6 +33,10 @@ public sealed record TokenRevoked(string Code, string Message)
 /// <param name="SessionGeneration">The generation a live token must carry.</param>
 public sealed record DinerSessionState(bool IsActive, bool IsDeleted, int SessionGeneration);
 
+/// <summary>What an admin-panel token is checked against: the staff row's session generation.</summary>
+/// <param name="SessionGeneration">The generation a live admin-panel token must carry.</param>
+public sealed record VenueUserSessionState(int SessionGeneration);
+
 /// <summary>
 /// What a tab participant's token may still do, decided from the tab as it stands now.
 /// </summary>
@@ -129,4 +133,21 @@ public interface ITokenAuthorityCheck
     /// commit leaves a window in which another request re-reads the old generation and caches it.
     /// </remarks>
     void InvalidateDiner(Guid dinerUserId);
+
+    /// <summary>
+    /// Whether an admin-panel (venue-user) token minted under <paramref name="tokenSessionGeneration"/>
+    /// is still good. Null when it is; <see cref="TokenRevoked.SessionRevoked"/> when the staff row is
+    /// gone or its generation differs from the token's.
+    /// </summary>
+    /// <remarks>
+    /// The same five-second cache and the same newer-token bypass as a diner's. Deactivation is not
+    /// part of this check: the services refuse an inactive staff member from the stored row, with 403.
+    /// </remarks>
+    Task<TokenRevoked?> CheckVenueUserSessionAsync(
+        Guid staffMemberId,
+        int tokenSessionGeneration,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="InvalidateDiner"/>
+    void InvalidateVenueUser(Guid staffMemberId);
 }
