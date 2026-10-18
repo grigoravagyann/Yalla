@@ -395,9 +395,20 @@ a seating that commits in between moves its row version; the move's `UPDATE` the
 the answer is **409 `concurrent-update`** - a move never resurrects a cancelled booking at a new time.
 `ReservationRescheduleTests` lands a real cancel at the moment the lock is taken and proves it.
 
-**The status is decided again**, by creation's rules with the new party size (`DecideStatusAsync`):
-auto-confirm off or a party over the threshold goes to `PendingApproval`, and so does a diner over the
-no-show threshold; otherwise `Confirmed`. **One exception, for a booking that is `Confirmed`**: when
+**A confirmed booking that keeps its table and its start and does not grow stays `Confirmed`** - today
+included, and whatever the branch's settings - without being decided again: the same table at the same
+time for as many people or fewer is nothing the venue has not already said yes to. Everything else is
+decided again.
+
+**The status is decided again**, by creation's rules with the new party size (`DecideStatusAsync`): a
+move into the short-notice window - see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) - goes to
+`PendingApproval` with a fifteen-minute window, auto-confirm off or a party over the threshold goes to
+`PendingApproval`, and so does a diner over the no-show threshold; otherwise `Confirmed`. A booking
+**already waiting** on a short-notice answer keeps the deadline it has through a move (never past the new
+start) - moving the request around does not restart the floor's fifteen minutes - and once that deadline
+has passed it cannot be moved at all: **409 `reservation-approval-expired`**, the sweep's to decline. A
+move of a pending short-notice booking to another day before then confirms it and clears its window, so
+the sweep never finds it. **One exception, for a booking that is `Confirmed`**: when
 the only reason the re-decision would ask for approval is the party-size threshold and the new party is
 **not larger** than the booking's current one, it stays `Confirmed` and keeps its `ConfirmedAtUtc`. The
 venue said yes to that many people; moving them to another table or time does not undo it. A party
@@ -406,7 +417,23 @@ booking - a branch with auto-confirm off sees every move, and a diner whose no-s
 confirmation loses it on a move too. Going back for approval clears `ConfirmedAtUtc`; a party that
 shrinks under the threshold is confirmed without anybody. A booking can therefore be approved twice.
 The second approval's push is its own message - `reservation:{id}:approved:{yyyyMMddHHmmssfff}` once
-the first key is taken - rather than a collision with the first.
+the first key is taken - rather than a collision with the first; a second decline or expiry is named
+the same way.
+
+**A declined change does not cost the booking.** When a `Confirmed` booking is moved into
+`PendingApproval` - for any reason, short notice most often - the slot it had is kept on the row
+(`PreviousDiningTableId`, `PreviousStartUtc`, `PreviousEndUtc`, `PreviousLocalDate`,
+`PreviousLocalStartTime`, `PreviousPartySize`, `PreviousConfirmedAtUtc`), and kept through further moves
+while it waits: it is the last slot anybody said yes to. Approving the change drops it. **Declining the
+change - by staff, or by the sweep for no answer - sends the booking back to that slot** when it is still
+free: judged under that table's lock exactly as a move is (another diner may have booked it since, a
+walk-in may be sitting into it, the table may be out of service, the slot may be over), and committed in
+the same transaction - the booking `Confirmed` again with its old start, end, table, party and
+`ConfirmedAtUtc`, its reminder and late nudge rewritten for that slot, `DeclineReason` recording why the
+change did not go through (the view's `declinedBecause` stays null - the booking is not declined). When
+the slot has gone, the booking is declined as any other. Either way the diner is told which: the
+`reservation.decided` push carries `wasChange` and `originalKept`, and so does the `booking-declined`
+feed entry, with the slot the change asked for in `requestedDate`/`requestedTime`.
 
 **Reminders are replaced, not edited.** Both the reminder and the late nudge name the old time, so the
 unsent ones are cancelled exactly as a cancellation cancels them (`IOutbox.CancelAsync` by the booking's
@@ -427,6 +454,117 @@ of the same booking**: a replay must name the table, the start (its local date a
 branch's zone) and the party size the record holds. Answering `wasReplay` with the booking still at
 eight to a command that asked for nine would tell the phone a move happened that did not; the 409 is
 the client's cue to mint a fresh id for the new change.
+
+---
+
+## 3d. Short notice: tonight is the floor's to decide
+
+An app booking for tonight is a promise about a table somebody may have just sat down at, and nothing the
+server knows says whether they will be gone in time. So a short-notice booking is never confirmed
+blindly: it waits for staff on the floor, who can see the table.
+
+**The rule (`ShortNoticeRule`, fixed in code - not a branch setting).** A booking is at short notice when
+its local date is **the branch's today** - in the branch's zone, so at 00:30 in Yerevan "today" has
+already turned over - **or** it starts **less than six hours** from now (at 22:00, tomorrow's 03:59 is;
+04:00 is not). Every short-notice booking a diner makes lands `PendingApproval` with
+`awaitingApprovalBecause` **4 `ShortNotice`**. It applies to every booking made through
+`POST /api/reservations` - the app's and the public page's - whatever `channel` the client reports:
+the channel is self-reported, and a rule a client could switch off by claiming `Staff` would be no
+rule. Nothing a member of staff enters goes through it. Every other booking follows the rules it always
+did, on every day: auto-confirm off, a party over `approvalRequiredAbovePartySize`, a no-show history.
+
+**The reason is stored**, on `Reservations.ApprovalTrigger`, when the booking goes to approval, and every
+read says that one - a booking made at short notice at two in the afternoon is still the short-notice
+booking at nine, and a policy edited since cannot rename the reason the diner was shown. When several
+apply, the first of **ShortNotice, BranchApprovesEveryBooking, LargeParty, NoShowHistory** is stored:
+short notice leads because it is the one with a deadline. A pending row from before the column has no
+stored reason and gets the old answer, worked out from the branch's policy.
+
+**Fifteen minutes to answer.** A short-notice booking carries `approvalExpiresAtUtc` = the request time
+plus 15 minutes, or its start if that is sooner (stored on the booking; null on every other booking and
+cleared the moment it stops waiting). The app and the public page count down to it. Until then a waiter
+or above at the branch may approve or decline it.
+
+**Unanswered, it is declined for them.** `ApprovalExpiryHostedService` runs `ApprovalExpirySweep` every
+`ApprovalExpiry:SweepIntervalSeconds` (default 20; 0 switches it off, which no venue should) and once at
+start-up. Each pass reads the pending bookings whose `approvalExpiresAtUtc` has passed - one filtered
+index, `IX_Reservations_ApprovalExpiresAtUtc`, which holds only the requests open now - and declines each
+on its own, under its own row version: `CancelledByVenue` with `declinedBecause` **2 `NoAnswer`**, its
+reminder and late nudge cancelled, and the diner told in the same save - a `reservation.decided` push
+with `expired: true` (an apology: *the venue could not confirm in time - try another time or place*) and
+a `booking-declined` feed entry with `expired: "true"`. A waiter's approval that lands first moves the
+row version, so the sweep's save matches nothing and writes nothing; a second process sweeping the same
+booking loses the same way. A booking is declined, and its diner told, exactly once. A change of a
+confirmed booking nobody answered goes back to the slot it had, as above.
+
+**One bad row does not stall the sweep.** Anything a booking throws - a lock that could not be had, a row
+the domain refuses - is logged at error level with its code and the pass goes on to the rest; that
+booking is not tried again in the same pass, and the next pass tries it afresh. **A request the sweep
+only reaches after the booking would have started** (the machine slept through the deadline) is still
+declined, but without the apology push or feed entry - there is no evening left to send the diner to.
+
+It is a sweep and not a scheduled outbox message on purpose: the outbox dead-letters anything more than
+an hour overdue, and a machine that slept through the deadline would leave the diner on a "waiting"
+screen for good. It releases no table - the booking was never promised, so there is no hold to let go -
+which is why it is not the timer [notifications.md](notifications.md#8-nothing-here-releases-a-table)
+says must never free one.
+
+**Who decides: a waiter or above at the booking's branch.** `POST /api/reservations/{id}/approve` and
+`/reject` take `WaiterOrAbove`, and the service confines them to the branch from the stored staff row: a
+waiter and a branch manager at their own branch, an owner or general manager at any branch of their
+venue, a platform admin anywhere. A cook, a diner and another branch's staff are 403. The **stored**
+role is checked as well as the token's, so a waiter moved to the kitchen is refused at once rather than
+when their token expires - the same check guards the floor's list and releasing a late booking. The
+bodies are unchanged; `reject` keeps its optional `reason`, recorded as `cancellationReason`, and the
+booking answers `declinedBecause` **1 `StaffDeclined`** - or, for a change of a confirmed booking whose
+old slot is still free, the booking back at that slot (see [3c](#3c-changing-a-booking)). A platform
+admin deciding a booking gets it back with `guestPhone` empty, as on the floor's list.
+
+**Too late is its own answer.** Approving or declining on or after `approvalExpiresAtUtc`, or after the
+sweep declined it, is **409 `reservation-approval-expired`** (`context`: `reservationId`, `status`,
+`startUtc`, `approvalExpiresAtUtc`). Past the deadline the decision is the sweep's, so a late "no" is
+refused as well as a late "yes": the diner is told nobody looked in time, not that the venue said no a
+second after the countdown. When the sweep commits between a waiter's read and their save, the waiter
+gets the same 409 rather than `concurrent-update`. Approving any pending booking - with a window or
+without - once it has **started** is the same 409; declining one is still allowed.
+
+**Reminders.** A short-notice booking whose three-hours-before reminder would fall inside its answer
+window is not given one at all - the approval push ("they expect you at 20:00") says the same thing, and
+truthfully. One due later is written as usual; the reminder handler skips a booking still waiting on a
+short-notice answer when it fires (only a sweep running behind could leave one), while a pending booking
+with no deadline - a large party next week - is reminded as before.
+
+**The floor's list.** `GET /api/branches/{branchId}/reservations/awaiting` (`WaiterOrAbove` +
+`BranchScoped`, then the same stored-row check as deciding) is what the staff tablet polls. It lists the
+branch's `PendingApproval` bookings that can still be answered - not past their window, not started -
+soonest deadline first, then those without one by start, at most 200, in **one query**. Each item:
+
+```json
+{
+  "reservation": { "id": "guid", "code": "K7Q2LM", "startUtc": "…", "partySize": 2, "tableId": "guid",
+                   "tableLabel": "4", "roomId": "guid", "roomName": "Hall", "guestName": "Gor",
+                   "guestPhone": "+37499333444", "status": 1, "awaitingApprovalBecause": 4,
+                   "approvalExpiresAtUtc": "…", "...": "the rest of ReservationView" },
+  "approvalExpiresAtUtc": "2026-09-10T08:15:00Z",
+  "trigger": 4,
+  "previousBooking": { "reservationId": "guid", "startUtc": "…", "localStartTime": "17:00:00",
+                       "partySize": 4, "guestName": "Anna", "guestPhone": "+37499111222", "status": 2 },
+  "nextBooking": { "reservationId": "guid", "startUtc": "…", "localStartTime": "21:30:00", "partySize": 2 },
+  "currentSitting": { "seatedAtUtc": "…", "partySize": 3 }
+}
+```
+
+`previousBooking` is the latest booking before it on the same table that local day that was not
+cancelled - still to come, at the table, gone home, a no-show or itself pending - with its guest's
+number, so the floor can call and ask how long they will be. `nextBooking` is the first booking after it
+that day that holds the table. `currentSitting` is the open sitting on the table now; its `partySize` is
+absent when a diner's scan opened the table, which only guesses. Each is absent when there is none, like
+every null in this API. Staff of the branch see the guests' numbers; a platform admin reading the list
+gets `guestPhone` empty and `previousBooking.guestPhone` absent.
+
+**What the diner is told before booking.** Availability's `requiresApproval` is asked **per slot**
+(`ReservationRules.AwaitsApproval` takes the slot): every time today and the first six hours tomorrow
+say true; the same times next week say false. See [5](#what-the-diner-is-told-before-they-commit).
 
 ## 4. The rules, and why none of them is a number in code
 
@@ -571,9 +709,11 @@ Each table also carries its derived state **at the requested instant** — not a
 
 ### What the diner is told before they commit
 
-- **`requiresApproval`** on a table is true when the booking will land `PendingApproval`: the branch
-  approves every booking by hand (`autoConfirm` off), or the party is over
-  `approvalRequiredAbovePartySize` (`ReservationRules.AwaitsApproval`). It was the threshold alone,
+- **`requiresApproval`** on a table, and on every day slot, is true when the booking will land
+  `PendingApproval`: the slot is at short notice - today at the branch, or under six hours away, see
+  [3d](#3d-short-notice-tonight-is-the-floors-to-decide) - the branch approves every booking by hand
+  (`autoConfirm` off), or the party is over `approvalRequiredAbovePartySize`
+  (`ReservationRules.AwaitsApproval`, asked per slot). It was the threshold alone,
   so a branch with auto-confirm off promised an instant confirmation it was never going to give.
   The third reason, the diner's own no-show record, needs the diner and is only known once they
   book - the booking says so in `awaitingApprovalBecause`.
@@ -641,7 +781,9 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
 | `POST /api/reservations/{id}/extend-hold` | `VerifiedDiner` | the booking must be theirs, **started**, and not yet extended - see [notifications.md](notifications.md) |
 | `POST /api/tabs/open-by-booking` | `VerifiedDiner` | "I'm at my table": the booking whose `code` was sent must be **theirs** - else 404 `booking-not-found`, identical to a code nobody holds - and its table theirs now: `Confirmed` from `StartUtc - walkInHoldbackMinutes` until `EndUtc`, or `Seated`. A free table is seated as the booking. See [tabs.md](tabs.md) |
-| `POST /api/reservations/{id}/approve` · `/reject` | `ManagerOrAbove` | the booking's **branch and venue** must be theirs |
+| `POST /api/reservations/{id}/approve` · `/reject` | `WaiterOrAbove` | a waiter or above at the booking's **branch** - an owner or general manager at any branch of their venue; too late is `409 reservation-approval-expired` - see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) |
+| `GET /api/branches/{branchId}/reservations` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only - the console's approval queue |
+| `GET /api/branches/{branchId}/reservations/awaiting` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch, from the stored row - the floor's list, see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) |
 
 Availability - one slot or one day - is the only anonymous endpoint outside the sign-in flows.
 Browsing needs no account: somebody deciding whether to eat here has to see the room before they are
@@ -665,7 +807,9 @@ policy reads the explicit `ytyp` principal-type claim rather than inferring it.
   is no `branchId` route value for `BranchScoped` to compare a claim against — and that policy
   fails closed when it cannot find one, which is correct and is the reason not to apply it here.
   The service resolves the booking's branch and checks it against the acting staff member's own
-  branch and venue. A manager of another venue gets 403, and `ReservationEndpointTests` proves it.
+  branch and venue, from the stored staff row. A waiter or manager of another venue - or of another
+  branch of the same one - gets 403, and `ReservationEndpointTests`, `ShortNoticeApprovalTests` and
+  `ShortNoticeApprovalEndpointTests` prove it.
 
 Cancellation is free until `CancellationDeadlineMinutes` before the start and **still allowed after
 it**, with the lateness recorded on the booking as `CancelledAfterDeadline`. Refusing a late
@@ -688,6 +832,7 @@ facts under `context`:
 | the command id belongs to another caller, or another command | 409 | `client-command-id-in-use` |
 | changing a booking that is not pending or confirmed, or has started | 409 | `reservation-not-changeable`, with `context.reservationId`, `status`, `startUtc` |
 | changing a booking that was cancelled, approved or seated meanwhile | 409 | `concurrent-update` |
+| approving or declining past the short-notice window, after the sweep declined it, or approving once it has started | 409 | `reservation-approval-expired`, with `context.reservationId`, `status`, `startUtc`, `approvalExpiresAtUtc` |
 | the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |
 | keep-my-table before the start, or on a booking that is not confirmed | 409 | `hold-not-active`, with `context.startUtc` |
 | keep-my-table a second time | 409 | `hold-already-extended` |

@@ -276,7 +276,7 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task Approving_needs_a_manager_and_a_manager_of_another_venue_is_refused()
+    public async Task Approving_needs_staff_of_the_branch_and_staff_of_another_venue_are_refused()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -317,12 +317,14 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
             HttpStatusCode.Forbidden,
             (await diner.PostAsJsonAsync($"/api/reservations/{id}/approve", new { })).StatusCode);
 
-        // Neither can a waiter: this is a decision, and ManagerOrAbove is the policy on the route.
-        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        // Nor a waiter of a different venue. WaiterOrAbove is the policy on the route - a short-notice
+        // booking is the floor's to decide, so the branch's own waiter may (ShortNoticeApprovalEndpointTests)
+        // - and it says nothing about which branch, so this is the service's check refusing them.
+        using var otherWaiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, elsewhere));
 
         Assert.Equal(
             HttpStatusCode.Forbidden,
-            (await waiter.PostAsJsonAsync($"/api/reservations/{id}/approve", new { })).StatusCode);
+            (await otherWaiter.PostAsJsonAsync($"/api/reservations/{id}/approve", new { })).StatusCode);
 
         // Nor a manager of a different venue. BranchScoped cannot guard this route - it is
         // addressed by reservation id and there is no branchId to compare against - so the service
@@ -415,18 +417,17 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// Declining is the manager's half of the same decision, and the reason they type reaches the
-    /// booking.
+    /// Declining is the other half of the same decision, for the same people, and the reason they
+    /// type reaches the booking.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Approve is tested above; reject is a separate mapping and can lose any of its refusals on
-    /// its own. Note what the three 403s do <b>not</b> prove: moving this route onto the waiters'
-    /// group leaves every one of them passing, because <c>DecideAsync</c> calls
-    /// <c>RequireManagerForBranchAsync</c> and refuses a waiter a second time further down. The
-    /// route policy and the service check are genuinely redundant here, and no request can tell
-    /// them apart from outside - so this asserts the guarantee, that a waiter cannot decline a
-    /// booking, rather than pretending to pin the layer that delivers it.
+    /// its own. Both are <c>WaiterOrAbove</c> since short-notice bookings became the floor's to
+    /// decide, and <c>DecideAsync</c> confines the caller to the booking's branch from the stored
+    /// staff row - so another venue's waiter and manager are refused by the service, which is what
+    /// these 403s prove. The branch's own waiter declining is in
+    /// <c>ShortNoticeApprovalEndpointTests</c>.
     /// </para>
     /// <para>
     /// The <c>reason</c> assertion is the part no service test can make. The service is handed a
@@ -436,7 +437,7 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
     /// </para>
     /// </remarks>
     [SkippableFact]
-    public async Task Rejecting_needs_a_manager_of_this_venue_and_the_reason_reaches_the_booking()
+    public async Task Rejecting_needs_staff_of_this_branch_and_the_reason_reaches_the_booking()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -467,19 +468,19 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
 
         var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
 
-        // Not the diner, not a waiter, and not a manager of somewhere else - the same three
-        // refusals as approve, because this route is mapped on its own and could have lost any of
-        // them without a service test noticing.
+        // Not the diner, not a waiter of somewhere else, and not a manager of somewhere else - the
+        // same three refusals as approve, because this route is mapped on its own and could have
+        // lost any of them without a service test noticing.
         Assert.Equal(
             HttpStatusCode.Forbidden,
             (await diner.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
 
-        using var waiter = factory.CreateClientWithToken(
-            await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        using var otherWaiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, elsewhere));
 
         Assert.Equal(
             HttpStatusCode.Forbidden,
-            (await waiter.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
+            (await otherWaiter.PostAsJsonAsync($"/api/reservations/{id}/reject", new { })).StatusCode);
 
         using var outsider = factory.CreateClientWithToken(
             await StaffAuthTests.SignInManagerAsync(factory, elsewhere));

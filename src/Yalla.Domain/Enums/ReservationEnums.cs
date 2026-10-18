@@ -45,6 +45,59 @@ public enum ReservationStatus
     NoShow = 8,
 }
 
+/// <summary>Why a booking needs a human before it is promised.</summary>
+/// <remarks>
+/// <para>
+/// Stored on the booking (<c>Reservation.ApprovalTrigger</c>) as the reason it was given when it went
+/// to <see cref="ReservationStatus.PendingApproval"/>, so a policy edited since cannot change what the
+/// diner and the venue were told. Rows from before the column was added carry none and have theirs
+/// worked out again from the branch's policy.
+/// </para>
+/// <para>
+/// When more than one applies, the first in this order is the one stored: <see cref="ShortNotice"/>,
+/// <see cref="BranchApprovesEveryBooking"/>, <see cref="LargeParty"/>, <see cref="NoShowHistory"/>.
+/// Short notice leads because it is the one with a deadline - fifteen minutes to answer - and the
+/// one the floor, not the office, decides. Persisted as its number: a member keeps it for good.
+/// </para>
+/// </remarks>
+public enum ApprovalTrigger
+{
+    /// <summary>The branch does not auto-confirm anything.</summary>
+    BranchApprovesEveryBooking = 1,
+
+    /// <summary>The party is above the branch's <c>ApprovalRequiredAbovePartySize</c>.</summary>
+    LargeParty = 2,
+
+    /// <summary>
+    /// The diner is over the rolling no-show threshold. See <c>NoShowPolicy</c> - this costs instant
+    /// confirmation and nothing else.
+    /// </summary>
+    NoShowHistory = 3,
+
+    /// <summary>
+    /// The booking is for the branch's today, or starts less than six hours from now. Somebody may
+    /// have just sat down at that table, so the floor decides - within fifteen minutes, or the booking
+    /// is declined for them. See <c>ShortNoticeRule</c>.
+    /// </summary>
+    ShortNotice = 4,
+}
+
+/// <summary>Why a booking that was waiting for the venue was declined.</summary>
+/// <remarks>
+/// Set by a decline only - a member of staff saying no, or the answer window running out - and never
+/// by a venue letting an accepted booking go, which is <see cref="ReservationStatus.CancelledByVenue"/>
+/// with no decline reason. Declines from before the column was added carry none either. Persisted as
+/// its number.
+/// </remarks>
+public enum DeclineReason
+{
+    /// <summary>A member of staff declined it.</summary>
+    StaffDeclined = 1,
+
+    /// <summary>Nobody at the venue answered within the fifteen-minute window, so it was declined for them.</summary>
+    NoAnswer = 2,
+}
+
 /// <summary>
 /// Optional hint from the diner about how long they expect to stay. Advisory only:
 /// <c>Reservation.EndUtc</c> is derived from the branch turn time, not from this.

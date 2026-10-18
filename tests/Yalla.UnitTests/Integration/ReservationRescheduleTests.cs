@@ -221,9 +221,13 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         Assert.Equal("reservation-not-changeable", mapped.Code);
         Assert.Equal((int)ReservationStatus.CancelledByDiner, mapped.Context!["status"]);
 
-        // Today at 13:00, booked at noon, and then the clock passes the start.
+        // Today at 13:00, booked at noon - short notice, so the floor confirms it - and then the clock
+        // passes the start.
         var today = await service.CreateAsync(
             Booking(branch, branch.TableIds[1], new TimeOnly(13, 0)) with { LocalDate = new DateOnly(2026, 9, 10) });
+
+        await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .ApproveAsync(new DecideReservationCommand(today.Id));
 
         clock.Advance(TimeSpan.FromMinutes(61));
 

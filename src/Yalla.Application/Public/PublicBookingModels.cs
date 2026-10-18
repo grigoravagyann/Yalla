@@ -60,6 +60,14 @@ namespace Yalla.Application.Public;
 /// The room the table is in - "Hall", "Terrace" - or absent for a table in no room. Said beside the
 /// table label, because "table 4" alone does not tell somebody arriving which room to walk into.
 /// </param>
+/// <param name="ApprovalExpiresAtUtc">
+/// For a booking waiting on a short-notice decision, when the venue's chance to answer runs out - the
+/// page counts down to it and reads the link again until the booking is decided. Null otherwise.
+/// </param>
+/// <param name="DeclinedBecause">
+/// Why a booking that was waiting was declined - the venue said no, or nobody answered in time - so
+/// the page can apologise for the right thing. Null for a booking that was not declined.
+/// </param>
 public sealed record PublicBookingView(
     string VenueName,
     string BranchName,
@@ -75,7 +83,9 @@ public sealed record PublicBookingView(
     bool CanCancel,
     bool CancelledAfterDeadline,
     string? Note = null,
-    string? RoomName = null);
+    string? RoomName = null,
+    DateTime? ApprovalExpiresAtUtc = null,
+    DeclineReason? DeclinedBecause = null);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.

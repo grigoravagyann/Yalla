@@ -27,17 +27,39 @@ internal sealed record ReservationNotice(
     TimeOnly LocalStartTime,
     string ReservationCode,
     int GraceExtensionMinutes = 0,
-    bool Approved = false);
+    bool Approved = false,
+    bool Expired = false,
+    bool WasChange = false,
+    bool OriginalKept = false);
 
-internal sealed record TabNotice(Guid TabId, Guid ParticipantId, Guid DinerUserId, string TableLabel);
+/// <param name="TabId">The tab, which is where a tap lands.</param>
+/// <param name="ParticipantId">Who it is about: the approved joiner, whoever ordered, or the one waiting.</param>
+/// <param name="DinerUserId">Who it is sent to.</param>
+/// <param name="TableLabel">The table as it was labelled when the message was written.</param>
+/// <param name="GuestName">The name a waiting joiner gave, for the host. Null when they gave none.</param>
+internal sealed record TabNotice(
+    Guid TabId,
+    Guid ParticipantId,
+    Guid DinerUserId,
+    string TableLabel,
+    string? GuestName = null);
 
 /// <summary>
 /// Sends the reminder, if the booking is still worth reminding anybody about.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The state check happens here rather than at write time, because hours pass in between. Cancelling
 /// a booking deletes its unsent reminder, so this is the belt to that braces - a booking seated early
 /// or cancelled by staff through some path that forgot still produces no push.
+/// </para>
+/// <para>
+/// A booking still waiting for the venue is reminded - a large party next week the venue has not got
+/// to yet is still the diner's plan - <b>except one waiting on a short-notice answer</b>. That one
+/// has a deadline minutes away, and "your table is at 20:00" about a table nobody has promised is the
+/// wrong thing to say; the answer itself says the right thing. Its reminder is not even written when
+/// it would fall before the deadline, so this is the braces for a sweep running behind.
+/// </para>
 /// </remarks>
 internal sealed class ReservationReminderHandler(
     YallaDbContext db,
@@ -50,17 +72,28 @@ internal sealed class ReservationReminderHandler(
     {
         var notice = Payload.Read<ReservationNotice>(payloadJson);
 
-        var status = await db.Reservations
+        var booking = await db.Reservations
             .AsNoTracking()
             .Where(r => r.Id == notice.ReservationId)
-            .Select(r => (ReservationStatus?)r.Status)
+            .Select(r => new { r.Status, AwaitsShortNoticeAnswer = r.ApprovalExpiresAtUtc != null })
             .FirstOrDefaultAsync(cancellationToken);
+
+        var status = booking?.Status;
 
         if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
         {
             logger.LogInformation(
                 "Skipping the reminder for booking {ReservationId}: it is {Status}.",
                 notice.ReservationId, status);
+
+            return;
+        }
+
+        if (status == ReservationStatus.PendingApproval && booking!.AwaitsShortNoticeAnswer)
+        {
+            logger.LogInformation(
+                "Skipping the reminder for booking {ReservationId}: it is still waiting on the venue's short-notice answer.",
+                notice.ReservationId);
 
             return;
         }
@@ -142,7 +175,21 @@ internal sealed class ReservationLateNudgeHandler(
     }
 }
 
-/// <summary>The manager approved or rejected a booking that was waiting.</summary>
+/// <summary>
+/// Staff approved or declined a booking that was waiting - or nobody answered a short-notice one in
+/// time and it was declined for them.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>expired</c> in the data tells the app which decline it is, so it can apologise rather than say
+/// the venue turned the diner down. A message written before the flag existed reads as not expired.
+/// </para>
+/// <para>
+/// <c>wasChange</c> and <c>originalKept</c> say what a declined <i>change</i> of a confirmed booking
+/// came to: the booking stands at the slot it had - the body names its time - or that slot was gone
+/// too and the booking with it.
+/// </para>
+/// </remarks>
 internal sealed class ReservationDecidedHandler(
     YallaDbContext db,
     INotificationChannel channel) : IOutboxHandler
@@ -154,9 +201,15 @@ internal sealed class ReservationDecidedHandler(
         var notice = Payload.Read<ReservationNotice>(payloadJson);
         var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
 
-        var (title, body) = notice.Approved
-            ? NotificationText.ReservationApproved(locale, notice.VenueName, notice.LocalStartTime)
-            : NotificationText.ReservationRejected(locale, notice.VenueName);
+        var (title, body) = notice switch
+        {
+            { Approved: true } => NotificationText.ReservationApproved(locale, notice.VenueName, notice.LocalStartTime),
+            { WasChange: true, OriginalKept: true } =>
+                NotificationText.ReservationChangeDeclined(locale, notice.VenueName, notice.LocalStartTime, notice.Expired),
+            { WasChange: true } => NotificationText.ReservationChangeDeclinedOriginalGone(locale, notice.VenueName, notice.Expired),
+            { Expired: true } => NotificationText.ReservationExpired(locale, notice.VenueName),
+            _ => NotificationText.ReservationRejected(locale, notice.VenueName),
+        };
 
         await channel.SendAsync(
             new NotificationMessage(
@@ -168,6 +221,9 @@ internal sealed class ReservationDecidedHandler(
                     ["kind"] = "reservation-decided",
                     ["reservationId"] = notice.ReservationId.ToString(),
                     ["approved"] = notice.Approved ? "true" : "false",
+                    ["expired"] = notice.Expired ? "true" : "false",
+                    ["wasChange"] = notice.WasChange ? "true" : "false",
+                    ["originalKept"] = notice.OriginalKept ? "true" : "false",
                 }),
             cancellationToken);
     }
@@ -196,6 +252,77 @@ internal sealed class ParticipantApprovedHandler(
                 {
                     ["kind"] = "participant-approved",
                     ["tabId"] = notice.TabId.ToString(),
+                }),
+            cancellationToken);
+    }
+}
+
+/// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>
+/// <remarks>
+/// Sent to the host only while the joiner is still waiting. The host may have seen them on the
+/// People screen first and let them on, or turned them away; "Anna wants to join" after Anna is
+/// already on the tab is the push that teaches a host to ignore the next one.
+/// </remarks>
+internal sealed class JoinRequestedHandler(
+    YallaDbContext db,
+    INotificationChannel channel,
+    ILogger<JoinRequestedHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.JoinRequested;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<TabNotice>(payloadJson);
+
+        // Still a question this person can answer: the joiner still waiting, the tab still taking
+        // people - closing leaves a pending joiner pending, and nobody new is let on a tab being
+        // settled - and the one it is addressed to still its host, which staff can change.
+        var standing = await db.TabParticipants
+            .AsNoTracking()
+            .Where(p => p.Id == notice.ParticipantId && p.TabId == notice.TabId)
+            .Select(p => new
+            {
+                p.Status,
+                TabStatus = p.Tab.Status,
+                HostUserId = p.Tab.Participants
+                    .Where(h => h.Id == p.Tab.HostParticipantId)
+                    .Select(h => h.UserId)
+                    .FirstOrDefault(),
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (standing is not { Status: ParticipantStatus.PendingApproval, TabStatus: TabStatus.Open }
+            || standing.HostUserId != notice.DinerUserId)
+        {
+            logger.LogInformation(
+                "Skipping the join request for participant {ParticipantId} on tab {TabId}: they are {Status}, "
+                + "the tab is {TabStatus}, and the host it was written for is {Host} its host.",
+                notice.ParticipantId,
+                notice.TabId,
+                standing?.Status,
+                standing?.TabStatus,
+                standing?.HostUserId == notice.DinerUserId ? "still" : "no longer");
+
+            return;
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+
+        var (title, body) = NotificationText.JoinRequested(locale, notice.TableLabel, notice.GuestName);
+
+        // The tab, so a tap opens the bill the request is waiting on; the participant too, so a
+        // client can go straight to them. The kind is camelCase, unlike the older kebab-case ones,
+        // because it is the exact string the diner app routes this tap on.
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string>
+                {
+                    ["kind"] = "tabJoinRequested",
+                    ["tabId"] = notice.TabId.ToString(),
+                    ["participantId"] = notice.ParticipantId.ToString(),
                 }),
             cancellationToken);
     }

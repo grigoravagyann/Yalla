@@ -69,9 +69,11 @@ public sealed record DaySlot
     public required bool IsAvailable { get; init; }
 
     /// <summary>
-    /// True when a booking made at this time will land waiting for approval: the branch approves
-    /// every booking by hand, or the party is over its threshold. The same answer every table in
-    /// the single-slot read gives.
+    /// True when a booking made at this time will land waiting for approval: the time is at short
+    /// notice (today at the branch, or under six hours away - the floor decides, within fifteen
+    /// minutes), the branch approves every booking by hand, or the party is over its threshold. Asked
+    /// per time, so on tomorrow's picker the first few hours can say yes and the evening no. The same
+    /// answer every table in the single-slot read gives.
     /// </summary>
     public required bool RequiresApproval { get; init; }
 

@@ -917,6 +917,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("ApprovalExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ApprovalTrigger")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -948,6 +954,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int?>("DeclineReason")
+                        .HasColumnType("int");
 
                     b.Property<Guid?>("DinerUserId")
                         .HasColumnType("uniqueidentifier");
@@ -991,6 +1000,27 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("PartySize")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("PreviousConfirmedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("PreviousDiningTableId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("PreviousEndUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateOnly?>("PreviousLocalDate")
+                        .HasColumnType("date");
+
+                    b.Property<TimeOnly?>("PreviousLocalStartTime")
+                        .HasColumnType("time");
+
+                    b.Property<int?>("PreviousPartySize")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("PreviousStartUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -1007,6 +1037,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ApprovalExpiresAtUtc")
+                        .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc")
+                        .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL");
 
                     b.HasIndex("ClientCommandId")
                         .IsUnique()

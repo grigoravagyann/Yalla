@@ -111,6 +111,80 @@ public static class NotificationText
                   $"{venue}-ը չկարողացավ ընդունել այս ամրագրումը։ Փորձեք այլ ժամ։"),
         };
 
+    /// <summary>
+    /// Nobody at the venue answered a short-notice booking within the fifteen minutes, so it was
+    /// declined for them.
+    /// </summary>
+    /// <remarks>
+    /// An apology, and not the venue's "no": the venue did not turn this diner down, it did not look in
+    /// time. The body sends them on - another time, or another place - while there is still an evening
+    /// to book.
+    /// </remarks>
+    public static (string Title, string Body) ReservationExpired(string locale, string venue) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронь не подтверждена вовремя",
+                     $"Извините, {venue} не успел подтвердить бронь. Попробуйте другое время или другое место."),
+            "en" => ("Booking not confirmed in time",
+                     $"Sorry, {venue} could not confirm in time. Try another time or place."),
+            _ => ("Ամրագրումը ժամանակին չհաստատվեց",
+                  $"Ներողություն, {venue}-ը չհասցրեց հաստատել ամրագրումը։ Փորձեք այլ ժամ կամ այլ վայր։"),
+        };
+
+    /// <summary>
+    /// A change of a confirmed booking was declined - by the venue, or for nobody answering in time -
+    /// and the booking stands as it was, at <paramref name="at"/>.
+    /// </summary>
+    /// <remarks>
+    /// The second sentence is the point: the diner asked to move, the move did not happen, and they
+    /// still have the table they had. Without it "not confirmed" reads as the evening being off.
+    /// </remarks>
+    public static (string Title, string Body) ReservationChangeDeclined(
+        string locale, string venue, TimeOnly at, bool expired) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Новое время не подтверждено",
+                     (expired
+                         ? $"Извините, {venue} не успел подтвердить изменение. "
+                         : $"{venue} не смог принять изменение. ")
+                     + $"Ваша бронь на {Time(at)} остаётся в силе."),
+            "en" => ("Change not confirmed",
+                     (expired
+                         ? $"Sorry, {venue} could not confirm the change in time. "
+                         : $"{venue} could not take the change. ")
+                     + $"Your booking at {Time(at)} stands."),
+            _ => ("Նոր ժամը չհաստատվեց",
+                  (expired
+                      ? $"Ներողություն, {venue}-ը չհասցրեց հաստատել փոփոխությունը։ "
+                      : $"{venue}-ը չկարողացավ ընդունել փոփոխությունը։ ")
+                  + $"Ձեր {Time(at)}-ի ամրագրումը մնում է ուժի մեջ։"),
+        };
+
+    /// <summary>
+    /// A change of a confirmed booking was declined, and the slot it had was gone too - taken by
+    /// another diner, or over - so the booking ended with the change.
+    /// </summary>
+    public static (string Title, string Body) ReservationChangeDeclinedOriginalGone(
+        string locale, string venue, bool expired) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронь не подтверждена",
+                     (expired
+                         ? $"Извините, {venue} не успел подтвердить изменение"
+                         : $"{venue} не смог принять изменение")
+                     + ", а прежнее время уже занято. Попробуйте другое время или другое место."),
+            "en" => ("Booking not confirmed",
+                     (expired
+                         ? $"Sorry, {venue} could not confirm the change in time"
+                         : $"{venue} could not take the change")
+                     + ", and your earlier time has been taken since. Try another time or place."),
+            _ => ("Ամրագրումը չհաստատվեց",
+                  (expired
+                      ? $"Ներողություն, {venue}-ը չհասցրեց հաստատել փոփոխությունը"
+                      : $"{venue}-ը չկարողացավ ընդունել փոփոխությունը")
+                  + ", իսկ նախկին ժամն արդեն զբաղված է։ Փորձեք այլ ժամ կամ այլ վայր։"),
+        };
+
     // ---------------------------------------------------------------- the tab
 
     /// <summary>
@@ -127,6 +201,34 @@ public static class NotificationText
             "en" => ("You are on the tab", $"Table {tableLabel} - you can order now."),
             _ => ("Դուք միացաք հաշվին", $"Սեղան {tableLabel} — այժմ կարող եք պատվիրել։"),
         };
+
+    /// <summary>
+    /// "Anna wants to join your tab", to the host.
+    /// </summary>
+    /// <remarks>
+    /// The other half of <see cref="ParticipantApproved"/>: the joiner is on "waiting for the host",
+    /// and the host has no reason to open the People screen. The table is the title because a host
+    /// knows their table, and the name is the joiner's own - "a guest" when they gave none, never the
+    /// roster's English "Guest 3".
+    /// </remarks>
+    public static (string Title, string Body) JoinRequested(string locale, string tableLabel, string? guestName)
+    {
+        var name = string.IsNullOrWhiteSpace(guestName) ? null : guestName.Trim();
+
+        return Normalise(locale) switch
+        {
+            "ru" => ($"Столик {tableLabel}",
+                     $"{name ?? "Гость"} хочет присоединиться к вашему счёту."),
+            "en" => ($"Table {tableLabel}",
+                     $"{name ?? "A guest"} wants to join your tab."),
+            _ => ($"Սեղան {tableLabel}",
+                  name is null
+                      ? "Մի հյուր ցանկանում է միանալ Ձեր հաշվին։"
+                      // The name first, set off with the Armenian pause as the app's own banner
+                      // reads it, so a name in any script needs no article.
+                      : $"{name}՝ ցանկանում է միանալ Ձեր հաշվին։"),
+        };
+    }
 
     public static (string Title, string Body) OrderReady(string locale, string tableLabel) =>
         Normalise(locale) switch

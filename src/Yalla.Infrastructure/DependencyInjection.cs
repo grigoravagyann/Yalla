@@ -158,10 +158,28 @@ public static class DependencyInjection
             services.AddScoped<INotificationChannel, LoggingNotificationChannel>();
         }
 
+        // Short-notice bookings nobody at the venue answered in time, declined with an apology. A loop
+        // of its own rather than an outbox message, because the outbox drops what is an hour overdue
+        // and this deadline is a promise to the diner however late it is noticed. Zero switches it off
+        // (a test host sharing a database); a negative value is a typo and stops startup.
+        var approvalExpiry = Bind<ApprovalExpiryOptions>(configuration, ApprovalExpiryOptions.SectionName);
+
+        if (approvalExpiry.SweepIntervalSeconds < 0)
+        {
+            throw new InvalidOperationException(
+                $"ApprovalExpiry:SweepIntervalSeconds is {approvalExpiry.SweepIntervalSeconds}. Use the seconds "
+                + "between approval sweeps, or 0 to switch the sweep off.");
+        }
+
+        services.AddSingleton(approvalExpiry);
+        services.AddScoped<ApprovalExpirySweep>();
+        services.AddHostedService<ApprovalExpiryHostedService>();
+
         services.AddScoped<IOutboxHandler, ReservationReminderHandler>();
         services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
         services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
         services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();
+        services.AddScoped<IOutboxHandler, JoinRequestedHandler>();
         services.AddScoped<IOutboxHandler, OrderReadyHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes

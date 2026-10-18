@@ -86,6 +86,12 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         // every worktree. A test host writes to a throwaway folder instead; the tests that read the
         // files back set a root of their own.
         ["PhotoStorage:RootPath"] = Path.Combine(Path.GetTempPath(), "yalla-test-photos"),
+
+        // Off: the test database is shared, and a sweep running on real time in the background would
+        // decline whichever test's short-notice requests its clock calls lapsed - and write their
+        // apology pushes into an outbox another test is counting. The sweep's own tests run a pass
+        // directly; a host test that wants the loop switches it back on.
+        ["ApprovalExpiry:SweepIntervalSeconds"] = "0",
     };
 
     private readonly List<Action<IServiceCollection>> _serviceOverrides = [];

@@ -387,7 +387,10 @@ in a WhatsApp thread should stop working once nobody could act on it.
 Exactly what the confirmation screen renders: venue, branch, address, time zone, table label and
 the room the table is in (`roomName`, absent for a table in no room), local date and time, party
 size, status, the code quoted at the door, the cancellation deadline as an **instant**, and whether
-cancelling would still do anything.
+cancelling would still do anything. A booking waiting on a short-notice answer also carries
+`approvalExpiresAtUtc` - the page counts down to it and reads the link again until the booking is
+decided - and a declined one `declinedBecause` (1 the venue said no, 2 nobody answered in time), so
+the page apologises for the right thing. See [reservations.md](reservations.md#3d-short-notice-tonight-is-the-floors-to-decide).
 
 **Nothing else.** No diner id, no phone number, no other bookings, no floor state, no table or
 branch id. `PublicBookingView` is its own record for the same reason `PublicReservationPolicy` is:
