@@ -1,3 +1,4 @@
+using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 
@@ -50,11 +51,56 @@ public class TabParticipantTests
         Assert.False(participant.CanPay);
     }
 
-    private static TabParticipant NewParticipant(bool canSeeTableTotal, bool canPay) => new(
+    // ------------------------------------------------------------ the host always sees the total
+
+    [Fact]
+    public void The_host_cannot_be_hidden_the_total()
+    {
+        var host = NewParticipant(canSeeTableTotal: true, canPay: true, ParticipantRole.Host);
+
+        var refused = Assert.Throws<FieldValidationException>(() => host.SetPermissions(
+            canOrder: true, canSeeTableTotal: false, canPay: false));
+
+        // A field error on the flag the request may not hold, which the API answers as a 422.
+        Assert.Equal("canSeeTableTotal", refused.Field);
+
+        // And nothing moved.
+        Assert.True(host.CanSeeTableTotal);
+        Assert.True(host.CanPay);
+    }
+
+    [Fact]
+    public void A_host_without_the_total_cannot_be_constructed()
+    {
+        Assert.Throws<FieldValidationException>(
+            () => NewParticipant(canSeeTableTotal: false, canPay: false, ParticipantRole.Host));
+    }
+
+    /// <summary>
+    /// The rule is about the role, not the person: a host who hands the tab over is a guest like any
+    /// other, and the new host may hide the total from them.
+    /// </summary>
+    [Fact]
+    public void A_host_who_hands_over_may_have_the_total_hidden_like_any_guest()
+    {
+        var former = NewParticipant(canSeeTableTotal: true, canPay: true, ParticipantRole.Host);
+
+        former.BecomeGuest();
+        former.SetPermissions(canOrder: true, canSeeTableTotal: false, canPay: false);
+
+        Assert.False(former.CanSeeTableTotal);
+    }
+
+    // The pay-and-see rules hold for anybody, so they are tested on a guest - the host now has a rule
+    // of their own about the total, above.
+    private static TabParticipant NewParticipant(
+        bool canSeeTableTotal,
+        bool canPay,
+        ParticipantRole role = ParticipantRole.Guest) => new(
         Guid.CreateVersion7(),
         "Ani",
         "device-1",
-        ParticipantRole.Host,
+        role,
         ParticipantStatus.Approved,
         JoinedAt,
         canOrder: true,

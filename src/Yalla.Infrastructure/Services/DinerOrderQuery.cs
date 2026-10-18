@@ -17,8 +17,9 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// <b>Which orders are "mine".</b> An order placed from the diner's own phone, or keyed in by a waiter
 /// on their behalf - through any tab participant row that carries their account - and an order a
-/// waiter keyed in for the whole table on a tab the diner was approved onto. The last is how most
-/// spoken orders land, and a diner who ate it should see it.
+/// waiter keyed in for the whole table while the diner was at it, when they may see the table total.
+/// The last is how most spoken orders land, and a diner who ate it should see it; the conditions are
+/// the tab read's, see <c>MineAsync</c>.
 /// </para>
 /// <para>
 /// <b>The timeline is the tab's event stream</b>, not a column: "confirmed" is when the order was
@@ -85,10 +86,20 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     /// behalf of, and whole-table on a tab - rather than a scan of every order on the platform.
     /// </para>
     /// <para>
-    /// <b>A whole-table order follows the tab view's rule.</b> In the tab those lines are the table's
-    /// bill, shown only to a participant <see cref="TabPermissions.MaySeeTableTotal"/> allows: approved,
-    /// and not hidden from by the host. A guest the host hid the total from, one still pending, and
-    /// one removed from the tab do not get it here either.
+    /// <b>A whole-table order follows the tab view's rule</b> (<see cref="TabProjection.IsOwnLine"/>).
+    /// A waiter's order for nobody in particular is table-attributed lines, and the tab itemises
+    /// those on somebody's own lines only when <see cref="TabPermissions.MaySeeTableTotal"/> allows -
+    /// approved, and not hidden from by the host - <b>and</b> they were at the table when it was
+    /// ordered, which is who <c>/shares</c> splits it across. A guest the host hid the total from, one
+    /// still pending, one removed from the tab, and one who arrived after it was ordered do not get
+    /// it here either.
+    /// </para>
+    /// <para>
+    /// One difference is deliberate. A whole-table order can carry a shared line as well (a waiter
+    /// can key in a shared bottle), and the tab shows a guest without the total that line on their
+    /// own lines like any shared item. This list is of orders, not lines, and the same order's
+    /// table-attributed lines are exactly what that guest may not see itemised - so the order stays
+    /// off their list, and the bottle is on their bill.
     /// </para>
     /// </remarks>
     private async Task<IQueryable<TabOrder>?> MineAsync(Guid dinerUserId, CancellationToken cancellationToken)
@@ -121,7 +132,8 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             .Union(db.TabOrders
                 .Where(o => wholeTableTabIds.Contains(o.TabId)
                             && o.PlacedByParticipantId == null
-                            && o.OnBehalfOfParticipantId == null)
+                            && o.OnBehalfOfParticipantId == null
+                            && o.Lines.Any(l => l.Shares.Any(s => participantIds.Contains(s.TabParticipantId))))
                 .Select(o => o.Id));
 
         return db.TabOrders

@@ -153,17 +153,37 @@ public sealed class TabParticipant : Entity
     /// a total they are not allowed to see.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>CanPay</c> implies <c>CanSeeTableTotal</c> is enforced here as a domain invariant rather
     /// than in the apps. Three clients consume this API and a rule that lives only in a UI is a
     /// rule that one of them will forget. The refusal is a refusal - the flags are not silently
     /// corrected, because a host who tapped "may pay" and got "may see the total" without being
     /// told has been surprised, and their next tap is made on the wrong assumption.
+    /// </para>
+    /// <para>
+    /// <b>The host always sees the total.</b> Hiding it on the host's own row would leave the person
+    /// who approves joiners, chooses the split and usually pays looking at a bill without its bottom
+    /// line - with no way back, because only the host sets flags. Refused as a field error on
+    /// <c>canSeeTableTotal</c>, a value the request may not hold, rather than quietly kept true.
+    /// </para>
     /// </remarks>
+    /// <exception cref="FieldValidationException">
+    /// Thrown when this participant is the host and <paramref name="canSeeTableTotal"/> is false.
+    /// </exception>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="canPay"/> is true while <paramref name="canSeeTableTotal"/> is false.
     /// </exception>
     public void SetPermissions(bool canOrder, bool canSeeTableTotal, bool canPay)
     {
+        if (IsHost && !canSeeTableTotal)
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "canSeeTableTotal",
+                "The host always sees the table total.",
+                FieldBounds.Conflict,
+                Value: false));
+        }
+
         if (canPay && !canSeeTableTotal)
         {
             throw new ArgumentException(

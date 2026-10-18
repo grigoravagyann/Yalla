@@ -1,5 +1,6 @@
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
+using Yalla.Api.Errors;
 using Yalla.Application.Tabs;
 using Yalla.Infrastructure.Identity;
 
@@ -194,7 +195,12 @@ public static class TabEndpoints
             .WithDescription(
                 "Projected through the caller's own flags by one function, so every rule applies "
                 + "the same way everywhere:\n"
-                + "- The caller's **own items and own subtotal are always present**, whatever the flags.\n"
+                + "- The caller's **own items and own subtotal are always present**, whatever the flags. "
+                + "Own means their own orders, a waiter's keyed in with `onBehalfOfParticipantId` for "
+                + "them, and the shared lines they were at the table for - and, only with "
+                + "`tableTotalVisible`, the `isTableAttributed` lines they were at the table for: a "
+                + "waiter's lines for nobody in particular can be the whole bill. `/shares` charges a "
+                + "part of those either way.\n"
                 + "- The **table total and other people's items appear only with `canSeeTableTotal`**, and "
                 + "only once approved. When hidden they are **absent from the body** - not zero, not "
                 + "null - with `tableTotalVisible: false` beside the gap, so no client can render a "
@@ -203,7 +209,9 @@ public static class TabEndpoints
                 + "- **Nothing silently disappears.** A voided line stays in both arrays with "
                 + "`isVoided`, `voidReason` and `voidedAtUtc`, worth zero and counted toward no "
                 + "total; comps and discounts appear in `adjustments` with the reason the manager "
-                + "typed. A bill whose number drops with no visible cause is the fastest way to "
+                + "typed - all of them with `tableTotalVisible`, otherwise only those on the caller's "
+                + "own lines, because one off the whole tab or another person's dish is the table's "
+                + "money. A bill whose number drops with no visible cause is the fastest way to "
                 + "make somebody distrust the app, and a waiter then has to explain it at the table.\n\n"
                 + "Menu prices are not part of this view and stay visible through the menu, so a "
                 + "guest without the total can always work out what their own order costs - and "
@@ -275,9 +283,15 @@ public static class TabEndpoints
             .WithDescription(
                 "`canOrder`, `canSeeTableTotal` and `canPay`, together. **`canPay` requires "
                 + "`canSeeTableTotal`** - nobody puts money toward a total they may not see - and the "
-                + "combination that breaks that is refused with 400 rather than silently corrected.")
+                + "combination that breaks that is refused with 400 rather than silently corrected.\n\n"
+                + "**The host always sees the total.** `canSeeTableTotal: false` on the host's own row is "
+                + "`422 validation-failed` with `context.field` `canSeeTableTotal`: only the host sets "
+                + "flags, so nobody could ever turn it back on.")
             .ProducesProblemDetails(
-                StatusCodes.Status400BadRequest, "`canPay` is true while `canSeeTableTotal` is false.");
+                StatusCodes.Status400BadRequest, "`canPay` is true while `canSeeTableTotal` is false.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`canSeeTableTotal` is false on the host's own row. `context.field` is `canSeeTableTotal`.");
 
         mutating.MapPost("/settlement-mode", SetSettlementModeAsync)
             .WithName("setTabSettlementMode")

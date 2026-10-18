@@ -669,6 +669,7 @@ internal sealed class TabOrderService(
             .FirstAsync(o => o.Id == orderId, cancellationToken);
 
         var tab = order.Tab;
+        var totalsVisible = await CallerMaySeeTableTotalAsync(order.TabId, cancellationToken);
 
         return new OrderView(
             order.Id,
@@ -680,10 +681,44 @@ internal sealed class TabOrderService(
             order.PlacedAtUtc,
             order.EstimatedReadyAtUtc,
             [.. order.Lines.Select(ToLineView)],
-            new TabTotalsSnapshot(
-                tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd),
+            totalsVisible,
+            totalsVisible
+                ? new TabTotalsSnapshot(
+                    tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd)
+                : null,
             await ledger.MaxSequenceAsync(order.TabId, cancellationToken),
             wasReplay);
+    }
+
+    /// <summary>
+    /// Whether whoever is calling may be answered with the tab's totals.
+    /// </summary>
+    /// <remarks>
+    /// Staff always: they are not participants and the host's flags are not about them. A diner by
+    /// <see cref="TabPermissions.MaySeeTableTotal"/> on their own row, the rule that decides
+    /// <c>tableTotalVisible</c> on their tab - the answer to placing a coffee used to carry the whole
+    /// table's bill to a guest the host had hidden it from. Anybody else gets none: there is no
+    /// caller here the rule has not been asked about.
+    /// </remarks>
+    private async Task<bool> CallerMaySeeTableTotalAsync(Guid tabId, CancellationToken cancellationToken)
+    {
+        if (actor.Type == ActorType.Staff)
+        {
+            return true;
+        }
+
+        if (actor.ParticipantId is not { } participantId)
+        {
+            return false;
+        }
+
+        var me = await db.TabParticipants
+            .AsNoTracking()
+            .Where(p => p.TabId == tabId && p.Id == participantId)
+            .Select(p => new { p.Status, p.CanSeeTableTotal })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return me is not null && TabPermissions.MaySeeTableTotal(me.Status, me.CanSeeTableTotal);
     }
 
     private static OrderLineView ToLineView(TabOrderLine line) =>

@@ -107,7 +107,14 @@ public sealed record OrderLineView(
 /// From the longest prep time on the order, not the sum: a kitchen cooks an order together.
 /// </param>
 /// <param name="Lines">What was ordered.</param>
-/// <param name="Totals">The tab's totals as they stand after this order.</param>
+/// <param name="TableTotalVisible">
+/// Whether <paramref name="Totals"/> is present: for staff, and for a diner allowed the table total -
+/// the rule <c>tableTotalVisible</c> on their tab follows.
+/// </param>
+/// <param name="Totals">
+/// The tab's totals as they stand after this order. <b>Absent</b> for a diner the host hid the
+/// total from - an order of their own is no way round the hidden bill. Never zeroed.
+/// </param>
 /// <param name="TabEventSequence">The tab's event sequence after this order, for a live client.</param>
 /// <param name="WasReplay">True when the command had already been applied and this is the original answer.</param>
 public sealed record OrderView(
@@ -120,7 +127,8 @@ public sealed record OrderView(
     DateTime PlacedAtUtc,
     DateTime? EstimatedReadyAtUtc,
     IReadOnlyList<OrderLineView> Lines,
-    TabTotalsSnapshot Totals,
+    bool TableTotalVisible,
+    TabTotalsSnapshot? Totals,
     long TabEventSequence,
     bool WasReplay);
 

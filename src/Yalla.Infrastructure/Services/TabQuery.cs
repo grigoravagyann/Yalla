@@ -155,12 +155,17 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 l.TabOrderId,
                 l.MenuItemId,
                 l.TabOrder.PlacedByParticipantId,
+
+                // Who a waiter keyed it in for. Without it a guest's own spoken order was nobody's
+                // on the projection while /shares charged them for it.
+                l.TabOrder.OnBehalfOfParticipantId,
                 OrderStatus = l.TabOrder.Status,
                 l.NameSnapshot,
                 l.UnitPriceAmdSnapshot,
                 l.Quantity,
                 l.Note,
                 l.IsShared,
+                l.IsTableAttributed,
                 l.VoidedAtUtc,
                 l.VoidReason,
                 Shares = l.Shares.Select(s => s.TabParticipantId).ToList(),
@@ -258,7 +263,9 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     IsVoided: l.VoidedAtUtc is not null,
                     l.VoidedAtUtc,
                     l.VoidReason,
-                    l.Shares)),
+                    l.Shares,
+                    l.OnBehalfOfParticipantId,
+                    l.IsTableAttributed)),
             ],
             [
                 .. adjustments.Select(a => new TabAdjustmentSnapshot(

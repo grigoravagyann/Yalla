@@ -113,6 +113,39 @@ public class TabEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Forbidden, guestAttempt.StatusCode);
     }
 
+    /// <summary>
+    /// The host may set flags on anybody but cannot hide the total from themself: they would be
+    /// approving joiners and choosing the split blind, and only a host could ever turn it back on.
+    /// A 422 naming the field, like any other value a request may not hold.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_host_cannot_hide_the_total_from_themself_and_is_told_which_field()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (_, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host", hideTotalFromGuests: true);
+
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+
+        Assert.Equal(
+            ["canSeeTableTotal"],
+            await RefusedFieldsAsync(await hostClient.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/participants/{host.ParticipantId}/permissions",
+                new { canOrder = true, canSeeTableTotal = false, canPay = false })));
+
+        // Nothing moved: the host still sees the total, and may still change their other flags.
+        var view = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+        Assert.True(view.GetProperty("tableTotalVisible").GetBoolean());
+
+        Assert.Equal(HttpStatusCode.OK, (await hostClient.PostAsJsonAsync(
+            $"/api/tabs/{host.TabId}/participants/{host.ParticipantId}/permissions",
+            new { canOrder = true, canSeeTableTotal = true, canPay = true })).StatusCode);
+    }
+
     // ------------------------------------------------------------ 9. absent on the wire
 
     [SkippableFact]

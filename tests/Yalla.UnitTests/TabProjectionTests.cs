@@ -1,5 +1,6 @@
 ﻿using Yalla.Application.Media;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests;
@@ -343,6 +344,209 @@ public class TabProjectionTests
         Assert.DoesNotContain(TabProjection.Project(tab, HostId)!.Participants, p => p.ParticipantId == AniId);
         Assert.DoesNotContain(TabProjection.ProjectForStaff(tab).Participants, p => p.ParticipantId == AniId);
     }
+
+    // ------------------------------------------------------------ whose line it is
+
+    /// <summary>
+    /// A waiter keyed Ani's order in for her. It is on her bill - <c>/shares</c> charges her for it -
+    /// so it is on her own lines and in her own subtotal, though no phone placed it.
+    /// </summary>
+    [Fact]
+    public void A_waiters_order_on_a_guests_behalf_is_on_their_own_lines_and_subtotal()
+    {
+        var soup = Line(placedBy: null, "Spas", 1_800L) with { OnBehalfOfParticipantId = AniId };
+        var tab = Tab(aniSeesTotal: false) with { Lines = [.. Tab().Lines, soup] };
+
+        var view = TabProjection.Project(tab, AniId)!;
+
+        var line = Assert.Single(view.MyLines, l => l.LineId == soup.LineId);
+        Assert.Null(line.PlacedByParticipantId);
+        Assert.Equal(AniId, line.OnBehalfOfParticipantId);
+        Assert.Equal(2_400L + 1_800L, view.MyItemsSubtotalAmd);
+
+        // And it is nobody else's.
+        Assert.DoesNotContain(TabProjection.Project(tab, HostId)!.MyLines, l => l.LineId == soup.LineId);
+    }
+
+    /// <summary>
+    /// A line a waiter keyed in for the table splits across whoever was approved at the time, like a
+    /// shared bottle, and <c>/shares</c> charges each of them a part. For a reader allowed the total
+    /// it is on their own lines when they were at the table for it - listed, flagged, and kept out of
+    /// the own-items subtotal.
+    /// </summary>
+    [Fact]
+    public void A_table_attributed_line_is_on_the_own_lines_of_a_reader_with_the_total_who_was_there()
+    {
+        var (tab, bread, jug) = TableAttributed(aniSeesTotal: true);
+
+        var view = TabProjection.Project(tab, AniId)!;
+
+        // The bread went on before she was let on.
+        Assert.DoesNotContain(view.MyLines, l => l.LineId == bread.LineId);
+
+        var line = Assert.Single(view.MyLines, l => l.LineId == jug.LineId);
+        Assert.True(line.IsTableAttributed);
+        Assert.False(line.IsShared);
+        Assert.Equal(2, line.SharedWithCount);
+
+        // Her tea alone: the jug is split, not hers whole.
+        Assert.Equal(2_400L, view.MyItemsSubtotalAmd);
+    }
+
+    /// <summary>
+    /// <b>Without the total, no table-attributed line is itemised.</b> A waiter who keys everything in
+    /// for nobody in particular makes those lines the whole bill, and itemising the ones a guest was
+    /// at the table for would hand them the total line by line. She is still charged her part - on
+    /// <c>/shares</c>, as money - and a comp off one of those lines follows the line off her bill.
+    /// A shared bottle she is on stays, as it always has.
+    /// </summary>
+    [Fact]
+    public void A_table_attributed_line_is_not_itemised_for_a_reader_without_the_total()
+    {
+        var (plain, _, jug) = TableAttributed(aniSeesTotal: false);
+        var wine = Line(HostId, "Areni red, bottle", 9_500L) with { IsShared = true, SharedWithParticipantIds = [HostId, AniId] };
+        var offTheJug = Adjustment(jug.LineId, percent: null, reductionAmd: 100L);
+        var tab = plain with { Lines = [.. plain.Lines, wine], Adjustments = [offTheJug] };
+
+        var view = TabProjection.Project(tab, AniId)!;
+
+        Assert.DoesNotContain(view.MyLines, l => l.IsTableAttributed);
+        Assert.Contains(view.MyLines, l => l.LineId == wine.LineId);
+        Assert.Empty(view.Adjustments);
+
+        // Charged for it all the same - the arithmetic's question, not the bill's.
+        Assert.True(jug.IsChargedTo(AniId));
+        Assert.False(TabProjection.IsOwnLine(jug, AniId, tableTotalVisible: false));
+        Assert.True(TabProjection.IsOwnLine(jug, AniId, tableTotalVisible: true));
+
+        // The pending stranger was not at the table for either, and would not be shown them anyway.
+        Assert.DoesNotContain(TabProjection.Project(tab, PendingId)!.MyLines, l => l.IsTableAttributed);
+
+        // The host keeps them, on their own lines and the table's.
+        var host = TabProjection.Project(tab, HostId)!;
+        Assert.Equal(2, host.MyLines.Count(l => l.IsTableAttributed));
+        Assert.Single(host.Adjustments);
+    }
+
+    private static (TabSnapshot Tab, TabLineSnapshot Bread, TabLineSnapshot Jug) TableAttributed(bool aniSeesTotal)
+    {
+        var bread = Line(placedBy: null, "Lavash", 800L) with
+        {
+            IsTableAttributed = true,
+            SharedWithParticipantIds = [HostId],
+        };
+        var jug = Line(placedBy: null, "Water, jug", 600L) with
+        {
+            IsTableAttributed = true,
+            SharedWithParticipantIds = [HostId, AniId],
+        };
+
+        return (Tab(aniSeesTotal) with { Lines = [.. Tab().Lines, bread, jug] }, bread, jug);
+    }
+
+    /// <summary>
+    /// The projection's own lines and the split agree, for everyone at the table and either way the
+    /// host set the total: each person's <c>myItemsSubtotalAmd</c> is exactly the own-items figure
+    /// <see cref="TabBilling"/> charges them, and every split line they are charged a part of is on
+    /// their own lines - except a table-attributed one for a reader without the total, which is the
+    /// one place the bill and the arithmetic deliberately differ.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Own_items_are_what_the_split_charges_each_person_for(bool aniSeesTotal)
+    {
+        var tab = Tab(aniSeesTotal) with
+        {
+            Lines =
+            [
+                .. Tab().Lines,
+                Line(placedBy: null, "Spas", 1_800L) with { OnBehalfOfParticipantId = AniId },
+                Line(placedBy: null, "Khorovats", 6_500L) with { OnBehalfOfParticipantId = HostId },
+                Line(placedBy: null, "Lavash", 800L) with { IsTableAttributed = true, SharedWithParticipantIds = [HostId] },
+                Line(placedBy: null, "Water, jug", 600L) with { IsTableAttributed = true, SharedWithParticipantIds = [HostId, AniId] },
+                Line(HostId, "Areni red, bottle", 9_500L) with { IsShared = true, SharedWithParticipantIds = [HostId, AniId] },
+            ],
+        };
+
+        var bill = TabBilling.Compute(
+            [
+                .. tab.Lines.Select(l => new BillingLine(
+                    l.LineId,
+                    l.IsSplitAcrossParticipants ? null : l.OwningParticipantId,
+                    l.UnitPriceAmd,
+                    l.Quantity,
+                    l.IsVoided,
+                    l.IsSplitAcrossParticipants,
+                    l.SharedWithParticipantIds)),
+            ],
+            [],
+            [.. tab.Participants.Select(p => new BillingParticipant(p.ParticipantId, p.ParticipantId == HostId, p.Status))],
+            tab.ServiceChargePercentSnapshot,
+            paidAmd: 0L);
+
+        foreach (var participant in tab.Participants)
+        {
+            var view = TabProjection.Project(tab, participant.ParticipantId)!;
+            var share = bill.Shares.Single(s => s.ParticipantId == participant.ParticipantId);
+
+            Assert.Equal(share.OwnItemsAmd, view.MyItemsSubtotalAmd);
+
+            var charged = tab.Lines
+                .Where(l => l.IsSplitAcrossParticipants && l.IsChargedTo(participant.ParticipantId))
+                .Where(l => view.TableTotalVisible || !l.IsTableAttributed)
+                .Select(l => l.LineId)
+                .Order();
+
+            Assert.Equal(charged, view.MyLines.Where(l => l.IsShared || l.IsTableAttributed).Select(l => l.LineId).Order());
+        }
+    }
+
+    // ------------------------------------------------------------ comps and discounts
+
+    /// <summary>
+    /// Without the total, only the adjustments on her own lines, with what they took off. One off
+    /// the whole tab or off the host's coffee is the table's money: a percentage off the whole tab
+    /// beside what it took off <i>is</i> the subtotal. Dropped rather than shown without amounts,
+    /// because the diner app draws every adjustment it is given with what it took off.
+    /// </summary>
+    [Fact]
+    public void A_guest_without_the_total_sees_only_the_adjustments_on_their_own_lines()
+    {
+        var plain = Tab(aniSeesTotal: false);
+        var coffee = plain.Lines.Single(l => l.Name == "Coffee");
+        var tea = plain.Lines.Single(l => l.Name == "Tea");
+
+        var offTheTab = Adjustment(lineId: null, percent: 10m, reductionAmd: 490L);
+        var offTheCoffee = Adjustment(coffee.LineId, percent: null, reductionAmd: 500L);
+        var offTheTea = Adjustment(tea.LineId, percent: null, reductionAmd: 400L);
+
+        var tab = plain with { Adjustments = [offTheTab, offTheCoffee, offTheTea] };
+
+        var hers = Assert.Single(TabProjection.Project(tab, AniId)!.Adjustments);
+        Assert.Equal(offTheTea.AdjustmentId, hers.AdjustmentId);
+        Assert.Equal(400L, hers.ReductionAmd);
+        Assert.Equal(400L, hers.AmountAmd);
+
+        // The host sees all three, and the pending stranger none.
+        Assert.Equal(3, TabProjection.Project(tab, HostId)!.Adjustments.Count);
+        Assert.Empty(TabProjection.Project(tab, PendingId)!.Adjustments);
+
+        // Allowed the total, Ani sees all three too.
+        Assert.Equal(3, TabProjection.Project(tab with { HideTotalFromGuests = false, Participants = Tab(aniSeesTotal: true).Participants }, AniId)!.Adjustments.Count);
+    }
+
+    private static TabAdjustmentSnapshot Adjustment(Guid? lineId, decimal? percent, long reductionAmd) =>
+        new(
+            Guid.CreateVersion7(),
+            lineId,
+            AdjustmentKind.Comp,
+            percent,
+            AmountAmd: percent is null ? reductionAmd : null,
+            ReductionAmd: reductionAmd,
+            Reason: "sorry about the wait",
+            CreatedAtUtc: Opened.AddMinutes(30),
+            IsVoided: false);
 
     private static PhotoView Photo() =>
         PhotoView.From(Guid.CreateVersion7(), isExternallyHosted: false, "t", "c", "f", width: 640, height: 640);
