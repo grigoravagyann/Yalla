@@ -110,6 +110,27 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_reported_review_once_hidden_leaves_the_reported_list()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(DateTime.UtcNow);
+        await using var db = fixture.CreateContext(clock);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var (reviewId, _) = await ReportedReviewAsync(db, branch.BranchId, clock, reports: 2);
+        var moderation = fixture.CreateReviewModerationService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+
+        await moderation.SetVisibilityForPlatformAsync(reviewId, new SetReviewVisibilityCommand(true, "Offensive"));
+
+        // Hiding it answered the reports: it is under Hidden, no longer waiting under Reported.
+        var reported = await moderation.ListForPlatformAsync(branch.BranchId, new ReviewModerationQuery(Filter: "reported"));
+        Assert.Empty(reported.Items);
+        var hidden = await moderation.ListForPlatformAsync(branch.BranchId, new ReviewModerationQuery(Filter: "hidden"));
+        Assert.Equal(reviewId, Assert.Single(hidden.Items).ReviewId);
+    }
+
+    [SkippableFact]
     public async Task A_hidden_review_stays_hidden_when_its_reports_are_dismissed()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);

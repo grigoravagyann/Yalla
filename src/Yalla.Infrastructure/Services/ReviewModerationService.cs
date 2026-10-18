@@ -370,7 +370,10 @@ internal sealed class ReviewModerationService(
 
         reviews = filter switch
         {
-            ReviewModerationFilters.Reported => reviews.Where(r => openReports.Any(p => p.ReviewId == r.Id)),
+            // Waiting for an answer: hiding a review answers its reports, so a hidden one is
+            // found under Hidden rather than still waiting here.
+            ReviewModerationFilters.Reported => reviews.Where(r =>
+                r.HiddenAtUtc == null && openReports.Any(p => p.ReviewId == r.Id)),
             ReviewModerationFilters.Hidden => reviews.Where(r => r.HiddenAtUtc != null),
             _ => reviews,
         };
