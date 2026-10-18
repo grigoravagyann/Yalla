@@ -47,6 +47,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
     private static readonly TabEventType[] TheEvening =
     [
         TabEventType.OrderPlaced,
+        TabEventType.ParticipantJoined,
         TabEventType.ParticipantApproved,
         TabEventType.OrderPlaced,
         TabEventType.OrderPlaced,
@@ -57,6 +58,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         TabEventType.AdjustmentAdded,
         TabEventType.AdjustmentAdded,
         TabEventType.AdjustmentAdded,
+        TabEventType.ParticipantJoined,
         TabEventType.ServiceRequested,
         TabEventType.ServiceRequested,
         TabEventType.TabClosing,
@@ -151,12 +153,38 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         Assert.DoesNotContain(HostsCompAmd, guestNumbers);
         Assert.DoesNotContain(TableCompAmd, guestNumbers);
 
-        // ---- The stranger: no lines, no money, no names, no notes, no reasons.
+        // ---- The roster: both joins, as written, for everyone allowed the roster.
+        var hostsJoins = Payloads(hostStream, TabEventType.ParticipantJoined);
+        Assert.Equal(
+            [evening.Guest.ParticipantId, evening.Stranger.ParticipantId],
+            hostsJoins.Select(p => p.GetProperty("participantId").GetGuid()));
+        Assert.Equal(["phone-guest", "phone-stranger"], hostsJoins.Select(p => p.GetProperty("displayName").GetString()));
+        Assert.All(hostsJoins, p => Assert.Equal((int)ParticipantStatus.PendingApproval, p.GetProperty("status").GetInt32()));
+
+        // The guest, without the total, still reads the roster: the stranger's join names them.
+        Assert.Equal(
+            "phone-stranger",
+            Payloads(guestStream, TabEventType.ParticipantJoined)[1].GetProperty("displayName").GetString());
+
+        // ---- The stranger: no lines, no money, no names, no notes, no reasons - but their own.
         Assert.Empty(LinesOn(pendingStream));
+
+        // Their own join is theirs to read, name and all; it is the only event about them.
+        var strangersOwn = pendingStream.Single(e =>
+            e.Type == TabEventType.ParticipantJoined
+            && e.Payload.GetProperty("participantId").GetGuid() == evening.Stranger.ParticipantId);
+        Assert.Equal("phone-stranger", strangersOwn.Payload.GetProperty("displayName").GetString());
+
+        // The guest's join is not: that somebody joined, and how they stand, and not who.
+        var guestsJoin = Payloads(pendingStream, TabEventType.ParticipantJoined)[0];
+        Assert.Equal(evening.Guest.ParticipantId, guestsJoin.GetProperty("participantId").GetGuid());
+        Assert.Equal(["canOrder", "canPay", "canSeeTableTotal", "participantId", "status"], Members(guestsJoin));
 
         string[] notTheStrangers =
             ["amountAmd", "tipAmd", "unitPriceAmd", "displayName", "note", "reason", "kind", "percent", .. TableMoney];
-        Assert.DoesNotContain(notTheStrangers, member => Contains(pendingStream, member));
+        Assert.DoesNotContain(
+            notTheStrangers,
+            member => Contains(pendingStream.Where(e => !ReferenceEquals(e, strangersOwn)), member));
 
         // The guest's approval is still there for them - it moves nothing on their screen - but it
         // does not say who the guest is.

@@ -69,6 +69,12 @@ public sealed class TabParticipant : Entity
 
     public bool IsRemoved => Status == ParticipantStatus.Removed;
 
+    /// <summary>
+    /// Off the tab without ever having been let on: the host rejected them, or removed them while
+    /// they were still waiting. Not somebody who was approved and later left or was taken off.
+    /// </summary>
+    public bool WasTurnedAway => IsRemoved && ApprovedAtUtc is null;
+
     private TabParticipant()
     {
     }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
@@ -720,6 +721,53 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
             .SingleAsync(p => p.TabId == tabId && p.Role == ParticipantRole.Host);
 
         Assert.Equal("phone-friend", host.DeviceId);
+    }
+
+    /// <summary>
+    /// The booker let straight onto a friend's tab is waiting for nobody, so the friend - signed in,
+    /// so a push would have somewhere to go - is not asked to let them on. The approval alone moves
+    /// the roster on every phone at the table.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_booker_let_straight_on_is_not_announced_to_the_host_as_a_join_request()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+        await SeatBookingAsync(factory, branch, booking);
+
+        using var friendsPhone = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var friend = await ScanAsync(friendsPhone, await QrTokenAsync(factory, branch.TableIds[0]), "phone-friend");
+        var tabId = friend.GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        var response = await OpenByBookingAsync(diner, booking.Code, "phone-booker");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var bookerId = (await response.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("tab").GetProperty("me").GetProperty("participantId").GetGuid();
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        Assert.Equal(
+            [TabEventType.ParticipantApproved],
+            await db.TabEvents.AsNoTracking()
+                .Where(e => e.TabId == tabId)
+                .OrderBy(e => e.Sequence)
+                .Select(e => e.Type)
+                .ToListAsync());
+
+        var id = tabId.ToString();
+
+        Assert.False(await db.OutboxMessages.AnyAsync(
+            m => m.IdempotencyKey == OutboxMessageTypes.KeyFor("participant", bookerId, "join-requested")));
+        Assert.False(await db.OutboxMessages.AnyAsync(
+            m => m.Type == OutboxMessageTypes.JoinRequested && m.PayloadJson.Contains(id)));
     }
 
     /// <summary>
