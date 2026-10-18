@@ -652,6 +652,7 @@ internal static class ApiExceptionMapper
             {
                 ["reservationId"] = e.ReservationId,
                 ["code"] = e.Code,
+                ["localDate"] = e.LocalDate,
                 ["localStartTime"] = e.LocalStartTime,
                 ["tableLabel"] = e.TableLabel,
             }),

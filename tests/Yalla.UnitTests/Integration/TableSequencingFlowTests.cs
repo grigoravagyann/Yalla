@@ -182,7 +182,8 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         // 19:30: ninety minutes after hers, so she is asked to leave by 19:25 - sooner than her booking's
         // 19:30 end, which her yes cuts.
-        var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 30));
+        var gor = TestActor.Diner();
+        var later = await BookAsync(clock, gor, branch, new TimeOnly(19, 30));
         var request = await RequestForLaterAsync(clock, later.Id);
 
         Assert.True(request.AsksEarlierGuest);
@@ -193,6 +194,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
         Assert.True(later.AwaitsEarlierGuestAnswer);
         Assert.True(Assert.Single(await PendingForBranchAsync(clock, branch)).AwaitsEarlierGuestAnswer);
         Assert.True((await LinkAsync(clock, later.ManageToken!)).AwaitsEarlierGuestAnswer);
+        Assert.True(Assert.Single((await MineAsync(clock, gor)).Upcoming).AwaitsEarlierGuestAnswer);
 
         // Her booking carries the question while it is open, on her own reads only.
         var mine = await MineAsync(clock, anna);

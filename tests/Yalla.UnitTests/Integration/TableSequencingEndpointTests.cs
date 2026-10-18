@@ -107,6 +107,7 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         Assert.Equal(gors.GetProperty("id").GetGuid(), own.GetProperty("reservationId").GetGuid());
         Assert.Equal(gors.GetProperty("code").GetString(), own.GetProperty("code").GetString());
         Assert.Equal("20:45:00", own.GetProperty("localStartTime").GetString());
+        Assert.Equal(day, own.GetProperty("localDate").GetString());
         Assert.Equal(gors.GetProperty("tableLabel").GetString(), own.GetProperty("tableLabel").GetString());
 
         // Aram asks for table 1 at 19:45: he waits, and Anna is asked.

@@ -257,22 +257,30 @@ internal sealed class ReservationWriter(
             // Nor is it in its own way here: only the diner's other bookings at the branch count, over the
             // sitting the move would have - cut to the time to leave by the next booking needs, or to the
             // one this booking already promised for the same start, as the move itself cuts it.
+            // A change that keeps the table, the start and the end - a party size - makes no overlap that was
+            // not already there, so it is not judged: a pair that overlapped before the rule stays editable.
             var turnEndUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
+            var sittingEndUtc = verdict.MustFreeByUtc
+                                ?? (reservation.StartUtc == startUtc
+                                    && reservation.PromisedFreeByUtc is { } kept
+                                    && kept > startUtc
+                                    && kept < turnEndUtc
+                                        ? kept
+                                        : turnEndUtc);
 
-            await RefuseOverlapWithOwnAsync(
-                dinerUserId,
-                table.BranchId,
-                new BookedInterval(
-                    startUtc,
-                    verdict.MustFreeByUtc
-                    ?? (reservation.StartUtc == startUtc
-                        && reservation.PromisedFreeByUtc is { } kept
-                        && kept > startUtc
-                        && kept < turnEndUtc
-                            ? kept
-                            : turnEndUtc)),
-                excludingReservationId: reservation.Id,
-                cancellationToken);
+            var sameSitting = table.Id == reservation.DiningTableId
+                              && startUtc == reservation.StartUtc
+                              && sittingEndUtc == reservation.EndUtc;
+
+            if (!sameSitting)
+            {
+                await RefuseOverlapWithOwnAsync(
+                    dinerUserId,
+                    table.BranchId,
+                    new BookedInterval(startUtc, sittingEndUtc),
+                    excludingReservationId: reservation.Id,
+                    cancellationToken);
+            }
 
             // A confirmed booking keeping its table and start is not judged again by the table's evening:
             // nothing the venue said yes to got harder to keep, whoever booked around it since. Only a
@@ -342,6 +350,14 @@ internal sealed class ReservationWriter(
     /// commits in this one transaction.
     /// </para>
     /// <para>
+    /// <b>Nor while the diner holds another table then.</b> A booking waiting on a change does not hold
+    /// the slot it came from, so the diner may have booked that time again elsewhere at the branch -
+    /// tomorrow's 20:00 moved to tonight, then table 3 tomorrow at 20:00. Going back would give them two
+    /// tables at once, which no booking or move may (<see cref="RefuseOverlapWithOwnAsync"/>); the slot
+    /// is not free, and the booking ends with its change, the diner told as for any slot that was gone.
+    /// Judged under the account's lock too, taken inside the table's as every booking takes it.
+    /// </para>
+    /// <para>
     /// A slot that has already ended cannot be gone back to whatever else is true of it.
     /// </para>
     /// <para>
@@ -377,7 +393,8 @@ internal sealed class ReservationWriter(
                            (await TableEvening.JudgeAsync(
                                db, tableId, slot.StartUtc, policy, excludingReservationId: reservation.Id, cancellationToken))
                            .Verdict,
-                           slot.EndUtc);
+                           slot.EndUtc)
+                       && !await HoldsAnotherTableThenAsync(reservation, slot, cancellationToken);
 
             await applyAsync(free, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
@@ -453,7 +470,9 @@ internal sealed class ReservationWriter(
     /// <para>
     /// Called inside the table's lock, after the account's lock and the replay check - so a retry of the
     /// same booking is answered as a replay, never refused as overlapping itself, and two bookings sent at
-    /// once on two tables queue on the account's row rather than both getting through.
+    /// once on two tables queue on the account's row rather than both getting through. A move that keeps
+    /// its table, start and end - a change of party size - is not judged: it makes no overlap that was not
+    /// already there.
     /// </para>
     /// </remarks>
     /// <exception cref="ReservationOverlapsOwnException">The diner already has a booking then, named.</exception>
@@ -464,9 +483,45 @@ internal sealed class ReservationWriter(
         Guid excludingReservationId,
         CancellationToken cancellationToken)
     {
+        if (await OwnBookingOverlappingAsync(dinerUserId, branchId, sitting, excludingReservationId, cancellationToken)
+            is { } own)
+        {
+            throw new ReservationOverlapsOwnException(own.Id, own.Code, own.LocalDate, own.LocalStartTime, own.TableLabel);
+        }
+    }
+
+    /// <summary>
+    /// Whether the diner of a booking going back to the slot it had holds another table at the branch
+    /// then - see <see cref="ReturnUnderTableLockAsync"/>. Taken under the account's lock; a booking whose
+    /// account has gone has nobody to hold anything.
+    /// </summary>
+    private async Task<bool> HoldsAnotherTableThenAsync(
+        Reservation reservation,
+        BookedInterval slot,
+        CancellationToken cancellationToken)
+    {
+        if (reservation.DinerUserId is not { } dinerUserId)
+        {
+            return false;
+        }
+
+        await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
+
+        return await OwnBookingOverlappingAsync(dinerUserId, reservation.BranchId, slot, reservation.Id, cancellationToken)
+            is not null;
+    }
+
+    /// <summary>The diner's earliest live booking at the branch whose sitting overlaps this one, or null.</summary>
+    private Task<OwnBooking?> OwnBookingOverlappingAsync(
+        Guid dinerUserId,
+        Guid branchId,
+        BookedInterval sitting,
+        Guid excludingReservationId,
+        CancellationToken cancellationToken)
+    {
         var (startUtc, endUtc) = (sitting.StartUtc, sitting.EndUtc);
 
-        var own = await db.Reservations
+        return db.Reservations
             .AsNoTracking()
             .Where(r => r.DinerUserId == dinerUserId
                         && r.BranchId == branchId
@@ -477,14 +532,12 @@ internal sealed class ReservationWriter(
                         && r.StartUtc < endUtc
                         && r.EndUtc > startUtc)
             .OrderBy(r => r.StartUtc)
-            .Select(r => new { r.Id, r.Code, r.LocalStartTime, TableLabel = r.DiningTable.Label })
+            .Select(r => new OwnBooking(r.Id, r.Code, r.LocalDate, r.LocalStartTime, r.DiningTable.Label))
             .FirstOrDefaultAsync(cancellationToken);
-
-        if (own is not null)
-        {
-            throw new ReservationOverlapsOwnException(own.Id, own.Code, own.LocalStartTime, own.TableLabel);
-        }
     }
+
+    /// <summary>One of the diner's own bookings, as an overlap names it.</summary>
+    private sealed record OwnBooking(Guid Id, string Code, DateOnly LocalDate, TimeOnly LocalStartTime, string TableLabel);
 
     /// <summary>
     /// The booking this command already created, if it has one.

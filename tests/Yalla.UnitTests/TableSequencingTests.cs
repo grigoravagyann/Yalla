@@ -332,4 +332,19 @@ public class TableSequencingTests
         // Already under way: the earlier start no longer caps it, the later start does.
         Assert.Equal(At(10, 30), TableSequencing.AnswerDeadline(now, 120, At(8, 0), At(10, 30)));
     }
+
+    [Fact]
+    public void A_wait_handed_to_another_guest_before_it_keeps_its_deadline_but_never_past_that_guests_start()
+    {
+        var now = At(9, 0);
+
+        // Kept: sooner than two hours from now.
+        Assert.Equal(At(10, 15), TableSequencing.AnswerDeadlineNoLaterThan(At(10, 15), now, 120, At(18, 0), At(19, 45)));
+
+        // The new guest before sits down at 10:00, before the deadline it had: their start caps it.
+        Assert.Equal(At(10, 0), TableSequencing.AnswerDeadlineNoLaterThan(At(10, 45), now, 120, At(10, 0), At(19, 45)));
+
+        // A wait from before every such wait had a clock gets the two hours a new one would.
+        Assert.Equal(At(11, 0), TableSequencing.AnswerDeadlineNoLaterThan(null, now, 120, At(18, 0), At(19, 45)));
+    }
 }

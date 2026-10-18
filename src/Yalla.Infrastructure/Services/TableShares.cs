@@ -250,7 +250,7 @@ internal static class TableShares
     /// <item>
     /// <b>Needing somebody else's yes</b> - another booking's sitting now runs into it: the request is
     /// withdrawn and the floor decides the later booking from the awaiting list, by the deadline it
-    /// already had.
+    /// already had, never past the new guest's start.
     /// </item>
     /// <item>
     /// <b>Crowded out</b> - the earlier booking now leaves it no room. A booking only asking for a table is
@@ -315,14 +315,17 @@ internal static class TableShares
             {
                 // Somebody else's guest is the one before it now - a long sitting, rare. Nothing new is
                 // pushed to anybody: the floor decides it from the awaiting list, by the deadline the
-                // booking already had - a wait never gets a later one - or, for one from before every
-                // such wait had a clock, the two hours from now that a new one would get.
+                // booking already had - a wait never gets a later one - but never past the new guest's
+                // start; one from before every such wait had a clock gets the two hours a new one would.
                 request.Withdraw(nowUtc);
                 later.WaitInsteadFor(
                     ApprovalTrigger.EarlierGuestConsent,
-                    later.ApprovalExpiresAtUtc
-                    ?? TableSequencing.AnswerDeadline(
-                        nowUtc, TableShareRequest.AnswerWindowMinutes, verdict.Earlier!.Value.StartUtc, later.StartUtc));
+                    TableSequencing.AnswerDeadlineNoLaterThan(
+                        later.ApprovalExpiresAtUtc,
+                        nowUtc,
+                        TableShareRequest.AnswerWindowMinutes,
+                        verdict.Earlier!.Value.StartUtc,
+                        later.StartUtc));
 
                 continue;
             }

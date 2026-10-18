@@ -63,6 +63,7 @@ public static class ReservationEndpoints
         "**One table at a time per diner at a branch**: a sitting that overlaps another of the diner's "
         + "own live bookings there (pending, confirmed or seated) is `409 reservation-overlaps-own`, with "
         + "`context` naming the booking already held - `reservationId`, `code` (its door code), "
+        + "`localDate` (`\"2026-10-22\"`, the branch's calendar - say the day when it differs), "
         + "`localStartTime` (`\"19:30:00\"`) and `tableLabel` - so the app can say \"You already have a "
         + "booking at 19:30 (table 2)\". Sittings that only touch do not overlap; another branch is not "
         + "refused. A retry with the same `clientCommandId` still answers as a replay.";
@@ -317,7 +318,7 @@ public static class ReservationEndpoints
                 StatusCodes.Status409Conflict,
                 "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
                 + " `reservation-overlaps-own`: the diner already has a booking at this branch then - "
-                + "`context.reservationId`, `code`, `localStartTime`, `tableLabel` name it.")
+                + "`context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel` name it.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
@@ -354,7 +355,8 @@ public static class ReservationEndpoints
                 + "that approves every booking or the diner's no-show history. A booking waiting on the "
                 + "guest before it (`awaitingApprovalBecause` 5) keeps its two-hour deadline through a move "
                 + "in the same way, whoever answers - the floor or that guest in the app.\n\n"
-                + OverlapsOwnDescription + " The booking being moved is left out of that check.\n\n"
+                + OverlapsOwnDescription + " The booking being moved is left out of that check, and a "
+                + "change that keeps its table, start and end (a party size) is not judged by it.\n\n"
                 + "The reminder and late nudge are replaced with ones for the new time. Idempotent on "
                 + "`clientCommandId`: a retry of the same change answers `200` with the booking **as it "
                 + "stands now** and `wasReplay: true`, moving nothing; the same id on another command, "
@@ -371,7 +373,7 @@ public static class ReservationEndpoints
                 "`reservation-not-changeable`: the booking is finished with or has started. "
                 + "`table-already-booked` / `table-currently-occupied`: the new slot is taken - " + ConflictDescription
                 + " `reservation-overlaps-own`: another of the diner's bookings at this branch runs then - "
-                + "`context.reservationId`, `code`, `localStartTime`, `tableLabel` name it."
+                + "`context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel` name it."
                 + " `concurrent-update`: the booking was cancelled, approved or seated while this was in "
                 + "flight; read it again. `bookings-not-accepted`, `web-bookings-not-accepted`, "
                 + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`: "

@@ -292,11 +292,12 @@ branch**: `409 reservation-overlaps-own`. QA found one diner holding table 1 at 
 
 ```json
 409 { "code": "reservation-overlaps-own",
-      "context": { "reservationId": "guid", "code": "K7Q2M9", "localStartTime": "19:30:00", "tableLabel": "2" } }
+      "context": { "reservationId": "guid", "code": "K7Q2M9", "localDate": "2026-10-22", "localStartTime": "19:30:00",
+                   "tableLabel": "2" } }
 ```
 
 The context names the booking already held, so the client can say "You already have a booking at 19:30
-(table 2)". Live is pending, confirmed or seated. Both sittings are the ones the bookings have: the new
+(table 2)" - and the day, from `localDate` (the branch's calendar), when it is not the one being booked. Live is pending, confirmed or seated. Both sittings are the ones the bookings have: the new
 one is the full turn from its start, or - when the table's next booking needs a time to leave by - cut to
 that time (one diner can book 13:00 promising to leave by 13:55 and their own 14:00 on another table; not
 sending the promise, they are asked for it, `422 reservation-free-by-required`, not refused as
@@ -307,7 +308,15 @@ is not refused. A move leaves the booking being moved out, so moving dinner half
 because of itself. It is judged inside the table's lock **after the account's lock and the replay**: a
 retry with the same `clientCommandId` is still answered as a replay, and two bookings sent at once on two
 tables queue on the account's row, so the second sees the first. Bookings that already overlapped before
-this rule (2026-10-18) are left as they are; a move of either is judged by it.
+this rule (2026-10-18) are left as they are; a change that keeps the table, the start and the end - a
+party size - is not judged (it makes no new overlap, so such a pair stays editable), and any other move
+of either is.
+
+**Nor through a change that falls through.** A booking waiting on a change does not hold the slot it
+came from, so the diner can book that time again elsewhere - tomorrow's 20:00 on table 1 moved to
+tonight, then table 3 tomorrow at 20:00. If the change is then declined or not answered, going back to
+table 1 would give them two tables at once: the slot counts as not free (§3c), the booking ends with its
+change, and the diner is told as for any slot that was gone (`originalKept` false).
 
 ### The lock is held for the shortest possible span
 
@@ -461,7 +470,8 @@ the same way.
 while it waits: it is the last slot anybody said yes to. Approving the change drops it. **Declining the
 change - by staff, or by the sweep for no answer - sends the booking back to that slot** when it is still
 free: judged under that table's lock exactly as a move is (another diner may have booked it since, a
-walk-in may be sitting into it, the table may be out of service, the slot may be over), and committed in
+walk-in may be sitting into it, the table may be out of service, the slot may be over, or the diner may
+have booked another table at the branch for that time meanwhile), and committed in
 the same transaction - the booking `Confirmed` again with its old start, end, table, party and
 `ConfirmedAtUtc`, its reminder and late nudge rewritten for that slot, `DeclineReason` recording why the
 change did not go through (the view's `declinedBecause` stays null - the booking is not declined). When
@@ -771,8 +781,8 @@ answered - either way - the table can be asked for again.
     that reason with no clock - the two hours were the question's. So a later booking that went to the
     floor only because the guest before booked on the web is confirmed when that guest cancels;
   - another booking's sitting now runs into it (rare): withdrawn, and the floor decides, by the deadline
-    the booking already had (two hours from now, never past either start, for one from before every such
-    wait had a clock);
+    the booking already had, never past the start of the guest it now waits on (two hours from now, never
+    past either start, for one from before every such wait had a clock);
   - crowded out - the earlier booking now leaves it no room: the change stands and is that guest's no -
     the later booking is declined, `EarlierGuestDeclined`. A later booking that was itself a change of a
     confirmed one is declined outright here (going back to its old slot would need that table's lock
@@ -1103,7 +1113,7 @@ facts under `context`:
 | the table's next booking cuts the sitting short and `acceptsFreeByUtc` is missing or not that instant | 422 | `reservation-free-by-required`, with `context.field` `acceptsFreeByUtc`, `requiredFreeByUtc`, `requiredFreeByLocal`, `nextBookingStartUtc` |
 | answering a request for one's table that no longer waits, or a yes about a booking that moved since it was asked | 409 | `table-request-not-pending`, with `context.reservationId`, `requestId`, `status`, `expiresAtUtc` |
 | staff approving or declining a booking that waits on the earlier guest's answer in the app (`awaitsEarlierGuestAnswer` true) | 409 | `reservation-awaiting-earlier-guest`, with `context.reservationId`, `requestId`, `expiresAtUtc` |
-| a signed-in diner booking, or moving a booking to, a sitting that overlaps another of their own live bookings (pending, confirmed, seated) at the same branch | 409 | `reservation-overlaps-own`, with `context.reservationId`, `code`, `localStartTime` (`"19:30:00"`), `tableLabel` - the booking already held |
+| a signed-in diner booking, or moving a booking to, a sitting that overlaps another of their own live bookings (pending, confirmed, seated) at the same branch | 409 | `reservation-overlaps-own`, with `context.reservationId`, `code`, `localDate` (`"2026-10-22"`), `localStartTime` (`"19:30:00"`), `tableLabel` - the booking already held |
 | the command id belongs to another caller, or another command | 409 | `client-command-id-in-use` |
 | changing a booking that is not pending or confirmed, or has started | 409 | `reservation-not-changeable`, with `context.reservationId`, `status`, `startUtc` |
 | changing a booking that was cancelled, approved or seated meanwhile | 409 | `concurrent-update` |

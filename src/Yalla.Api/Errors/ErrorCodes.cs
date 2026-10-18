@@ -377,8 +377,9 @@ public static class ErrorCodes
     /// <summary>
     /// A signed-in diner booking, or moving a booking to, a time whose sitting overlaps another of their
     /// own live bookings (pending, confirmed or seated) at the same branch. HTTP 409, with
-    /// <c>context.reservationId</c>, <c>context.code</c> (its door code), <c>context.localStartTime</c>
-    /// (<c>"19:30:00"</c>) and <c>context.tableLabel</c> - the booking already held - so the client can say
+    /// <c>context.reservationId</c>, <c>context.code</c> (its door code), <c>context.localDate</c>
+    /// (<c>"2026-10-22"</c>, the branch's calendar), <c>context.localStartTime</c> (<c>"19:30:00"</c>) and
+    /// <c>context.tableLabel</c> - the booking already held - so the client can say
     /// "You already have a booking at 19:30 (table 2)". Minted by <c>ReservationOverlapsOwnException</c>.
     /// </summary>
     public const string ReservationOverlapsOwn = "reservation-overlaps-own";

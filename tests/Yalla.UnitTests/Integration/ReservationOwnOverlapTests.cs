@@ -24,6 +24,9 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
 
     private static readonly DateOnly Sunday = new(2026, 9, 13);
 
+    /// <summary>The branch's today, Thursday.</summary>
+    private static readonly DateOnly Today = new(2026, 9, 10);
+
     [SkippableFact]
     public async Task A_second_table_at_the_same_branch_while_the_first_booking_runs_is_refused_naming_the_first()
     {
@@ -42,6 +45,7 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(first.Id, refused.ReservationId);
         Assert.Equal(first.Code, refused.Code);
         Assert.Equal(new TimeOnly(19, 30), refused.LocalStartTime);
+        Assert.Equal(Sunday, refused.LocalDate);
         Assert.Equal("2", refused.TableLabel);
 
         var mapped = ApiExceptionMapper.Map(refused);
@@ -52,6 +56,7 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(first.Id, mapped.Context!["reservationId"]);
         Assert.Equal(first.Code, mapped.Context["code"]);
         Assert.Equal(new TimeOnly(19, 30), mapped.Context["localStartTime"]);
+        Assert.Equal(Sunday, mapped.Context["localDate"]);
         Assert.Equal("2", mapped.Context["tableLabel"]);
 
         // Nothing was written: one booking, the first.
@@ -188,6 +193,136 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(first.Id, refused.ReservationId);
     }
 
+    [SkippableFact]
+    public async Task A_change_of_party_size_alone_is_not_refused_even_for_a_pair_that_overlapped_before_the_rule()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = TestActor.Diner();
+        var bella = fixture.CreateReservationService(db, clock, diner);
+
+        var dinner = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(19, 30)));
+
+        // The pair QA found, written as it was before the rule: her own 19:45 on table 2.
+        var policy = await db.Branches.AsNoTracking().Where(b => b.Id == branch.BranchId).Select(b => b.ReservationPolicy).FirstAsync();
+        var legacy = Reservation.Create(
+            branchId: branch.BranchId,
+            diningTableId: branch.TableIds[1],
+            startUtc: SundayAt(19, 45),
+            localDate: Sunday,
+            localStartTime: new TimeOnly(19, 45),
+            partySize: 2,
+            guestName: "Bella Test",
+            guestPhone: "+37411223344",
+            code: Guid.NewGuid().ToString("N")[..8].ToUpperInvariant(),
+            policy: policy,
+            dinerUserId: diner.DinerUserId,
+            clientCommandId: Guid.CreateVersion7());
+        db.Reservations.Add(legacy);
+        await db.SaveChangesAsync();
+
+        // Same table, start and end, one more guest: it adds no overlap that was not already there.
+        var bigger = await bella.RescheduleAsync(
+            new RescheduleReservationCommand(dinner.Id, branch.TableIds[0], Sunday, new TimeOnly(19, 30), 3, Guid.CreateVersion7()));
+        Assert.Equal(3, bigger.PartySize);
+
+        // Another table at the same time is a new sitting, and is judged.
+        var refused = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
+            () => bella.RescheduleAsync(
+                new RescheduleReservationCommand(dinner.Id, branch.TableIds[2], Sunday, new TimeOnly(19, 30), 3, Guid.CreateVersion7())));
+        Assert.Equal(legacy.Id, refused.ReservationId);
+    }
+
+    [SkippableFact]
+    public async Task A_change_nobody_answered_does_not_go_back_to_a_slot_she_has_booked_another_table_for()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var (branch, original, other) = await TwoTablesThroughAChangeAsync(clock);
+
+        // Sixteen minutes on, nobody has answered the change: the sweep declines it. Going back to
+        // tomorrow's 20:00 on table 1 would give her two tables at 20:00, so the booking ends.
+        clock.Advance(TimeSpan.FromMinutes(16));
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            // At least hers: the database is shared, and other tests' lapsed requests are swept too.
+            Assert.True(await fixture.CreateApprovalExpirySweep(db, clock).RunOnceAsync() >= 1);
+        }
+
+        await AssertEndedAndToldAsync(clock, original, other, expired: true);
+    }
+
+    [SkippableFact]
+    public async Task A_change_staff_declined_does_not_go_back_to_a_slot_she_has_booked_another_table_for()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var (branch, original, other) = await TwoTablesThroughAChangeAsync(clock);
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+                .RejectAsync(new DecideReservationCommand(original.Id, "Full tonight."));
+        }
+
+        await AssertEndedAndToldAsync(clock, original, other, expired: false);
+    }
+
+    /// <summary>
+    /// Bella has table 1 tomorrow at 20:00, moves it to tonight at 21:00 on table 2 - short notice, so it
+    /// waits for the floor and keeps tomorrow's slot to go back to - and meanwhile books table 3 tomorrow
+    /// at 20:00, which nothing she holds now overlaps.
+    /// </summary>
+    private async Task<(TestBranch Branch, ReservationView Original, ReservationView Other)> TwoTablesThroughAChangeAsync(
+        TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+        await fixture.ClearOutboxAsync(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var bella = fixture.CreateReservationService(db, clock, TestActor.Diner());
+        var tomorrow = Today.AddDays(1);
+
+        var original = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(20, 0), date: tomorrow));
+        Assert.Equal(ReservationStatus.Confirmed, original.Status);
+
+        var moved = await bella.RescheduleAsync(
+            new RescheduleReservationCommand(original.Id, branch.TableIds[1], Today, new TimeOnly(21, 0), 2, Guid.CreateVersion7()));
+        Assert.Equal(ReservationStatus.PendingApproval, moved.Status);
+        Assert.Equal(ApprovalTrigger.ShortNotice, moved.AwaitingApprovalBecause);
+
+        var other = await bella.CreateAsync(Booking(branch, branch.TableIds[2], new TimeOnly(20, 0), date: tomorrow));
+        Assert.Equal(ReservationStatus.Confirmed, other.Status);
+
+        return (branch, original, other);
+    }
+
+    private async Task AssertEndedAndToldAsync(TestClock clock, ReservationView original, ReservationView other, bool expired)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var ended = await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == original.Id);
+        Assert.Equal(ReservationStatus.CancelledByVenue, ended.Status);
+        Assert.Equal(expired ? DeclineReason.NoAnswer : DeclineReason.StaffDeclined, ended.DeclineReason);
+
+        Assert.Equal(
+            ReservationStatus.Confirmed,
+            (await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == other.Id)).Status);
+
+        // Told as for any slot that could not be kept: the change declined, and the booking gone with it.
+        var told = await db.OutboxMessages.AsNoTracking()
+            .Where(m => m.Type == "reservation.decided" && m.IdempotencyKey.StartsWith("reservation:" + original.Id))
+            .Select(m => m.PayloadJson)
+            .SingleAsync();
+        Assert.Contains("\"wasChange\":true", told, StringComparison.Ordinal);
+        Assert.Contains("\"originalKept\":false", told, StringComparison.Ordinal);
+    }
+
     /// <summary>A Sunday wall-clock time in Yerevan, as UTC.</summary>
     private static DateTime SundayAt(int hour, int minute) =>
         new DateTime(2026, 9, 13, hour, minute, 0, DateTimeKind.Utc).AddHours(-4);
@@ -196,11 +331,12 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         TestBranch branch,
         Guid tableId,
         TimeOnly localTime,
-        DateTime? acceptsFreeByUtc = null) =>
+        DateTime? acceptsFreeByUtc = null,
+        DateOnly? date = null) =>
         new(
             branch.BranchId,
             tableId,
-            Sunday,
+            date ?? Sunday,
             localTime,
             2,
             GuestName: "Bella Test",

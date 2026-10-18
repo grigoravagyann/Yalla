@@ -23,6 +23,7 @@ namespace Yalla.Domain.Occupancy;
 public sealed class ReservationOverlapsOwnException(
     Guid reservationId,
     string code,
+    DateOnly localDate,
     TimeOnly localStartTime,
     string tableLabel)
     : DomainStateException(
@@ -34,6 +35,12 @@ public sealed class ReservationOverlapsOwnException(
 
     /// <summary>Its door code, as the diner knows it.</summary>
     public string Code { get; } = code;
+
+    /// <summary>
+    /// Its day on the branch's wall clock - for saying the day when it is not the one being booked (a
+    /// 00:30 after a 23:30, a move to another day).
+    /// </summary>
+    public DateOnly LocalDate { get; } = localDate;
 
     /// <summary>Its start on the branch's wall clock.</summary>
     public TimeOnly LocalStartTime { get; } = localStartTime;
