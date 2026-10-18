@@ -1,6 +1,6 @@
 # Notifications — the outbox, what is sent, and what nothing sends
 
-Yalla sends a diner five things and no more. Every one of them is written to a database table in the
+Yalla sends a diner six things and no more. Every one of them is written to a database table in the
 same transaction as the fact that caused it, and a background loop takes them from there.
 
 This document is the contract that table makes, because a notification system fails silently by
@@ -34,7 +34,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 
 ---
 
-## 2. The five message types
+## 2. The six message types
 
 | Type | Written when | Due at | Sent to |
 |---|---|---|---|
@@ -42,6 +42,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 | `reservation.late-nudge` | A booking is created | `StartUtc + LateNudgeAfterMinutes` (default 10m) | The diner |
 | `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, or the approval sweep declines a short-notice one nobody answered | Immediately | The diner |
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
+| `tab.join-requested` | Somebody joins a tab and lands pending | Immediately | The host |
 | `tab.order-ready` | An order moves to `Ready` | Immediately | Whoever ordered it |
 
 Both reservation messages are written when the booking is made, hours before either is due. A
@@ -79,6 +80,16 @@ message written before `expired`, `wasChange` or `originalKept` existed reads as
 written for a request the sweep only reaches after the booking would have started** - it is declined
 quietly; an evening that has gone is not one to send the diner to.
 
+`tab.join-requested` goes to the host's account, which a host has only when their phone was
+carrying a diner token when they scanned - most hosts have none, and then the tab's own stream
+(`ParticipantJoined`, [tabs.md](tabs.md#telling-the-host-somebody-is-waiting)) is all there is. It is
+not written for a joiner who is let on without waiting - the first phone onto a tab staff opened, or
+the booker on their own booking's sitting - nor for the host's own account joining from a second
+phone, nor again for somebody the host already turned away on that tab who scans again. Its body
+names the joiner by the name they typed, or "a guest" in the host's language when they typed none,
+never the roster's English `Guest 3`. A tap carries `kind` = `tabJoinRequested`, `tabId` and
+`participantId`, and opens the tab; the other two tab messages carry `kind` and `tabId`.
+
 `tab.order-ready` is **off by default**, per branch, on `Branch.NotifyOnOrderReady`. It is noise in a
 cafe where a waiter carries the plate ten feet and genuinely useful in a canteen where the diner
 collects it. Defaulting it on would train a city to switch our notifications off, and the two that
@@ -99,8 +110,8 @@ written before the key existed has none and was a staff decline. It also carries
 slot it asked for; `date` and `time` are the booking as it now stands, which for a kept original is
 that slot. Two entries have no push beside them - a
 booking the venue lets go, and a review moderation takes down - and are written with that change. The
-late nudge and the participant approval write none. Rows older than 90 days are deleted by this loop's
-host, `OutboxHostedService`, about hourly.
+late nudge, the participant approval and the join request write none. Rows older than 90 days are
+deleted by this loop's host, `OutboxHostedService`, about hourly.
 
 ### These are not tab events
 
@@ -118,7 +129,11 @@ moves: the venue gets renamed, the table gets relabelled. What the message shoul
 true when the booking was made.
 
 The one thing read at send time is the **state that decides whether to send at all**: the handler
-re-reads the booking's status and stays quiet if it is no longer `Confirmed`.
+re-reads the booking's status and stays quiet if it is no longer `Confirmed`. The join request does
+the same, in one read: it is sent only while the joiner is still pending, the tab is still `Open` and
+its host is still the account the message was written for. A host who answered from the People
+screen first, a tab staff marked closing, or a host role staff moved is not asked about anybody, and
+the message is marked done rather than retried.
 
 ---
 
@@ -136,6 +151,7 @@ reservation:{reservationId}:approved:{yyyyMMddHHmmssfff}          (a second appr
 reservation:{reservationId}:expired       (declined by the sweep: nobody answered in time)
 reservation:{reservationId}:rejected:{yyyyMMddHHmmssfff}          (a second decline of a kept booking; :expired:... likewise)
 participant:{participantId}:approved
+participant:{participantId}:join-requested
 order:{orderId}:ready
 ```
 

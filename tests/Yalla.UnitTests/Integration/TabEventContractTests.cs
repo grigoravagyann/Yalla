@@ -43,7 +43,7 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
     // ------------------------------------------------------------ the scheduler is not a writer
 
     /// <summary>
-    /// Every one of the five message types dispatches, and the tab's event stream is untouched.
+    /// Every one of the six message types dispatches, and the tab's event stream is untouched.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -54,7 +54,7 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
     /// would move the sequence for something the tab did not do.
     /// </para>
     /// <para>
-    /// All five handlers are driven here rather than the two a tab naturally produces, because what
+    /// All six handlers are driven here rather than the three a tab naturally produces, because what
     /// is being asserted is a property of the dispatcher and its handlers as a set.
     /// </para>
     /// </remarks>
@@ -72,13 +72,17 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         var tab = await TabWithOrdersAsync(branch, menu, clock, diner);
         var booking = await BookingAsync(branch, clock, diner);
 
+        // Somebody waiting to be let on, so the join request's handler has a pending joiner to send
+        // about rather than skipping. Their join is on the stream before it is read below.
+        var waiting = await PendingGuestAsync(branch, clock);
+
         var before = await StreamAsync(tab.TabId, clock);
 
         Assert.NotEmpty(before);
 
         var run = Guid.NewGuid().ToString("N");
 
-        // One of each, all five, with payloads the handlers can actually read.
+        // One of each, all six, with payloads the handlers can actually read.
         await using (var enqueueDb = fixture.CreateContext(clock))
         {
             var reservationNotice = new
@@ -102,6 +106,15 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
                 tableLabel = "3",
             };
 
+            var joinNotice = new
+            {
+                tabId = tab.TabId,
+                participantId = waiting,
+                dinerUserId = diner,
+                tableLabel = "3",
+                guestName = "Nare",
+            };
+
             var outbox = fixture.CreateOutbox(enqueueDb, clock);
 
             outbox.Enqueue(OutboxMessageTypes.ReservationReminder, reservationNotice, clock.UtcNow, $"{run}:1");
@@ -109,6 +122,7 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             outbox.Enqueue(OutboxMessageTypes.ReservationDecided, reservationNotice, clock.UtcNow, $"{run}:3");
             outbox.Enqueue(OutboxMessageTypes.ParticipantApproved, tabNotice, clock.UtcNow, $"{run}:4");
             outbox.Enqueue(OutboxMessageTypes.OrderReady, tabNotice, clock.UtcNow, $"{run}:5");
+            outbox.Enqueue(OutboxMessageTypes.JoinRequested, joinNotice, clock.UtcNow, $"{run}:6");
 
             await enqueueDb.SaveChangesAsync();
         }
@@ -121,8 +135,8 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
 
             // The database is shared across the collection, so the pass may also carry another
             // test's messages that are due by this clock - a rescheduled booking's reminder, say.
-            // Those are not this test's to count; its own five are.
-            Assert.True(pass.Sent >= 5, $"Expected at least this run's 5 sent, got {pass.Sent}.");
+            // Those are not this test's to count; its own six are.
+            Assert.True(pass.Sent >= 6, $"Expected at least this run's 6 sent, got {pass.Sent}.");
         }
 
         await using (var checkDb = fixture.CreateContext(clock))
@@ -131,7 +145,7 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
                 .Where(message => message.IdempotencyKey.StartsWith(run + ":"))
                 .ToListAsync();
 
-            Assert.Equal(5, ours.Count);
+            Assert.Equal(6, ours.Count);
             Assert.All(ours, message =>
             {
                 Assert.True(message.IsSent, $"{message.Type} was not sent.");
@@ -139,8 +153,8 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             });
         }
 
-        // Every handler ran and reached the channel, so this is not five no-ops.
-        Assert.True(channel.Sent >= 5, $"Expected at least 5 deliveries, got {channel.Sent}.");
+        // Every handler ran and reached the channel, so this is not six no-ops.
+        Assert.True(channel.Sent >= 6, $"Expected at least 6 deliveries, got {channel.Sent}.");
 
         var after = await StreamAsync(tab.TabId, clock);
 
@@ -355,6 +369,7 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
                 new ReservationLateNudgeHandler(db, channel, NullLogger<ReservationLateNudgeHandler>.Instance),
                 new ReservationDecidedHandler(db, channel),
                 new ParticipantApprovedHandler(db, channel),
+                new JoinRequestedHandler(db, channel, NullLogger<JoinRequestedHandler>.Instance),
                 new OrderReadyHandler(db, channel),
             ],
             NullLogger<OutboxDispatcher>.Instance);
@@ -398,6 +413,22 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             .ApproveAsync(new DecideReservationCommand(view.Id));
 
         return view.Id;
+    }
+
+    /// <summary>A phone scanning the tab's table without an account, left waiting for the host.</summary>
+    private async Task<Guid> PendingGuestAsync(TestBranch branch, IClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var qr = await db.DiningTables
+            .Where(t => t.Id == branch.TableIds[2]).Select(t => t.QrToken).FirstAsync();
+
+        var joined = await fixture.CreateTabService(db, clock, new TestActor(ActorType.Diner, null, null, null))
+            .OpenAsync(new OpenTabCommand(qr, "phone-waiting", Guid.CreateVersion7(), "Nare"));
+
+        Assert.Equal(ParticipantStatus.PendingApproval, joined.Tab.Me.Status);
+
+        return joined.Tab.Me.ParticipantId;
     }
 
     /// <summary>A seated table with an open tab and a couple of events already on its stream.</summary>

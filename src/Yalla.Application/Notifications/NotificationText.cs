@@ -202,6 +202,34 @@ public static class NotificationText
             _ => ("Դուք միացաք հաշվին", $"Սեղան {tableLabel} — այժմ կարող եք պատվիրել։"),
         };
 
+    /// <summary>
+    /// "Anna wants to join your tab", to the host.
+    /// </summary>
+    /// <remarks>
+    /// The other half of <see cref="ParticipantApproved"/>: the joiner is on "waiting for the host",
+    /// and the host has no reason to open the People screen. The table is the title because a host
+    /// knows their table, and the name is the joiner's own - "a guest" when they gave none, never the
+    /// roster's English "Guest 3".
+    /// </remarks>
+    public static (string Title, string Body) JoinRequested(string locale, string tableLabel, string? guestName)
+    {
+        var name = string.IsNullOrWhiteSpace(guestName) ? null : guestName.Trim();
+
+        return Normalise(locale) switch
+        {
+            "ru" => ($"Столик {tableLabel}",
+                     $"{name ?? "Гость"} хочет присоединиться к вашему счёту."),
+            "en" => ($"Table {tableLabel}",
+                     $"{name ?? "A guest"} wants to join your tab."),
+            _ => ($"Սեղան {tableLabel}",
+                  name is null
+                      ? "Մի հյուր ցանկանում է միանալ Ձեր հաշվին։"
+                      // The name first, set off with the Armenian pause as the app's own banner
+                      // reads it, so a name in any script needs no article.
+                      : $"{name}՝ ցանկանում է միանալ Ձեր հաշվին։"),
+        };
+    }
+
     public static (string Title, string Body) OrderReady(string locale, string tableLabel) =>
         Normalise(locale) switch
         {

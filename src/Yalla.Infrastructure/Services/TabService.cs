@@ -377,6 +377,7 @@ internal sealed class TabService(
                         "Joining tab {TabId} lost the race to host it; re-reading.", existingTab.Id);
 
                     db.ChangeTracker.Clear();
+                    ledger.DiscardPending();
                     continue;
                 }
 
@@ -570,12 +571,86 @@ internal sealed class TabService(
             return guest;
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        AnnouncePendingJoin(tab, guest, displayName);
+
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
             "Participant {ParticipantId} joined tab {TabId} pending the host's approval.", guest.Id, tab.Id);
 
         return guest;
+    }
+
+    /// <summary>
+    /// Tells the host somebody is waiting to be let on: on the tab's stream, which every phone at the
+    /// table polls, and on the host's lock screen when the host scanned with an account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only for a join that lands pending. The first phone onto a tab staff opened hosts it, and the
+    /// booker on their own booking's sitting is approved on the spot and announced by
+    /// <c>ParticipantApproved</c>. Neither is waiting for anybody, and a second event for the same
+    /// moment would only make every phone refetch twice.
+    /// </para>
+    /// <para>
+    /// The push has one address, the host's account - see <see cref="TabParticipant.UserId"/>. Most
+    /// hosts scanned without one, and then the stream is all there is. The host's own account on a
+    /// second phone lands pending like anybody else, and is not told that it wants to join itself.
+    /// </para>
+    /// <para>
+    /// Somebody the host already turned away on this tab - the same phone, or the same account on
+    /// another - is on the stream again but not pushed again. The host sees them on the bill and can
+    /// still let them on; they are not woken for every retry of a question they answered.
+    /// </para>
+    /// </remarks>
+    private void AnnouncePendingJoin(Tab tab, TabParticipant joiner, string? givenName)
+    {
+        // The shape of every other roster event, so the redactor's participant rule already decides
+        // it: a pending reader sees who it is about and nothing that says who they are.
+        ledger.Append(tab.Id, TabEventType.ParticipantJoined, new
+        {
+            participantId = joiner.Id,
+            displayName = joiner.DisplayName,
+            status = (int)joiner.Status,
+            canOrder = joiner.CanOrder,
+            canSeeTableTotal = joiner.CanSeeTableTotal,
+            canPay = joiner.CanPay,
+        });
+
+        var hostUserId = tab.Participants.FirstOrDefault(p => p.Id == tab.HostParticipantId)?.UserId;
+
+        if (hostUserId is not { } dinerUserId || joiner.UserId == dinerUserId)
+        {
+            return;
+        }
+
+        var askedBefore = tab.Participants.Any(p =>
+            p.WasTurnedAway
+            && (p.DeviceId == joiner.DeviceId || (joiner.UserId is { } account && p.UserId == account)));
+
+        if (askedBefore)
+        {
+            logger.LogInformation(
+                "Participant {ParticipantId} is back on tab {TabId} after the host turned them away; not pushing again.",
+                joiner.Id, tab.Id);
+
+            return;
+        }
+
+        outbox.Enqueue(
+            OutboxMessageTypes.JoinRequested,
+            new
+            {
+                tabId = tab.Id,
+                participantId = joiner.Id,
+                dinerUserId,
+                tableLabel = tab.DiningTable?.Label ?? string.Empty,
+                // The name they gave, or none. "Guest 3" is the roster's placeholder in English; the
+                // push says "a guest" in the host's own language instead.
+                guestName = string.IsNullOrWhiteSpace(givenName) ? null : joiner.DisplayName,
+            },
+            clock.UtcNow,
+            OutboxMessageTypes.KeyFor("participant", joiner.Id, "join-requested"));
     }
 
     /// <summary>
@@ -651,7 +726,8 @@ internal sealed class TabService(
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Approving a participant",
             TabEventType.ParticipantApproved,
-            (participant, nowUtc) => participant.Approve(nowUtc), cancellationToken);
+            (participant, nowUtc) => participant.Approve(nowUtc), cancellationToken,
+            alreadyAnswered: participant => participant.IsApproved);
 
     public Task<TabParticipantView> RejectParticipantAsync(
         Guid tabId,
@@ -661,7 +737,8 @@ internal sealed class TabService(
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Rejecting a participant",
             TabEventType.ParticipantRejected,
-            (participant, nowUtc) => participant.Reject(nowUtc), cancellationToken);
+            (participant, nowUtc) => participant.Reject(nowUtc), cancellationToken,
+            alreadyAnswered: participant => participant.WasTurnedAway);
 
     /// <summary>
     /// A status change, never a delete. The participant's order lines and payments reference the
@@ -806,13 +883,23 @@ internal sealed class TabService(
         string operation,
         TabEventType eventType,
         Action<TabParticipant, DateTime> change,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<TabParticipant, bool>? alreadyAnswered = null)
     {
         var tab = await LoadTabAsync(tabId, cancellationToken);
         RequireHost(tab, actingParticipantId, operation);
 
         var target = tab.Participants.FirstOrDefault(p => p.Id == participantId)
                      ?? throw new KeyNotFoundException("No such participant on that tab.");
+
+        // Answered already: the banner and the People screen offer the same tap, and a retry on
+        // flaky wifi sends it twice. The answer is the one the first tap got. A second event would
+        // tell every phone it happened twice, and a second approval push collides with the first on
+        // its idempotency key.
+        if (alreadyAnswered?.Invoke(target) == true)
+        {
+            return await ToViewAsync(target, tab.Status, cancellationToken);
+        }
 
         change(target, clock.UtcNow);
 
@@ -846,7 +933,29 @@ internal sealed class TabService(
             canPay = target.CanPay,
         });
 
-        await ledger.SaveAppendedAsync(cancellationToken);
+        try
+        {
+            await ledger.SaveAppendedAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.OutboxIdempotency))
+        {
+            // Two approvals at the same instant both read the joiner as pending, and the other one
+            // committed first: its push took the key this one was about to write. The joiner is
+            // approved either way, so this answers with the approval that won, as a second tap
+            // after it would have been answered.
+            logger.LogInformation(
+                "{Operation} on tab {TabId} lost the race for participant {ParticipantId}; answering with the one that won.",
+                operation, tabId, participantId);
+
+            db.ChangeTracker.Clear();
+            ledger.DiscardPending();
+            authority.InvalidateParticipant(tabId, participantId);
+
+            var current = await LoadTabAsync(tabId, cancellationToken);
+
+            return await ToViewAsync(
+                current.Participants.First(p => p.Id == participantId), current.Status, cancellationToken);
+        }
 
         // Their standing just changed, so the cached answer about it is wrong. A participant the
         // host has just removed must be refused on their next call, not on the one after the cache

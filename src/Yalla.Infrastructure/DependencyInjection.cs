@@ -175,6 +175,7 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
         services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
         services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();
+        services.AddScoped<IOutboxHandler, JoinRequestedHandler>();
         services.AddScoped<IOutboxHandler, OrderReadyHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes

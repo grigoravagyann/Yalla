@@ -45,7 +45,7 @@ upper-casing every scan.
 | --- | --- | --- | --- |
 | **Free** — no open `TableSession` | A `TableSession` opens (`Source = WalkIn`) through the table state machine, which writes the `TableStateChange` audit row (`Free → Occupied`, reason "opened by QR scan"). A `Tab` opens on that session. | `OpenedNewSession` (1) | **Host**, approved, may order, see the total and pay |
 | **Occupied, open session, no tab** — a party a waiter sat down, or one seated from a booking, now wanting to order | A `Tab` is attached to the *existing* session. No table state changes and no audit row, because the table was already occupied. | `OpenedOnExistingSession` (2) | **Host** |
-| **Occupied, open tab** | No second tab. The scanner is put on the existing tab as a **pending** participant until the host approves them. The same phone re-scanning is recognised and lands on its own row. | `JoinedExistingTab` (3) | **Guest**, `PendingApproval` |
+| **Occupied, open tab** | No second tab. The scanner is put on the existing tab as a **pending** participant until the host approves them, and the host is told (section 3). The same phone re-scanning is recognised and lands on its own row. | `JoinedExistingTab` (3) | **Guest**, `PendingApproval` |
 | **OutOfService** | Refused with 409 and a message to ask staff for another table. | — | — |
 
 Two things the table does not decide:
@@ -219,10 +219,68 @@ The host invites; nobody types a code.
   last Tuesday gets 401 whatever it once pointed at.
 - `POST /api/tabs/join` with the token puts the device on the tab as `PendingApproval` and issues
   it a participant token scoped to this tab.
-- `POST /api/tabs/{tabId}/participants/{id}/approve` and `/reject` are host only.
+- `POST /api/tabs/{tabId}/participants/{id}/approve` and `/reject` are host only. Asking twice is
+  answered as the first time: approving somebody already approved, or rejecting somebody already
+  turned away, is 200 with them as they are and writes no event and no push. The banner and the
+  People screen offer the same tap, and a retry on flaky wifi sends it twice; a second approval used
+  to collide with the first one's push on its idempotency key and come back as a 500. Two approvals
+  at the same instant write one, and both answer with it.
 
 **Approval, not a password.** The first scanner is host; everyone else lands pending until the
 host taps approve. There is no code to say out loud, and the next table cannot order on your bill.
+
+### Telling the host somebody is waiting
+
+The joiner sits on "waiting for the host", and the host has no reason to open the People screen. So
+a join that lands **pending** - a scan of a table whose tab is open, or `POST /api/tabs/join` with
+the host's invitation - tells them twice, in the same `SaveChanges` as the participant row
+(`TabService.AnnouncePendingJoin`):
+
+- **On the stream.** One `ParticipantJoined` (2), in the shape of every other roster event, so the
+  redactor's participant rule already decides it (section 7.4):
+
+  ```json
+  { "participantId": "…", "displayName": "Anna", "status": 1,
+    "canOrder": true, "canSeeTableTotal": true, "canPay": false }
+  ```
+
+  `status` is always 1 (`PendingApproval`) and the flags are the tab's guest defaults.
+  `displayName` is what the joiner typed, or the roster's placeholder `Guest {n}` when they typed
+  nothing. Every phone at the table polls the stream, so the host's bill and roster move within one
+  poll. A pending reader sees only their own join with its name; anybody else's, without it.
+- **On the host's lock screen**, when the host scanned with a diner account
+  (`TabParticipant.UserId`): an outbox message `tab.join-requested` to that account, keyed
+  `participant:{participantId}:join-requested` - see [notifications.md](notifications.md#2-the-six-message-types).
+  Most hosts scanned without one, and then the stream is all there is.
+
+**Written once per join.** The same phone scanning again is recognised and lands on its own row, so
+it writes nothing. Somebody the host turned away who scans again is a new participant row and a new
+join: `ParticipantJoined` is written, so the host sees them on the bill and can still let them on,
+but they are **not pushed again** when the same phone, or the same diner account on another phone,
+already has a turned-away row on this tab (`TabParticipant.WasTurnedAway`: removed without ever being
+approved). Somebody who was let on and later left is not turned away, and asking back in is pushed.
+
+**Checked again at send time.** The push goes out only while the joiner is still pending, the tab is
+still `Open` - closing leaves a pending joiner pending, and nobody new is let on a tab being settled -
+and the account it was written for is still the tab's host, which staff can change. Otherwise it is
+marked done and not sent; the new host sees the joiner on the bill.
+
+**Only a join that waits for somebody.** Neither of these is a join request, and neither writes
+`ParticipantJoined` or pushes:
+
+- The **first phone onto a tab staff opened** hosts it (section 2). There is nobody on the tab to tell
+  and nothing to wait for - the same reason a scan that opens a tab writes no `TabOpened`.
+- The **booker on their own booking's sitting** is approved on the spot. `ParticipantApproved` already
+  moves every roster; a `ParticipantJoined` beside it for the same instant would only make every phone
+  refetch twice, and asking the host to let in somebody already let in is noise.
+
+The **host's own account on a second phone** lands pending like anybody else - it is a second device,
+and the roster says so - but is not pushed to: the host does not need telling that they want to join
+their own tab. No diner-feed entry is written: the request is answered in seconds, from the tab, and
+a feed row saying "Anna wanted to join" an hour later would be history nobody acts on.
+
+Pinned by `JoinRequestTests`; what each reader gets of the event over HTTP, by
+`TabEventVisibilityTests`.
 
 ## 4. The permission model
 
@@ -447,7 +505,7 @@ them.
 | # | Type | Kept for every reader | Kept only when own | Never for a restricted reader | Pending also loses |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `TabOpened` | nothing - never written today | | everything | |
-| 2 | `ParticipantJoined` | `participantId`, `status`, `canOrder`, `canSeeTableTotal`, `canPay`, `left` - never written today | | | `displayName` |
+| 2 | `ParticipantJoined` | `participantId`, `status`, `canOrder`, `canSeeTableTotal`, `canPay` - written for a join that lands pending (section 3) | | | `displayName` |
 | 3 | `ParticipantApproved` | `participantId`, `status`, `canOrder`, `canSeeTableTotal`, `canPay` | | | `displayName` |
 | 4 | `ParticipantRejected` | as 3 | | | `displayName` |
 | 5 | `ParticipantRemoved` | as 3, and `left` | | | `displayName` |

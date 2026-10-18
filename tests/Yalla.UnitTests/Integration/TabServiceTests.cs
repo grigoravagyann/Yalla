@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Messaging;
 using Yalla.Application.Tables;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
@@ -707,6 +708,145 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         await using var verify = fixture.CreateContext(clock);
         var hostView = (await fixture.CreateTabQuery(verify).GetForParticipantAsync(tabId, hostId))!;
         Assert.Contains(hostView.Participants, p => p.ParticipantId == guestId && p.DisplayName == "Nare");
+    }
+
+    // ------------------------------------------------------------ answering twice
+
+    /// <summary>
+    /// The host taps approve on the banner and again on the People screen, or the app retries on
+    /// flaky wifi. The second answer is the first one: no second event, no second push - which used
+    /// to collide with the first on its idempotency key and come back as a 500.
+    /// </summary>
+    [SkippableFact]
+    public async Task Approving_somebody_already_approved_answers_with_them_and_changes_nothing()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (db, clock, _, qr) = await ArrangeAsync();
+        await using var ownedDb = db;
+
+        var host = await fixture.CreateTabService(db, clock, Anonymous)
+            .OpenAsync(new OpenTabCommand(qr, "phone-host", Guid.CreateVersion7(), "Aram"));
+        var guest = await JoinWithAccountAsync(clock, qr);
+
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            await using var approveDb = fixture.CreateContext(clock);
+
+            var approved = await fixture.CreateTabService(approveDb, clock, Anonymous)
+                .ApproveParticipantAsync(host.Tab.TabId, host.Tab.Me.ParticipantId, guest);
+
+            Assert.Equal(ParticipantStatus.Approved, approved.Status);
+            Assert.Equal(guest, approved.ParticipantId);
+        }
+
+        await AssertAnsweredOnceAsync(clock, host.Tab.TabId, guest, TabEventType.ParticipantApproved, pushes: 1);
+    }
+
+    [SkippableFact]
+    public async Task Turning_away_somebody_already_turned_away_answers_with_them_and_changes_nothing()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (db, clock, _, qr) = await ArrangeAsync();
+        await using var ownedDb = db;
+
+        var host = await fixture.CreateTabService(db, clock, Anonymous)
+            .OpenAsync(new OpenTabCommand(qr, "phone-host", Guid.CreateVersion7(), "Aram"));
+        var guest = await JoinWithAccountAsync(clock, qr);
+
+        foreach (var _ in Enumerable.Range(0, 2))
+        {
+            await using var rejectDb = fixture.CreateContext(clock);
+
+            var rejected = await fixture.CreateTabService(rejectDb, clock, Anonymous)
+                .RejectParticipantAsync(host.Tab.TabId, host.Tab.Me.ParticipantId, guest);
+
+            Assert.Equal(ParticipantStatus.Removed, rejected.Status);
+        }
+
+        await AssertAnsweredOnceAsync(clock, host.Tab.TabId, guest, TabEventType.ParticipantRejected, pushes: 0);
+
+        // Approving somebody turned away is still refused - that is not the same answer twice.
+        await using var lateDb = fixture.CreateContext(clock);
+
+        await Assert.ThrowsAsync<DomainStateException>(() => fixture.CreateTabService(lateDb, clock, Anonymous)
+            .ApproveParticipantAsync(host.Tab.TabId, host.Tab.Me.ParticipantId, guest));
+    }
+
+    /// <summary>
+    /// The two taps at the same instant: both read the joiner as pending. The second commits in full
+    /// between the first's read and its write, and the first answers with the approval that won
+    /// rather than a 500 off the push's idempotency key.
+    /// </summary>
+    [SkippableFact]
+    public async Task Two_approvals_at_the_same_instant_write_one_approval_and_both_answer_with_it()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (db, clock, _, qr) = await ArrangeAsync();
+        await using var ownedDb = db;
+
+        var host = await fixture.CreateTabService(db, clock, Anonymous)
+            .OpenAsync(new OpenTabCommand(qr, "phone-host", Guid.CreateVersion7(), "Aram"));
+        var guest = await JoinWithAccountAsync(clock, qr);
+
+        var competing = new BeforeFirstInsertInto("OutboxMessages", async () =>
+        {
+            await using var otherDb = fixture.CreateContext(clock);
+
+            await fixture.CreateTabService(otherDb, clock, Anonymous)
+                .ApproveParticipantAsync(host.Tab.TabId, host.Tab.Me.ParticipantId, guest);
+        });
+
+        await using (var racingDb = fixture.CreateContext(clock, competing))
+        {
+            var approved = await fixture.CreateTabService(racingDb, clock, Anonymous)
+                .ApproveParticipantAsync(host.Tab.TabId, host.Tab.Me.ParticipantId, guest);
+
+            Assert.Equal(ParticipantStatus.Approved, approved.Status);
+        }
+
+        Assert.True(competing.Fired, "The competing approval never ran, so there was no race.");
+
+        await AssertAnsweredOnceAsync(clock, host.Tab.TabId, guest, TabEventType.ParticipantApproved, pushes: 1);
+    }
+
+    /// <summary>A guest whose phone carries a diner account, so approving them writes a push.</summary>
+    private async Task<Guid> JoinWithAccountAsync(TestClock clock, string qr)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        var joined = await fixture.CreateTabService(db, clock, TestActor.Diner())
+            .OpenAsync(new OpenTabCommand(qr, "phone-guest", Guid.CreateVersion7(), "Nare"));
+
+        Assert.Equal(ParticipantStatus.PendingApproval, joined.Tab.Me.Status);
+
+        return joined.Tab.Me.ParticipantId;
+    }
+
+    /// <summary>One answer on the stream after the join, and the push it owed, if any, once.</summary>
+    private async Task AssertAnsweredOnceAsync(
+        TestClock clock,
+        Guid tabId,
+        Guid participantId,
+        TabEventType answer,
+        int pushes)
+    {
+        await using var verify = fixture.CreateContext(clock);
+
+        var events = await verify.TabEvents.AsNoTracking()
+            .Where(e => e.TabId == tabId)
+            .OrderBy(e => e.Sequence)
+            .Select(e => new { e.Sequence, e.Type })
+            .ToListAsync();
+
+        Assert.Equal([TabEventType.ParticipantJoined, answer], events.Select(e => e.Type));
+        Assert.Equal([1L, 2L], events.Select(e => e.Sequence));
+
+        var approvedKey = OutboxMessageTypes.KeyFor("participant", participantId, "approved");
+
+        Assert.Equal(pushes, await verify.OutboxMessages.CountAsync(m => m.IdempotencyKey == approvedKey));
     }
 
     // ------------------------------------------------------------ faces on the roster
