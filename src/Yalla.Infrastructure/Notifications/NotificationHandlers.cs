@@ -30,7 +30,27 @@ internal sealed record ReservationNotice(
     bool Approved = false,
     bool Expired = false,
     bool WasChange = false,
-    bool OriginalKept = false);
+    bool OriginalKept = false,
+    DeclineReason? DeclinedBecause = null);
+
+/// <summary>A later guest's request for a booking's table, as the earlier guest is told about it.</summary>
+/// <param name="RequestId">The request.</param>
+/// <param name="ReservationId">The earlier guest's booking - where a tap lands.</param>
+/// <param name="DinerUserId">The earlier guest.</param>
+/// <param name="VenueName">The venue, as it was named when the request was made.</param>
+/// <param name="TableLabel">The table.</param>
+/// <param name="RequestedLocalTime">When the later guest would sit down, on the branch's wall clock.</param>
+/// <param name="FreeByLocalTime">The time to have left by, on the branch's wall clock.</param>
+/// <param name="FreeByUtc">The same instant, for the app's own countdown and text.</param>
+internal sealed record TableRequestNotice(
+    Guid RequestId,
+    Guid ReservationId,
+    Guid DinerUserId,
+    string VenueName,
+    string TableLabel,
+    TimeOnly RequestedLocalTime,
+    TimeOnly FreeByLocalTime,
+    DateTime FreeByUtc);
 
 /// <param name="TabId">The tab, which is where a tap lands.</param>
 /// <param name="ParticipantId">Who it is about: the approved joiner, whoever ordered, or the one waiting.</param>
@@ -207,6 +227,10 @@ internal sealed class ReservationDecidedHandler(
             { WasChange: true, OriginalKept: true } =>
                 NotificationText.ReservationChangeDeclined(locale, notice.VenueName, notice.LocalStartTime, notice.Expired),
             { WasChange: true } => NotificationText.ReservationChangeDeclinedOriginalGone(locale, notice.VenueName, notice.Expired),
+            { DeclinedBecause: DeclineReason.EarlierGuestDeclined } =>
+                NotificationText.ReservationEarlierGuestDeclined(locale, notice.VenueName, notice.LocalStartTime),
+            { DeclinedBecause: DeclineReason.EarlierGuestNoAnswer } =>
+                NotificationText.ReservationEarlierGuestNoAnswer(locale, notice.VenueName, notice.LocalStartTime),
             { Expired: true } => NotificationText.ReservationExpired(locale, notice.VenueName),
             _ => NotificationText.ReservationRejected(locale, notice.VenueName),
         };
@@ -224,6 +248,127 @@ internal sealed class ReservationDecidedHandler(
                     ["expired"] = notice.Expired ? "true" : "false",
                     ["wasChange"] = notice.WasChange ? "true" : "false",
                     ["originalKept"] = notice.OriginalKept ? "true" : "false",
+
+                    // Why a decline happened, as the DeclineReason number - "3" the guest before said no,
+                    // "4" they did not answer - absent for an approval and for a decline written before.
+                    ["declinedBecause"] = notice.DeclinedBecause is { } because
+                        ? ((int)because).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        : string.Empty,
+                }),
+            cancellationToken);
+    }
+}
+
+/// <summary>
+/// "Someone would like your table at 19:45. Will you have left by 19:40?" - to the guest with the table
+/// first, with Yes and No on the notification (the <c>table-request</c> category).
+/// </summary>
+/// <remarks>
+/// Sent only while the question is still open: answered from the booking's card, withdrawn because one
+/// of the two bookings moved or ended, or past its deadline, the push would ask about something already
+/// settled - and teach the guest to ignore the next one.
+/// </remarks>
+internal sealed class TableRequestHandler(
+    YallaDbContext db,
+    IClock clock,
+    INotificationChannel channel,
+    ILogger<TableRequestHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.ReservationTableRequest;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<TableRequestNotice>(payloadJson);
+        var nowUtc = clock.UtcNow;
+
+        var open = await db.TableShareRequests
+            .AsNoTracking()
+            .AnyAsync(
+                r => r.Id == notice.RequestId
+                     && r.Status == TableShareRequestStatus.Pending
+                     && r.ExpiresAtUtc > nowUtc,
+                cancellationToken);
+
+        if (!open)
+        {
+            logger.LogInformation(
+                "Skipping the request for booking {ReservationId}'s table: request {RequestId} is no longer open.",
+                notice.ReservationId, notice.RequestId);
+
+            return;
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+
+        var (title, body) = NotificationText.TableRequested(
+            locale, notice.VenueName, notice.RequestedLocalTime, notice.FreeByLocalTime);
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string>
+                {
+                    ["kind"] = "table-request",
+                    ["reservationId"] = notice.ReservationId.ToString(),
+                    ["requestId"] = notice.RequestId.ToString(),
+                    ["requestedTime"] = notice.RequestedLocalTime.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                    ["freeByTime"] = notice.FreeByLocalTime.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                    ["freeByUtc"] = notice.FreeByUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                },
+                CategoryId: "table-request"),
+            cancellationToken);
+    }
+}
+
+/// <summary>
+/// To the guest who said yes - or for whom the floor said it after calling: "please free the table by
+/// 19:40". Sent while the booking still holds the table.
+/// </summary>
+internal sealed class TableRequestDecidedHandler(
+    YallaDbContext db,
+    INotificationChannel channel,
+    ILogger<TableRequestDecidedHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.ReservationTableRequestDecided;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<TableRequestNotice>(payloadJson);
+
+        var status = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.Id == notice.ReservationId)
+            .Select(r => (ReservationStatus?)r.Status)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval or ReservationStatus.Seated))
+        {
+            logger.LogInformation(
+                "Skipping the free-by reminder for booking {ReservationId}: it is {Status}.",
+                notice.ReservationId, status);
+
+            return;
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+
+        var (title, body) = NotificationText.TableRequestAccepted(locale, notice.VenueName, notice.FreeByLocalTime);
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string>
+                {
+                    ["kind"] = "table-request-decided",
+                    ["reservationId"] = notice.ReservationId.ToString(),
+                    ["requestId"] = notice.RequestId.ToString(),
+                    ["accepted"] = "true",
+                    ["freeByTime"] = notice.FreeByLocalTime.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                    ["freeByUtc"] = notice.FreeByUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
                 }),
             cancellationToken);
     }

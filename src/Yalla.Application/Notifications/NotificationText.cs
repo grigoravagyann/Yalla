@@ -12,7 +12,7 @@ namespace Yalla.Application.Notifications;
 /// serves three languages does not have to pick one on their diners' behalf.
 /// </para>
 /// <para>
-/// Constants in one file rather than .resx, because these are eleven strings that three languages
+/// Constants in one file rather than .resx, because these are a few dozen strings that three languages
 /// share and the translator is a person reading this file, not a tool. Anything unknown falls back to
 /// Armenian - the market's language, and the one most likely to be understood by someone whose phone
 /// is set to something we do not have.
@@ -183,6 +183,77 @@ public static class NotificationText
                       ? $"Ներողություն, {venue}-ը չհասցրեց հաստատել փոփոխությունը"
                       : $"{venue}-ը չկարողացավ ընդունել փոփոխությունը")
                   + ", իսկ նախկին ժամն արդեն զբաղված է։ Փորձեք այլ ժամ կամ այլ վայր։"),
+        };
+
+    /// <summary>
+    /// The guest with the table before this booking said they would not have left in time, so the
+    /// booking was declined.
+    /// </summary>
+    /// <remarks>
+    /// The other guest stays anonymous - "the guest before you" - and the body sends the diner on to
+    /// another time or table, which is what they can do about it.
+    /// </remarks>
+    public static (string Title, string Body) ReservationEarlierGuestDeclined(string locale, string venue, TimeOnly at) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Столик в это время занят",
+                     $"{venue}: гости перед вами не освободят столик к {Time(at)}. Выберите другое время или столик."),
+            "en" => ("That table is not free then",
+                     $"{venue}: the guests before you will not have left by {Time(at)}. Try another time or table."),
+            _ => ("Սեղանն այդ ժամին զբաղված է",
+                  $"{venue}․ Ձեզնից առաջ եկած հյուրերը չեն ազատի սեղանը մինչև {Time(at)}-ը։ Ընտրեք այլ ժամ կամ սեղան։"),
+        };
+
+    /// <summary>
+    /// The guest with the table before this booking did not answer within the two hours, so the booking
+    /// was declined.
+    /// </summary>
+    public static (string Title, string Body) ReservationEarlierGuestNoAnswer(string locale, string venue, TimeOnly at) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронь не подтверждена вовремя",
+                     $"{venue}: не удалось вовремя подтвердить столик на {Time(at)}. Выберите другое время или столик."),
+            "en" => ("Booking not confirmed in time",
+                     $"{venue}: we could not confirm the table for {Time(at)} in time. Try another time or table."),
+            _ => ("Ամրագրումը ժամանակին չհաստատվեց",
+                  $"{venue}․ չհաջողվեց ժամանակին հաստատել սեղանը {Time(at)}-ի համար։ Ընտրեք այլ ժամ կամ սեղան։"),
+        };
+
+    // ---------------------------------------------------------------- the table after yours
+
+    /// <summary>
+    /// "Someone would like your table at 19:45. Will you have left by 19:40?" - to the guest with the
+    /// table first, with Yes and No on the notification.
+    /// </summary>
+    /// <remarks>
+    /// The other guest stays anonymous. The question is the whole message, because it is answered from
+    /// the lock screen.
+    /// </remarks>
+    public static (string Title, string Body) TableRequested(
+        string locale, string venue, TimeOnly requestedAt, TimeOnly freeBy) =>
+        Normalise(locale) switch
+        {
+            "ru" => ($"Ваш столик хотят занять в {Time(requestedAt)}",
+                     $"{venue}: вы освободите столик к {Time(freeBy)}?"),
+            "en" => ($"Someone would like your table at {Time(requestedAt)}",
+                     $"{venue}: will you have left by {Time(freeBy)}?"),
+            _ => ($"Ձեր սեղանը ցանկանում են ամրագրել {Time(requestedAt)}-ին",
+                  $"{venue}․ կազատե՞ք սեղանը մինչև {Time(freeBy)}-ը։"),
+        };
+
+    /// <summary>
+    /// The guest said yes - or the venue said it for them after calling - and is now held to the time:
+    /// "please free the table by 19:40".
+    /// </summary>
+    public static (string Title, string Body) TableRequestAccepted(string locale, string venue, TimeOnly freeBy) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Спасибо!",
+                     $"{venue}: пожалуйста, освободите столик к {Time(freeBy)} — после вас придут гости."),
+            "en" => ("Thank you",
+                     $"{venue}: please free the table by {Time(freeBy)} - the next guests are coming after you."),
+            _ => ("Շնորհակալություն",
+                  $"{venue}․ խնդրում ենք ազատել սեղանը մինչև {Time(freeBy)}-ը — Ձեզնից հետո հյուրեր են գալու։"),
         };
 
     // ---------------------------------------------------------------- the tab

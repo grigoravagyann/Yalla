@@ -55,9 +55,10 @@ public enum ReservationStatus
 /// </para>
 /// <para>
 /// When more than one applies, the first in this order is the one stored: <see cref="ShortNotice"/>,
-/// <see cref="BranchApprovesEveryBooking"/>, <see cref="LargeParty"/>, <see cref="NoShowHistory"/>.
-/// Short notice leads because it is the one with a deadline - fifteen minutes to answer - and the
-/// one the floor, not the office, decides. Persisted as its number: a member keeps it for good.
+/// <see cref="EarlierGuestConsent"/>, <see cref="BranchApprovesEveryBooking"/>, <see cref="LargeParty"/>,
+/// <see cref="NoShowHistory"/>. Short notice leads because it is the one with a deadline - fifteen
+/// minutes to answer - and the one the floor, not the office, decides; the earlier guest's two hours
+/// come next. Persisted as its number: a member keeps it for good.
 /// </para>
 /// </remarks>
 public enum ApprovalTrigger
@@ -80,6 +81,15 @@ public enum ApprovalTrigger
     /// is declined for them. See <c>ShortNoticeRule</c>.
     /// </summary>
     ShortNotice = 4,
+
+    /// <summary>
+    /// The table has a booking less than three hours before this one - somebody who may still be
+    /// sitting there - so whoever has it first is asked whether they will have left in time: the
+    /// earlier guest in the app, or the floor when that guest booked on the web or has no phone to push
+    /// to. Two hours to answer, never past the earlier booking's start. See <c>TableSequencing</c> and
+    /// <c>TableShareRequest</c>.
+    /// </summary>
+    EarlierGuestConsent = 5,
 }
 
 /// <summary>Why a booking that was waiting for the venue was declined.</summary>
@@ -96,6 +106,35 @@ public enum DeclineReason
 
     /// <summary>Nobody at the venue answered within the fifteen-minute window, so it was declined for them.</summary>
     NoAnswer = 2,
+
+    /// <summary>The guest with the table before this booking said they would not have left in time.</summary>
+    EarlierGuestDeclined = 3,
+
+    /// <summary>The guest with the table before this booking did not answer within the two hours.</summary>
+    EarlierGuestNoAnswer = 4,
+}
+
+/// <summary>Where a request to share a table's evening stands. See <c>TableShareRequest</c>.</summary>
+/// <remarks>Persisted as its number: a member keeps it for good.</remarks>
+public enum TableShareRequestStatus
+{
+    /// <summary>Waiting for the earlier guest - or the floor - to answer.</summary>
+    Pending = 1,
+
+    /// <summary>Yes: the earlier booking promised to free the table in time and the later one was confirmed.</summary>
+    Accepted = 2,
+
+    /// <summary>No: the later booking was declined, or went back to the slot it had.</summary>
+    Declined = 3,
+
+    /// <summary>Nobody answered in time; the later booking was declined for it.</summary>
+    Expired = 4,
+
+    /// <summary>
+    /// The question went away before anybody answered it: the later booking was moved or cancelled, or
+    /// the earlier one got out of its way - cancelled, released, declined, or moved off the table.
+    /// </summary>
+    Withdrawn = 5,
 }
 
 /// <summary>

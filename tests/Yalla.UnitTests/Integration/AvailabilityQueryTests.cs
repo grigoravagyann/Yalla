@@ -81,7 +81,7 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 2);
 
         // A 20:00 booking on table 1. The diner asking about 18:00 may have the table until
-        // 19:45 - 20:00 less the branch's 15 minutes of clearing time.
+        // 19:55 - 20:00 less the branch's 5 minutes of clearing time.
         var later = await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(20, 0)));
 
@@ -102,13 +102,16 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.Equal(availability.RequestedStartUtc, window.AvailableFromUtc);
         Assert.Equal(later.StartUtc.AddMinutes(-availability.BufferMinutes), window.AvailableUntilUtc);
 
-        // 18:00 to 19:45, as the diner reads it off the screen before confirming.
+        // 18:00 to 19:55, as the diner reads it off the screen before confirming.
         Assert.Equal(SixPm, window.AvailableFromLocal);
-        Assert.Equal(new TimeOnly(19, 45), window.AvailableUntilLocal);
-        Assert.Equal(105, window.WindowMinutes);
+        Assert.Equal(new TimeOnly(19, 55), window.AvailableUntilLocal);
+        Assert.Equal(115, window.WindowMinutes);
 
-        // 105 minutes against a 90-minute turn time is not short, so the sheet says nothing.
+        // 115 minutes against a 90-minute turn time is not short, so the sheet says nothing - and a
+        // full sitting ends before the next one less clearing, so there is no time to leave by either.
         Assert.False(window.IsShorterThanTurnTime);
+        Assert.Null(limited.MustFreeByUtc);
+        Assert.False(limited.IsRequestable);
 
         // The other table has no limit, which is exactly the comparison the screen exists to let
         // a diner make.
@@ -119,7 +122,7 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
     }
 
     [SkippableFact]
-    public async Task A_table_whose_next_booking_leaves_no_room_is_reported_as_already_booked()
+    public async Task A_table_whose_next_booking_starts_within_forty_five_minutes_is_refused_as_too_soon()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -127,7 +130,8 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 2);
 
-        // 18:30 leaves nowhere near a 90-minute sitting starting at 18:00.
+        // 18:30 is thirty minutes after an 18:00 start - less than the forty-five the table's evening
+        // needs before a next booking (TableSequencing), so 18:00 is not on offer at all.
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(18, 30)));
 
@@ -138,7 +142,7 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var taken = availability!.Tables.Single(t => t.TableId == branch.TableIds[0]);
 
         Assert.False(taken.IsAvailable);
-        Assert.Equal(ReservationRejectionReason.TableAlreadyBooked, taken.UnavailableReason);
+        Assert.Equal(ReservationRejectionReason.NextBookingTooSoon, taken.UnavailableReason);
 
         // No window at all, because there is no offer to make - rather than a window too short
         // to use, which is what a zero-length one would read as.
@@ -276,19 +280,19 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
 
-        // Booked at 18:00. Asked about 17:50, which is inside the branch's 15-minute turnaround.
+        // Booked at 18:00. Asked about 17:56, which is inside the branch's 5-minute turnaround.
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.FirstTableId, SixPm));
 
         await using var readDb = fixture.CreateContext(clock);
         var availability = await fixture.CreateAvailabilityQuery(readDb, clock)
             .GetAvailabilityAsync(
-                new AvailabilityRequest(branch.BranchId, 2, BookingDate, new TimeOnly(17, 50)));
+                new AvailabilityRequest(branch.BranchId, 2, BookingDate, new TimeOnly(17, 56)));
 
         var table = availability!.Tables.Single();
 
         // The table is physically free right now and will be for days, but the question was about
-        // 17:50 - and at 17:50 it is about to be somebody else's.
+        // 17:56 - and at 17:56 it is about to be somebody else's.
         Assert.Equal(TableStatus.Free, table.PhysicalStatus);
         Assert.Equal(DerivedTableState.ReservedSoon, table.State);
     }
@@ -339,10 +343,11 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.NotNull(availability);
         Assert.Equal(BookingDate, availability.LocalDate);
 
-        // Noon at the branch on the requested date, and the booking made above is right there.
+        // Noon at the branch on the requested date, and the booking made above is right there - it
+        // starts then, so the table is refused as just booked.
         Assert.Equal(noon, availability.LocalTime);
         Assert.Equal(
-            ReservationRejectionReason.TableAlreadyBooked,
+            ReservationRejectionReason.TableJustBooked,
             availability.Tables.Single().UnavailableReason);
     }
 
@@ -448,10 +453,10 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
                 var day = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, date, partySize));
 
                 Assert.NotNull(day);
-                Assert.Equal(30, day.StepMinutes);
+                Assert.Equal(15, day.StepMinutes);
                 Assert.NotEmpty(day.Slots);
 
-                for (var minutes = 0; minutes < 24 * 60; minutes += 30)
+                for (var minutes = 0; minutes < 24 * 60; minutes += DaySlotStep.Minutes)
                 {
                     var time = new TimeOnly(minutes / 60, minutes % 60);
                     var single = await query.GetAvailabilityAsync(
@@ -474,12 +479,35 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
                         continue;
                     }
 
-                    var offered = single!.Tables.Count(t => t.IsAvailable);
+                    var offered = single!.Tables.Where(t => t.IsAvailable).ToList();
+                    var free = offered.Count(t => !t.IsRequestable);
+                    var requestable = offered.Count(t => t.IsRequestable);
 
                     Assert.Equal(single.RequestedStartUtc, slot.StartUtc);
-                    Assert.Equal(offered, slot.FreeTableCount);
-                    Assert.Equal(offered > 0, slot.IsAvailable);
-                    Assert.All(single.Tables, t => Assert.Equal(t.RequiresApproval, slot.RequiresApproval));
+                    Assert.Equal(free, slot.FreeTableCount);
+                    Assert.Equal(requestable, slot.RequestableTableCount);
+                    Assert.Equal(offered.Count > 0, slot.IsAvailable);
+                    Assert.Equal(free == 0 && requestable > 0, slot.IsRequestable);
+
+                    // A table that has to be asked for always waits; the others say what the slot says
+                    // when it is not only asked for.
+                    Assert.All(single.Tables.Where(t => t.IsRequestable), t => Assert.True(t.RequiresApproval));
+
+                    if (!slot.IsRequestable)
+                    {
+                        Assert.All(single.Tables.Where(t => !t.IsRequestable), t => Assert.Equal(t.RequiresApproval, slot.RequiresApproval));
+                    }
+                    else
+                    {
+                        Assert.True(slot.RequiresApproval);
+                    }
+
+                    // The latest time to leave by, when no table on offer gives a full sitting.
+                    var expectedFreeBy = offered.Count > 0 && offered.All(t => t.MustFreeByUtc is not null)
+                        ? offered.Max(t => t.MustFreeByUtc)
+                        : null;
+
+                    Assert.Equal(expectedFreeBy, slot.MustFreeByUtc);
 
                     if (single.UnavailableReason is { } refused)
                     {
@@ -508,11 +536,11 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
     }
 
     /// <summary>
-    /// The only table that fits the party is booked, so the times its sitting runs into are struck -
-    /// as already booked, not as "too small", although the two-seaters that do not fit outnumber it.
+    /// The only table that fits the party is booked, so the times its evening refuses are struck - for
+    /// the table's booking, not as "too small", although the two-seaters that do not fit outnumber it.
     /// </summary>
     [SkippableFact]
-    public async Task A_time_whose_only_fitting_table_is_booked_is_struck_as_already_booked()
+    public async Task A_time_whose_only_fitting_table_is_booked_is_struck_for_the_booking_not_as_too_small()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -533,20 +561,33 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.NotNull(day);
         Assert.Null(day.UnavailableReason);
 
-        // Open 10:00-23:00 with a 90-minute turn: the last sitting that fits starts at 21:30.
+        // Open 10:00-23:00 with a 90-minute turn: the last sitting that fits starts at 21:30, and every
+        // quarter of an hour from 10:00 to then is listed.
         Assert.Equal("10:00", day.Slots[0].Time);
         Assert.Equal("21:30", day.Slots[^1].Time);
-        Assert.Equal(24, day.Slots.Count);
+        Assert.Equal(47, day.Slots.Count);
 
-        // 18:00-19:30 plus 15 minutes of clearing either side: 16:30 to 19:30 run into it.
-        var struck = day.Slots.Where(s => !s.IsAvailable).Select(s => s.Time).ToList();
+        // The 18:00 refuses less than forty-five minutes before it and ninety after its start; from
+        // 19:30 its guest can be asked, and before 17:30 a sitting just has a time to leave by.
+        var struck = day.Slots.Where(s => !s.IsAvailable).ToDictionary(s => s.Time, s => s.UnavailableReason);
 
-        Assert.Equal(["16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "19:30"], struck);
-        Assert.All(day.Slots.Where(s => !s.IsAvailable), s =>
-        {
-            Assert.Equal(ReservationRejectionReason.TableAlreadyBooked, s.UnavailableReason);
-            Assert.Equal(0, s.FreeTableCount);
-        });
+        Assert.Equal(
+            new Dictionary<string, ReservationRejectionReason?>
+            {
+                ["17:30"] = ReservationRejectionReason.NextBookingTooSoon,
+                ["17:45"] = ReservationRejectionReason.NextBookingTooSoon,
+                ["18:00"] = ReservationRejectionReason.TableJustBooked,
+                ["18:15"] = ReservationRejectionReason.TableJustBooked,
+                ["18:30"] = ReservationRejectionReason.TableJustBooked,
+                ["18:45"] = ReservationRejectionReason.TableJustBooked,
+                ["19:00"] = ReservationRejectionReason.TableJustBooked,
+                ["19:15"] = ReservationRejectionReason.TableJustBooked,
+            },
+            struck);
+        Assert.All(day.Slots.Where(s => !s.IsAvailable), s => Assert.Equal(0, s.FreeTableCount));
+
+        Assert.Equal("17:55", day.Slots.Single(s => s.Time == "17:15").MustFreeByLocal);
+        Assert.True(day.Slots.Single(s => s.Time == "19:30").IsRequestable);
 
         var free = day.Slots.Single(s => s.Time == "16:00");
 
@@ -590,7 +631,7 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
 
         Assert.True(slot!.Tables.Single(t => t.TableId == branch.TableIds[0]).IsAvailable);
         Assert.Equal(
-            ReservationRejectionReason.TableAlreadyBooked,
+            ReservationRejectionReason.TableJustBooked,
             slot.Tables.Single(t => t.TableId == branch.TableIds[1]).UnavailableReason);
 
         // An id that is not a booking here changes nothing.
@@ -674,9 +715,9 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var day = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, BookingDate, 2));
 
         Assert.NotNull(day);
-        Assert.Equal(24, day.Slots.Count);
+        Assert.Equal(47, day.Slots.Count);
 
-        // Forty-eight times, eight tables, one statement.
+        // Ninety-six times, eight tables, one statement.
         Assert.Equal(1, counter.Count);
 
         var sql = query.GetDaySlotsQuerySql(new DaySlotsRequest(branch.BranchId, BookingDate, 2, Guid.CreateVersion7()));

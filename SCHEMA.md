@@ -41,7 +41,9 @@ reservation rule (turn time, buffer, grace, lead time, booking window, cancellat
 auto-confirm, service charge, VAT, seat overhang, approval threshold) is a per-branch setting
 with a shipped default, never a constant in code. "How long do we hold a table?" has a different
 answer in a breakfast cafe and a tasting-menu restaurant, and the only default that varies by
-venue type is the turn time: 120 minutes for a cafe or a bar, 90 for a restaurant. `Venue.Type` is
+venue type is the turn time: 120 minutes for a cafe or a bar, 90 for a restaurant. A new branch books
+from 10 minutes ahead with 5 minutes of clearing (`BookingTimes` moved every branch still on the old 30
+and 15 to those, column by column, and kept every value an owner chose). `Venue.Type` is
 `1 Cafe, 2 Restaurant, 3 Bar`, stored as an int with no check constraint, so a new type is a new
 member rather than a migration.
 
@@ -149,14 +151,31 @@ tomorrow without rewriting history. `(DiningTableId, StartUtc, EndUtc)` is the i
 overlap check hits. `Code` is unique — it is what the diner quotes at the door. `HoldExpiresAtUtc`
 covers the brief hold while a booking is being completed; `GraceExtensionsUsed` stops "just five
 more minutes" being granted indefinitely. `ApprovalTrigger` stores why a booking went to
-`PendingApproval` (short notice, the branch approves everything, a large party, a no-show history) so
-later reads do not re-derive it from a policy that may have changed; `ApprovalExpiresAtUtc` is the
-short-notice answer deadline, cleared the moment the booking stops waiting, behind a filtered index
-the approval sweep reads; `DeclineReason` records whether a decline was a member of staff's or nobody
-answering in time. The seven `Previous*` columns hold the confirmed slot (table, start, end, local date
-and time, party, confirmation) a booking had before a change sent it back for approval, so declining the
-change can put it back there; they are null whenever no such change is waiting. See
-`docs/reservations.md` §3c and §3d.
+`PendingApproval` (short notice, waiting on the guest before it on the table, the branch approves
+everything, a large party, a no-show history) so later reads do not re-derive it from a policy that may
+have changed; `ApprovalExpiresAtUtc` is the answer deadline - fifteen minutes at short notice, two hours
+for the guest before - cleared the moment the booking stops waiting, behind a filtered index the
+approval sweep reads; `DeclineReason` records whose no it was (staff, the guest before) or whose silence
+(the venue, the guest before). `PromisedFreeByUtc` is the time the guest promised to have left the table
+by - accepting a "must free by" when booking, or saying yes to a later guest - and `EndUtc` is cut to it
+when it is sooner. The eight `Previous*` columns hold the confirmed slot (table, start, end, local date
+and time, party, confirmation, promise) a booking had before a change sent it back for approval, so
+declining the change can put it back there; they are null whenever no such change is waiting. See
+`docs/reservations.md` §3c, §3d and §3e.
+
+### TableShareRequest
+
+A later booking asking the booking before it on the same table to free the table in time: "will you
+have left by 19:40?". `EarlierReservationId` and `LaterReservationId` (both Restrict to `Reservations`),
+`RequestedStartUtc` (the later start, what the earlier guest is told), `FreeByUtc` (that start less the
+branch's clearing time), `Status` (`Pending | Accepted | Declined | Expired | Withdrawn`),
+`AsksEarlierGuest` (true: the earlier guest is pushed and answers in the app; false: the floor asks them),
+`ExpiresAtUtc` (two hours from the request, never past the earlier booking's start - the later booking's
+`ApprovalExpiresAtUtc` too), `DecidedAtUtc` and `RowVersion`. Two filtered unique indexes on `Status = 1`
+hold **one open question per earlier booking** and one per later booking; every booker takes the table's
+lock before asking, so the writer settles a race itself and the indexes hold the rule for any writer that
+did not. A yes cuts the earlier booking's end to `FreeByUtc` (`Reservation.PromisedFreeByUtc`). See
+`docs/reservations.md` §3e.
 
 ### TableSession
 
@@ -341,7 +360,7 @@ the account; **no foreign key to the branch** - a heart is checked against a pub
 is added and read back through the same rule, so a place that closes drops out of the list and one that
 reopens comes back with its hearts. Deleting an account deletes them.
 
-`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of six slugs, held by
+`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of eight slugs, held by
 `CK_DinerNotifications_Kind`), `ParamsJson` (2000, the string values the app builds its own text from -
 the server writes no prose), optional `BranchId`, `ReservationId`, `TabId`, `OrderId` (pointers the app
 follows, deliberately without foreign keys), `ReadAtUtc`, and `Sequence`, an identity column that breaks

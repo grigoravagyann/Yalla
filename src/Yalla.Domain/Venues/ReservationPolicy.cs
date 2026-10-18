@@ -153,6 +153,13 @@ public sealed class ReservationPolicy
     /// lingers over one coffee and a bar table over a round or two, so both get two hours; a
     /// restaurant sits a tighter 90-minute cover.
     /// </summary>
+    /// <remarks>
+    /// Bookable from <see cref="DefaultMinLeadMinutes"/> minutes ahead, with
+    /// <see cref="DefaultBufferMinutes"/> minutes of clearing time between two parties: the times a
+    /// diner books tonight. Both were longer (30 and 15) until the booking-times change, whose
+    /// migration moved every branch still on those two old defaults to these - see
+    /// <c>docs/reservations.md</c>.
+    /// </remarks>
     public static ReservationPolicy DefaultFor(VenueType venueType) => new(
         turnTimeMinutes: venueType switch
         {
@@ -160,12 +167,12 @@ public sealed class ReservationPolicy
             VenueType.Bar => 120,
             _ => 90,
         },
-        bufferMinutes: 15,
+        bufferMinutes: DefaultBufferMinutes,
         graceMinutes: 15,
         lateNudgeAfterMinutes: 10,
         reminderHoursBefore: 3,
         graceExtensionMinutes: 10,
-        minLeadMinutes: 30,
+        minLeadMinutes: DefaultMinLeadMinutes,
         bookingWindowDays: 14,
         cancellationDeadlineMinutes: 120,
         autoConfirm: true,
@@ -174,6 +181,12 @@ public sealed class ReservationPolicy
         maxSeatOverhang: 2,
         approvalRequiredAbovePartySize: 8,
         walkInHoldbackMinutes: 30);
+
+    /// <summary>A new branch takes bookings from this many minutes ahead.</summary>
+    public const int DefaultMinLeadMinutes = 10;
+
+    /// <summary>A new branch clears a table in this many minutes between two parties.</summary>
+    public const int DefaultBufferMinutes = 5;
 
     private static int Positive(int value, string paramName) =>
         value <= 0

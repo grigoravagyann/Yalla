@@ -40,6 +40,12 @@ namespace Yalla.Application.Reservations;
 /// A note to the venue - "window table", "a high chair". Trimmed, blank means none, at most 500
 /// characters (K9).
 /// </param>
+/// <param name="AcceptsFreeByUtc">
+/// The time the diner agreed to free the table by, when the table's next booking cuts a full sitting
+/// short - availability's <c>mustFreeByUtc</c> for the table, sent back. Required exactly then, and it
+/// must be that instant: anything else is refused naming <c>acceptsFreeByUtc</c>, with the time
+/// required. Ignored when the table has no such limit.
+/// </param>
 public sealed record CreateReservationCommand(
     Guid BranchId,
     Guid TableId,
@@ -51,7 +57,8 @@ public sealed record CreateReservationCommand(
     Guid ClientCommandId,
     StayHint? StayHint = null,
     ReservationChannel Channel = ReservationChannel.Unknown,
-    string? Note = null);
+    string? Note = null,
+    DateTime? AcceptsFreeByUtc = null);
 
 /// <summary>
 /// A diner moving their own booking: another time, another table, another party size - the same
@@ -73,12 +80,33 @@ public sealed record CreateReservationCommand(
 /// The caller's own id for this change. <b>Required.</b> A retry with the same id answers with the
 /// booking as it stands instead of moving it again.
 /// </param>
+/// <param name="AcceptsFreeByUtc">
+/// As on <see cref="CreateReservationCommand"/>: the time to free the table by at the new slot, when
+/// its next booking cuts a full sitting short. A booking that already promised exactly that time
+/// need not send it again.
+/// </param>
 public sealed record RescheduleReservationCommand(
     Guid ReservationId,
     Guid TableId,
     DateOnly LocalDate,
     TimeOnly LocalTime,
     int PartySize,
+    Guid ClientCommandId,
+    DateTime? AcceptsFreeByUtc = null);
+
+/// <summary>
+/// The earlier guest answering a later guest's request for their table: "will you have left by 19:40?".
+/// </summary>
+/// <param name="ReservationId">The earlier guest's own booking - the one whose table is asked for.</param>
+/// <param name="RequestId">The request, from the booking's <c>incomingTableRequest</c>.</param>
+/// <param name="Accept">Yes, they will have left by then; or no.</param>
+/// <param name="ClientCommandId">
+/// The caller's own id for this answer. A retry with the same id answers with the booking as it stands.
+/// </param>
+public sealed record AnswerTableRequestCommand(
+    Guid ReservationId,
+    Guid RequestId,
+    bool Accept,
     Guid ClientCommandId);
 
 /// <summary>A diner giving up a booking.</summary>

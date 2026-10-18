@@ -162,36 +162,61 @@ internal sealed class ReservationService(
         var status = await DecideStatusAsync(
             command.PartySize, approvedPartySize: null, policy, dinerUserId, startUtc, shortNotice, nowUtc, cancellationToken);
 
-        var reservation = Reservation.Create(
-            branchId: branch.Id,
-            diningTableId: table.Id,
-            startUtc: startUtc,
-            localDate: command.LocalDate,
-            localStartTime: command.LocalTime,
-            partySize: command.PartySize,
-            guestName: command.GuestName,
-            guestPhone: command.GuestPhone,
-            code: ReservationCode.Generate(),
-            policy: policy,
-            initialStatus: status.Status,
-            dinerUserId: dinerUserId,
-            stayHint: command.StayHint,
-            clientCommandId: command.ClientCommandId,
-            channel: command.Channel,
-            note: note,
-            approvalTrigger: status.Trigger,
-            approvalExpiresAtUtc: status.ApprovalExpiresAtUtc);
-
         // Minted here and returned exactly once, below. Only the hash is stored, so this plaintext
         // exists in this method and in the response and nowhere else - which is what makes it safe
         // to put in a URL somebody will paste into WhatsApp.
         var manageToken = Secrets.NewOpaqueToken();
-        reservation.AttachManageToken(Secrets.Hash(manageToken));
+        var manageTokenHash = Secrets.Hash(manageToken);
+        StatusDecision decided = status;
 
         // The one way a booking row is created. Everything above this line is validation and
-        // everything below it is presentation; the concurrency-critical part is all in there.
+        // everything below it is presentation; the concurrency-critical part is all in there - and
+        // what the booking becomes, which the table's evening decides, is built inside it.
         var outcome = await InsertUnderTheTableLockAsync(
-            reservation, table, proposed, policy, dinerUserId, cancellationToken);
+            command.ClientCommandId,
+            table,
+            startUtc,
+            policy,
+            dinerUserId,
+            command.AcceptsFreeByUtc,
+            async (verdict, ct) =>
+            {
+                var withTable = await DecideWithTheTableAsync(verdict, status, shortNotice, startUtc, nowUtc, ct);
+                decided = withTable.Status;
+
+                var booking = Reservation.Create(
+                    branchId: branch.Id,
+                    diningTableId: table.Id,
+                    startUtc: startUtc,
+                    localDate: command.LocalDate,
+                    localStartTime: command.LocalTime,
+                    partySize: command.PartySize,
+                    guestName: command.GuestName,
+                    guestPhone: command.GuestPhone,
+                    code: ReservationCode.Generate(),
+                    policy: policy,
+                    initialStatus: withTable.Status.Status,
+                    dinerUserId: dinerUserId,
+                    stayHint: command.StayHint,
+                    clientCommandId: command.ClientCommandId,
+                    channel: command.Channel,
+                    note: note,
+                    approvalTrigger: withTable.Status.Trigger,
+                    approvalExpiresAtUtc: withTable.Status.ApprovalExpiresAtUtc,
+                    promisedFreeByUtc: verdict.MustFreeByUtc);
+
+                booking.AttachManageToken(manageTokenHash);
+
+                if (withTable.Ask is { } ask)
+                {
+                    await TableShares.AskAsync(
+                        db, outbox, branch, table.Label, booking, ask.EarlierReservationId, ask.FreeByUtc,
+                        ask.ExpiresAtUtc, ask.AsksEarlierGuest, nowUtc, ct);
+                }
+
+                return booking;
+            },
+            cancellationToken);
 
         if (outcome.Replay is { } winner)
         {
@@ -214,6 +239,14 @@ internal sealed class ReservationService(
             throw await ConflictAsync(SnapshotFor(command), table, proposed, conflict, cancellationToken);
         }
 
+        if (outcome.FreeBy is { } freeBy)
+        {
+            // A full sitting runs into the next booking, and the diner has not agreed to leave in time.
+            throw FreeByNotAccepted(table, freeBy, zone, command.AcceptsFreeByUtc);
+        }
+
+        var reservation = outcome.Booking!;
+
         // The reminder and the nudge, written in the same unit of work as the booking. A booking
         // that exists without its reminder is the failure mode an outbox is for, and the diner finds
         // out about it by not being reminded.
@@ -224,7 +257,7 @@ internal sealed class ReservationService(
             table.Label, branch.Id, command.PartySize, reservation.Code, reservation.Status);
 
         return await ToViewAsync(
-            reservation, branch, table, wasReplay: false, status.Trigger, cancellationToken, manageToken);
+            reservation, branch, table, wasReplay: false, decided.Trigger, cancellationToken, manageToken);
     }
 
     /// <summary>
@@ -236,23 +269,94 @@ internal sealed class ReservationService(
     /// error codes for the same underlying wait. The retryable-503 shape is identical either way.
     /// </remarks>
     private async Task<InsertOutcome> InsertUnderTheTableLockAsync(
-        Reservation reservation,
+        Guid clientCommandId,
         DiningTable table,
-        BookedInterval proposed,
+        DateTime startUtc,
         ReservationPolicy policy,
         Guid dinerUserId,
+        DateTime? acceptsFreeByUtc,
+        Func<TableSequencingVerdict, CancellationToken, Task<Reservation>> stageAsync,
         CancellationToken cancellationToken)
     {
         try
         {
             return await reservations.InsertUnderTableLockAsync(
-                reservation, table, proposed, policy, dinerUserId, cancellationToken);
+                clientCommandId, table, startUtc, policy, dinerUserId, acceptsFreeByUtc, stageAsync, cancellationToken);
         }
         catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
         {
             throw new ReservationLockTimeoutException(ex.TableId, ex.TableLabel, ex.TimeoutMilliseconds);
         }
     }
+
+    /// <summary>
+    /// What a booking becomes once the table's evening is known: the status creation's rules gave it,
+    /// or - when the guest before it may still be at the table - a wait for their yes, and the question
+    /// to ask them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Tonight</b> (short notice) the floor decides, as for any short-notice booking: the same
+    /// fifteen minutes, with the guest before named on the awaiting card and asked by the floor - a
+    /// request the floor answers is opened beside it, so approving it holds the guest before to the time.
+    /// </para>
+    /// <para>
+    /// <b>Another day</b> the booking waits <c>EarlierGuestConsent</c>, for two hours at most and never
+    /// past the earlier booking's start. The earlier guest is asked in the app when they booked from it,
+    /// have a phone to push to, and nothing else about this booking needs a human; otherwise the floor
+    /// asks them - by telephone - from the awaiting list.
+    /// </para>
+    /// </remarks>
+    private async Task<(StatusDecision Status, ShareAsk? Ask)> DecideWithTheTableAsync(
+        TableSequencingVerdict verdict,
+        StatusDecision status,
+        bool shortNotice,
+        DateTime startUtc,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        if (!verdict.NeedsEarlierGuest)
+        {
+            return (status, null);
+        }
+
+        var earlier = verdict.Earlier!.Value;
+        var freeBy = verdict.EarlierGuestFreeByUtc!.Value;
+
+        if (shortNotice && status is { Trigger: ApprovalTrigger.ShortNotice, ApprovalExpiresAtUtc: { } deadline })
+        {
+            return (status, new ShareAsk(earlier.ReservationId, freeBy, deadline, AsksEarlierGuest: false));
+        }
+
+        var expiresAtUtc = TableSequencing.AnswerDeadline(
+            nowUtc, TableShareRequest.AnswerWindowMinutes, earlier.StartUtc, startUtc);
+
+        // Something else about this booking already needs a human - a venue that approves every booking,
+        // a large party, a no-show history - so the floor decides it with the guest before on the card.
+        var needsAHumanAnyway = status.Status == ReservationStatus.PendingApproval;
+
+        var inApp = !needsAHumanAnyway
+                    && earlier.StartUtc > nowUtc
+                    && await TableShares.CanAskInAppAsync(db, earlier.ReservationId, cancellationToken);
+
+        return (
+            new StatusDecision(ReservationStatus.PendingApproval, ApprovalTrigger.EarlierGuestConsent, expiresAtUtc),
+            new ShareAsk(earlier.ReservationId, freeBy, expiresAtUtc, inApp));
+    }
+
+    /// <summary>The refusal for a time to leave by the booking did not accept, in the branch's wall clock.</summary>
+    private static FreeByNotAcceptedException FreeByNotAccepted(
+        DiningTable table,
+        FreeByRequirement requirement,
+        BranchZone zone,
+        DateTime? accepted) =>
+        new(
+            table.Id,
+            table.Label,
+            requirement.FreeByUtc,
+            zone.LocalTimeAt(requirement.FreeByUtc),
+            requirement.NextStartUtc,
+            accepted);
 
     // ---------------------------------------------------------------- the diner moves their booking
 
@@ -370,14 +474,31 @@ internal sealed class ReservationService(
             };
         }
 
+        var shortNoticeMove = ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc));
+        StatusDecision decided = status;
+
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
             table,
-            proposed,
+            startUtc,
             policy,
             dinerUserId,
             command.ClientCommandId,
-            ct => StageMoveAsync(reservation, command, table, branch, startUtc, status, dinerUserId, nowUtc, ct),
+            command.AcceptsFreeByUtc,
+            async (verdict, ct) =>
+            {
+                // A confirmed booking keeping its table and start is not asked about again: nothing the
+                // venue said yes to got harder to keep, whoever has the table before it.
+                var withTable = keepsItsConfirmation
+                    ? (status, (ShareAsk?)null)
+                    : await DecideWithTheTableAsync(verdict, status, shortNoticeMove, startUtc, nowUtc, ct);
+
+                decided = withTable.Item1;
+
+                await StageMoveAsync(
+                    reservation, command, table, branch, startUtc, withTable.Item1, withTable.Item2, verdict,
+                    dinerUserId, nowUtc, ct);
+            },
             cancellationToken);
 
         if (outcome.WasReplay)
@@ -404,11 +525,16 @@ internal sealed class ReservationService(
             throw await ConflictAsync(snapshot, table, proposed, conflict, cancellationToken);
         }
 
+        if (outcome.FreeBy is { } freeBy)
+        {
+            throw FreeByNotAccepted(table, freeBy, zone, command.AcceptsFreeByUtc);
+        }
+
         logger.LogInformation(
             "Booking {Code} moved to table {TableLabel} at {Start:o} for {PartySize} ({Status}).",
             reservation.Code, table.Label, reservation.StartUtc, reservation.PartySize, reservation.Status);
 
-        return await ToViewAsync(reservation, branch, table, wasReplay: false, status.Trigger, cancellationToken);
+        return await ToViewAsync(reservation, branch, table, wasReplay: false, decided.Trigger, cancellationToken);
     }
 
     /// <summary>
@@ -440,10 +566,25 @@ internal sealed class ReservationService(
         Branch branch,
         DateTime startUtc,
         StatusDecision status,
+        ShareAsk? ask,
+        TableSequencingVerdict verdict,
         Guid dinerUserId,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
+        // The question this booking was waiting on is for the slot it is leaving; at once, inside the
+        // lock's transaction, so a new one asked of the same guest below finds it closed.
+        await TableShares.WithdrawForLaterNowAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+        // A promise this booking made for the slot it keeps stands; otherwise the new slot's own.
+        var promise = verdict.MustFreeByUtc
+                      ?? (reservation.StartUtc == startUtc
+                          && reservation.PromisedFreeByUtc is { } kept
+                          && kept < startUtc.AddMinutes(branch.ReservationPolicy.TurnTimeMinutes)
+                          && kept > startUtc
+                              ? kept
+                              : null);
+
         // Throws if the booking stopped being changeable since it was read - though a change of state
         // since then has moved its row version, and the save would refuse it anyway.
         reservation.Reschedule(
@@ -456,7 +597,19 @@ internal sealed class ReservationService(
             status.Status,
             nowUtc,
             status.Trigger,
-            status.ApprovalExpiresAtUtc);
+            status.ApprovalExpiresAtUtc,
+            promise);
+
+        if (ask is { } question)
+        {
+            await TableShares.AskAsync(
+                db, outbox, branch, table.Label, reservation, question.EarlierReservationId, question.FreeByUtc,
+                question.ExpiresAtUtc, question.AsksEarlierGuest, nowUtc, cancellationToken);
+        }
+
+        // And a guest who was asked to free their table for this one - or whose table this one was
+        // asked for - is settled by where it now stands.
+        await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, cancellationToken);
 
         // The account is live: the writer took its lock, inside this transaction, before calling here.
         await ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
@@ -629,23 +782,206 @@ internal sealed class ReservationService(
     private async Task<MoveOutcome> MoveUnderTheTableLockAsync(
         Reservation reservation,
         DiningTable table,
-        BookedInterval proposed,
+        DateTime startUtc,
         ReservationPolicy policy,
         Guid dinerUserId,
         Guid clientCommandId,
-        Func<CancellationToken, Task> applyAsync,
+        DateTime? acceptsFreeByUtc,
+        Func<TableSequencingVerdict, CancellationToken, Task> applyAsync,
         CancellationToken cancellationToken)
     {
         try
         {
             return await reservations.MoveUnderTableLockAsync(
-                reservation, table, proposed, policy, dinerUserId, clientCommandId, applyAsync, cancellationToken);
+                reservation, table, startUtc, policy, dinerUserId, clientCommandId, acceptsFreeByUtc, applyAsync,
+                cancellationToken);
         }
         catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
         {
             throw new ReservationLockTimeoutException(ex.TableId, ex.TableLabel, ex.TimeoutMilliseconds);
         }
     }
+
+    // ---------------------------------------------------------------- the earlier guest answers
+
+    /// <summary>What an answer to a request for a table is recorded as in <c>ProcessedCommands</c>.</summary>
+    internal const string AnswerTableRequestCommandType = "reservation.table-request.answer";
+
+    public async Task<ReservationView> AnswerTableRequestAsync(
+        AnswerTableRequestCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var dinerUserId = RequireDiner("Answer a request for your table");
+
+        var earlier = await db.Reservations
+            .FirstOrDefaultAsync(r => r.Id == command.ReservationId, cancellationToken);
+
+        // Somebody else's booking answers exactly as one that does not exist, as for a change.
+        if (earlier is null || earlier.DinerUserId != dinerUserId)
+        {
+            throw new KeyNotFoundException($"Reservation {command.ReservationId} was not found.");
+        }
+
+        // A retry of this answer: the booking as it stands now. The same id on anything else is refused.
+        if (await IsAnswerReplayAsync(command, dinerUserId, cancellationToken))
+        {
+            return await ReplayViewAsync(earlier.Id, cancellationToken);
+        }
+
+        // Only a request put to this guest in the app is theirs to answer; one the floor is deciding
+        // was never shown to them.
+        var request = await db.TableShareRequests
+            .FirstOrDefaultAsync(
+                r => r.Id == command.RequestId && r.EarlierReservationId == earlier.Id && r.AsksEarlierGuest,
+                cancellationToken)
+            ?? throw new KeyNotFoundException($"Request {command.RequestId} was not found on this booking.");
+
+        var nowUtc = clock.UtcNow;
+        var branch = await LoadBranchAsync(earlier.BranchId, cancellationToken);
+
+        if (!request.IsOpenAt(nowUtc))
+        {
+            // The same answer again - a second tap, the notification's action and then the card - is
+            // answered with the booking, not refused. Anything else is too late.
+            var sameAnswer = request.Status == (command.Accept ? TableShareRequestStatus.Accepted : TableShareRequestStatus.Declined);
+
+            if (sameAnswer)
+            {
+                return await ToViewAsync(earlier, branch, table: null, wasReplay: true, trigger: null, cancellationToken);
+            }
+
+            throw new TableRequestNotPendingException(earlier.Id, request.Id, request.Status, request.ExpiresAtUtc);
+        }
+
+        var later = await db.Reservations.FirstOrDefaultAsync(r => r.Id == request.LaterReservationId, cancellationToken);
+
+        if (later is not { Status: ReservationStatus.PendingApproval } || later.ApprovalHasLapsedAt(nowUtc))
+        {
+            throw new TableRequestNotPendingException(earlier.Id, request.Id, request.Status, request.ExpiresAtUtc);
+        }
+
+        db.ProcessedCommands.Add(new ProcessedCommand(
+            command.ClientCommandId,
+            AnswerTableRequestCommandType,
+            ActorType.Diner,
+            dinerUserId,
+            JsonSerializer.Serialize(new AnswerRecord(earlier.Id, request.Id, command.Accept), RecordJson),
+            RescheduleStatusCode,
+            nowUtc));
+
+        try
+        {
+            if (command.Accept)
+            {
+                // Yes: the later booking is confirmed, this one held to the time - its end cut to it -
+                // and both diners told.
+                later.Confirm(nowUtc);
+
+                await TableShares.ApplyYesAsync(db, outbox, later.Id, branch, nowUtc, cancellationToken);
+
+                var key = await DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
+
+                TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
+
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                // No: the later booking is declined - or, for a change of a confirmed one, goes back to the
+                // slot it had - and its diner told. Saved inside, with this guest's own record of it.
+                await TableShares.TellEarlierDecidedAsync(
+                    db, outbox, earlier, request, branch, accepted: false, nowUtc, cancellationToken);
+
+                await PendingDecline.DeclineAsync(
+                    db,
+                    outbox,
+                    reservations,
+                    later,
+                    branch,
+                    DeclineReason.EarlierGuestDeclined,
+                    reason: null,
+                    quietIfAlreadyStarted: false,
+                    nowUtc,
+                    cancellationToken);
+            }
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The later booking or the request changed under this answer: the sweep expired it, the other
+            // diner moved or cancelled, the floor decided. Whatever they did stands.
+            db.ChangeTracker.Clear();
+
+            var current = await db.TableShareRequests
+                .AsNoTracking()
+                .Where(r => r.Id == request.Id)
+                .Select(r => new { r.Status, r.ExpiresAtUtc })
+                .FirstAsync(cancellationToken);
+
+            throw new TableRequestNotPendingException(earlier.Id, request.Id, current.Status, current.ExpiresAtUtc);
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.ProcessedCommandId))
+        {
+            // The same id was recorded by a racing request. Answered outside as a replay - or refused,
+            // when it was another command's.
+            db.ChangeTracker.Clear();
+
+            if (await IsAnswerReplayAsync(command, dinerUserId, cancellationToken))
+            {
+                return await ReplayViewAsync(command.ReservationId, cancellationToken);
+            }
+
+            throw;
+        }
+
+        logger.LogInformation(
+            "Booking {Code} answered the request for its table from booking {LaterCode}: {Answer}.",
+            earlier.Code, later.Code, command.Accept ? "yes" : "no");
+
+        var fresh = await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == earlier.Id, cancellationToken);
+
+        return await ToViewAsync(fresh, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether this answer was already given under this id - or throws when the id belongs to another
+    /// command, another booking's request, or the other answer.
+    /// </summary>
+    private async Task<bool> IsAnswerReplayAsync(
+        AnswerTableRequestCommand command,
+        Guid dinerUserId,
+        CancellationToken cancellationToken)
+    {
+        var processed = await db.ProcessedCommands
+            .AsNoTracking()
+            .Where(c => c.ClientCommandId == command.ClientCommandId)
+            .Select(c => new { c.CommandType, c.ActorId, c.ResponseJson })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (processed is null)
+        {
+            return false;
+        }
+
+        if (processed.CommandType != AnswerTableRequestCommandType
+            || processed.ActorId != dinerUserId
+            || JsonSerializer.Deserialize<AnswerRecord>(processed.ResponseJson, RecordJson) is not { } record
+            || record.ReservationId != command.ReservationId
+            || record.RequestId != command.RequestId
+            || record.Accept != command.Accept)
+        {
+            throw new ClientCommandIdAlreadyUsedException(
+                command.ClientCommandId,
+                "That clientCommandId already belongs to another command. Generate a fresh one per answer, "
+                + "and reuse it only when retrying that same answer.");
+        }
+
+        return true;
+    }
+
+    /// <summary>What an answer records: which booking, which request, and which way.</summary>
+    private sealed record AnswerRecord(Guid ReservationId, Guid RequestId, bool Accept);
 
     public async Task<ReservationView> CancelAsync(
         CancelReservationCommand command,
@@ -806,6 +1142,11 @@ internal sealed class ReservationService(
         // a no-show costs the venue the same table plus the chance to resell it.
         reservation.CancelByDiner(nowUtc, reason, late);
 
+        // A question this booking was waiting on goes with it, and a guest who was asked to free their
+        // table for it - or a booking waiting on this one's guest - is settled now the table is free.
+        await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
+        await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, cancellationToken);
+
         // Cancelling the cause cancels the message, in the same transaction. A reminder arriving for
         // a booking somebody cancelled an hour ago is worse than no reminder at all - it is the push
         // the diner remembers, and it teaches them the notifications are wrong.
@@ -855,6 +1196,23 @@ internal sealed class ReservationService(
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
+
+                // A later guest asking for this booking's table, while the question is open and theirs
+                // to answer - beside the booking, in the same statement.
+                Incoming = db.TableShareRequests
+                    .Where(q => q.EarlierReservationId == r.Id
+                                && q.Status == TableShareRequestStatus.Pending
+                                && q.AsksEarlierGuest
+                                && q.ExpiresAtUtc > nowUtc)
+                    .OrderBy(q => q.CreatedAtUtc)
+                    .Select(q => new IncomingRow
+                    {
+                        RequestId = q.Id,
+                        RequestedStartUtc = q.RequestedStartUtc,
+                        FreeByUtc = q.FreeByUtc,
+                        ExpiresAtUtc = q.ExpiresAtUtc,
+                    })
+                    .FirstOrDefault(),
             })
             .ToListAsync(cancellationToken);
 
@@ -942,7 +1300,13 @@ internal sealed class ReservationService(
             .Where(r => r.BranchId == branchId
                         && r.Status == ReservationStatus.PendingApproval
                         && r.StartUtc > nowUtc
-                        && (r.ApprovalExpiresAtUtc == null || r.ApprovalExpiresAtUtc > nowUtc))
+                        && (r.ApprovalExpiresAtUtc == null || r.ApprovalExpiresAtUtc > nowUtc)
+
+                        // Not one waiting on the earlier guest's own answer in the app: that question is
+                        // theirs, not the floor's.
+                        && !db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
+                                                           && q.Status == TableShareRequestStatus.Pending
+                                                           && q.AsksEarlierGuest))
             .OrderBy(r => r.ApprovalExpiresAtUtc == null)
             .ThenBy(r => r.ApprovalExpiresAtUtc)
             .ThenBy(r => r.StartUtc)
@@ -969,7 +1333,8 @@ internal sealed class ReservationService(
                                 && p.Status != ReservationStatus.CancelledByVenue)
                     .OrderByDescending(p => p.StartUtc)
                     .Select(p => new AwaitingPreviousBooking(
-                        p.Id, p.StartUtc, p.LocalStartTime, p.PartySize, p.GuestName, p.GuestPhone, p.Status))
+                        p.Id, p.StartUtc, p.LocalStartTime, p.PartySize, p.GuestName, p.GuestPhone, p.Status,
+                        p.PromisedFreeByUtc))
                     .FirstOrDefault(),
 
                 // The next promise on the table that day - the statuses that hold it.
@@ -982,7 +1347,13 @@ internal sealed class ReservationService(
                                     || n.Status == ReservationStatus.PendingApproval
                                     || n.Status == ReservationStatus.Seated))
                     .OrderBy(n => n.StartUtc)
-                    .Select(n => new AwaitingNextBooking(n.Id, n.StartUtc, n.LocalStartTime, n.PartySize))
+                    .Select(n => new AwaitingNextBooking(n.Id, n.StartUtc, n.LocalStartTime, n.PartySize, n.PromisedFreeByUtc))
+                    .FirstOrDefault(),
+
+                // The time the guest before is asked to have left by, when this booking waits on that.
+                EarlierGuestFreeByUtc = db.TableShareRequests
+                    .Where(q => q.LaterReservationId == r.Id && q.Status == TableShareRequestStatus.Pending)
+                    .Select(q => (DateTime?)q.FreeByUtc)
                     .FirstOrDefault(),
 
                 // Somebody at the table now. A diner's scan opens a table with a guessed party size, so
@@ -1021,6 +1392,7 @@ internal sealed class ReservationService(
                         : row.Previous with { GuestPhone = null },
                     NextBooking = row.Next,
                     CurrentSitting = row.Sitting,
+                    EarlierGuestFreeByUtc = row.EarlierGuestFreeByUtc,
                 };
             })
             .ToList();
@@ -1111,12 +1483,12 @@ internal sealed class ReservationService(
         AvailabilityRequest snapshot,
         DiningTable table,
         BookedInterval proposed,
-        Reservation conflict,
+        BookingClash conflict,
         CancellationToken cancellationToken)
     {
         logger.LogInformation(
-            "Table {TableLabel} was taken for {Start:o} before this booking committed; it clashes with {Code}.",
-            table.Label, proposed.StartUtc, conflict.Code);
+            "Table {TableLabel} cannot take {Start:o}: booking {ReservationId} is in the way ({Reason}).",
+            table.Label, proposed.StartUtc, conflict.ReservationId, conflict.Reason);
 
         BranchAvailability? availability = null;
 
@@ -1137,9 +1509,10 @@ internal sealed class ReservationService(
             table.Id,
             table.Label,
             proposed,
-            BookedInterval.Of(conflict),
-            conflict.Id,
-            availability);
+            conflict.Interval,
+            conflict.ReservationId,
+            availability,
+            conflict.Reason);
     }
 
     /// <summary>The floor a refused booking is answered with: the slot it asked about.</summary>
@@ -1345,6 +1718,10 @@ internal sealed class ReservationService(
             {
                 reservation.Confirm(nowUtc);
 
+                // The floor's yes for the guest before, when this booking was waiting on them: they are
+                // held to the time asked - its end cut to it - and told.
+                await TableShares.ApplyYesAsync(db, outbox, reservation.Id, branch, nowUtc, cancellationToken);
+
                 // A booking the diner moved back into the queue is approved a second time, and the
                 // first approval's message keeps its key once sent - see DecisionKeyAsync.
                 var decidedKey = await DecisionKeyAsync(db, reservation.Id, "approved", nowUtc, cancellationToken);
@@ -1382,7 +1759,8 @@ internal sealed class ReservationService(
                 .Select(r => new { r.Status, r.DeclineReason })
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (current is { DeclineReason: DeclineReason.NoAnswer }
+            if (current is { DeclineReason: { } declined }
+                && Reservation.IsForNoAnswer(declined)
                 && current.Status != ReservationStatus.PendingApproval)
             {
                 throw new ReservationApprovalExpiredException(
@@ -1464,6 +1842,7 @@ internal sealed class ReservationService(
     /// For a declined change of a confirmed booking: whether the booking went back to the slot it had,
     /// and the slot that was asked for. Null for every other decision.
     /// </param>
+    /// <param name="because">Why a decline happened, carried as <c>declinedBecause</c>; null for an approval.</param>
     internal static void TellDinerDecided(
         YallaDbContext db,
         IOutbox outbox,
@@ -1473,7 +1852,8 @@ internal sealed class ReservationService(
         bool expired,
         string idempotencyKey,
         DateTime nowUtc,
-        DeclinedChange? change = null)
+        DeclinedChange? change = null,
+        DeclineReason? because = null)
     {
         if (reservation.DinerUserId is null)
         {
@@ -1498,12 +1878,14 @@ internal sealed class ReservationService(
                 expired,
                 wasChange = change is not null,
                 originalKept = change?.OriginalKept ?? false,
+                declinedBecause = approved ? null : because,
             },
             nowUtc,
             idempotencyKey);
 
         // The same fact into the diner's feed, beside its push and in the same save (K12).
-        DinerNotices.BookingDecided(db, reservation, venueName, branch.Name, approved, expired, nowUtc, change);
+        DinerNotices.BookingDecided(
+            db, reservation, venueName, branch.Name, approved, expired, nowUtc, change, approved ? null : because);
     }
 
     // ---------------------------------------------------------------- what the diner gets told
@@ -1761,6 +2143,13 @@ internal sealed class ReservationService(
         {
             reservation.CancelByVenue(nowUtc, reason);
         }
+
+        // As for a cancellation: the table is free of this booking, so a question it asked goes, and a
+        // booking waiting on this one's guest no longer has to.
+        var releasedFrom = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+        await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
+        await TableShares.EarlierChangedAsync(db, outbox, reservation, releasedFrom, nowUtc, cancellationToken);
 
         // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
         // after a waiter has already given the table away is the worst of both.
@@ -2029,6 +2418,32 @@ internal sealed class ReservationService(
                   .FirstOrDefaultAsync(cancellationToken)
               ?? new TableFacts(string.Empty, null, null);
 
+        // The question to this booking's guest, on their own views of it only.
+        IncomingRow? incoming = null;
+
+        if (actor.Type == ActorType.Diner
+            && actor.DinerUserId is { } caller
+            && reservation.DinerUserId == caller)
+        {
+            var nowUtc = clock.UtcNow;
+
+            incoming = await db.TableShareRequests
+                .AsNoTracking()
+                .Where(q => q.EarlierReservationId == reservation.Id
+                            && q.Status == TableShareRequestStatus.Pending
+                            && q.AsksEarlierGuest
+                            && q.ExpiresAtUtc > nowUtc)
+                .OrderBy(q => q.CreatedAtUtc)
+                .Select(q => new IncomingRow
+                {
+                    RequestId = q.Id,
+                    RequestedStartUtc = q.RequestedStartUtc,
+                    FreeByUtc = q.FreeByUtc,
+                    ExpiresAtUtc = q.ExpiresAtUtc,
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
         return BuildView(
             reservation,
             branch.Name,
@@ -2037,7 +2452,8 @@ internal sealed class ReservationService(
             branch.ReservationPolicy.CancellationDeadlineMinutes,
             wasReplay,
             trigger,
-            manageToken);
+            manageToken,
+            incoming);
     }
 
     private static ReservationView ToView(MineRow row) =>
@@ -2048,7 +2464,8 @@ internal sealed class ReservationService(
             new TableFacts(row.TableLabel, row.RoomId, row.RoomName),
             row.CancellationDeadlineMinutes,
             wasReplay: false,
-            trigger: null);
+            trigger: null,
+            incoming: row.Incoming);
 
     private static ReservationView BuildView(
         Reservation reservation,
@@ -2058,7 +2475,8 @@ internal sealed class ReservationService(
         int cancellationDeadlineMinutes,
         bool wasReplay,
         ApprovalTrigger? trigger,
-        string? manageToken = null)
+        string? manageToken = null,
+        IncomingRow? incoming = null)
     {
         var zone = BranchZone.For(timeZoneId);
 
@@ -2118,6 +2536,20 @@ internal sealed class ReservationService(
             // Null on every path but creation. The server holds only the hash, so a later read
             // could not return it even if one wanted to.
             ManageToken = manageToken,
+
+            // The time the guest promised to free the table by, kept on the row (EndUtc is cut to it).
+            PromisedFreeByUtc = reservation.PromisedFreeByUtc,
+
+            // Only on a booking still holding its table: a cancelled one has nothing to answer about.
+            IncomingTableRequest = incoming is not null && ReservationOverlap.Blocks(reservation.Status)
+                ? new IncomingTableRequest(
+                    incoming.RequestId,
+                    incoming.RequestedStartUtc,
+                    incoming.FreeByUtc,
+                    incoming.ExpiresAtUtc,
+                    zone.LocalTimeAt(incoming.RequestedStartUtc),
+                    zone.LocalTimeAt(incoming.FreeByUtc))
+                : null,
         };
     }
 
@@ -2126,6 +2558,17 @@ internal sealed class ReservationService(
         ReservationStatus Status,
         ApprovalTrigger? Trigger,
         DateTime? ApprovalExpiresAtUtc);
+
+    /// <summary>The question a booking asks the booking before it on the table, before it is staged.</summary>
+    /// <param name="EarlierReservationId">The booking whose guest is asked.</param>
+    /// <param name="FreeByUtc">The time to have left by.</param>
+    /// <param name="ExpiresAtUtc">The deadline - the later booking's own <c>ApprovalExpiresAtUtc</c>.</param>
+    /// <param name="AsksEarlierGuest">In the app; or false, the floor asks.</param>
+    private sealed record ShareAsk(
+        Guid EarlierReservationId,
+        DateTime FreeByUtc,
+        DateTime ExpiresAtUtc,
+        bool AsksEarlierGuest);
 
     /// <summary>
     /// What a change of booking records in <c>ProcessedCommands</c>: which booking, and where it went.
@@ -2179,6 +2622,21 @@ internal sealed class ReservationService(
 
         /// <summary>The branch's setting as it stands, which a cancellation now is judged by.</summary>
         public int CancellationDeadlineMinutes { get; init; }
+
+        /// <summary>A later guest's open request for this booking's table, or null.</summary>
+        public IncomingRow? Incoming { get; init; }
+    }
+
+    /// <summary>A later guest's open request for a booking's table, as the read finds it.</summary>
+    private sealed class IncomingRow
+    {
+        public Guid RequestId { get; init; }
+
+        public DateTime RequestedStartUtc { get; init; }
+
+        public DateTime FreeByUtc { get; init; }
+
+        public DateTime ExpiresAtUtc { get; init; }
     }
 
     /// <summary>One booking awaiting approval, with its table's evening, as the single query reads it.</summary>
@@ -2204,5 +2662,7 @@ internal sealed class ReservationService(
         public AwaitingNextBooking? Next { get; init; }
 
         public AwaitingCurrentSitting? Sitting { get; init; }
+
+        public DateTime? EarlierGuestFreeByUtc { get; init; }
     }
 }

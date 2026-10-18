@@ -132,4 +132,20 @@ public sealed record TableFloorState
     /// turnaround buffer. Null when nothing is booked.
     /// </summary>
     public DateTime? FreeUntilUtc { get; init; }
+
+    /// <summary>
+    /// The time the next booking's guest promised to free the table by - "must free by 21:25" on the
+    /// next-booking line - or absent when they made no such promise.
+    /// </summary>
+    /// <remarks>
+    /// Another booking follows theirs that a full sitting would run into (they accepted the time when
+    /// booking), or they said yes to a later guest's request for the table.
+    /// </remarks>
+    public DateTime? NextReservationPromisedFreeByUtc { get; init; }
+
+    /// <summary>
+    /// The time the party sitting here now promised to free the table by, when they were seated against
+    /// a booking that made such a promise; absent otherwise.
+    /// </summary>
+    public DateTime? SittingPromisedFreeByUtc { get; init; }
 }

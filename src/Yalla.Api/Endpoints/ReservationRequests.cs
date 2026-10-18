@@ -74,6 +74,12 @@ public sealed record ReleaseReservationRequest(
 /// A note to the venue - "window table", "a high chair". Optional; trimmed, blank means none, at
 /// most 500 characters, refused as <c>validation-failed</c> naming <c>note</c> with bound <c>max</c>.
 /// </param>
+/// <param name="AcceptsFreeByUtc">
+/// "I'll free the table by 21:25": the table's <c>mustFreeByUtc</c> from availability, sent back once the
+/// diner has agreed to it. Required exactly when the table's next booking cuts a full sitting short,
+/// and then it must be that instant - otherwise <c>422 reservation-free-by-required</c> naming this
+/// field, with <c>context.requiredFreeByUtc</c>. Ignored for a table with no such limit.
+/// </param>
 public sealed record CreateReservationRequest(
     // NotEmpty as well as Required: a missing Guid binds Guid.Empty rather than null, so Required
     // alone let it reach the lookup, which answered "Branch 00000000-0000-0000-0000-000000000000
@@ -100,7 +106,12 @@ public sealed record CreateReservationRequest(
 
     // No [MaxLength] here on purpose: the validation filter reports every attribute as bound
     // `required`, and the contract says `max`. The service trims it and refuses it naming `note`.
-    string? Note = null) : IClientCommandRequest;
+    string? Note = null,
+
+    // Required only when the table's next booking cuts a full sitting short, and then it must be that
+    // instant - which only the service, under the table's lock, can know. So no attribute: the refusal
+    // is the service's 422 `reservation-free-by-required`, naming this field.
+    DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
 
 /// <summary>Body of <c>POST /api/reservations/{reservationId}/reschedule</c>.</summary>
 /// <remarks>
@@ -121,6 +132,10 @@ public sealed record CreateReservationRequest(
 /// The caller's own id for this change. <b>Required.</b> A retry with the same id answers with the
 /// booking as it stands instead of moving it again; a fresh id for every change.
 /// </param>
+/// <param name="AcceptsFreeByUtc">
+/// As on a new booking: the new slot's <c>mustFreeByUtc</c>, when its next booking cuts a full sitting
+/// short. A booking that already promised exactly that time for the same start need not send it.
+/// </param>
 public sealed record RescheduleReservationRequest(
     // Nullable for the same reason as on a new booking: a missing DateOnly binds year one and a
     // missing TimeOnly binds midnight, so only null lets [Required] tell absent from meant.
@@ -131,6 +146,23 @@ public sealed record RescheduleReservationRequest(
     // Nullable, so an explicit null is refused naming the field rather than failing to deserialise;
     // NotEmpty for the all-zeros id, as on a new booking.
     [Required][NotEmpty] Guid? DiningTableId,
+    [Required] Guid ClientCommandId,
+
+    // As on a new booking: required exactly when the new slot's next booking cuts a full sitting short.
+    DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
+
+/// <summary>Body of <c>POST /api/reservations/{reservationId}/table-requests/{requestId}/answer</c>.</summary>
+/// <param name="Accept">
+/// <c>true</c>: yes, the diner will have left by the time asked - their booking's end is cut to it and
+/// the other guest is confirmed. <c>false</c>: no - the other guest is declined. Nullable so an omitted
+/// answer is refused naming the field rather than read as no.
+/// </param>
+/// <param name="ClientCommandId">
+/// The caller's own id for this answer. <b>Required.</b> A retry with the same id answers with the
+/// booking as it stands; the push action and the card may both send it.
+/// </param>
+public sealed record AnswerTableRequestRequest(
+    [Required] bool? Accept,
     [Required] Guid ClientCommandId) : IClientCommandRequest;
 
 /// <summary>Query of <c>GET /api/branches/{branchId}/reservations</c>.</summary>

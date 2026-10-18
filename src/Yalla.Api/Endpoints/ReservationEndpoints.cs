@@ -174,6 +174,11 @@ public static class ReservationEndpoints
                 + "specific reason - and the window the diner may have. Assembled in a single "
                 + "query. Returns no guest names and no money. Omit date and time for 'now, at "
                 + "the branch'.\n\n"
+                + "Each table also says what booking it takes: `isRequestable` when the guest with it before "
+                + "has to agree to leave in time first (the booking waits - `requiresApproval`), and "
+                + "`mustFreeByUtc`/`mustFreeByLocal` when a full sitting would run into its next booking - "
+                + "send that instant back as `acceptsFreeByUtc` once the diner agrees. The rules are the "
+                + "day slots' - see `getBranchDaySlots`.\n\n"
                 + ExcludeReservationDescription)
             .Produces<BranchAvailability>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
@@ -203,20 +208,31 @@ public static class ReservationEndpoints
 
     /// <summary>The day-slots read, word for word on the app route and its public twin.</summary>
     internal const string DaySlotsDescription =
-        "Every half hour from 00:00 on `date` (`stepMinutes` is 30) whose whole sitting - the branch's "
-        + "turn time - fits one opening block, earliest first. A time the branch is shut for is **left "
-        + "out**, never struck. Each slot carries `time` (`HH:mm`, branch wall clock), `startUtc`, "
-        + "`isAvailable`, `requiresApproval`, `freeTableCount` and, when not available, "
-        + "`unavailableReason`.\n\n"
+        "Every quarter of an hour from 00:00 on `date` (`stepMinutes` is 15) whose whole sitting - the "
+        + "branch's turn time - fits one opening block, earliest first. A time the branch is shut for is "
+        + "**left out**, never struck. Each slot carries `time` (`HH:mm`, branch wall clock), `startUtc`, "
+        + "`isAvailable`, `isRequestable`, `requiresApproval`, `freeTableCount`, `requestableTableCount`, "
+        + "`mustFreeByUtc`/`mustFreeByLocal` and, when not available, `unavailableReason`.\n\n"
         + "**`isAvailable`** is true when at least one bookable table pinned on a photo of its room "
-        + "seats the party within the seat-overhang limit and has no booking or sitting running into "
-        + "the slot, clearing time included. These are the single-slot read's own rules over the same "
-        + "rows, so a time listed here as free is one `availability?time=` offers exactly "
-        + "`freeTableCount` tables at, and a struck time is one it offers none at.\n\n"
+        + "seats the party within the seat-overhang limit and the table's evening allows it - free "
+        + "outright (`freeTableCount`) or once the guest before agrees to leave in time "
+        + "(`requestableTableCount`; `isRequestable` when that is all there is, and `requiresApproval` with "
+        + "it). These are the single-slot read's own rules over the same rows, so a time listed here is "
+        + "one `availability?time=` offers exactly those tables at, and a struck time one it offers none at.\n\n"
+        + "**The table's evening** - fixed rules, the ones a booking is judged by under the table's lock: "
+        + "refused from the previous booking's start until ninety minutes after it (`TableJustBooked` 11) "
+        + "and within forty-five minutes before the next one (`NextBookingTooSoon` 12); from ninety minutes "
+        + "to three hours after the previous start, or while that sitting plus clearing time still runs, "
+        + "the table can only be asked for - its guest is asked to have left by the start less the clearing "
+        + "time - and while one such question to a guest is open nobody else can ask "
+        + "(`EarlierGuestBeingAsked` 13). A sitting that would run into the next booking ends at that "
+        + "booking's start less the clearing time; `mustFreeByUtc` is the latest such time when no table "
+        + "on offer gives a full sitting.\n\n"
         + "**Why a time is struck**: `LeadTimeTooShort` (1) or `OutsideBookingWindow` (2) when the "
-        + "time itself is refused; otherwise `TableAlreadyBooked` (8) - or `TableCurrentlyOccupied` "
-        + "(10) - when tables that fit the party are taken, else the commonest table reason, e.g. "
-        + "`PartyExceedsCapacity` (4) when nothing seats them.\n\n"
+        + "time itself is refused; otherwise, when tables that fit the party are taken, the commonest of "
+        + "`TableAlreadyBooked` (8), `TableCurrentlyOccupied` (10), `TableJustBooked` (11), "
+        + "`NextBookingTooSoon` (12) and `EarlierGuestBeingAsked` (13); else the commonest table reason, "
+        + "e.g. `PartyExceedsCapacity` (4) when nothing seats them.\n\n"
         + "The top-level `unavailableReason` refuses the whole day: `OutsideOpeningHours` (3) with no "
         + "slots when the branch is shut all day, or the timing reason every listed time shares - a "
         + "past day, the rest of today inside the lead time, a date beyond the booking window. Null "
@@ -332,6 +348,33 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
+        group.MapPost("/{reservationId:guid}/table-requests/{requestId:guid}/answer", AnswerTableRequestAsync)
+            .WithName("answerTableRequest")
+            .WithSummary("Answer a later guest's request for your table: will you have left in time?")
+            .WithDescription(
+                "Somebody would like the table after the diner's **own** booking - its `incomingTableRequest` "
+                + "says when (`requestedStartUtc`) and by when the diner is asked to have left (`freeByUtc`, "
+                + "the requested start less the branch's clearing time); the push is kind `table-request` "
+                + "with `reservationId` and `requestId`. The other guest stays anonymous.\n\n"
+                + "`accept: true`: the later booking is confirmed, and this booking promises to free the table "
+                + "by `freeByUtc` - its `endUtc` is cut to it and `promisedFreeByUtc` set. `accept: false`: the "
+                + "later booking is declined (`declinedBecause` 3). Both diners are told. Answers with this "
+                + "booking as it now stands.\n\n"
+                + "Before `expiresAtUtc` only - two hours from the request, never past this booking's start; "
+                + "unanswered by then the later booking is declined for it (`declinedBecause` 4) and this one "
+                + "is unchanged. Idempotent on `clientCommandId`, and the same answer twice is answered "
+                + "with the booking; a request answered the other way, expired, or withdrawn because either "
+                + "booking moved or ended is `409 table-request-not-pending`.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "No such booking of the caller's, or no such request on it put to them - one answer for all.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`table-request-not-pending`: the request no longer waits - drop the card. "
+                + "`client-command-id-in-use`: the id belongs to another command or the other answer.")
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, "`accept` is missing.");
 
         group.MapGet("/mine", GetMineAsync)
             .WithName("getMyReservations")
@@ -578,7 +621,8 @@ public static class ReservationEndpoints
                 request.ClientCommandId,
                 request.StayHint,
                 request.Channel,
-                request.Note),
+                request.Note,
+                request.AcceptsFreeByUtc),
             cancellationToken);
 
         // A replay is answered 200, not 201: the second request created nothing, and telling a
@@ -604,7 +648,23 @@ public static class ReservationEndpoints
                 request.Date!.Value,
                 request.Time!.Value,
                 request.PartySize,
-                request.ClientCommandId),
+                request.ClientCommandId,
+                request.AcceptsFreeByUtc),
+            cancellationToken));
+    }
+
+    private static async Task<IResult> AnswerTableRequestAsync(
+        Guid reservationId,
+        Guid requestId,
+        AnswerTableRequestRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // The validation filter has already refused a missing answer by the time this runs.
+        return Results.Ok(await reservations.AnswerTableRequestAsync(
+            new AnswerTableRequestCommand(reservationId, requestId, request.Accept!.Value, request.ClientCommandId),
             cancellationToken));
     }
 

@@ -167,4 +167,14 @@ internal static class DatabaseIndexNames
 
     /// <summary>One nonce, one challenge: the hash in the deep link is looked up here on /start.</summary>
     public const string TelegramVerificationNonce = "UX_TelegramVerifications_NonceHash";
+
+    /// <summary>
+    /// Unique on the earlier booking among the requests still waiting: one guest is asked one question
+    /// at a time. Every booker of the table takes its lock first, so the writer's own check settles it;
+    /// this is what holds the rule for a writer that did not.
+    /// </summary>
+    public const string OpenTableShareRequestPerEarlierBooking = "UX_TableShareRequests_EarlierReservationId_Pending";
+
+    /// <summary>Unique on the later booking among the requests still waiting: a booking waits on one answer.</summary>
+    public const string OpenTableShareRequestPerLaterBooking = "UX_TableShareRequests_LaterReservationId_Pending";
 }

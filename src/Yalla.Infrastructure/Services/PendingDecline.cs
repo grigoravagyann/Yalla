@@ -67,9 +67,18 @@ internal static class PendingDecline
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var expired = because == DeclineReason.NoAnswer;
+        var expired = Reservation.IsForNoAnswer(because);
         var key = await ReservationService.DecisionKeyAsync(
             db, reservation.Id, expired ? "expired" : "rejected", nowUtc, cancellationToken);
+
+        // The question this booking was waiting on - to the guest before it on the table - ends with it:
+        // a no, or nobody in time.
+        await TableShares.CloseForLaterAsync(
+            db,
+            reservation.Id,
+            expired ? TableShareRequestStatus.Expired : TableShareRequestStatus.Declined,
+            nowUtc,
+            cancellationToken);
 
         if (!reservation.HasConfirmedSlotToReturnTo)
         {
@@ -78,9 +87,13 @@ internal static class PendingDecline
             End(reservation, because, reason, nowUtc);
             await CancelWhatWasQueuedAsync(db, outbox, reservation, nowUtc, cancellationToken);
 
+            // And whoever was asking this booking's guest for the table no longer has to wait for them.
+            await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, cancellationToken);
+
             if (tell)
             {
-                ReservationService.TellDinerDecided(db, outbox, reservation, branch, approved: false, expired, key, nowUtc);
+                ReservationService.TellDinerDecided(
+                    db, outbox, reservation, branch, approved: false, expired, key, nowUtc, because: because);
             }
 
             await db.SaveChangesAsync(cancellationToken);
@@ -125,6 +138,10 @@ internal static class PendingDecline
                     await CancelWhatWasQueuedAsync(db, outbox, reservation, nowUtc, token);
                 }
 
+                // Back at the slot it had, or gone: either way it moved, and a guest asked to free a
+                // table for it - or whose table it asked for - is settled by where it now stands.
+                await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, token);
+
                 // A kept booking is worth telling about while it is still to come; a lost one while the
                 // change it asked for still was.
                 told = !quietIfAlreadyStarted || (free ? reservation.StartUtc : requestedStartUtc) > nowUtc;
@@ -140,7 +157,8 @@ internal static class PendingDecline
                         expired,
                         key,
                         nowUtc,
-                        new DeclinedChange(free, requestedDate, requestedTime));
+                        new DeclinedChange(free, requestedDate, requestedTime),
+                        because);
                 }
             },
             cancellationToken);
@@ -148,16 +166,19 @@ internal static class PendingDecline
         return new PendingDeclineOutcome(WasChange: true, OriginalKept: kept, DinerTold: told);
     }
 
-    /// <summary>Ends the booking: declined by staff, or for nobody answering in time.</summary>
+    /// <summary>
+    /// Ends the booking: declined - by staff, or by the guest before it on the table - or for nobody
+    /// answering in time.
+    /// </summary>
     private static void End(Reservation reservation, DeclineReason because, string? reason, DateTime nowUtc)
     {
-        if (because == DeclineReason.NoAnswer)
+        if (Reservation.IsForNoAnswer(because))
         {
-            reservation.DeclineForNoAnswer(nowUtc);
+            reservation.DeclineForNoAnswer(nowUtc, because);
         }
         else
         {
-            reservation.Reject(nowUtc, reason);
+            reservation.Reject(nowUtc, reason, because);
         }
     }
 

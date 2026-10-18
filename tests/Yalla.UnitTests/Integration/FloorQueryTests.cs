@@ -21,8 +21,11 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
 {
     private static readonly DateTime Now = new(2026, 9, 4, 15, 15, 0, DateTimeKind.Utc);
 
-    /// <summary>The default restaurant policy: a table reads as reserved 15 minutes ahead.</summary>
-    private const int BufferMinutes = 15;
+    /// <summary>
+    /// The default restaurant policy: a table reads as reserved its clearing time ahead - five minutes
+    /// since the booking-times change (it was fifteen).
+    /// </summary>
+    private const int BufferMinutes = 5;
 
     [SkippableFact]
     public async Task The_floor_derives_every_state_for_a_branch()
@@ -37,7 +40,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
 
         // Table 1 stays free with nothing booked.
         // Table 2: free, but booked inside the buffer - the overlay should show it.
-        var soonStart = Now.AddMinutes(10);
+        var soonStart = Now.AddMinutes(4);
         await TestBranchBuilder.AddConfirmedReservationAsync(db, branch, branch.TableIds[1], soonStart);
 
         // Table 3: occupied by a walk-in.
@@ -128,7 +131,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
 
-        // Comfortably outside the 15-minute buffer, for now.
+        // Comfortably outside the 5-minute buffer, for now.
         await TestBranchBuilder.AddConfirmedReservationAsync(
             db, branch, branch.FirstTableId, Now.AddMinutes(40));
 
@@ -139,7 +142,7 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         Assert.Equal(DerivedTableState.Free, before!.Tables[0].State);
 
         // No write of any kind - only time passing.
-        clock.Advance(TimeSpan.FromMinutes(30));
+        clock.Advance(TimeSpan.FromMinutes(36));
 
         var after = await floorQuery.GetFloorStateAsync(branch.BranchId, clock.UtcNow);
         Assert.Equal(DerivedTableState.ReservedSoon, after!.Tables[0].State);

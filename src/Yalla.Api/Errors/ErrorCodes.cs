@@ -348,6 +348,25 @@ public static class ErrorCodes
     public const string ReservationApprovalExpired = "reservation-approval-expired";
 
     /// <summary>
+    /// The table's next booking cuts a full sitting short and the booking did not accept the time to
+    /// free the table by - <c>acceptsFreeByUtc</c> missing, or not that instant. HTTP 422, naming the field
+    /// (<c>context.field</c> and <c>errors.acceptsFreeByUtc</c>), with <c>context.requiredFreeByUtc</c>,
+    /// <c>context.requiredFreeByLocal</c> (<c>HH:mm</c>), <c>context.nextBookingStartUtc</c>,
+    /// <c>context.tableId</c> and <c>context.tableLabel</c>. Ask "Will you free the table by 21:25?" and send
+    /// again with <c>acceptsFreeByUtc</c> = <c>requiredFreeByUtc</c>. Minted by <c>FreeByNotAcceptedException</c>.
+    /// </summary>
+    public const string ReservationFreeByRequired = "reservation-free-by-required";
+
+    /// <summary>
+    /// The earlier guest answered a request for their table that no longer waits: answered the other
+    /// way, past its deadline, or withdrawn because one of the bookings moved or ended. HTTP 409, with
+    /// <c>context.reservationId</c>, <c>context.requestId</c>, <c>context.status</c> (the
+    /// <c>TableShareRequestStatus</c>) and <c>context.expiresAtUtc</c>. Drop the card; the booking is
+    /// unchanged. Minted by <c>TableRequestNotPendingException</c>.
+    /// </summary>
+    public const string TableRequestNotPending = "table-request-not-pending";
+
+    /// <summary>
     /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
     /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
     /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
@@ -434,6 +453,8 @@ public static class ErrorCodes
         BookingsNotAccepted => "Bookings not accepted",
         ReservationNotChangeable => "Booking can no longer be changed",
         ReservationApprovalExpired => "Too late to answer this booking",
+        ReservationFreeByRequired => "Free the table by the time required",
+        TableRequestNotPending => "This request no longer needs an answer",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",

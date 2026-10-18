@@ -186,7 +186,10 @@ public sealed record TableAvailability
     /// <remarks>
     /// Distinct per rule so the app can say "seats 4" or "already booked" rather than greying the
     /// table out with no explanation - which is the difference between a diner picking another
-    /// table and a diner leaving.
+    /// table and a diner leaving. The table's evening has four of its own: <c>TableAlreadyBooked</c>
+    /// (8, an interval clash), <c>TableJustBooked</c> (11, its previous booking started under ninety
+    /// minutes before), <c>NextBookingTooSoon</c> (12, its next one starts under forty-five minutes
+    /// after) and <c>EarlierGuestBeingAsked</c> (13, somebody else is already asking the guest before).
     /// </remarks>
     public ReservationRejectionReason? UnavailableReason { get; init; }
 
@@ -201,6 +204,25 @@ public sealed record TableAvailability
     /// only known once they book - the booking carries it in <c>awaitingApprovalBecause</c>.
     /// </remarks>
     public required bool RequiresApproval { get; init; }
+
+    /// <summary>
+    /// True when the table can be had only once the guest with it before agrees to leave in time: its
+    /// previous booking started less than three hours before (and at least ninety minutes - sooner is
+    /// refused, <c>TableJustBooked</c>). Available, labelled "the guest before you will be asked"; a
+    /// booking lands <c>PendingApproval</c> - <c>EarlierGuestConsent</c> on a later day, the floor's
+    /// short-notice decision tonight - so <see cref="RequiresApproval"/> is true too.
+    /// </summary>
+    public bool IsRequestable { get; init; }
+
+    /// <summary>
+    /// The time a party booking this table now must have left by - the next booking's start less the
+    /// clearing time - when a full sitting would run into it; absent otherwise. The diner accepts it
+    /// before booking, by sending it as <c>acceptsFreeByUtc</c>.
+    /// </summary>
+    public DateTime? MustFreeByUtc { get; init; }
+
+    /// <summary><see cref="MustFreeByUtc"/> on the branch's wall clock - "will you free the table by 21:25?".</summary>
+    public TimeOnly? MustFreeByLocal { get; init; }
 
     /// <summary>Start of the window on offer. The requested slot, when the table is available.</summary>
     /// <summary>
