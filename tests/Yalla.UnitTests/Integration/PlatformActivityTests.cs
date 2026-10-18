@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Platform;
 using Yalla.Application.Reviews;
 using Yalla.Application.Staff;
+using Yalla.Domain;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -183,7 +184,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task The_feed_is_newest_first_limited_and_leaves_out_rows_no_staff_member_wrote()
+    public async Task The_feed_is_newest_first_limited_and_leaves_out_rows_no_staff_member_wrote_and_failed_password_changes()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -215,6 +216,14 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         await db.SaveChangesAsync();
         clock.Advance(TimeSpan.FromSeconds(1));
 
+        // A wrong current password is written by the admin, but it is the lockout's counter, not a change.
+        await Assert.ThrowsAsync<FieldValidationException>(
+            () => fixture.CreatePlatformAdminAccountService(db, clock, actor)
+                .ChangePasswordAsync(new ChangePlatformAdminPasswordCommand("not-the-password-at-all", "a-new-password-long-enough")));
+        Assert.True(await db.PlatformAuditLogs.AnyAsync(
+            l => l.ActorStaffMemberId == admin.StaffMemberId && l.Action == "admin.password-change-failed" && l.ActorRole != null));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
         await platform.SuspendVenueAsync(branch.VenueId);
 
         var feed = await query.GetActivityAsync(new ActivityQuery(Limit: 3));
@@ -222,6 +231,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         Assert.Equal(3, feed.Items.Count);
         Assert.Equal(["venue.suspend", "venue.reactivate", "venue.suspend"], feed.Items.Select(i => i.Action));
         Assert.DoesNotContain(feed.Items, i => i.Action == "diner.account-deleted");
+        Assert.DoesNotContain(feed.Items, i => i.Action == "admin.password-change-failed");
         Assert.True(feed.Items[0].AtUtc > feed.Items[1].AtUtc);
 
         var top = feed.Items[0];

@@ -111,7 +111,8 @@ public class ReservationFloorEndpointTests(SqlServerFixture fixture)
         // Now one that is genuinely waiting: the branch stops auto-confirming.
         await StopAutoConfirmingAsync(factory, world);
 
-        var pending = await BookAsync(factory, world, tableIndex: 1);
+        // Another diner's: the first already holds a table then, and one diner holds one at a time.
+        var pending = await BookAsync(factory, world, tableIndex: 1, dinerToken: await SignInDinerAsync(factory));
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
@@ -228,9 +229,9 @@ public class ReservationFloorEndpointTests(SqlServerFixture fixture)
     }
 
     /// <summary>Books a table as the world's diner and returns the booking's id.</summary>
-    private async Task<Guid> BookAsync(YallaApiFactory factory, World world, int tableIndex = 0)
+    private async Task<Guid> BookAsync(YallaApiFactory factory, World world, int tableIndex = 0, string? dinerToken = null)
     {
-        using var diner = factory.CreateClientWithToken(world.DinerToken);
+        using var diner = factory.CreateClientWithToken(dinerToken ?? world.DinerToken);
 
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
         var localNow = TimeZoneInfo.ConvertTimeFromUtc(

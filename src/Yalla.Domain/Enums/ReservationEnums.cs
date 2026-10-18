@@ -86,8 +86,9 @@ public enum ApprovalTrigger
     /// The table has a booking less than three hours before this one - somebody who may still be
     /// sitting there - so whoever has it first is asked whether they will have left in time: the
     /// earlier guest in the app, or the floor when that guest booked on the web or has no phone to push
-    /// to. Two hours to answer, never past the earlier booking's start. See <c>TableSequencing</c> and
-    /// <c>TableShareRequest</c>.
+    /// to. Two hours to answer either way, never past the earlier booking's start; unanswered, it is
+    /// declined - <c>EarlierGuestNoAnswer</c> in the app, <c>NoAnswer</c> by the floor. See
+    /// <c>TableSequencing</c> and <c>TableShareRequest</c>.
     /// </summary>
     EarlierGuestConsent = 5,
 }
@@ -104,7 +105,10 @@ public enum DeclineReason
     /// <summary>A member of staff declined it.</summary>
     StaffDeclined = 1,
 
-    /// <summary>Nobody at the venue answered within the fifteen-minute window, so it was declined for them.</summary>
+    /// <summary>
+    /// Nobody at the venue answered in time, so it was declined for them: the fifteen minutes at short
+    /// notice, or the two hours of a booking the floor was to decide after calling the guest before it.
+    /// </summary>
     NoAnswer = 2,
 
     /// <summary>The guest with the table before this booking said they would not have left in time.</summary>

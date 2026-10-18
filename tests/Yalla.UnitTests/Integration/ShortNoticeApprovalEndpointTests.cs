@@ -123,15 +123,18 @@ public sealed class ShortNoticeApprovalEndpointTests(SqlServerFixture fixture)
             otherVenue = await AuthTestData.CreateBranchAsync(db);
         }
 
+        // Three diners, one per table at 20:00: one diner holds one table at a branch at a time.
         using var diner = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
+        using var second = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
+        using var third = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
         using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
         using var outsider = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, otherVenue));
 
         var (_, date) = MoveToNoonInTwoDays(factory);
 
         var toApprove = await BookAsync(diner, branch, date, "20:00", tableId: branch.TableIds[0]);
-        var toDecline = await BookAsync(diner, branch, date, "20:00", tableId: branch.TableIds[1]);
-        var tooLate = await BookAsync(diner, branch, date, "20:00", tableId: branch.TableIds[2]);
+        var toDecline = await BookAsync(second, branch, date, "20:00", tableId: branch.TableIds[1]);
+        var tooLate = await BookAsync(third, branch, date, "20:00", tableId: branch.TableIds[2]);
 
         // Another venue's waiter guessing the id.
         Assert.Equal(

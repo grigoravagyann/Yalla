@@ -35,7 +35,7 @@ namespace Yalla.Domain.Occupancy;
 /// </remarks>
 public sealed class TableShareRequest : Entity
 {
-    /// <summary>How long the earlier guest has to answer, at most: two hours.</summary>
+    /// <summary>How long the earlier guest - or the floor, calling them - has to answer, at most: two hours.</summary>
     public const int AnswerWindowMinutes = 120;
 
     /// <summary>The booking that has the table first, whose guest is asked.</summary>
@@ -59,11 +59,11 @@ public sealed class TableShareRequest : Entity
     public bool AsksEarlierGuest { get; private set; }
 
     /// <summary>
-    /// Until when the question can be answered. Asked in the app: two hours from the request, never past
-    /// the earlier booking's start - the same instant as the later booking's <c>ApprovalExpiresAtUtc</c>,
-    /// past which the sweep declines it. Asked by the floor: tonight, the short-notice fifteen minutes;
-    /// another day, the later booking's start - the floor decides it as it decides any booking waiting
-    /// for approval, with no clock running.
+    /// Until when the question can be answered - always the same instant as the later booking's
+    /// <c>ApprovalExpiresAtUtc</c>, past which the sweep declines it. Asked in the app, or by the floor
+    /// another day: two hours from the request, never past the earlier booking's start nor the later
+    /// one's. Asked by the floor tonight: the short-notice fifteen minutes. (Requests from before the floor's
+    /// had a clock ran to the later booking's start.)
     /// </summary>
     public DateTime ExpiresAtUtc { get; private set; }
 
@@ -142,7 +142,8 @@ public sealed class TableShareRequest : Entity
     /// <summary>
     /// The later booking moved and still asks the same guest, the same way: the same question at its new
     /// time, without asking again - in the app under the same deadline or a sooner one, never a later
-    /// one; by the floor until the new start, with the reason it would wait for anyway as it now is.
+    /// one; by the floor under the deadline the moved booking now has (which the caller never makes later
+    /// than it was), with the reason it would wait for anyway as it now is.
     /// </summary>
     /// <exception cref="DomainStateException">The request was already answered or withdrawn.</exception>
     public void Retime(DateTime requestedStartUtc, DateTime freeByUtc, DateTime expiresAtUtc, ApprovalTrigger? fallbackTrigger)

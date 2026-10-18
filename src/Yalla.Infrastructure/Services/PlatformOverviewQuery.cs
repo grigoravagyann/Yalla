@@ -7,6 +7,7 @@ using Yalla.Application.Platform;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
+using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -225,8 +226,12 @@ internal sealed class PlatformOverviewQuery(
         }
 
         // Rows with no staff member behind them - the diner deleting their own account - name nobody
-        // and are about nobody the console shows; they stay in the log and out of the feed.
-        var logs = db.PlatformAuditLogs.AsNoTracking().Where(l => l.ActorRole != null);
+        // and are about nobody the console shows; they stay in the log and out of the feed. So do the
+        // wrong current passwords on the admin's own account: they are the lockout's counter (the log is
+        // where it counts them), a security record, not a change anybody made.
+        var logs = db.PlatformAuditLogs
+            .AsNoTracking()
+            .Where(l => l.ActorRole != null && l.Action != PlatformAdminAccountService.PasswordChangeFailedAuditAction);
 
         if (query.VenueId is { } venueId)
         {

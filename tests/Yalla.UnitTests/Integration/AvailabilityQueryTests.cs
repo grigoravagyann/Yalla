@@ -359,12 +359,13 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 8);
-        var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
-        // Bookings on half the tables, so an N+1 has something to be tempted by.
+        // Bookings on half the tables, so an N+1 has something to be tempted by - each its own diner's,
+        // since one diner holds one table at a branch at a time.
         foreach (var tableId in branch.TableIds.Take(4))
         {
-            await booker.CreateAsync(Booking(branch, tableId, new TimeOnly(21, 0)));
+            await fixture.CreateReservationService(db, clock, TestActor.Diner())
+                .CreateAsync(Booking(branch, tableId, new TimeOnly(21, 0)));
         }
 
         var counter = new CommandCounter();
@@ -440,7 +441,8 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
 
         var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
         await booker.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
-        await booker.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 0)));
+        await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 0)));
         await booker.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(13, 0)) with { LocalDate = new DateOnly(2026, 9, 10) });
 
         await using var readDb = fixture.CreateContext(clock);
@@ -612,7 +614,8 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var mine = await booker.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
-        await booker.CreateAsync(Booking(branch, branch.TableIds[1], SixPm));
+        await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], SixPm));
 
         await using var readDb = fixture.CreateContext(clock);
         var query = fixture.CreateAvailabilityQuery(readDb, clock);
@@ -701,11 +704,12 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 8);
-        var booker = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
+        // Each its own diner's: one diner holds one table at a branch at a time.
         foreach (var tableId in branch.TableIds.Take(4))
         {
-            await booker.CreateAsync(Booking(branch, tableId, new TimeOnly(21, 0)));
+            await fixture.CreateReservationService(db, clock, TestActor.Diner())
+                .CreateAsync(Booking(branch, tableId, new TimeOnly(21, 0)));
         }
 
         var counter = new CommandCounter();

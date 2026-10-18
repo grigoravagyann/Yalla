@@ -29,8 +29,10 @@ public sealed record AwaitingApproval
     public required ReservationView Reservation { get; init; }
 
     /// <summary>
-    /// When the chance to answer runs out - null for a booking with no deadline, which waits for
-    /// the venue as long as it takes (a large party next week, a branch that approves every booking).
+    /// When the chance to answer runs out - fifteen minutes at short notice, two hours for a booking
+    /// waiting on the guest before it (<see cref="Trigger"/> 5) - or null for a booking with no deadline,
+    /// which waits for the venue as long as it takes (a large party next week, a branch that approves
+    /// every booking).
     /// </summary>
     public DateTime? ApprovalExpiresAtUtc { get; init; }
 

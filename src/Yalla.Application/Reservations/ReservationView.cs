@@ -138,16 +138,33 @@ public sealed record ReservationView
     public ApprovalTrigger? AwaitingApprovalBecause { get; init; }
 
     /// <summary>
-    /// When the venue's chance to answer runs out, for a booking waiting on a short-notice decision;
-    /// null for every other booking, and once it is decided.
+    /// When the chance to answer runs out, for a booking waiting on a short-notice decision or on the
+    /// guest before it on the table; null for every other booking, and once it is decided.
     /// </summary>
     /// <remarks>
-    /// Fifteen minutes from the request, or the start if that is sooner. Past it nobody can approve or
-    /// decline the booking - both answer <c>409 reservation-approval-expired</c> - and the server
-    /// declines it within moments, with <see cref="DeclinedBecause"/> <c>NoAnswer</c> and an apology
-    /// to the diner. Count down to this, never to a client-side fifteen minutes.
+    /// At short notice, fifteen minutes from the request. Waiting on the guest before
+    /// (<see cref="AwaitingApprovalBecause"/> 5), two hours, never past that guest's start - whether they
+    /// answer in the app (<see cref="AwaitsEarlierGuestAnswer"/>) or the floor calls them. Never past the
+    /// booking's own start. Past it nobody can approve or decline the booking - both answer
+    /// <c>409 reservation-approval-expired</c> - and the server declines it within moments, with
+    /// <see cref="DeclinedBecause"/> <c>NoAnswer</c> (the venue did not answer) or
+    /// <c>EarlierGuestNoAnswer</c> (the guest before did not, in the app) and an apology to the diner.
+    /// Count down to this, never to a client-side clock.
     /// </remarks>
     public DateTime? ApprovalExpiresAtUtc { get; init; }
+
+    /// <summary>
+    /// True while the booking waits on the guest before it on the table to answer in the app - "will you
+    /// have left by 19:40?" - and false otherwise, the floor's own questions included.
+    /// </summary>
+    /// <remarks>
+    /// Both kinds of wait for the guest before (<see cref="AwaitingApprovalBecause"/> 5
+    /// <c>EarlierGuestConsent</c>) carry a two-hour <see cref="ApprovalExpiresAtUtc"/>, so this is what tells
+    /// them apart: while it is true the answer is that guest's alone, and the floor's approve and reject are
+    /// <c>409 reservation-awaiting-earlier-guest</c> - show the countdown, not the buttons. False, the floor
+    /// decides it as any booking waiting for it, calling the guest before.
+    /// </remarks>
+    public required bool AwaitsEarlierGuestAnswer { get; init; }
 
     /// <summary>
     /// Why a booking that was waiting was declined: a member of staff said no (1), nobody at the venue

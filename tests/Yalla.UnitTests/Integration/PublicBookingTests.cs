@@ -251,7 +251,10 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         await MarkPolicySavedAsync(factory, world);
 
-        var fromAppNow = await diner.PostAsJsonAsync(
+        // Another diner: the first already holds a table then, and one diner holds one at a time.
+        using var another = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
+        var fromAppNow = await another.PostAsJsonAsync(
             "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
 
         Assert.Equal(HttpStatusCode.Created, fromAppNow.StatusCode);

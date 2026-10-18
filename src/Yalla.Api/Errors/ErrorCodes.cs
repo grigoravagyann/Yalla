@@ -375,6 +375,15 @@ public static class ErrorCodes
     public const string ReservationAwaitingEarlierGuest = "reservation-awaiting-earlier-guest";
 
     /// <summary>
+    /// A signed-in diner booking, or moving a booking to, a time whose sitting overlaps another of their
+    /// own live bookings (pending, confirmed or seated) at the same branch. HTTP 409, with
+    /// <c>context.reservationId</c>, <c>context.code</c> (its door code), <c>context.localStartTime</c>
+    /// (<c>"19:30:00"</c>) and <c>context.tableLabel</c> - the booking already held - so the client can say
+    /// "You already have a booking at 19:30 (table 2)". Minted by <c>ReservationOverlapsOwnException</c>.
+    /// </summary>
+    public const string ReservationOverlapsOwn = "reservation-overlaps-own";
+
+    /// <summary>
     /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
     /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
     /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
@@ -464,6 +473,7 @@ public static class ErrorCodes
         ReservationFreeByRequired => "Free the table by the time required",
         TableRequestNotPending => "This request no longer needs an answer",
         ReservationAwaitingEarlierGuest => "Waiting for the guest before to answer",
+        ReservationOverlapsOwn => "You already have a booking then",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",

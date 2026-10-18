@@ -59,10 +59,13 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
             HttpStatusCode.Created,
             (await diner.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[0], ReservationChannel.Web))).StatusCode);
 
-        // A client that does not say where it booked from is not the app, and is not gated.
+        // A client that does not say where it booked from is not the app, and is not gated. (Another
+        // diner each time from here: one diner holds one table at a branch at a time.)
+        using var second = factory.CreateClientWithToken((await ReviewIntegrityTests.SignInDinerAsync(factory)).AccessToken);
+
         Assert.Equal(
             HttpStatusCode.Created,
-            (await diner.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[1], ReservationChannel.Unknown))).StatusCode);
+            (await second.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[1], ReservationChannel.Unknown))).StatusCode);
 
         // Somebody saves the policy.
         await using (var db = fixture.CreateContext(factory.Clock))
@@ -74,7 +77,9 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
         Assert.True(saved.GetProperty("acceptsAppBookings").GetBoolean());
         Assert.True((await anyone.GetFromJsonAsync<JsonElement>(pageUrl)).GetProperty("acceptsAppBookings").GetBoolean());
 
-        var booked = await diner.PostAsJsonAsync(
+        using var third = factory.CreateClientWithToken((await ReviewIntegrityTests.SignInDinerAsync(factory)).AccessToken);
+
+        var booked = await third.PostAsJsonAsync(
             "/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[2], ReservationChannel.App));
 
         Assert.Equal(HttpStatusCode.Created, booked.StatusCode);

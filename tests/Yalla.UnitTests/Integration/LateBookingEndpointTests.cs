@@ -140,10 +140,13 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
         using var waiter = factory.CreateClientWithToken(
             await StaffAuthTests.SignInWaiterAsync(factory, branch));
 
-        // One booking per table, so the two releases are not competing for the same hold.
+        // One booking per table, so the two releases are not competing for the same hold - and per
+        // diner, since one diner holds one table at a branch at a time.
+        using var another = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
         var throughNoShow = await BookAsync(diner, factory, branch, branch.TableIds[0]);
         var throughRelease = await BookAsync(
-            diner, factory, branch, branch.TableIds[1], time: new TimeOnly(19, 0));
+            another, factory, branch, branch.TableIds[1], time: new TimeOnly(19, 0));
 
         await HoldTableAsync(waiter, branch, branch.TableIds[0]);
         await HoldTableAsync(waiter, branch, branch.TableIds[1]);

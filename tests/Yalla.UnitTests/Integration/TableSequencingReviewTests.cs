@@ -213,11 +213,13 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
         Assert.Equal(ReservationStatus.Confirmed, (await StoredAsync(clock, gors.Id)).Status);
         Assert.Equal(TableShareRequestStatus.Withdrawn, (await RequestStatusAsync(clock, gors.Id)).Status);
 
-        // Table 2: the same, but she moves only to 17:30 - two and a half hours before: still asked.
-        var hers = await BookAsync(clock, anna, branch, new TimeOnly(18, 0), tableId: branch.TableIds[1]);
+        // Table 2: the same, but Mari moves only to 17:30 - two and a half hours before: still asked. (Mari,
+        // not Anna: 17:30 would run into Anna's own 16:30, and one diner holds one table at a time.)
+        var mari = await DinerWithDeviceAsync(clock);
+        var hers = await BookAsync(clock, mari, branch, new TimeOnly(18, 0), tableId: branch.TableIds[1]);
         var his = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(20, 0), tableId: branch.TableIds[1]);
 
-        await MoveAsync(clock, anna, hers, new TimeOnly(17, 30));
+        await MoveAsync(clock, mari, hers, new TimeOnly(17, 30));
 
         Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(clock, his.Id)).Status);
         Assert.Equal(TableShareRequestStatus.Pending, (await RequestStatusAsync(clock, his.Id)).Status);
@@ -259,7 +261,7 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
     // ---------------------------------------------------------------- 6 and e. the floor's questions
 
     [SkippableFact]
-    public async Task A_booking_the_floor_decides_has_no_clock_and_is_confirmed_when_the_web_guest_before_cancels()
+    public async Task A_booking_the_floor_decides_has_two_hours_and_is_confirmed_when_the_web_guest_before_cancels_within_them()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -269,11 +271,12 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
         var earlier = await BookAsync(clock, anna, branch, new TimeOnly(18, 0), channel: ReservationChannel.Web);
         var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 45));
 
-        // The floor's to decide, as any booking waiting for the floor: no two-hour clock.
+        // The floor's to decide, with the two hours the guest would have had in the app - not for days.
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, later.AwaitingApprovalBecause);
-        Assert.Null(later.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddHours(2), later.ApprovalExpiresAtUtc);
+        Assert.False(later.AwaitsEarlierGuestAnswer);
 
-        clock.Advance(TimeSpan.FromHours(3));
+        clock.Advance(TimeSpan.FromHours(1));
         await SweepAsync(clock);
         Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(clock, later.Id)).Status);
 
@@ -283,7 +286,42 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
             await fixture.CreateReservationService(db, clock, anna).CancelAsync(new CancelReservationCommand(earlier.Id));
         }
 
-        Assert.Equal(ReservationStatus.Confirmed, (await StoredAsync(clock, later.Id)).Status);
+        var confirmed = await StoredAsync(clock, later.Id);
+        Assert.Equal(ReservationStatus.Confirmed, confirmed.Status);
+        Assert.Null(confirmed.ApprovalExpiresAtUtc);
+    }
+
+    [SkippableFact]
+    public async Task Moving_a_booking_the_floor_decides_never_restarts_its_two_hours()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        var branch = await BranchAsync(clock);
+        var earlier = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(18, 0));
+        var gor = TestActor.Diner();
+        var later = await BookAsync(clock, gor, branch, new TimeOnly(19, 30));
+
+        Assert.Equal(Now.AddHours(2), later.ApprovalExpiresAtUtc);
+
+        foreach (var (minutes, time) in new[] { (20, new TimeOnly(19, 45)), (50, new TimeOnly(20, 0)) })
+        {
+            clock.UtcNow = Now.AddMinutes(minutes);
+            var moved = await MoveAsync(clock, gor, later, time);
+
+            Assert.Equal(ApprovalTrigger.EarlierGuestConsent, moved.AwaitingApprovalBecause);
+            Assert.Equal(Now.AddHours(2), moved.ApprovalExpiresAtUtc);
+        }
+
+        // One question, retimed, whose deadline is the booking's.
+        var request = await RequestStatusAsync(clock, later.Id);
+        Assert.Equal(earlier.Id, request.EarlierReservationId);
+        Assert.Equal(TableShareRequestStatus.Pending, request.Status);
+        Assert.Equal(Now.AddHours(2), request.ExpiresAtUtc);
+        Assert.Equal(ThursdayAt(20, 0), request.RequestedStartUtc);
+
+        await using var db = fixture.CreateContext(clock);
+        Assert.Equal(1, await db.TableShareRequests.CountAsync(r => r.LaterReservationId == later.Id));
     }
 
     [SkippableFact]
@@ -300,7 +338,7 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
         var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 45));
 
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, later.AwaitingApprovalBecause);
-        Assert.Null(later.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddHours(2), later.ApprovalExpiresAtUtc);
 
         await using (var db = fixture.CreateContext(clock))
         {
@@ -310,6 +348,8 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
         var stillWaiting = await StoredAsync(clock, later.Id);
         Assert.Equal(ReservationStatus.PendingApproval, stillWaiting.Status);
         Assert.Equal(ApprovalTrigger.BranchApprovesEveryBooking, stillWaiting.ApprovalTrigger);
+
+        // The two hours were the question's; waiting for a branch that approves every booking has no clock.
         Assert.Null(stillWaiting.ApprovalExpiresAtUtc);
     }
 

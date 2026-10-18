@@ -105,8 +105,10 @@ public sealed class Reservation : Entity
     public ApprovalTrigger? ApprovalTrigger { get; private set; }
 
     /// <summary>
-    /// When the venue's chance to answer this booking runs out - see <see cref="ShortNoticeRule"/> -
-    /// or null for a booking with no deadline and for every booking that is no longer waiting.
+    /// When the chance to answer this booking runs out - fifteen minutes at short notice (see
+    /// <see cref="ShortNoticeRule"/>), two hours for a wait on the guest before it on the table, asked in
+    /// the app or by the floor (see <see cref="TableShareRequest"/>) - or null for a booking with no
+    /// deadline and for every booking that is no longer waiting.
     /// </summary>
     /// <remarks>
     /// Stored, so the sweep that declines lapsed requests reads one indexed column rather than

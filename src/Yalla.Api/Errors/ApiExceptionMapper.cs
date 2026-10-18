@@ -641,6 +641,21 @@ internal static class ApiExceptionMapper
                 ["expiresAtUtc"] = e.ExpiresAtUtc,
             }),
 
+        // A diner's second table at the same branch while their first booking runs. Its own code so the
+        // app can name the booking they already have. Must stay ABOVE DomainStateException.
+        ReservationOverlapsOwnException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationOverlapsOwn,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["code"] = e.Code,
+                ["localStartTime"] = e.LocalStartTime,
+                ["tableLabel"] = e.TableLabel,
+            }),
+
         // An answer to a request for a table that no longer waits. Its own code so the app drops the
         // card. Must stay ABOVE DomainStateException, which it derives from.
         TableRequestNotPendingException e => new MappedError(

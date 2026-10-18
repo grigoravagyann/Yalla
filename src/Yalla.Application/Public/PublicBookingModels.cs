@@ -61,8 +61,15 @@ namespace Yalla.Application.Public;
 /// table label, because "table 4" alone does not tell somebody arriving which room to walk into.
 /// </param>
 /// <param name="ApprovalExpiresAtUtc">
-/// For a booking waiting on a short-notice decision, when the venue's chance to answer runs out - the
-/// page counts down to it and reads the link again until the booking is decided. Null otherwise.
+/// For a booking waiting on a short-notice decision or on the guest before it on the table, when the
+/// chance to answer runs out - the page counts down to it and reads the link again until the booking is
+/// decided. Null otherwise.
+/// </param>
+/// <param name="AwaitsEarlierGuestAnswer">
+/// True while the booking waits on the guest before it on the table to answer in the app - only they can,
+/// and the venue cannot decide it meanwhile - and false otherwise, a wait the venue decides after calling
+/// them included. Both count down to <paramref name="ApprovalExpiresAtUtc"/>; this says whose answer the
+/// page is waiting for.
 /// </param>
 /// <param name="DeclinedBecause">
 /// Why a booking that was waiting was declined - the venue said no, or nobody answered in time - so
@@ -82,6 +89,7 @@ public sealed record PublicBookingView(
     DateTime CancellationDeadlineUtc,
     bool CanCancel,
     bool CancelledAfterDeadline,
+    bool AwaitsEarlierGuestAnswer,
     string? Note = null,
     string? RoomName = null,
     DateTime? ApprovalExpiresAtUtc = null,

@@ -301,12 +301,13 @@ internal sealed class ReservationService(
     /// request the floor answers is opened beside it, so approving it holds the guest before to the time.
     /// </para>
     /// <para>
-    /// <b>Another day</b> the booking waits <c>EarlierGuestConsent</c>. The earlier guest is asked in the
-    /// app - two hours at most, never past their own start, then declined for no answer - when they booked
-    /// from it, have a phone to push to, and nothing else about this booking needs a human. Otherwise the
-    /// floor asks them by telephone from the awaiting list, and the booking waits as any booking the floor
-    /// decides waits - with no clock. Why it went to the floor is stored on the question
-    /// (<c>FallbackTrigger</c>), so it is decided again without it when the earlier guest gets out of the way.
+    /// <b>Another day</b> the booking waits <c>EarlierGuestConsent</c>, two hours at most, never past the
+    /// earlier booking's start nor its own. The earlier guest is asked in the app when they booked from it,
+    /// have a phone to push to, and nothing else about this booking needs a human - unanswered, it is
+    /// declined <c>EarlierGuestNoAnswer</c>. Otherwise the floor asks them by telephone from the awaiting
+    /// list, with the same two hours - unanswered, it is declined <c>NoAnswer</c>, the venue's silence. Why
+    /// it went to the floor is stored on the question (<c>FallbackTrigger</c>), so it is decided again
+    /// without it when the earlier guest gets out of the way.
     /// </para>
     /// </remarks>
     private async Task<(StatusDecision Status, ShareAsk? Ask)> DecideWithTheTableAsync(
@@ -341,20 +342,17 @@ internal sealed class ReservationService(
                     && earlier.StartUtc > nowUtc
                     && await TableShares.CanAskInAppAsync(db, earlier.ReservationId, cancellationToken);
 
-        if (inApp)
-        {
-            var expiresAtUtc = TableSequencing.AnswerDeadline(
-                nowUtc, TableShareRequest.AnswerWindowMinutes, earlier.StartUtc, startUtc);
+        // The same two hours whoever answers - never past the earlier booking's start, nor this one's.
+        // Asked by the floor, a wait with no clock would leave the later guest waiting for days on a
+        // venue that never gets round to the call; past it the sweep declines it for the venue not
+        // answering (NoAnswer), as it declines tonight's.
+        var expiresAtUtc = TableSequencing.AnswerDeadline(
+            nowUtc, TableShareRequest.AnswerWindowMinutes, earlier.StartUtc, startUtc);
 
-            return (
-                new StatusDecision(ReservationStatus.PendingApproval, ApprovalTrigger.EarlierGuestConsent, expiresAtUtc),
-                new ShareAsk(earlier.ReservationId, freeBy, expiresAtUtc, AsksEarlierGuest: true, FallbackTrigger: null));
-        }
-
-        // The floor's: no clock. The question is open until the floor answers or the booking starts.
         return (
-            new StatusDecision(ReservationStatus.PendingApproval, ApprovalTrigger.EarlierGuestConsent, null),
-            new ShareAsk(earlier.ReservationId, freeBy, startUtc, AsksEarlierGuest: false, otherwise));
+            new StatusDecision(ReservationStatus.PendingApproval, ApprovalTrigger.EarlierGuestConsent, expiresAtUtc),
+            new ShareAsk(
+                earlier.ReservationId, freeBy, expiresAtUtc, AsksEarlierGuest: inApp, FallbackTrigger: inApp ? null : otherwise));
     }
 
     /// <summary>The refusal for a time to leave by the booking did not accept, in the branch's wall clock.</summary>
@@ -504,11 +502,9 @@ internal sealed class ReservationService(
                     decision = decision with { ApprovalExpiresAtUtc = had };
                 }
 
-                // A question with a clock - in the app, or the floor's tonight - runs out when the
-                // booking's wait does.
-                if (ask is { } timed
-                    && (timed.AsksEarlierGuest || timed.FallbackTrigger == ApprovalTrigger.ShortNotice)
-                    && decision.ApprovalExpiresAtUtc is { } deadline)
+                // Every question has a clock - in the app, the floor's tonight, the floor's another day -
+                // and it runs out when the booking's wait does.
+                if (ask is { } timed && decision.ApprovalExpiresAtUtc is { } deadline)
                 {
                     ask = timed with { ExpiresAtUtc = deadline };
                 }
@@ -1266,6 +1262,11 @@ internal sealed class ReservationService(
                         ExpiresAtUtc = q.ExpiresAtUtc,
                     })
                     .FirstOrDefault(),
+
+                // And the other side: this booking waiting on the guest before it to answer in the app.
+                AwaitsEarlierGuestAnswer = db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
+                                                                          && q.Status == TableShareRequestStatus.Pending
+                                                                          && q.AsksEarlierGuest),
             })
             .ToListAsync(cancellationToken);
 
@@ -1319,6 +1320,12 @@ internal sealed class ReservationService(
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
+
+                // Beside each row in the same statement, so the console can tell a booking only the guest
+                // before can answer from one the floor decides - both count down two hours.
+                AwaitsEarlierGuestAnswer = db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
+                                                                          && q.Status == TableShareRequestStatus.Pending
+                                                                          && q.AsksEarlierGuest),
             })
             .ToListAsync(cancellationToken);
 
@@ -1330,7 +1337,8 @@ internal sealed class ReservationService(
                 new TableFacts(r.TableLabel, r.RoomId, r.RoomName),
                 policy.CancellationDeadlineMinutes,
                 wasReplay: false,
-                trigger: PendingTriggerFor(r.Reservation, policy)))
+                trigger: PendingTriggerFor(r.Reservation, policy),
+                awaitsEarlierGuestAnswer: r.AwaitsEarlierGuestAnswer))
             .ToList();
     }
 
@@ -1444,7 +1452,11 @@ internal sealed class ReservationService(
                     new TableFacts(row.TableLabel, row.RoomId, row.RoomName),
                     row.Policy.CancellationDeadlineMinutes,
                     wasReplay: false,
-                    trigger: PendingTriggerFor(row.Reservation, row.Policy));
+                    trigger: PendingTriggerFor(row.Reservation, row.Policy),
+
+                    // False for every card: the list leaves out the bookings waiting on the guest
+                    // before them in the app - those are not the floor's to answer.
+                    awaitsEarlierGuestAnswer: false);
 
                 return new AwaitingApproval
                 {
@@ -2524,6 +2536,16 @@ internal sealed class ReservationService(
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
+        // Whether it waits on the guest before it to answer in the app - only a waiting booking can.
+        var awaitsEarlierGuestAnswer = reservation.Status == ReservationStatus.PendingApproval
+                                       && await db.TableShareRequests
+                                           .AsNoTracking()
+                                           .AnyAsync(
+                                               q => q.LaterReservationId == reservation.Id
+                                                    && q.Status == TableShareRequestStatus.Pending
+                                                    && q.AsksEarlierGuest,
+                                               cancellationToken);
+
         return BuildView(
             reservation,
             branch.Name,
@@ -2533,7 +2555,8 @@ internal sealed class ReservationService(
             wasReplay,
             trigger,
             manageToken,
-            incoming);
+            incoming,
+            awaitsEarlierGuestAnswer);
     }
 
     private static ReservationView ToView(MineRow row) =>
@@ -2545,7 +2568,8 @@ internal sealed class ReservationService(
             row.CancellationDeadlineMinutes,
             wasReplay: false,
             trigger: null,
-            incoming: row.Incoming);
+            incoming: row.Incoming,
+            awaitsEarlierGuestAnswer: row.AwaitsEarlierGuestAnswer);
 
     private static ReservationView BuildView(
         Reservation reservation,
@@ -2556,7 +2580,8 @@ internal sealed class ReservationService(
         bool wasReplay,
         ApprovalTrigger? trigger,
         string? manageToken = null,
-        IncomingRow? incoming = null)
+        IncomingRow? incoming = null,
+        bool awaitsEarlierGuestAnswer = false)
     {
         var zone = BranchZone.For(timeZoneId);
 
@@ -2609,6 +2634,9 @@ internal sealed class ReservationService(
                 : null,
             // Only on a booking that ended declined. A confirmed one carrying a reason is one whose last
             // change was declined and that went back to the slot it had - it is not declined.
+            // Only while it waits: a decided booking is waiting on nobody.
+            AwaitsEarlierGuestAnswer = awaitsEarlierGuestAnswer && reservation.Status == ReservationStatus.PendingApproval,
+
             DeclinedBecause = reservation.Status == ReservationStatus.CancelledByVenue
                 ? reservation.DeclineReason
                 : null,
@@ -2707,6 +2735,9 @@ internal sealed class ReservationService(
 
         /// <summary>A later guest's open request for this booking's table, or null.</summary>
         public IncomingRow? Incoming { get; init; }
+
+        /// <summary>Whether this booking waits on the guest before it to answer in the app.</summary>
+        public bool AwaitsEarlierGuestAnswer { get; init; }
     }
 
     /// <summary>A later guest's open request for a booking's table, as the read finds it.</summary>
