@@ -56,20 +56,28 @@ large party next week the venue has not got to), never for one still waiting on 
 ### `reservation.decided`, and the apology
 
 One message for every way a waiting booking is decided. Its data carries `kind: "reservation-decided"`,
-`reservationId`, `approved` and **`expired`** (all strings, `"true"`/`"false"`):
+`reservationId`, `approved`, **`expired`**, **`wasChange`** and **`originalKept`** (all strings,
+`"true"`/`"false"`):
 
-| `approved` | `expired` | What happened | Words (`NotificationText`) |
-|---|---|---|---|
-| `true` | `false` | Staff said yes | `ReservationApproved` - "Booking confirmed - {venue} is expecting you at 20:00." |
-| `false` | `false` | Staff said no | `ReservationRejected` - "{venue} could not take this booking. Try another time." |
-| `false` | `true` | Nobody answered a short-notice booking within 15 minutes | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
+| `approved` | `expired` | `wasChange` | `originalKept` | What happened | Words (`NotificationText`) |
+|---|---|---|---|---|---|
+| `true` | `false` | `false` | `false` | Staff said yes | `ReservationApproved` - "Booking confirmed - {venue} is expecting you at 20:00." |
+| `false` | `false` | `false` | `false` | Staff said no | `ReservationRejected` - "{venue} could not take this booking. Try another time." |
+| `false` | `true` | `false` | `false` | Nobody answered a short-notice booking within 15 minutes | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
+| `false` | either | `true` | `true` | A change of a confirmed booking was declined (or not answered); the booking is back at the slot it had | `ReservationChangeDeclined` - "Change not confirmed - {venue} could not take the change. Your booking at 19:00 stands." (the expired form apologises) |
+| `false` | either | `true` | `false` | The same, but that slot had been taken or was over, so the booking ended | `ReservationChangeDeclinedOriginalGone` - "...and your earlier time has been taken since. Try another time or place." |
+
+A declined change leaves a confirmed booking standing, so it can be declined again later; a second
+`rejected` or `expired` key for the same booking carries its moment after it, like a second approval.
 
 The expired one is an apology, not the venue's "no": the venue did not turn the diner down, it did not
 look in time. It is written by `ApprovalExpirySweep` - a loop of its own (`ApprovalExpiryHostedService`,
 every `ApprovalExpiry:SweepIntervalSeconds`, default 20), not a scheduled outbox message, because the
 staleness rule below would dead-letter a deadline the machine slept through and leave the diner waiting
 for good. See [reservations.md](reservations.md#3d-short-notice-tonight-is-the-floors-to-decide). A
-message written before `expired` existed reads as `false`.
+message written before `expired`, `wasChange` or `originalKept` existed reads as `false`. **No apology is
+written for a request the sweep only reaches after the booking would have started** - it is declined
+quietly; an evening that has gone is not one to send the diner to.
 
 `tab.order-ready` is **off by default**, per branch, on `Branch.NotifyOnOrderReady`. It is noise in a
 cafe where a waiter carries the plate ten feet and genuinely useful in a canteen where the diner
@@ -86,7 +94,10 @@ a diner without push reads. It carries a `kind` and string `params`, never rende
 the words in the diner's language. A reminder's row carries its due time and does not show before then,
 and cancelling a booking deletes it with the unsent message. A `booking-declined` entry carries
 `expired` in its `params` - `"true"` when nobody answered in time, `"false"` when staff said no; one
-written before the key existed has none and was a staff decline. Two entries have no push beside them - a
+written before the key existed has none and was a staff decline. It also carries `wasChange` and
+`originalKept` as the push does, and a declined change adds `requestedDate` and `requestedTime` - the
+slot it asked for; `date` and `time` are the booking as it now stands, which for a kept original is
+that slot. Two entries have no push beside them - a
 booking the venue lets go, and a review moderation takes down - and are written with that change. The
 late nudge and the participant approval write none. Rows older than 90 days are deleted by this loop's
 host, `OutboxHostedService`, about hourly.
@@ -123,6 +134,7 @@ reservation:{reservationId}:late-nudge:{startUtc:yyyyMMddHHmm}    (a moved booki
 reservation:{reservationId}:approved      (or :rejected)
 reservation:{reservationId}:approved:{yyyyMMddHHmmssfff}          (a second approval)
 reservation:{reservationId}:expired       (declined by the sweep: nobody answered in time)
+reservation:{reservationId}:rejected:{yyyyMMddHHmmssfff}          (a second decline of a kept booking; :expired:... likewise)
 participant:{participantId}:approved
 order:{orderId}:ready
 ```
@@ -280,7 +292,7 @@ A Russian-speaking regular at an Armenian venue is written to in Russian, and a 
 languages does not have to pick one on their diners' behalf. Anything unrecognised falls back to
 Armenian.
 
-Every word lives in `NotificationText` — seven messages of a title and a body each, three languages,
+Every word lives in `NotificationText` — nine messages of a title and a body each, three languages,
 in one file, because the translator is a person reading the file and not a tool. They are short on
 purpose: a push is read on a lock screen at a glance and the second sentence is never read at all.
 

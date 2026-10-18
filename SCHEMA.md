@@ -153,7 +153,10 @@ more minutes" being granted indefinitely. `ApprovalTrigger` stores why a booking
 later reads do not re-derive it from a policy that may have changed; `ApprovalExpiresAtUtc` is the
 short-notice answer deadline, cleared the moment the booking stops waiting, behind a filtered index
 the approval sweep reads; `DeclineReason` records whether a decline was a member of staff's or nobody
-answering in time. See `docs/reservations.md` §3d.
+answering in time. The seven `Previous*` columns hold the confirmed slot (table, start, end, local date
+and time, party, confirmation) a booking had before a change sent it back for approval, so declining the
+change can put it back there; they are null whenever no such change is waiting. See
+`docs/reservations.md` §3c and §3d.
 
 ### TableSession
 

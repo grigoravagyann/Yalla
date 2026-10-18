@@ -131,6 +131,60 @@ public static class NotificationText
                   $"Ներողություն, {venue}-ը չհասցրեց հաստատել ամրագրումը։ Փորձեք այլ ժամ կամ այլ վայր։"),
         };
 
+    /// <summary>
+    /// A change of a confirmed booking was declined - by the venue, or for nobody answering in time -
+    /// and the booking stands as it was, at <paramref name="at"/>.
+    /// </summary>
+    /// <remarks>
+    /// The second sentence is the point: the diner asked to move, the move did not happen, and they
+    /// still have the table they had. Without it "not confirmed" reads as the evening being off.
+    /// </remarks>
+    public static (string Title, string Body) ReservationChangeDeclined(
+        string locale, string venue, TimeOnly at, bool expired) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Новое время не подтверждено",
+                     (expired
+                         ? $"Извините, {venue} не успел подтвердить изменение. "
+                         : $"{venue} не смог принять изменение. ")
+                     + $"Ваша бронь на {Time(at)} остаётся в силе."),
+            "en" => ("Change not confirmed",
+                     (expired
+                         ? $"Sorry, {venue} could not confirm the change in time. "
+                         : $"{venue} could not take the change. ")
+                     + $"Your booking at {Time(at)} stands."),
+            _ => ("Նոր ժամը չհաստատվեց",
+                  (expired
+                      ? $"Ներողություն, {venue}-ը չհասցրեց հաստատել փոփոխությունը։ "
+                      : $"{venue}-ը չկարողացավ ընդունել փոփոխությունը։ ")
+                  + $"Ձեր {Time(at)}-ի ամրագրումը մնում է ուժի մեջ։"),
+        };
+
+    /// <summary>
+    /// A change of a confirmed booking was declined, and the slot it had was gone too - taken by
+    /// another diner, or over - so the booking ended with the change.
+    /// </summary>
+    public static (string Title, string Body) ReservationChangeDeclinedOriginalGone(
+        string locale, string venue, bool expired) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронь не подтверждена",
+                     (expired
+                         ? $"Извините, {venue} не успел подтвердить изменение"
+                         : $"{venue} не смог принять изменение")
+                     + ", а прежнее время уже занято. Попробуйте другое время или другое место."),
+            "en" => ("Booking not confirmed",
+                     (expired
+                         ? $"Sorry, {venue} could not confirm the change in time"
+                         : $"{venue} could not take the change")
+                     + ", and your earlier time has been taken since. Try another time or place."),
+            _ => ("Ամրագրումը չհաստատվեց",
+                  (expired
+                      ? $"Ներողություն, {venue}-ը չհասցրեց հաստատել փոփոխությունը"
+                      : $"{venue}-ը չկարողացավ ընդունել փոփոխությունը")
+                  + ", իսկ նախկին ժամն արդեն զբաղված է։ Փորձեք այլ ժամ կամ այլ վայր։"),
+        };
+
     // ---------------------------------------------------------------- the tab
 
     /// <summary>

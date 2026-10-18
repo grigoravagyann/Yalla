@@ -28,7 +28,9 @@ internal sealed record ReservationNotice(
     string ReservationCode,
     int GraceExtensionMinutes = 0,
     bool Approved = false,
-    bool Expired = false);
+    bool Expired = false,
+    bool WasChange = false,
+    bool OriginalKept = false);
 
 internal sealed record TabNotice(Guid TabId, Guid ParticipantId, Guid DinerUserId, string TableLabel);
 
@@ -168,8 +170,15 @@ internal sealed class ReservationLateNudgeHandler(
 /// time and it was declined for them.
 /// </summary>
 /// <remarks>
+/// <para>
 /// <c>expired</c> in the data tells the app which decline it is, so it can apologise rather than say
 /// the venue turned the diner down. A message written before the flag existed reads as not expired.
+/// </para>
+/// <para>
+/// <c>wasChange</c> and <c>originalKept</c> say what a declined <i>change</i> of a confirmed booking
+/// came to: the booking stands at the slot it had - the body names its time - or that slot was gone
+/// too and the booking with it.
+/// </para>
 /// </remarks>
 internal sealed class ReservationDecidedHandler(
     YallaDbContext db,
@@ -185,6 +194,9 @@ internal sealed class ReservationDecidedHandler(
         var (title, body) = notice switch
         {
             { Approved: true } => NotificationText.ReservationApproved(locale, notice.VenueName, notice.LocalStartTime),
+            { WasChange: true, OriginalKept: true } =>
+                NotificationText.ReservationChangeDeclined(locale, notice.VenueName, notice.LocalStartTime, notice.Expired),
+            { WasChange: true } => NotificationText.ReservationChangeDeclinedOriginalGone(locale, notice.VenueName, notice.Expired),
             { Expired: true } => NotificationText.ReservationExpired(locale, notice.VenueName),
             _ => NotificationText.ReservationRejected(locale, notice.VenueName),
         };
@@ -200,6 +212,8 @@ internal sealed class ReservationDecidedHandler(
                     ["reservationId"] = notice.ReservationId.ToString(),
                     ["approved"] = notice.Approved ? "true" : "false",
                     ["expired"] = notice.Expired ? "true" : "false",
+                    ["wasChange"] = notice.WasChange ? "true" : "false",
+                    ["originalKept"] = notice.OriginalKept ? "true" : "false",
                 }),
             cancellationToken);
     }

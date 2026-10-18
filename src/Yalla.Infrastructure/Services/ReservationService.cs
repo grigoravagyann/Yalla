@@ -304,6 +304,11 @@ internal sealed class ReservationService(
         // looking for another table for nothing.
         reservation.RequireChangeableAt(nowUtc);
 
+        // And a short-notice request nobody answered in time is the sweep's to decline, not the diner's
+        // to restart: a move now would hand the floor a fresh fifteen minutes for a question it let
+        // run out. 409 reservation-approval-expired.
+        reservation.RequireAnswerWindowOpenAt(nowUtc);
+
         // Every gate creation applies: a move is a new promise about a slot, so a venue that stopped
         // trading - or stopped taking bookings from where this one came from - does not make it.
         VenueGate.RequireOpenForBusiness(branch);
@@ -351,6 +356,19 @@ internal sealed class ReservationService(
                 ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc)),
                 nowUtc,
                 cancellationToken);
+
+        // A booking already waiting on a short-notice answer keeps its deadline through a move: the
+        // diner moving the request around does not restart the floor's fifteen minutes. Never past the
+        // new start, which may be sooner.
+        if (status.Trigger == ApprovalTrigger.ShortNotice
+            && reservation.Status == ReservationStatus.PendingApproval
+            && reservation.ApprovalExpiresAtUtc is { } runningDeadline)
+        {
+            status = status with
+            {
+                ApprovalExpiresAtUtc = runningDeadline < startUtc ? runningDeadline : startUtc,
+            };
+        }
 
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
@@ -426,6 +444,58 @@ internal sealed class ReservationService(
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
+        // Throws if the booking stopped being changeable since it was read - though a change of state
+        // since then has moved its row version, and the save would refuse it anyway.
+        reservation.Reschedule(
+            table.Id,
+            startUtc,
+            command.LocalDate,
+            command.LocalTime,
+            command.PartySize,
+            branch.ReservationPolicy,
+            status.Status,
+            nowUtc,
+            status.Trigger,
+            status.ApprovalExpiresAtUtc);
+
+        // The account is live: the writer took its lock, inside this transaction, before calling here.
+        await ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
+
+        db.ProcessedCommands.Add(new ProcessedCommand(
+            command.ClientCommandId,
+            RescheduleCommandType,
+            ActorType.Diner,
+            dinerUserId,
+            JsonSerializer.Serialize(
+                new RescheduleRecord(
+                    reservation.Id, reservation.DiningTableId, reservation.StartUtc, reservation.PartySize, reservation.Status),
+                RecordJson),
+            RescheduleStatusCode,
+            nowUtc));
+    }
+
+    /// <summary>
+    /// Replaces a booking's unsent reminder, late nudge and waiting feed entry with ones for the slot
+    /// it now has, in the caller's unit of work - after a move, and after a declined change sent it
+    /// back to the slot it had.
+    /// </summary>
+    /// <remarks>
+    /// The new keys carry the start they are for (<c>reminder:202610171930</c>), because a message
+    /// already sent keeps its row and its key; one whose key was sent already is not written again. A
+    /// web booking's new messages carry the manage link its old ones did - the token's plaintext exists
+    /// only in the create response and the messages written then. The caller is responsible for the
+    /// diner's account being live (its lock, or a booking whose account is gone has no diner and so no
+    /// feed to write).
+    /// </remarks>
+    internal static async Task ReplaceRemindersAsync(
+        YallaDbContext db,
+        IOutbox outbox,
+        Reservation reservation,
+        Branch branch,
+        string tableLabel,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
         var prefix = OutboxMessageTypes.PrefixFor("reservation", reservation.Id);
 
         var messages = await db.OutboxMessages
@@ -443,45 +513,20 @@ internal sealed class ReservationService(
 
         var delivered = messages.Where(m => m.Sent).Select(m => m.IdempotencyKey).ToHashSet(StringComparer.Ordinal);
 
-        // Throws if the booking stopped being changeable since it was read - though a change of state
-        // since then has moved its row version, and the save would refuse it anyway.
-        reservation.Reschedule(
-            table.Id,
-            startUtc,
-            command.LocalDate,
-            command.LocalTime,
-            command.PartySize,
-            branch.ReservationPolicy,
-            status.Status,
-            nowUtc,
-            status.Trigger,
-            status.ApprovalExpiresAtUtc);
-
         await outbox.CancelAsync(prefix, cancellationToken);
         await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
 
-        // The account is live: the writer took its lock, inside this transaction, before calling here.
         EnqueueReminders(
+            db,
+            outbox,
             reservation,
             branch,
-            table.Label,
+            tableLabel,
             manageUrl,
             keyVersion: reservation.StartUtc.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture),
-            writeFeed: true,
+            writeFeed: reservation.DinerUserId is not null,
             delivered,
             nowUtc);
-
-        db.ProcessedCommands.Add(new ProcessedCommand(
-            command.ClientCommandId,
-            RescheduleCommandType,
-            ActorType.Diner,
-            dinerUserId,
-            JsonSerializer.Serialize(
-                new RescheduleRecord(
-                    reservation.Id, reservation.DiningTableId, reservation.StartUtc, reservation.PartySize, reservation.Status),
-                RecordJson),
-            RescheduleStatusCode,
-            nowUtc));
     }
 
     /// <summary>
@@ -1294,44 +1339,37 @@ internal sealed class ReservationService(
         // Both throw ReservationApprovalExpiredException once the answer window has closed: past it
         // the decision is the sweep's, and the diner is told nobody looked rather than that somebody
         // said no a second too late.
-        if (approve)
-        {
-            reservation.Confirm(nowUtc);
-        }
-        else
-        {
-            reservation.Reject(nowUtc, command.Reason);
-        }
-
-        var decidedKey = OutboxMessageTypes.KeyFor("reservation", reservation.Id, approve ? "approved" : "rejected");
-
-        // A booking the diner moved back into the queue is approved a second time, and the first
-        // approval's message keeps its key once sent. The second is named for when it was made, so it
-        // is its own message rather than a collision with the first. A rejection ends the booking, so
-        // there is only ever one.
-        if (approve && await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == decidedKey, cancellationToken))
-        {
-            decidedKey = OutboxMessageTypes.KeyFor(
-                "reservation",
-                reservation.Id,
-                "approved:" + nowUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture));
-        }
-
-        // The decision is worth telling the diner about: they are on a screen that says "waiting".
-        TellDinerDecided(db, outbox, reservation, branch, approve, expired: false, decidedKey, nowUtc);
-
-        if (!approve)
-        {
-            // A rejected booking is not going to happen, so its reminder and nudge must not fire.
-            await outbox.CancelAsync(
-                OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
-
-            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
-        }
-
         try
         {
-            await db.SaveChangesAsync(cancellationToken);
+            if (approve)
+            {
+                reservation.Confirm(nowUtc);
+
+                // A booking the diner moved back into the queue is approved a second time, and the
+                // first approval's message keeps its key once sent - see DecisionKeyAsync.
+                var decidedKey = await DecisionKeyAsync(db, reservation.Id, "approved", nowUtc, cancellationToken);
+
+                // The decision is worth telling the diner about: they are on a screen that says "waiting".
+                TellDinerDecided(db, outbox, reservation, branch, approved: true, expired: false, decidedKey, nowUtc);
+
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                // A no - to the booking, or, for a change of a confirmed one, to the change: the diner
+                // keeps the slot they had when it is still free. Saved inside.
+                await PendingDecline.DeclineAsync(
+                    db,
+                    outbox,
+                    reservations,
+                    reservation,
+                    branch,
+                    DeclineReason.StaffDeclined,
+                    command.Reason,
+                    quietIfAlreadyStarted: false,
+                    nowUtc,
+                    cancellationToken);
+            }
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -1344,7 +1382,8 @@ internal sealed class ReservationService(
                 .Select(r => new { r.Status, r.DeclineReason })
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (current is { Status: ReservationStatus.CancelledByVenue, DeclineReason: DeclineReason.NoAnswer })
+            if (current is { DeclineReason: DeclineReason.NoAnswer }
+                && current.Status != ReservationStatus.PendingApproval)
             {
                 throw new ReservationApprovalExpiredException(
                     reservation.Id,
@@ -1353,18 +1392,48 @@ internal sealed class ReservationService(
                     reservation.StartUtc,
                     approvalExpiresAtUtc: null,
                     $"Booking {reservation.Code} was declined because nobody answered in time, just before this "
-                    + "decision arrived. The diner has been told and can book again.");
+                    + "decision arrived. The diner has been told.");
             }
 
             throw;
         }
 
         logger.LogInformation(
-            "Booking {Code} was {Decision} by staff {StaffId}.",
-            reservation.Code, approve ? "approved" : "rejected", staffId);
+            "Booking {Code} was {Decision} by staff {StaffId}; it is now {Status}.",
+            reservation.Code, approve ? "approved" : "rejected", staffId, reservation.Status);
 
-        return await ToViewAsync(
+        var view = await ToViewAsync(
             reservation, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+
+        // The guest's number is the venue's to call, not the platform's to read - as on the floor's list.
+        return actor.Role == StaffRole.PlatformAdmin ? view with { GuestPhone = string.Empty } : view;
+    }
+
+    /// <summary>
+    /// The idempotency key a decision's push is written under: <c>reservation:{id}:{what}</c>, or - when
+    /// that is taken already - the same with the decision's moment after it.
+    /// </summary>
+    /// <remarks>
+    /// One booking can be decided more than once. A move sends a confirmed booking back for approval,
+    /// so it can be approved twice; and a declined change leaves the booking standing at the slot it
+    /// had, so it can be declined - or run out of time - twice as well. The first message keeps its key
+    /// once sent, so a later one is named for when it was made rather than colliding with it.
+    /// </remarks>
+    internal static async Task<string> DecisionKeyAsync(
+        YallaDbContext db,
+        Guid reservationId,
+        string what,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var key = OutboxMessageTypes.KeyFor("reservation", reservationId, what);
+
+        return await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == key, cancellationToken)
+            ? OutboxMessageTypes.KeyFor(
+                "reservation",
+                reservationId,
+                what + ":" + nowUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture))
+            : key;
     }
 
     /// <summary>
@@ -1383,6 +1452,18 @@ internal sealed class ReservationService(
     /// than a push that could never be addressed and would only be retried into the dead letters.
     /// </para>
     /// </remarks>
+    /// <param name="db">The caller's unit of work, for the feed entry.</param>
+    /// <param name="outbox">The caller's outbox, for the push.</param>
+    /// <param name="reservation">The booking as it now stands.</param>
+    /// <param name="branch">Its branch, with the venue, for the names.</param>
+    /// <param name="approved">Whether it was a yes.</param>
+    /// <param name="expired">Whether it was the clock: nobody answered in time.</param>
+    /// <param name="idempotencyKey">The push's key - see <see cref="DecisionKeyAsync"/>.</param>
+    /// <param name="nowUtc">Now.</param>
+    /// <param name="change">
+    /// For a declined change of a confirmed booking: whether the booking went back to the slot it had,
+    /// and the slot that was asked for. Null for every other decision.
+    /// </param>
     internal static void TellDinerDecided(
         YallaDbContext db,
         IOutbox outbox,
@@ -1391,7 +1472,8 @@ internal sealed class ReservationService(
         bool approved,
         bool expired,
         string idempotencyKey,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        DeclinedChange? change = null)
     {
         if (reservation.DinerUserId is null)
         {
@@ -1414,12 +1496,14 @@ internal sealed class ReservationService(
                 graceExtensionMinutes = 0,
                 approved,
                 expired,
+                wasChange = change is not null,
+                originalKept = change?.OriginalKept ?? false,
             },
             nowUtc,
             idempotencyKey);
 
         // The same fact into the diner's feed, beside its push and in the same save (K12).
-        DinerNotices.BookingDecided(db, reservation, venueName, branch.Name, approved, expired, nowUtc);
+        DinerNotices.BookingDecided(db, reservation, venueName, branch.Name, approved, expired, nowUtc, change);
     }
 
     // ---------------------------------------------------------------- what the diner gets told
@@ -1478,7 +1562,7 @@ internal sealed class ReservationService(
                         && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
 
         EnqueueReminders(
-            reservation, branch, tableLabel, manageUrl, keyVersion: null, writeFeed, NothingDelivered, nowUtc);
+            db, outbox, reservation, branch, tableLabel, manageUrl, keyVersion: null, writeFeed, NothingDelivered, nowUtc);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -1495,6 +1579,8 @@ internal sealed class ReservationService(
     /// Writes the reminder - with its feed entry - and the late nudge for the booking as it now stands,
     /// into the caller's unit of work.
     /// </summary>
+    /// <param name="db">The caller's unit of work, for the feed entry.</param>
+    /// <param name="outbox">The caller's outbox, for the messages.</param>
     /// <param name="reservation">The booking, at its current start.</param>
     /// <param name="branch">Its branch, with the venue, for the names the messages carry.</param>
     /// <param name="tableLabel">The table, as the messages name it.</param>
@@ -1507,7 +1593,9 @@ internal sealed class ReservationService(
     /// <param name="writeFeed">Whether the account is live, under its lock, so the feed entry may be written.</param>
     /// <param name="delivered">Keys already sent: a message under one of them went out and is not written again.</param>
     /// <param name="nowUtc">Now.</param>
-    private void EnqueueReminders(
+    private static void EnqueueReminders(
+        YallaDbContext db,
+        IOutbox outbox,
         Reservation reservation,
         Branch branch,
         string tableLabel,
@@ -1799,8 +1887,8 @@ internal sealed class ReservationService(
     {
         if (actor.Type != ActorType.Staff
             || actor.StaffMemberId is not { } staffId
-            || actor.Role is not (StaffRole.Waiter or StaffRole.Manager or StaffRole.GeneralManager
-                or StaffRole.Owner or StaffRole.PlatformAdmin))
+            || actor.Role is not { } tokenRole
+            || !IsFloorStaff(tokenRole))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
         }
@@ -1814,6 +1902,14 @@ internal sealed class ReservationService(
         if (staff is not { IsActive: true })
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
+        }
+
+        // The stored role, not only the token's: a waiter moved to the kitchen keeps a waiter's token
+        // until it expires, and must not keep a waiter's reach with it - the same rule the manager
+        // guard applies to a demoted manager.
+        if (!IsFloorStaff(staff.Role))
+        {
+            throw new StaffPermissionException(operation, staff.Role, StaffRole.Waiter);
         }
 
         if (staff.Role == StaffRole.PlatformAdmin || staff.BranchId == branchId)
@@ -1833,6 +1929,11 @@ internal sealed class ReservationService(
 
         throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
     }
+
+    /// <summary>A waiter or above: the roles that work the floor - and decide what it can take.</summary>
+    private static bool IsFloorStaff(StaffRole role) =>
+        role is StaffRole.Waiter or StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner
+            or StaffRole.PlatformAdmin;
 
     // ---------------------------------------------------------------- permissions
 
@@ -2008,7 +2109,11 @@ internal sealed class ReservationService(
             ApprovalExpiresAtUtc = reservation.Status == ReservationStatus.PendingApproval
                 ? reservation.ApprovalExpiresAtUtc
                 : null,
-            DeclinedBecause = reservation.DeclineReason,
+            // Only on a booking that ended declined. A confirmed one carrying a reason is one whose last
+            // change was declined and that went back to the slot it had - it is not declined.
+            DeclinedBecause = reservation.Status == ReservationStatus.CancelledByVenue
+                ? reservation.DeclineReason
+                : null,
 
             // Null on every path but creation. The server holds only the hash, so a later read
             // could not return it even if one wanted to.

@@ -120,6 +120,11 @@ public interface IReservationService
     /// <summary>
     /// Staff decline a booking that was waiting for approval. Scoped as <see cref="ApproveAsync"/>.
     /// </summary>
+    /// <remarks>
+    /// A waiting <i>change</i> of a confirmed booking is declined as a change: the booking goes back to
+    /// the confirmed slot it had, and is answered as such, when that slot is still free; otherwise it is
+    /// declined like any other.
+    /// </remarks>
     /// <exception cref="Domain.Staff.StaffPermissionException">Not a waiter or above at this booking's branch.</exception>
     /// <exception cref="Domain.Occupancy.ReservationApprovalExpiredException">
     /// The answer window has closed, or the booking was already declined for nobody answering.

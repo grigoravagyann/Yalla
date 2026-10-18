@@ -125,7 +125,7 @@ internal sealed class PublicBookingService(
         // facts the app shows, about nothing but the link holder's own booking. The column is cleared
         // once the booking stops waiting, so it is only ever a live deadline.
         ApprovalExpiresAtUtc: row.ApprovalExpiresAtUtc,
-        DeclinedBecause: row.DeclineReason);
+        DeclinedBecause: row.Status == Domain.Enums.ReservationStatus.CancelledByVenue ? row.DeclineReason : null);
 
     private sealed record Row(
         string VenueName,

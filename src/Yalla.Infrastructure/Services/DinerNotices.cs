@@ -42,9 +42,17 @@ internal static class DinerNotices
 
     /// <summary>A pending booking approved or declined.</summary>
     /// <remarks>
+    /// <para>
     /// A decline carries <c>expired</c> - <c>"true"</c> when nobody at the venue answered a short-notice
     /// booking in time, <c>"false"</c> when somebody said no - so the app apologises for the right
     /// thing. Declines written before it existed have no such key and were all somebody's no.
+    /// </para>
+    /// <para>
+    /// It also carries <c>wasChange</c> and <c>originalKept</c>: a declined <i>change</i> of a
+    /// confirmed booking either left the booking standing at the slot it had (<c>originalKept</c>
+    /// <c>"true"</c>; <c>date</c> and <c>time</c> are that slot) or ended it because that slot had gone
+    /// too. A change also carries <c>requestedDate</c> and <c>requestedTime</c>, the slot it asked for.
+    /// </para>
     /// </remarks>
     public static void BookingDecided(
         YallaDbContext db,
@@ -53,7 +61,27 @@ internal static class DinerNotices
         string branchName,
         bool approved,
         bool expired,
-        DateTime atUtc) =>
+        DateTime atUtc,
+        DeclinedChange? change = null)
+    {
+        Dictionary<string, string>? extra = null;
+
+        if (!approved)
+        {
+            extra = new Dictionary<string, string>
+            {
+                ["expired"] = expired ? "true" : "false",
+                ["wasChange"] = change is not null ? "true" : "false",
+                ["originalKept"] = change?.OriginalKept == true ? "true" : "false",
+            };
+
+            if (change is not null)
+            {
+                extra["requestedDate"] = change.RequestedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                extra["requestedTime"] = change.RequestedTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+            }
+        }
+
         Booking(
             db,
             approved ? DinerNotificationKinds.BookingConfirmed : DinerNotificationKinds.BookingDeclined,
@@ -61,7 +89,8 @@ internal static class DinerNotices
             venueName,
             branchName,
             atUtc,
-            approved ? null : new() { ["expired"] = expired ? "true" : "false" });
+            extra);
+    }
 
     /// <summary>An accepted booking the venue let go.</summary>
     public static void BookingCancelledByVenue(

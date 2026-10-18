@@ -96,10 +96,57 @@ public sealed class Reservation : Entity
     public DateTime? ApprovalExpiresAtUtc { get; private set; }
 
     /// <summary>
-    /// Why the booking was declined while it waited - by a member of staff, or because nobody answered
-    /// in time - or null for one that was not declined.
+    /// Why the booking - or the change to it that was waiting - was declined: by a member of staff, or
+    /// because nobody answered in time. Null for one that was not declined.
     /// </summary>
+    /// <remarks>
+    /// On a <see cref="ReservationStatus.CancelledByVenue"/> booking it is why the booking ended. On a
+    /// confirmed one it is why the last change asked for did not go through and the booking went back
+    /// to the slot it had (see <see cref="KeepConfirmedSlot"/>). A new change clears it.
+    /// </remarks>
     public DeclineReason? DeclineReason { get; private set; }
+
+    /// <summary>
+    /// The confirmed slot this booking had before a change sent it back for approval - its table -
+    /// or null when no change is waiting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A declined change must not cost the diner the booking they had.</b> Moving tonight's
+    /// confirmed 19:00 to 21:00 sends it to the floor (short notice); if the floor says no, or does
+    /// not answer, the diner still has their 19:00 - so the confirmed slot is kept here, all seven
+    /// columns of it, from the moment the change starts waiting until it is decided.
+    /// </para>
+    /// <para>
+    /// Set when a <see cref="ReservationStatus.Confirmed"/> booking is moved into
+    /// <see cref="ReservationStatus.PendingApproval"/>, and kept through further moves while it waits -
+    /// it is the last slot anybody said yes to. Cleared when the change is approved, when the booking
+    /// goes back to it, and when the booking ends.
+    /// </para>
+    /// </remarks>
+    public Guid? PreviousDiningTableId { get; private set; }
+
+    /// <summary>The confirmed slot's start. See <see cref="PreviousDiningTableId"/>.</summary>
+    public DateTime? PreviousStartUtc { get; private set; }
+
+    /// <summary>The confirmed slot's end, as it was fixed then. See <see cref="PreviousDiningTableId"/>.</summary>
+    public DateTime? PreviousEndUtc { get; private set; }
+
+    /// <summary>The confirmed slot's local date. See <see cref="PreviousDiningTableId"/>.</summary>
+    public DateOnly? PreviousLocalDate { get; private set; }
+
+    /// <summary>The confirmed slot's local start time. See <see cref="PreviousDiningTableId"/>.</summary>
+    public TimeOnly? PreviousLocalStartTime { get; private set; }
+
+    /// <summary>The party size that was confirmed. See <see cref="PreviousDiningTableId"/>.</summary>
+    public int? PreviousPartySize { get; private set; }
+
+    /// <summary>When the confirmed slot was confirmed. See <see cref="PreviousDiningTableId"/>.</summary>
+    public DateTime? PreviousConfirmedAtUtc { get; private set; }
+
+    /// <summary>Whether a change is waiting with a confirmed slot behind it to go back to.</summary>
+    public bool HasConfirmedSlotToReturnTo =>
+        PreviousDiningTableId is not null && PreviousStartUtc is not null && PreviousEndUtc is not null;
 
     public DateTime? CancelledAtUtc { get; private set; }
 
@@ -633,6 +680,87 @@ public sealed class Reservation : Entity
         ConfirmedAtUtc = Guard.NotLocalTime(confirmedAtUtc, nameof(confirmedAtUtc));
         HoldExpiresAtUtc = null;
         ApprovalExpiresAtUtc = null;
+
+        // The change is accepted, so there is nothing to go back to.
+        ForgetConfirmedSlot();
+    }
+
+    /// <summary>
+    /// The waiting change is declined, and the booking goes back to the confirmed slot it had - same
+    /// table, start, end, party and confirmation - as a <see cref="ReservationStatus.Confirmed"/>
+    /// booking, recording why the change did not go through.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The caller has already made sure the slot is still free, under its table's lock: another diner
+    /// may have booked it after this one moved away, and then there is nothing to go back to and the
+    /// booking is declined instead (<see cref="Reject"/>, <see cref="DeclineForNoAnswer"/>).
+    /// </para>
+    /// <para>
+    /// The same deadline rules as declining: a member of staff only while the window is open, the
+    /// sweep only once it has run out.
+    /// </para>
+    /// </remarks>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="because">Who declined the change: staff, or nobody in time.</param>
+    /// <exception cref="ReservationApprovalExpiredException">A staff decline after the window closed.</exception>
+    /// <exception cref="DomainStateException">
+    /// Not a waiting change of a confirmed booking, or - for no answer - its window has not run out.
+    /// </exception>
+    public void KeepConfirmedSlot(DateTime atUtc, DeclineReason because)
+    {
+        if (because == Enums.DeclineReason.NoAnswer)
+        {
+            if (!ApprovalHasLapsedAt(atUtc))
+            {
+                throw new DomainStateException(
+                    $"Booking {Code} is {Status} and its answer window has not run out; it cannot be declined for no answer.");
+            }
+        }
+        else
+        {
+            RequireStillAnswerable(atUtc, approving: false);
+        }
+
+        if (Status != ReservationStatus.PendingApproval || !HasConfirmedSlotToReturnTo)
+        {
+            throw new DomainStateException(
+                $"Booking {Code} is {Status} with no confirmed slot to go back to.");
+        }
+
+        DiningTableId = PreviousDiningTableId!.Value;
+        StartUtc = PreviousStartUtc!.Value;
+        EndUtc = PreviousEndUtc!.Value;
+        LocalDate = PreviousLocalDate ?? LocalDate;
+        LocalStartTime = PreviousLocalStartTime ?? LocalStartTime;
+        PartySize = PreviousPartySize ?? PartySize;
+        ConfirmedAtUtc = PreviousConfirmedAtUtc;
+        Status = ReservationStatus.Confirmed;
+        HoldExpiresAtUtc = null;
+        ApprovalExpiresAtUtc = null;
+        DeclineReason = Guard.Defined(because, nameof(because));
+
+        ForgetConfirmedSlot();
+    }
+
+    /// <summary>
+    /// Refuses with <see cref="ReservationApprovalExpiredException"/> once a waiting booking's answer
+    /// window has run out - for a change of a booking whose short-notice request nobody answered.
+    /// </summary>
+    /// <remarks>
+    /// Past the deadline the request is the sweep's to decline. A move then would hand the diner a
+    /// fresh request and the floor a fresh fifteen minutes for one nobody answered, which is the
+    /// countdown restarting itself.
+    /// </remarks>
+    public void RequireAnswerWindowOpenAt(DateTime nowUtc)
+    {
+        if (ApprovalHasLapsedAt(nowUtc))
+        {
+            throw new ReservationApprovalExpiredException(
+                Id, Code, Status, StartUtc, ApprovalExpiresAtUtc,
+                $"The venue's time to answer booking {Code} has run out, so it can no longer be changed. "
+                + "It is being declined; you can book again.");
+        }
     }
 
     /// <summary>
@@ -684,12 +812,17 @@ public sealed class Reservation : Entity
     /// </summary>
     private void RequireStillAnswerable(DateTime atUtc, bool approving)
     {
-        if (Status == ReservationStatus.CancelledByVenue && DeclineReason == Enums.DeclineReason.NoAnswer)
+        // Declined by the sweep: the booking ended, or - for a change of a confirmed booking - it went
+        // back to the slot it had. Either way the request is gone.
+        if (Status != ReservationStatus.PendingApproval && DeclineReason == Enums.DeclineReason.NoAnswer)
         {
             throw new ReservationApprovalExpiredException(
                 Id, Code, Status, StartUtc, ApprovalExpiresAtUtc,
-                $"Booking {Code} was already declined because nobody answered in time. The diner has been told "
-                + "and can book again.");
+                Status == ReservationStatus.Confirmed
+                    ? $"The change to booking {Code} was already declined because nobody answered in time; the "
+                      + "booking stands as it was, and the diner has been told."
+                    : $"Booking {Code} was already declined because nobody answered in time. The diner has been "
+                      + "told and can book again.");
         }
 
         if (Status != ReservationStatus.PendingApproval)
@@ -820,11 +953,34 @@ public sealed class Reservation : Entity
         ArgumentNullException.ThrowIfNull(policy);
 
         RequireChangeableAt(nowUtc);
+        RequireAnswerWindowOpenAt(nowUtc);
 
         if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(status), status, "A moved reservation must be Confirmed or PendingApproval.");
+        }
+
+        if (status == ReservationStatus.PendingApproval)
+        {
+            // A confirmed booking whose change now has to wait keeps the slot somebody said yes to,
+            // so a no to the change is not a no to the booking. One that was already waiting keeps
+            // what it had: the last confirmed slot, or none.
+            if (Status == ReservationStatus.Confirmed)
+            {
+                PreviousDiningTableId = DiningTableId;
+                PreviousStartUtc = StartUtc;
+                PreviousEndUtc = EndUtc;
+                PreviousLocalDate = LocalDate;
+                PreviousLocalStartTime = LocalStartTime;
+                PreviousPartySize = PartySize;
+                PreviousConfirmedAtUtc = ConfirmedAtUtc;
+            }
+        }
+        else
+        {
+            // Confirmed where it is now: nothing to go back to.
+            ForgetConfirmedSlot();
         }
 
         DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
@@ -841,7 +997,22 @@ public sealed class Reservation : Entity
         }
 
         Status = status;
+
+        // A new request: whatever an earlier one was declined for is history.
+        DeclineReason = null;
         AwaitDecision(status, approvalTrigger, approvalExpiresAtUtc);
+    }
+
+    /// <summary>Drops the confirmed slot a waiting change could fall back to.</summary>
+    private void ForgetConfirmedSlot()
+    {
+        PreviousDiningTableId = null;
+        PreviousStartUtc = null;
+        PreviousEndUtc = null;
+        PreviousLocalDate = null;
+        PreviousLocalStartTime = null;
+        PreviousPartySize = null;
+        PreviousConfirmedAtUtc = null;
     }
 
     /// <summary>
@@ -945,7 +1116,8 @@ public sealed class Reservation : Entity
         CancelledAfterDeadline = afterDeadline;
         HoldExpiresAtUtc = null;
 
-        // No longer waiting for anybody, so nothing for the sweep to find.
+        // No longer waiting for anybody, so nothing for the sweep to find - and nothing to go back to.
         ApprovalExpiresAtUtc = null;
+        ForgetConfirmedSlot();
     }
 }

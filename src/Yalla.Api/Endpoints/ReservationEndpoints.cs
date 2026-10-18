@@ -302,7 +302,11 @@ public static class ReservationEndpoints
                 + "says why). A `Confirmed` booking that keeps its **table and start** and does not grow "
                 + "stays `Confirmed`, today included - nothing about it got harder to keep. Otherwise a "
                 + "move into the short-notice window (today, or under six hours away) goes to "
-                + "`PendingApproval` with a **fresh** fifteen-minute `approvalExpiresAtUtc`. A `Confirmed` "
+                + "`PendingApproval` with a fifteen-minute `approvalExpiresAtUtc` - and keeps the slot it "
+                + "had: if the change is declined, or nobody answers it, the booking goes back to that "
+                + "slot, `Confirmed` as before, when it is still free. A booking **already waiting** on a "
+                + "short-notice answer keeps its deadline through a move (never past the new start); past "
+                + "the deadline it cannot be moved at all - `409 reservation-approval-expired`. A `Confirmed` "
                 + "booking whose party does not grow keeps its confirmation against the party-size "
                 + "threshold - the venue already said yes to that many people - but not against a branch "
                 + "that approves every booking or the diner's no-show history.\n\n"
@@ -406,7 +410,9 @@ public static class ReservationEndpoints
                 + "branch of their venue, a platform admin anywhere. Staff of one branch cannot decide "
                 + "another's bookings by guessing an id.\n\n"
                 + "A short-notice booking (`awaitingApprovalBecause` 4) can be approved until "
-                + "`approvalExpiresAtUtc`, and no booking once it has started.")
+                + "`approvalExpiresAtUtc`, and no booking once it has started. The caller's **stored** "
+                + "role counts, not only the token's: a waiter moved to the kitchen is refused at once. "
+                + "A platform admin gets the booking back with `guestPhone` empty.")
             .Produces<ReservationView>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")
@@ -472,7 +478,12 @@ public static class ReservationEndpoints
                 + "it is theirs. `reason` is optional and recorded as `cancellationReason`; the booking "
                 + "answers `declinedBecause` 1 (StaffDeclined). A short-notice booking can be declined "
                 + "until `approvalExpiresAtUtc` - after that it is declined for nobody answering, and the "
-                + "diner is told that instead.")
+                + "diner is told that instead.\n\n"
+                + "**A change of a confirmed booking** is declined as a change: when the slot it had is "
+                + "still free the answer is the booking back there - `Confirmed`, its old `startUtc`, "
+                + "`tableId` and `partySize` - and the diner is told it stands (`reservation-decided` with "
+                + "`wasChange` and `originalKept` \"true\"); when that slot has gone too it is declined "
+                + "as above, with `originalKept` \"false\". A platform admin gets `guestPhone` empty.")
             .Produces<ReservationView>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")

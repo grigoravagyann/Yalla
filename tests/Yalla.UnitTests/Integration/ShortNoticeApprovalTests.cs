@@ -358,9 +358,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         await using (var sweepDb = fixture.CreateContext(sweepClock, race))
         {
-            declined = await new ApprovalExpirySweep(
-                    sweepDb, sweepClock, fixture.CreateOutbox(sweepDb, sweepClock), NullLogger<ApprovalExpirySweep>.Instance)
-                .RunOnceAsync();
+            declined = await fixture.CreateApprovalExpirySweep(sweepDb, sweepClock).RunOnceAsync();
         }
 
         Assert.True(race.Fired);
@@ -699,7 +697,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_move_into_tonight_waits_with_a_fresh_window_and_a_move_out_of_it_is_confirmed()
+    public async Task A_move_into_tonight_waits_moving_it_again_keeps_its_deadline_and_a_move_out_of_it_is_confirmed()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -718,10 +716,13 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         Assert.Equal(ApprovalTrigger.ShortNotice, intoTonight.AwaitingApprovalBecause);
         Assert.Equal(Now.AddMinutes(7 + 15), intoTonight.ApprovalExpiresAtUtc);
 
-        // Moved again within tonight: a new request, so a new fifteen minutes.
+        // Moved again within tonight while it waits: the floor's fifteen minutes do not restart.
         clock.Advance(TimeSpan.FromMinutes(3));
         var again = await diner.RescheduleAsync(Move(booked.Id, branch.FirstTableId, Today, new TimeOnly(21, 0)));
-        Assert.Equal(Now.AddMinutes(10 + 15), again.ApprovalExpiresAtUtc);
+
+        Assert.Equal(ReservationStatus.PendingApproval, again.Status);
+        Assert.Equal(Now.AddMinutes(7 + 15), again.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddMinutes(7 + 15), (await StoredAsync(booked.Id, clock)).ApprovalExpiresAtUtc);
 
         // And back to another day: confirmed on the spot, the window gone, so the sweep never finds it.
         var outOfIt = await diner.RescheduleAsync(Move(booked.Id, branch.FirstTableId, Today.AddDays(4), EightPm));
@@ -735,6 +736,39 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         clock.Advance(TimeSpan.FromHours(1));
         await SweepAsync(clock);
         Assert.Equal(ReservationStatus.Confirmed, (await StoredAsync(booked.Id, clock)).Status);
+    }
+
+    /// <summary>
+    /// Past its deadline a waiting request is the sweep's to decline, so the diner cannot move it into a
+    /// fresh one: 409 reservation-approval-expired, and the booking is left as it was.
+    /// </summary>
+    [SkippableFact]
+    public async Task After_its_deadline_a_waiting_request_cannot_be_moved()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var tonight = await diner.CreateAsync(Booking(branch, branch.FirstTableId, Today, EightPm));
+
+        // On the deadline, before any sweep: not to tonight, and not to another day either.
+        clock.UtcNow = tonight.ApprovalExpiresAtUtc!.Value;
+
+        var refused = await Assert.ThrowsAsync<ReservationApprovalExpiredException>(
+            () => diner.RescheduleAsync(Move(tonight.Id, branch.FirstTableId, Today, new TimeOnly(21, 0))));
+        await Assert.ThrowsAsync<ReservationApprovalExpiredException>(
+            () => diner.RescheduleAsync(Move(tonight.Id, branch.FirstTableId, Today.AddDays(3), EightPm)));
+
+        var mapped = ApiExceptionMapper.Map(refused);
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal(ErrorCodes.ReservationApprovalExpired, mapped.Code);
+
+        var stored = await StoredAsync(tonight.Id, clock);
+        Assert.Equal(ReservationStatus.PendingApproval, stored.Status);
+        Assert.Equal(tonight.StartUtc, stored.StartUtc);
     }
 
     // ---------------------------------------------------------------- what the diner is told
@@ -816,6 +850,393 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(unanswered.Id, clock)).Status);
     }
 
+    // ---------------------------------------------------------------- a declined change keeps the booking
+
+    /// <summary>
+    /// Tonight's confirmed 19:00 moved to 21:00 waits for the floor; the floor says no to the change,
+    /// and the diner still has their 19:00 - same table, party and confirmation, its reminder back.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_declined_change_of_a_confirmed_booking_leaves_the_booking_at_the_slot_it_had()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        // Booked two days ago for tonight, so confirmed on the spot.
+        var clock = new TestClock(Now.AddDays(-2));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var dinerActor = await DinerWithDeviceAsync(db, clock, "en");
+        var diner = fixture.CreateReservationService(db, clock, dinerActor);
+
+        // The dispatcher below is table-wide, so this booking must be the only cause of anything due.
+        await fixture.ClearOutboxAsync(clock);
+
+        var booked = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0)));
+        Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+
+        // Today at noon the diner asks for 21:00 at table 2: short notice, so the floor's to decide.
+        clock.UtcNow = Now;
+        var change = await diner.RescheduleAsync(Move(booked.Id, branch.TableIds[1], Today, new TimeOnly(21, 0), partySize: 3));
+
+        Assert.Equal(ReservationStatus.PendingApproval, change.Status);
+
+        var waiting = await StoredAsync(booked.Id, clock);
+        Assert.Equal(branch.TableIds[0], waiting.PreviousDiningTableId);
+        Assert.Equal(booked.StartUtc, waiting.PreviousStartUtc);
+        Assert.Equal(booked.EndUtc, waiting.PreviousEndUtc);
+        Assert.Equal(2, waiting.PreviousPartySize);
+        Assert.Equal(booked.ConfirmedAtUtc, waiting.PreviousConfirmedAtUtc);
+
+        clock.Advance(TimeSpan.FromMinutes(4));
+        var answer = await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .RejectAsync(new DecideReservationCommand(booked.Id, "Table 2 is a private party tonight."));
+
+        // The booking as it was: confirmed, 19:00, table 1, two people, the same confirmation.
+        Assert.Equal(ReservationStatus.Confirmed, answer.Status);
+        Assert.Equal(booked.StartUtc, answer.StartUtc);
+        Assert.Equal(booked.EndUtc, answer.EndUtc);
+        Assert.Equal(new TimeOnly(19, 0), answer.LocalStartTime);
+        Assert.Equal(branch.TableIds[0], answer.TableId);
+        Assert.Equal(2, answer.PartySize);
+        Assert.Equal(booked.ConfirmedAtUtc, answer.ConfirmedAtUtc);
+        Assert.Null(answer.ApprovalExpiresAtUtc);
+        Assert.Null(answer.AwaitingApprovalBecause);
+
+        // It is not a declined booking - only its change was.
+        Assert.Null(answer.DeclinedBecause);
+
+        var stored = await StoredAsync(booked.Id, clock);
+        Assert.Equal(DeclineReason.StaffDeclined, stored.DeclineReason);
+        Assert.Null(stored.PreviousDiningTableId);
+        Assert.Null(stored.PreviousStartUtc);
+
+        // Its reminder is for 19:00 again, and nothing for 21:00 is left to send.
+        var messages = await MessagesForAsync(booked.Id, clock);
+        var at19 = booked.StartUtc.ToString("yyyyMMddHHmm", System.Globalization.CultureInfo.InvariantCulture);
+        var at21 = change.StartUtc.ToString("yyyyMMddHHmm", System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.Contains(messages, m => m.SentAtUtc == null
+            && m.IdempotencyKey == OutboxMessageTypes.KeyFor("reservation", booked.Id, "reminder:" + at19));
+        Assert.DoesNotContain(messages, m => m.SentAtUtc == null && m.IdempotencyKey.EndsWith(at21, StringComparison.Ordinal));
+
+        // Told the change did not go through and the booking stands.
+        var decided = Assert.Single(messages, m => m.Type == OutboxMessageTypes.ReservationDecided);
+        Assert.Contains("\"wasChange\":true", decided.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"originalKept\":true", decided.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"expired\":false", decided.PayloadJson, StringComparison.Ordinal);
+
+        await using (var check = fixture.CreateContext(clock))
+        {
+            var entry = await check.DinerNotifications.AsNoTracking()
+                .SingleAsync(n => n.ReservationId == booked.Id && n.Kind == DinerNotificationKinds.BookingDeclined);
+
+            Assert.Contains("\"originalKept\":\"true\"", entry.ParamsJson, StringComparison.Ordinal);
+            Assert.Contains("\"wasChange\":\"true\"", entry.ParamsJson, StringComparison.Ordinal);
+            Assert.Contains("\"time\":\"19:00\"", entry.ParamsJson, StringComparison.Ordinal);
+            Assert.Contains("\"requestedTime\":\"21:00\"", entry.ParamsJson, StringComparison.Ordinal);
+        }
+
+        var channel = new RecordingChannel();
+
+        await using (var passDb = fixture.CreateContext(clock))
+        {
+            await Dispatcher(passDb, clock, channel).RunOnceAsync();
+        }
+
+        var push = Assert.Single(
+            channel.OfKind("reservation-decided"), m => m.Data["reservationId"] == booked.Id.ToString());
+        var (title, body) = NotificationText.ReservationChangeDeclined(
+            "en", await VenueNameAsync(branch, clock), new TimeOnly(19, 0), expired: false);
+
+        Assert.Equal(title, push.Title);
+        Assert.Equal(body, push.Body);
+        Assert.Equal("true", push.Data["originalKept"]);
+        Assert.Equal("true", push.Data["wasChange"]);
+
+        // Table 1 at 19:00 is the diner's again, so nobody else can have it; 21:00 at table 2 is free.
+        var other = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        await Assert.ThrowsAsync<TableAlreadyBookedException>(
+            () => other.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0))));
+
+        Assert.Equal(
+            ReservationStatus.PendingApproval,
+            (await other.CreateAsync(Booking(branch, branch.TableIds[1], Today, new TimeOnly(21, 0)))).Status);
+    }
+
+    /// <summary>Approving the change instead moves the booking for good: nothing is kept to go back to.</summary>
+    [SkippableFact]
+    public async Task An_approved_change_drops_the_slot_it_could_have_gone_back_to()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now.AddDays(-2));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var booked = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0)));
+
+        clock.UtcNow = Now;
+        await diner.RescheduleAsync(Move(booked.Id, branch.TableIds[1], Today, new TimeOnly(21, 0)));
+
+        var approved = await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .ApproveAsync(new DecideReservationCommand(booked.Id));
+
+        Assert.Equal(ReservationStatus.Confirmed, approved.Status);
+        Assert.Equal(new TimeOnly(21, 0), approved.LocalStartTime);
+        Assert.Null((await StoredAsync(booked.Id, clock)).PreviousStartUtc);
+    }
+
+    /// <summary>
+    /// Nobody answers the change in time: the sweep sends the booking back to the slot it had, with the
+    /// apology saying the booking stands - and a waiter answering after that is told it is too late.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_change_nobody_answers_goes_back_to_the_slot_it_had_and_says_so()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (clock, now, today) = await SweepWorldAsync(month: 7);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        clock.UtcNow = now.AddDays(-2);
+        var booked = await diner.CreateAsync(Booking(branch, branch.TableIds[0], today, new TimeOnly(19, 0)));
+        Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+
+        clock.UtcNow = now;
+        var change = await diner.RescheduleAsync(Move(booked.Id, branch.TableIds[1], today, new TimeOnly(21, 0)));
+        Assert.Equal(now.AddMinutes(15), change.ApprovalExpiresAtUtc);
+
+        clock.UtcNow = now.AddMinutes(16);
+        Assert.Equal(1, await SweepAsync(clock));
+
+        var stored = await StoredAsync(booked.Id, clock);
+        Assert.Equal(ReservationStatus.Confirmed, stored.Status);
+        Assert.Equal(booked.StartUtc, stored.StartUtc);
+        Assert.Equal(branch.TableIds[0], stored.DiningTableId);
+        Assert.Equal(DeclineReason.NoAnswer, stored.DeclineReason);
+        Assert.Null(stored.ApprovalExpiresAtUtc);
+
+        var decided = Assert.Single(
+            await MessagesForAsync(booked.Id, clock), m => m.Type == OutboxMessageTypes.ReservationDecided);
+
+        Assert.Equal(OutboxMessageTypes.KeyFor("reservation", booked.Id, "expired"), decided.IdempotencyKey);
+        Assert.Contains("\"expired\":true", decided.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"originalKept\":true", decided.PayloadJson, StringComparison.Ordinal);
+
+        // The waiter who opens the request now is told it is too late, not that the state is wrong.
+        await Assert.ThrowsAsync<ReservationApprovalExpiredException>(
+            () => fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+                .ApproveAsync(new DecideReservationCommand(booked.Id)));
+    }
+
+    /// <summary>
+    /// The slot the booking left was booked by somebody else meanwhile. Declining the change then ends the
+    /// booking as any decline does, and the diner is told their earlier time has gone too.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_declined_change_whose_old_slot_was_taken_meanwhile_ends_the_booking_and_says_so()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now.AddDays(-2));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var dinerActor = await DinerWithDeviceAsync(db, clock, "en");
+        var diner = fixture.CreateReservationService(db, clock, dinerActor);
+
+        // The dispatcher below is table-wide, so this booking must be the only cause of anything due.
+        await fixture.ClearOutboxAsync(clock);
+
+        var booked = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0)));
+
+        clock.UtcNow = Now;
+        await diner.RescheduleAsync(Move(booked.Id, branch.TableIds[1], Today, new TimeOnly(21, 0)));
+
+        // Somebody else takes table 1 at 19:00, which the move left free.
+        var taker = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0)));
+        Assert.Equal(ReservationStatus.PendingApproval, taker.Status);
+
+        var answer = await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .RejectAsync(new DecideReservationCommand(booked.Id));
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, answer.Status);
+        Assert.Equal(DeclineReason.StaffDeclined, answer.DeclinedBecause);
+        Assert.Equal(new TimeOnly(21, 0), answer.LocalStartTime);
+        Assert.Null((await StoredAsync(booked.Id, clock)).PreviousStartUtc);
+
+        var decided = Assert.Single(
+            await MessagesForAsync(booked.Id, clock), m => m.Type == OutboxMessageTypes.ReservationDecided);
+        Assert.Contains("\"wasChange\":true", decided.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"originalKept\":false", decided.PayloadJson, StringComparison.Ordinal);
+
+        await using (var check = fixture.CreateContext(clock))
+        {
+            var entry = await check.DinerNotifications.AsNoTracking()
+                .SingleAsync(n => n.ReservationId == booked.Id && n.Kind == DinerNotificationKinds.BookingDeclined);
+
+            Assert.Contains("\"originalKept\":\"false\"", entry.ParamsJson, StringComparison.Ordinal);
+            Assert.Contains("\"wasChange\":\"true\"", entry.ParamsJson, StringComparison.Ordinal);
+        }
+
+        var channel = new RecordingChannel();
+
+        await using (var passDb = fixture.CreateContext(clock))
+        {
+            await Dispatcher(passDb, clock, channel).RunOnceAsync();
+        }
+
+        var push = Assert.Single(
+            channel.OfKind("reservation-decided"), m => m.Data["reservationId"] == booked.Id.ToString());
+        var (title, body) = NotificationText.ReservationChangeDeclinedOriginalGone(
+            "en", await VenueNameAsync(branch, clock), expired: false);
+
+        Assert.Equal(title, push.Title);
+        Assert.Equal(body, push.Body);
+        Assert.Equal("false", push.Data["originalKept"]);
+    }
+
+    // ---------------------------------------------------------------- the sweep, hardened
+
+    /// <summary>
+    /// One booking that throws does not stop the pass: it is logged with its code, the others are
+    /// declined, and the next pass tries it again.
+    /// </summary>
+    [SkippableFact]
+    public async Task One_booking_the_sweep_cannot_decline_does_not_stall_the_others()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (clock, now, today) = await SweepWorldAsync(month: 5);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var poisoned = await diner.CreateAsync(Booking(branch, branch.TableIds[0], today, EightPm));
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var healthy = await diner.CreateAsync(Booking(branch, branch.TableIds[1], today, EightPm));
+
+        clock.UtcNow = now.AddMinutes(17);
+
+        var failing = new FailingUpdateOf(poisoned.Id);
+        var log = new CapturingLogger();
+        int declined;
+
+        await using (var sweepDb = fixture.CreateContext(clock, failing))
+        {
+            declined = await fixture.CreateApprovalExpirySweep(sweepDb, clock, log).RunOnceAsync();
+        }
+
+        Assert.True(failing.Fired);
+        Assert.Equal(1, declined);
+        Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(poisoned.Id, clock)).Status);
+        Assert.Equal(DeclineReason.NoAnswer, (await StoredAsync(healthy.Id, clock)).DeclineReason);
+        Assert.Contains(log.Errors, line => line.Contains(poisoned.Code, StringComparison.Ordinal));
+
+        // The next pass, with nothing in the way, gets it.
+        Assert.Equal(1, await SweepAsync(clock));
+        Assert.Equal(DeclineReason.NoAnswer, (await StoredAsync(poisoned.Id, clock)).DeclineReason);
+    }
+
+    /// <summary>
+    /// A request the sweep only reaches after the booking would have started - the machine slept - is
+    /// still declined, and nobody is sent an apology for an evening already gone.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_request_the_sweep_reaches_after_its_start_is_declined_without_an_apology()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (clock, now, today) = await SweepWorldAsync(month: 6);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, policy: PolicyWith(minLeadMinutes: 0));
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        // Ten minutes from now, so the window closes at the start.
+        var soon = await diner.CreateAsync(Booking(branch, branch.FirstTableId, today, new TimeOnly(12, 10)));
+        Assert.Equal(soon.StartUtc, soon.ApprovalExpiresAtUtc);
+
+        clock.UtcNow = soon.StartUtc.AddMinutes(5);
+        Assert.Equal(1, await SweepAsync(clock));
+
+        Assert.Equal(DeclineReason.NoAnswer, (await StoredAsync(soon.Id, clock)).DeclineReason);
+        Assert.DoesNotContain(
+            await MessagesForAsync(soon.Id, clock), m => m.Type == OutboxMessageTypes.ReservationDecided);
+
+        await using var check = fixture.CreateContext(clock);
+        Assert.False(await check.DinerNotifications.AnyAsync(
+            n => n.ReservationId == soon.Id && n.Kind == DinerNotificationKinds.BookingDeclined));
+    }
+
+    // ---------------------------------------------------------------- the stored role, and the platform
+
+    /// <summary>
+    /// A waiter moved to the kitchen still holds a waiter's token until it expires. The stored role is
+    /// what counts: no decisions, no list, no releases.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_waiter_demoted_to_cook_is_refused_whatever_their_token_says()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var tonight = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm));
+        var later = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today.AddDays(3), EightPm));
+
+        await db.Database.ExecuteSqlAsync(
+            $"UPDATE dbo.StaffMembers SET Role = {(int)StaffRole.Kitchen} WHERE Id = {branch.WaiterId}");
+
+        var demoted = fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId));
+
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => demoted.ApproveAsync(new DecideReservationCommand(tonight.Id)));
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => demoted.RejectAsync(new DecideReservationCommand(tonight.Id)));
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => demoted.ListAwaitingApprovalAsync(branch.BranchId));
+        await Assert.ThrowsAsync<StaffPermissionException>(
+            () => demoted.ReleaseAsync(new ReleaseReservationCommand(later.Id, ReleaseOutcome.NoShow, Guid.CreateVersion7())));
+
+        Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(tonight.Id, clock)).Status);
+        Assert.Equal(ReservationStatus.Confirmed, (await StoredAsync(later.Id, clock)).Status);
+    }
+
+    [SkippableFact]
+    public async Task A_platform_admin_deciding_a_booking_is_not_shown_the_guests_number()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var admin = await AuthTestData.CreatePlatformAdminAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var toApprove = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm, guestPhone: "+37499333444"));
+        var toDecline = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm, guestPhone: "+37499333444"));
+
+        var platform = fixture.CreateReservationService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
+
+        var approved = await platform.ApproveAsync(new DecideReservationCommand(toApprove.Id));
+        var declined = await platform.RejectAsync(new DecideReservationCommand(toDecline.Id));
+
+        Assert.Equal(ReservationStatus.Confirmed, approved.Status);
+        Assert.Equal(string.Empty, approved.GuestPhone);
+        Assert.Equal(ReservationStatus.CancelledByVenue, declined.Status);
+        Assert.Equal(string.Empty, declined.GuestPhone);
+
+        // The number itself is untouched; the branch's own waiter still reads it.
+        Assert.Equal("+37499333444", (await StoredAsync(toApprove.Id, clock)).GuestPhone);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static CreateReservationCommand Booking(
@@ -882,8 +1303,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
     {
         await using var db = fixture.CreateContext(clock);
 
-        return await new ApprovalExpirySweep(db, clock, fixture.CreateOutbox(db, clock), NullLogger<ApprovalExpirySweep>.Instance)
-            .RunOnceAsync();
+        return await fixture.CreateApprovalExpirySweep(db, clock).RunOnceAsync();
     }
 
     private async Task<Reservation> StoredAsync(Guid reservationId, IClock clock)
@@ -949,4 +1369,78 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
                 new ReservationDecidedHandler(db, channel),
             ],
             NullLogger<OutboxDispatcher>.Instance);
+
+    /// <summary>
+    /// Throws on the save that would update one particular booking, and on nothing else - a row the
+    /// sweep cannot get past, for the test that it gets past it anyway.
+    /// </summary>
+    private sealed class FailingUpdateOf(Guid reservationId) : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        private int _fired;
+
+        public bool Fired => _fired > 0;
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command,
+            Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            ThrowIfItsTheOne(command);
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command,
+            Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            ThrowIfItsTheOne(command);
+
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void ThrowIfItsTheOne(System.Data.Common.DbCommand command)
+        {
+            if (!command.CommandText.Contains("UPDATE [Reservations]", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            foreach (System.Data.Common.DbParameter parameter in command.Parameters)
+            {
+                if (parameter.Value is Guid id && id == reservationId)
+                {
+                    Interlocked.Increment(ref _fired);
+
+                    throw new InvalidOperationException("The test's poisoned booking cannot be written.");
+                }
+            }
+        }
+    }
+
+    /// <summary>Keeps what the sweep logs at error level, so a test can read which booking it named.</summary>
+    private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<ApprovalExpirySweep>
+    {
+        public List<string> Errors { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel >= Microsoft.Extensions.Logging.LogLevel.Error)
+            {
+                Errors.Add(formatter(state, exception));
+            }
+        }
+    }
 }

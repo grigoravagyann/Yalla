@@ -982,6 +982,27 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("PartySize")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("PreviousConfirmedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("PreviousDiningTableId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("PreviousEndUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateOnly?>("PreviousLocalDate")
+                        .HasColumnType("date");
+
+                    b.Property<TimeOnly?>("PreviousLocalStartTime")
+                        .HasColumnType("time");
+
+                    b.Property<int?>("PreviousPartySize")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("PreviousStartUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()

@@ -402,10 +402,13 @@ decided again.
 
 **The status is decided again**, by creation's rules with the new party size (`DecideStatusAsync`): a
 move into the short-notice window - see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) - goes to
-`PendingApproval` with a **fresh** fifteen-minute window, auto-confirm off or a party over the threshold
-goes to `PendingApproval`, and so does a diner over the no-show threshold; otherwise `Confirmed`. A move
-of a pending short-notice booking to another day confirms it and clears its window, so the sweep never
-finds it. **One exception, for a booking that is `Confirmed`**: when
+`PendingApproval` with a fifteen-minute window, auto-confirm off or a party over the threshold goes to
+`PendingApproval`, and so does a diner over the no-show threshold; otherwise `Confirmed`. A booking
+**already waiting** on a short-notice answer keeps the deadline it has through a move (never past the new
+start) - moving the request around does not restart the floor's fifteen minutes - and once that deadline
+has passed it cannot be moved at all: **409 `reservation-approval-expired`**, the sweep's to decline. A
+move of a pending short-notice booking to another day before then confirms it and clears its window, so
+the sweep never finds it. **One exception, for a booking that is `Confirmed`**: when
 the only reason the re-decision would ask for approval is the party-size threshold and the new party is
 **not larger** than the booking's current one, it stays `Confirmed` and keeps its `ConfirmedAtUtc`. The
 venue said yes to that many people; moving them to another table or time does not undo it. A party
@@ -414,7 +417,23 @@ booking - a branch with auto-confirm off sees every move, and a diner whose no-s
 confirmation loses it on a move too. Going back for approval clears `ConfirmedAtUtc`; a party that
 shrinks under the threshold is confirmed without anybody. A booking can therefore be approved twice.
 The second approval's push is its own message - `reservation:{id}:approved:{yyyyMMddHHmmssfff}` once
-the first key is taken - rather than a collision with the first.
+the first key is taken - rather than a collision with the first; a second decline or expiry is named
+the same way.
+
+**A declined change does not cost the booking.** When a `Confirmed` booking is moved into
+`PendingApproval` - for any reason, short notice most often - the slot it had is kept on the row
+(`PreviousDiningTableId`, `PreviousStartUtc`, `PreviousEndUtc`, `PreviousLocalDate`,
+`PreviousLocalStartTime`, `PreviousPartySize`, `PreviousConfirmedAtUtc`), and kept through further moves
+while it waits: it is the last slot anybody said yes to. Approving the change drops it. **Declining the
+change - by staff, or by the sweep for no answer - sends the booking back to that slot** when it is still
+free: judged under that table's lock exactly as a move is (another diner may have booked it since, a
+walk-in may be sitting into it, the table may be out of service, the slot may be over), and committed in
+the same transaction - the booking `Confirmed` again with its old start, end, table, party and
+`ConfirmedAtUtc`, its reminder and late nudge rewritten for that slot, `DeclineReason` recording why the
+change did not go through (the view's `declinedBecause` stays null - the booking is not declined). When
+the slot has gone, the booking is declined as any other. Either way the diner is told which: the
+`reservation.decided` push carries `wasChange` and `originalKept`, and so does the `booking-declined`
+feed entry, with the slot the change asked for in `requestedDate`/`requestedTime`.
 
 **Reminders are replaced, not edited.** Both the reminder and the late nudge name the old time, so the
 unsent ones are cancelled exactly as a cancellation cancels them (`IOutbox.CancelAsync` by the booking's
@@ -475,7 +494,14 @@ reminder and late nudge cancelled, and the diner told in the same save - a `rese
 with `expired: true` (an apology: *the venue could not confirm in time - try another time or place*) and
 a `booking-declined` feed entry with `expired: "true"`. A waiter's approval that lands first moves the
 row version, so the sweep's save matches nothing and writes nothing; a second process sweeping the same
-booking loses the same way. A booking is declined, and its diner told, exactly once.
+booking loses the same way. A booking is declined, and its diner told, exactly once. A change of a
+confirmed booking nobody answered goes back to the slot it had, as above.
+
+**One bad row does not stall the sweep.** Anything a booking throws - a lock that could not be had, a row
+the domain refuses - is logged at error level with its code and the pass goes on to the rest; that
+booking is not tried again in the same pass, and the next pass tries it afresh. **A request the sweep
+only reaches after the booking would have started** (the machine slept through the deadline) is still
+declined, but without the apology push or feed entry - there is no evening left to send the diner to.
 
 It is a sweep and not a scheduled outbox message on purpose: the outbox dead-letters anything more than
 an hour overdue, and a machine that slept through the deadline would leave the diner on a "waiting"
@@ -486,9 +512,13 @@ says must never free one.
 **Who decides: a waiter or above at the booking's branch.** `POST /api/reservations/{id}/approve` and
 `/reject` take `WaiterOrAbove`, and the service confines them to the branch from the stored staff row: a
 waiter and a branch manager at their own branch, an owner or general manager at any branch of their
-venue, a platform admin anywhere. A cook, a diner and another branch's staff are 403. The bodies are
-unchanged; `reject` keeps its optional `reason`, recorded as `cancellationReason`, and the booking
-answers `declinedBecause` **1 `StaffDeclined`**.
+venue, a platform admin anywhere. A cook, a diner and another branch's staff are 403. The **stored**
+role is checked as well as the token's, so a waiter moved to the kitchen is refused at once rather than
+when their token expires - the same check guards the floor's list and releasing a late booking. The
+bodies are unchanged; `reject` keeps its optional `reason`, recorded as `cancellationReason`, and the
+booking answers `declinedBecause` **1 `StaffDeclined`** - or, for a change of a confirmed booking whose
+old slot is still free, the booking back at that slot (see [3c](#3c-changing-a-booking)). A platform
+admin deciding a booking gets it back with `guestPhone` empty, as on the floor's list.
 
 **Too late is its own answer.** Approving or declining on or after `approvalExpiresAtUtc`, or after the
 sweep declined it, is **409 `reservation-approval-expired`** (`context`: `reservationId`, `status`,
