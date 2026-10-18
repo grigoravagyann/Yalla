@@ -67,17 +67,19 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         Assert.Equal(ReservationStatus.PendingApproval, asked.Status);
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, asked.AwaitingApprovalBecause);
-        Assert.Equal(Now.AddHours(2), asked.ApprovalExpiresAtUtc);
 
         var request = await RequestForLaterAsync(clock, asked.Id);
 
         Assert.Equal(earlier.Id, request.EarlierReservationId);
         Assert.Equal(ThursdayAt(19, 25), request.FreeByUtc);
         Assert.Equal(TableShareRequestStatus.Pending, request.Status);
-        Assert.Equal(Now.AddHours(2), request.ExpiresAtUtc);
 
-        // The guest before booked with no phone to push to, so the floor asks them.
+        // The guest before booked with no phone to push to, so the floor asks them - with no clock, as
+        // the floor decides any booking that waits for it; the question is open until the start.
         Assert.False(request.AsksEarlierGuest);
+        Assert.Null(asked.ApprovalExpiresAtUtc);
+        Assert.Equal(ThursdayAt(19, 30), request.ExpiresAtUtc);
+        Assert.Null(request.FallbackTrigger);
     }
 
     [SkippableFact]
@@ -371,7 +373,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
         var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 45));
 
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, later.AwaitingApprovalBecause);
-        Assert.Equal(Now.AddHours(2), later.ApprovalExpiresAtUtc);
+        Assert.Null(later.ApprovalExpiresAtUtc);
         Assert.False((await RequestForLaterAsync(clock, later.Id)).AsksEarlierGuest);
 
         // Nothing on her booking to answer: the floor calls her.
@@ -382,7 +384,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         Assert.Equal(later.Id, card.Reservation.Id);
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, card.Trigger);
-        Assert.Equal(Now.AddHours(2), card.ApprovalExpiresAtUtc);
+        Assert.Null(card.ApprovalExpiresAtUtc);
         Assert.Equal(ThursdayAt(19, 40), card.EarlierGuestFreeByUtc);
         Assert.Equal(earlier.Id, card.PreviousBooking?.ReservationId);
         Assert.NotNull(card.PreviousBooking?.GuestPhone);
@@ -403,7 +405,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_guest_with_no_phone_to_push_to_is_asked_by_the_floor_and_the_two_hours_still_run()
+    public async Task A_guest_with_no_phone_to_push_to_is_asked_by_the_floor_with_no_clock()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -414,13 +416,15 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         Assert.Single(await AwaitingAsync(clock, branch));
 
-        clock.UtcNow = Now.AddHours(2);
+        // Two hours and more on, nothing has run out: the floor's question waits for the floor.
+        clock.UtcNow = Now.AddHours(3);
         await SweepAsync(clock);
 
-        // Nobody at the venue answered: the venue's silence, not the guest's.
-        var lapsed = await StoredAsync(clock, later.Id);
-        Assert.Equal(DeclineReason.NoAnswer, lapsed.DeclineReason);
-        Assert.Equal(TableShareRequestStatus.Expired, (await RequestForLaterAsync(clock, later.Id)).Status);
+        var waiting = await StoredAsync(clock, later.Id);
+        Assert.Equal(ReservationStatus.PendingApproval, waiting.Status);
+        Assert.Null(waiting.ApprovalExpiresAtUtc);
+        Assert.Equal(TableShareRequestStatus.Pending, (await RequestForLaterAsync(clock, later.Id)).Status);
+        Assert.Single(await AwaitingAsync(clock, branch));
     }
 
     [SkippableFact]
@@ -589,7 +593,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_later_booking_moved_to_another_asked_for_time_asks_again_with_one_open_question()
+    public async Task A_later_booking_moved_to_another_asked_for_time_keeps_its_one_question_and_deadline()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -601,17 +605,24 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
         var later = await BookAsync(clock, gor, branch, new TimeOnly(19, 45));
         var first = await RequestForLaterAsync(clock, later.Id);
 
+        // Half an hour on, the diner moves to 20:00 - still asking Anna, the same way.
+        clock.Advance(TimeSpan.FromMinutes(30));
         var moved = await MoveAsync(clock, gor, later, new TimeOnly(20, 0));
 
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, moved.AwaitingApprovalBecause);
-        Assert.Equal(TableShareRequestStatus.Withdrawn, (await RequestAsync(clock, first.Id)).Status);
 
-        var second = await RequestForLaterAsync(clock, later.Id);
-        Assert.NotEqual(first.Id, second.Id);
-        Assert.Equal(ThursdayAt(19, 55), second.FreeByUtc);
+        // The same question at the new time: one request, its deadline not restarted.
+        var same = await RequestForLaterAsync(clock, later.Id);
+        Assert.Equal(first.Id, same.Id);
+        Assert.Equal(TableShareRequestStatus.Pending, same.Status);
+        Assert.Equal(ThursdayAt(19, 55), same.FreeByUtc);
+        Assert.Equal(ThursdayAt(20, 0), same.RequestedStartUtc);
+        Assert.Equal(first.ExpiresAtUtc, same.ExpiresAtUtc);
+        Assert.Equal(first.ExpiresAtUtc, moved.ApprovalExpiresAtUtc);
 
         var card = Assert.Single((await MineAsync(clock, anna)).Upcoming).IncomingTableRequest;
-        Assert.Equal(second.Id, card?.RequestId);
+        Assert.Equal(same.Id, card?.RequestId);
+        Assert.Equal(new TimeOnly(19, 55), card?.FreeByLocalTime);
     }
 
     [SkippableFact]

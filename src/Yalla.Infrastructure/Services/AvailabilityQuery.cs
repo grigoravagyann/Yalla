@@ -242,8 +242,15 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval
                                             || r.Status == ReservationStatus.Seated)
-                                        && r.EndUtc > guardFromUtc
-                                        && r.StartUtc < guardToUtc)
+                                        && (r.EndUtc > guardFromUtc || r.Status == ReservationStatus.Seated)
+                                        && r.StartUtc < guardToUtc
+
+                                        // Nor a booking only asking for the left-out booking's table: a
+                                        // diner changing their booking is not held to its question, as
+                                        // the move itself is not (TableEvening).
+                                        && !db.TableShareRequests.Any(q => q.EarlierReservationId == excludedId
+                                                                           && q.LaterReservationId == r.Id
+                                                                           && q.Status == TableShareRequestStatus.Pending))
                             .OrderBy(r => r.StartUtc)
                             .Select(r => new AvailabilityBookingRow
                             {

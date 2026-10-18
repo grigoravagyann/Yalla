@@ -1135,6 +1135,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("ExpiresAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("FallbackTrigger")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("FreeByUtc")
                         .HasColumnType("datetime2");
 

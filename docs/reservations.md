@@ -584,10 +584,10 @@ time - **5 minutes** by default.
 
 | # | When | The table at `S` | Reason / field |
 |---|---|---|---|
-| 1 | `S < P.start + 90 min` | **refused** - whoever has it is barely seated | `TableJustBooked` (11) |
+| 1 | `S < P.start + 90 min` - unless `P` already promised to be gone by `S - buffer` | **refused** - whoever has it is barely seated | `TableJustBooked` (11) |
 | 2 | `S > N.start - 45 min` | **refused** - too little time to sit down | `NextBookingTooSoon` (12) |
 | 3 | `S + turn + buffer > N.start` | **must free by** `N.start - buffer`: the sitting ends then, and the diner accepts it before booking | `mustFreeByUtc`, `acceptsFreeByUtc` |
-| 4 | `S < P.start + 180 min`, or `P`'s sitting plus clearing still runs into `S` | **requestable**: `P`'s guest is asked to have left by `S - buffer` | `isRequestable`, `ApprovalTrigger.EarlierGuestConsent` (5) |
+| 4 | `S < P.start + 180 min`, or `P`'s sitting plus clearing still runs into `S` - unless `P` already promised to be gone by `S - buffer` | **requestable**: `P`'s guest is asked to have left by `S - buffer` | `isRequestable`, `ApprovalTrigger.EarlierGuestConsent` (5) |
 | 4a | as 4, while another booking is already asking `P`'s guest | **refused** - one question to one guest at a time | `EarlierGuestBeingAsked` (13) |
 | 5 | otherwise | **free** - after the overlap rule (§2) over every other booking, and the open sitting's projection over a walk-in at the table | |
 
@@ -613,11 +613,25 @@ exactly the clearing time the branch asked for, and the overlap rule underneath 
 `PromisedFreeByUtc`; when it is sooner than the booking's end, `EndUtc` is cut to it, so every rule
 that reads the interval reads the promise. A promise is never a lengthening: a booking ending 19:30
 whose guest promised to be gone by 19:40 keeps its 19:30 end, and the 19:40 beside it. A guest who
-already promised to be gone in time is not asked again (rule 4 does not apply).
+already promised to be gone in time neither blocks the next ninety minutes (rule 1) nor is asked again
+(rule 4): a 21:30 booked first, then a 20:45 that promised 21:25, leaves the 21:30 its own slot - judged
+again for a change of party size it is free, on the room screen leaving it out and under the lock.
+
+**A confirmed booking keeping its table and start is never judged again by these rules** - a smaller
+party, a party-size change that does not grow: nothing the venue said yes to got harder to keep, and
+legacy data from before them must not cost anybody their table. Only a party sitting into it now still
+refuses it, as it always has. A change that grows the party or moves it is judged as any booking.
 
 **A party seated late is judged as sitting until its projected end.** A booking seated against its
 reservation is judged as that booking - not as a walk-in in the way - running until whichever is later
-of its booked end and the seat time plus the turn time, unless its guest promised a time.
+of its booked end and the seat time plus the turn time, unless its guest promised a time. The writer
+reads that booking whatever its booked times (a 13:00 seated at 17:00 is three hours past its end), as
+the availability read does, so the two cannot disagree about it.
+
+**One read for every writer** (`TableEvening`): an insert and a move under the table's lock, going back
+to a declined change's slot (§3c - free to go back to only when nothing refuses it, nobody has to be
+asked and no booking since needs it gone before it ends; the overlap rule alone is no longer enough),
+and judging a waiting booking again when the guest before it changes.
 
 **Walk-in holdback (30 minutes) is unchanged** and does not contradict these rules: it is a warning to a
 waiter seating somebody near a booking, and the moment the booked party may claim the table with its
@@ -648,19 +662,23 @@ again. The booking answers with `promisedFreeByUtc` and the cut `endUtc`.
 
 A booking for a requestable table lands `PendingApproval`, and a **`TableShareRequest`** is opened beside
 it, in the same transaction under the table's lock: `{ earlierReservationId, laterReservationId,
-requestedStartUtc, freeByUtc (= S - buffer), status, asksEarlierGuest, createdAtUtc, expiresAtUtc,
-decidedAtUtc }`, status `Pending` (1), `Accepted` (2), `Declined` (3), `Expired` (4), `Withdrawn` (5).
+requestedStartUtc, freeByUtc (= S - buffer), status, asksEarlierGuest, fallbackTrigger, createdAtUtc,
+expiresAtUtc, decidedAtUtc }`, status `Pending` (1), `Accepted` (2), `Declined` (3), `Expired` (4),
+`Withdrawn` (5). `fallbackTrigger` is why the later booking would still wait without the question - the
+reason the floor decides it anyway (auto-confirm off, a large party, a no-show history, short notice) -
+or null when it would be confirmed at once.
 
 | The later booking is | It waits as | Who answers | Window |
 |---|---|---|---|
 | short notice (today, or under six hours) | `ShortNotice` (4), as §3d | the floor, from the awaiting list - the card names the time to ask for (`earlierGuestFreeByUtc`) | 15 minutes |
-| another day, the earlier guest booked from the app, has a live push device, and nothing else about the later booking needs a human | `EarlierGuestConsent` (5) | **the earlier guest**, from a push and a card on their booking | 2 hours, never past the earlier booking's start |
-| another day, otherwise - the earlier guest booked on the web, has no device, or the later booking needs approval anyway (auto-confirm off, a large party, a no-show history) | `EarlierGuestConsent` (5) | the floor, from the awaiting list, after calling them | 2 hours, never past the earlier booking's start |
+| another day, the earlier guest booked from the app, has a live push device, and nothing else about the later booking needs a human | `EarlierGuestConsent` (5) | **the earlier guest**, from a push and a card on their booking - **only them**: the floor's approve and reject are `409 reservation-awaiting-earlier-guest` | 2 hours, never past the earlier booking's start |
+| another day, otherwise - the earlier guest booked on the web, has no device, or the later booking needs approval anyway (auto-confirm off, a large party, a no-show history) | `EarlierGuestConsent` (5) | the floor, from the awaiting list, after calling them | **none** - it waits as any booking the floor decides; the request's `expiresAtUtc` is the later booking's start |
 
-The later booking's `approvalExpiresAtUtc` is the request's `expiresAtUtc`. The later guest stays
-anonymous to the earlier one: the request carries times, never a name.
+The later booking's `approvalExpiresAtUtc` is the request's `expiresAtUtc` when there is a clock, and null
+on the floor's questions for another day. The later guest stays anonymous to the earlier one: the
+request carries times, never a name.
 
-- **Yes** (the earlier guest's answer, or the floor approving the later booking): the later booking is
+- **Yes** (the earlier guest's answer in the app, or the floor approving a booking it decides): the later booking is
   `Confirmed`, the earlier one promises to free the table by `freeByUtc` (`PromisedFreeByUtc`, its end
   cut when sooner), the request is `Accepted`, and both diners are told - the later one a
   `reservation.decided` approval, the earlier one a `reservation.table-request-decided` push ("please
@@ -669,10 +687,13 @@ anonymous to the earlier one: the request carries times, never a name.
   `EarlierGuestDeclined`** - or, for a change of a confirmed booking, goes back to the slot it had (§3c).
   The request is `Declined`; the later diner is told (`declinedBecause` "3" on the push and the feed).
   The floor declining is `StaffDeclined` (1) as ever.
-- **No answer by `expiresAtUtc`**: the approval sweep (§3d) declines the later booking -
-  `declinedBecause` **4 `EarlierGuestNoAnswer`** when it was waiting on the earlier guest in the app, **2
-  `NoAnswer`** when the floor did not answer - and the request is `Expired`. The earlier booking is
-  untouched.
+- **No answer by `expiresAtUtc`** (only a question with a clock): the approval sweep (§3d) declines the
+  later booking - `declinedBecause` **4 `EarlierGuestNoAnswer`** when it was waiting on the earlier guest
+  in the app, **2 `NoAnswer`** when the floor did not answer tonight's - and the request is `Expired`. The
+  earlier booking is untouched.
+- A **yes about a booking that has moved** since it was asked - to another table, or past the time it is
+  asked to leave by, under another table's lock - is refused, `409 table-request-not-pending`, rather
+  than written onto a booking it was never about.
 
 **One open question per earlier booking.** While a request to a guest is pending, no other booking can
 ask them: the table is refused at those times (`EarlierGuestBeingAsked`) by the writer and by
@@ -684,17 +705,31 @@ answered - either way - the table can be asked for again.
 
 **What a move or a cancellation does.**
 
-- The later booking is **moved**: its open request is withdrawn inside the move's lock, and the new slot is
-  judged afresh - confirmed, cut short, or asking again (a fresh two hours). **Cancelled or released**:
-  withdrawn.
-- The earlier booking is **cancelled, released, declined, or moved off the table** (another table, or a
-  start at or after the later one): its open requests are withdrawn, and a later booking that was waiting
-  on that guest's own answer is `Confirmed` - the table is free of them - and its diner told. One the floor
-  was deciding stays with the floor. **Moved but still before it**: the question stands, unless the move
-  accepted a time to leave by that covers the one asked - that answers it yes, and a later booking
-  waiting on that guest's own answer is confirmed. An open request on an account deleted meanwhile is
-  left to run out.
-- A confirmed booking that keeps its table and start (a smaller party) is not asked about again.
+- The later booking is **moved**: the new slot is judged afresh - confirmed, cut short, or asking. Still
+  asking **the same guest the same way**, it keeps **the same request** - retimed to the new start, no
+  second push to the earlier guest, no new card. Otherwise its request is withdrawn inside the move's lock
+  and a new one asked. **Cancelled or released**: withdrawn.
+- **A waiting booking that moves never gets a later deadline than it had.** Moved from the two hours into
+  tonight it gets tonight's fifteen minutes, not what was left of the two hours; moved around while it
+  waits on the same guest, the two hours do not restart. A move to a slot whose wait has no clock (the
+  floor's, another day) has none.
+- **The earlier guest's own change** - a move, a party size - is not made to promise a time, nor refused,
+  because of a booking that is only asking for its table: those are left out of judging it, on the room
+  screen leaving it out as under the lock. Afterwards each booking waiting on that guest is judged again
+  with the earlier booking where it now is - and the same when the earlier booking is **cancelled,
+  released or declined**, or its own declined change sends it back to the slot it had:
+  - still the booking before it within three hours: the question stands;
+  - free now - moved off the table, early enough, after it, or promised a time that covers it: the request
+    is withdrawn and the later booking decided again without it, from `fallbackTrigger` - **confirmed**
+    (its diner told) when nothing else needs a human, left as it is at short notice, otherwise waiting for
+    that reason with no clock. So a later booking that went to the floor only because the guest before
+    booked on the web is confirmed when that guest cancels;
+  - another booking's sitting now runs into it (rare): withdrawn, and the floor decides, with no clock;
+  - crowded out - the earlier booking now leaves it no room: the change stands and is that guest's no -
+    the later booking is declined, `EarlierGuestDeclined`. A later booking that was itself a change of a
+    confirmed one is declined outright here (going back to its old slot would need that table's lock
+    inside this one) - the one case that does not restore.
+- An open request on an account deleted meanwhile is left to run out (in the app) or to the floor.
 
 ### The earlier guest answers
 
@@ -707,8 +742,9 @@ diner's **own** booking (somebody else's, or a request the floor is deciding, is
 ```
 
 Answers `200` with the earlier guest's `ReservationView`. Idempotent: a retry with the same id is the
-booking as it stands (`wasReplay`), and the same answer twice under different ids is answered the same
-way; the other answer once decided, a request past its deadline, or one withdrawn is **409
+booking as it stands (`wasReplay`), and the same answer twice under different ids - one after the other,
+or two quick taps racing - is answered with the booking as the first left it; the other answer once
+decided, a request past its deadline, or one withdrawn is **409
 `table-request-not-pending`** (`context`: `reservationId`, `requestId`, `status`, `expiresAtUtc`). The
 same id on another command, or the other answer, is `409 client-command-id-in-use`. The later booking's
 row version settles the answer racing the sweep, the floor, or the other diner's move.
@@ -724,10 +760,12 @@ view of their own booking:
 ### What staff see
 
 The awaiting list (§3d) lists `EarlierGuestConsent` bookings the floor decides - not the ones waiting
-on the earlier guest's own answer - with `trigger` 5, the two-hour `approvalExpiresAtUtc`, the previous
+on the earlier guest's own answer - with `trigger` 5, no `approvalExpiresAtUtc` (no clock), the previous
 booking and its guest's number to call, and **`earlierGuestFreeByUtc`**: the time to ask them for
-(also set on a short-notice booking whose table is within three hours of its previous one). Approving it
-is the floor's yes for that guest. `previousBooking.promisedFreeByUtc` and `nextBooking.promisedFreeByUtc`
+(also set on a short-notice booking whose table is within three hours of its previous one). While a
+question is open, **`previousBooking` is the booking it asks** - whatever day it is on (a 23:00 before a
+00:30 is the day before's), never another booking that happens to sit between. Approving it is the
+floor's yes for that guest. `previousBooking.promisedFreeByUtc` and `nextBooking.promisedFreeByUtc`
 show promises already made; every `ReservationView` carries `promisedFreeByUtc`. The floor's table state
 carries `nextReservationPromisedFreeByUtc` ("must free by 21:25" on the next-booking line) and
 `sittingPromisedFreeByUtc` for the party seated now.
@@ -738,7 +776,9 @@ Every threshold comes from the branch's `ReservationPolicy`. A lunch cafe and a 
 answer all of these differently, and Yerevan cafes sit far longer than the textbook 90 minutes. A new
 branch books from **10 minutes** ahead with **5 minutes** of clearing time (`DefaultFor`; 30 and 15
 before the booking-times change, whose migration moved every branch still on those old defaults, column
-by column, and left every value an owner had chosen). The two exceptions - how bookings follow one
+by column, and left every value an owner had chosen; its Down is best-effort - nothing records which rows
+it moved, so it moves every 10 and 5 back - and maps the new enum numbers onto old ones: `ApprovalTrigger`
+5 to 4 where the booking has a deadline and 1 where it has none, `DeclineReason` 3 to 1 and 4 to 2). The two exceptions - how bookings follow one
 another on a table, and short notice - are the product's promises, fixed in code: see
 [3e](#3e-a-tables-evening-when-one-booking-may-follow-another) and [3d](#3d-short-notice-tonight-is-the-floors-to-decide).
 
@@ -1013,7 +1053,8 @@ facts under `context`:
 | a branch rule refused it | 422 | one per rule, e.g. `reservation-party-exceeds-capacity` |
 | the table went first, or the table's evening refuses the time | 409 | `table-already-booked`, with the clashing window and a fresh floor; `context.reason` 8 `TableAlreadyBooked`, 11 `TableJustBooked`, 12 `NextBookingTooSoon` or 13 `EarlierGuestBeingAsked` |
 | the table's next booking cuts the sitting short and `acceptsFreeByUtc` is missing or not that instant | 422 | `reservation-free-by-required`, with `context.field` `acceptsFreeByUtc`, `requiredFreeByUtc`, `requiredFreeByLocal`, `nextBookingStartUtc` |
-| answering a request for one's table that no longer waits | 409 | `table-request-not-pending`, with `context.reservationId`, `requestId`, `status`, `expiresAtUtc` |
+| answering a request for one's table that no longer waits, or a yes about a booking that moved since it was asked | 409 | `table-request-not-pending`, with `context.reservationId`, `requestId`, `status`, `expiresAtUtc` |
+| staff approving or declining a booking that waits on the earlier guest's answer in the app | 409 | `reservation-awaiting-earlier-guest`, with `context.reservationId`, `requestId`, `expiresAtUtc` |
 | the command id belongs to another caller, or another command | 409 | `client-command-id-in-use` |
 | changing a booking that is not pending or confirmed, or has started | 409 | `reservation-not-changeable`, with `context.reservationId`, `status`, `startUtc` |
 | changing a booking that was cancelled, approved or seated meanwhile | 409 | `concurrent-update` |

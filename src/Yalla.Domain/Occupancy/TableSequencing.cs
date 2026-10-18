@@ -100,7 +100,9 @@ public sealed record TableSequencingVerdict
 /// and <c>N</c> the first starting after it:
 /// </para>
 /// <list type="number">
-/// <item><b>Just booked.</b> <c>S &lt; P.start + 90 min</c>: refused, <see cref="ReservationRejectionReason.TableJustBooked"/>.</item>
+/// <item><b>Just booked.</b> <c>S &lt; P.start + 90 min</c>: refused, <see cref="ReservationRejectionReason.TableJustBooked"/> -
+/// unless <c>P</c> already promised to be gone by <c>S - buffer</c>, as the booking before one that
+/// accepted a time to leave by has.</item>
 /// <item><b>Too close to the next.</b> <c>S &gt; N.start - 45 min</c>: refused,
 /// <see cref="ReservationRejectionReason.NextBookingTooSoon"/>.</item>
 /// <item><b>Must free by.</b> A full sitting plus the clearing time would run into <c>N</c>: the sitting
@@ -194,8 +196,15 @@ public static class TableSequencing
             EndUtc = naturalEnd,
         };
 
+        // Whoever has it before already promised to be gone by this start less the clearing time - by
+        // accepting a time to leave by when they booked, or saying yes to a request. Neither the ninety
+        // minutes nor a question to them applies: they will not be there.
+        var previousPromisedInTime = hasPrevious
+                                     && previous.PromisedFreeByUtc is { } promised
+                                     && promised <= startUtc - buffer;
+
         // 1. Whoever has it before is barely seated.
-        if (hasPrevious && startUtc < previous.StartUtc.AddMinutes(JustBookedMinutes))
+        if (hasPrevious && !previousPromisedInTime && startUtc < previous.StartUtc.AddMinutes(JustBookedMinutes))
         {
             return Refuse(ReservationRejectionReason.TableJustBooked, previous);
         }
@@ -235,9 +244,7 @@ public static class TableSequencing
             var needed = startUtc - buffer;
             var mayStillBeThere = startUtc < previous.StartUtc.AddMinutes(AskEarlierGuestWithinMinutes)
                                   || startUtc < previous.EndUtc + buffer;
-            var alreadyPromised = previous.PromisedFreeByUtc is { } promised && promised <= needed;
-
-            if (mayStillBeThere && !alreadyPromised)
+            if (mayStillBeThere && !previousPromisedInTime)
             {
                 // A clearing time so long it would have them leave before they arrived.
                 if (needed <= previous.StartUtc)

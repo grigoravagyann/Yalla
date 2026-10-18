@@ -15,9 +15,20 @@ namespace Yalla.Infrastructure.Persistence.Migrations
     /// <b>The two policy defaults move, only where nobody chose them.</b> A branch whose
     /// <c>ReservationPolicy_MinLeadMinutes</c> is still 30 - the old default - takes 10; one whose
     /// <c>ReservationPolicy_BufferMinutes</c> is still 15 takes 5. Each column on its own, so a branch that
-    /// changed one keeps that one and has the other moved; every other value an owner set stays. Down moves
-    /// the new defaults back the same way, which also catches a branch that chose 10 or 5 in between - a
-    /// rollback, not an edit.
+    /// changed one keeps that one and has the other moved; every other value an owner set stays.
+    /// </para>
+    /// <para>
+    /// <b>Down is best-effort, and says so.</b> Nothing records which rows Up moved, so Down moves every 10
+    /// back to 30 and every 5 back to 15 - which also catches a branch whose owner chose 10 or 5 after the
+    /// change. A rollback, not an edit; an owner who chose those can save them again. Recording the moved
+    /// rows would mean a table the model does not describe, kept for ever for a rollback that should not
+    /// happen. The new enum numbers are mapped onto ones the code before this understands - the table
+    /// that explained them is gone: <c>ApprovalTrigger</c> 5 (the guest before is asked) becomes 4
+    /// (short notice) where the booking has a deadline - the old sweep declines it at that deadline, as it
+    /// would have - and 1 (the branch approves) where it has none, so the floor decides it;
+    /// <c>DeclineReason</c> 3 (the guest before said no) becomes 1 (somebody said no) and 4 (they did not
+    /// answer) becomes 2 (nobody answered). Promises already made stay as cut <c>EndUtc</c>s when the
+    /// columns go - the end a booking was given stands.
     /// </para>
     /// <para>
     /// <c>Reservations</c> gains <c>PromisedFreeByUtc</c> - the time its guest promised to have left the
@@ -155,6 +166,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             // The old check knows nothing of these, so they go before it comes back.
             migrationBuilder.Sql(
                 "DELETE FROM [DinerNotifications] WHERE [Kind] IN ('table-request', 'table-request-decided');");
+
+            // Numbers the code before this does not know, onto the nearest it does.
+            migrationBuilder.Sql(
+                "UPDATE [Reservations] SET [ApprovalTrigger] = CASE WHEN [ApprovalExpiresAtUtc] IS NULL THEN 1 ELSE 4 END "
+                + "WHERE [ApprovalTrigger] = 5;");
+
+            migrationBuilder.Sql("UPDATE [Reservations] SET [DeclineReason] = 1 WHERE [DeclineReason] = 3;");
+            migrationBuilder.Sql("UPDATE [Reservations] SET [DeclineReason] = 2 WHERE [DeclineReason] = 4;");
 
             migrationBuilder.Sql(
                 $"UPDATE [Branches] SET [ReservationPolicy_MinLeadMinutes] = {OldDefaultMinLeadMinutes} "

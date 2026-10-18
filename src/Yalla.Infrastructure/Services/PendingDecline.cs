@@ -88,7 +88,8 @@ internal static class PendingDecline
             await CancelWhatWasQueuedAsync(db, outbox, reservation, nowUtc, cancellationToken);
 
             // And whoever was asking this booking's guest for the table no longer has to wait for them.
-            await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(
+                db, outbox, reservation, branch, nowUtc, cancellationToken);
 
             if (tell)
             {
@@ -140,7 +141,8 @@ internal static class PendingDecline
 
                 // Back at the slot it had, or gone: either way it moved, and a guest asked to free a
                 // table for it - or whose table it asked for - is settled by where it now stands.
-                await TableShares.EarlierChangedAsync(db, outbox, reservation, branch, nowUtc, token);
+                await TableShares.EarlierChangedAsync(
+                    db, outbox, reservation, branch, nowUtc, token);
 
                 // A kept booking is worth telling about while it is still to come; a lost one while the
                 // change it asked for still was.

@@ -367,6 +367,14 @@ public static class ErrorCodes
     public const string TableRequestNotPending = "table-request-not-pending";
 
     /// <summary>
+    /// Staff approving or declining a booking that waits on the guest before it on the table to answer
+    /// in the app - theirs to answer, not the floor's. HTTP 409, with <c>context.reservationId</c>,
+    /// <c>context.requestId</c> and <c>context.expiresAtUtc</c>. Minted by
+    /// <c>ReservationAwaitingEarlierGuestException</c>.
+    /// </summary>
+    public const string ReservationAwaitingEarlierGuest = "reservation-awaiting-earlier-guest";
+
+    /// <summary>
     /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
     /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
     /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
@@ -455,6 +463,7 @@ public static class ErrorCodes
         ReservationApprovalExpired => "Too late to answer this booking",
         ReservationFreeByRequired => "Free the table by the time required",
         TableRequestNotPending => "This request no longer needs an answer",
+        ReservationAwaitingEarlierGuest => "Waiting for the guest before to answer",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",

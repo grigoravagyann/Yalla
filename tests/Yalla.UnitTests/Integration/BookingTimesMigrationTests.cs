@@ -74,8 +74,37 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
                 // The new table is there and empty.
                 Assert.Equal(0, await db.TableShareRequests.CountAsync());
 
+                // Bookings carrying the numbers this migration brought: waiting on the guest before with a
+                // deadline and without one, declined by that guest and for their silence.
+                foreach (var minutes in new[] { 60, 120, 180, 240 })
+                {
+                    await TestBranchBuilder.AddConfirmedReservationAsync(
+                        db, untouched, untouched.FirstTableId, new DateTime(2026, 11, 2, 8, 0, 0, DateTimeKind.Utc).AddMinutes(minutes * 3));
+                }
+
+                var ids = await db.Reservations.AsNoTracking()
+                    .Where(r => r.BranchId == untouched.BranchId)
+                    .OrderBy(r => r.StartUtc)
+                    .Select(r => r.Id)
+                    .ToListAsync();
+
+                await db.Database.ExecuteSqlAsync(
+                    $"UPDATE dbo.Reservations SET Status = 1, ApprovalTrigger = 5, ApprovalExpiresAtUtc = '2026-11-02T09:00:00' WHERE Id = {ids[0]}");
+                await db.Database.ExecuteSqlAsync(
+                    $"UPDATE dbo.Reservations SET Status = 1, ApprovalTrigger = 5 WHERE Id = {ids[1]}");
+                await db.Database.ExecuteSqlAsync(
+                    $"UPDATE dbo.Reservations SET Status = 7, DeclineReason = 3 WHERE Id = {ids[2]}");
+                await db.Database.ExecuteSqlAsync(
+                    $"UPDATE dbo.Reservations SET Status = 7, DeclineReason = 4 WHERE Id = {ids[3]}");
+
                 // Down puts the old defaults back where the new ones are, and leaves the rest.
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
+
+                // And maps the new numbers onto ones the code before it knows.
+                Assert.Equal(4, await TriggerAsync(db, ids[0]));
+                Assert.Equal(1, await TriggerAsync(db, ids[1]));
+                Assert.Equal(1, await DeclineAsync(db, ids[2]));
+                Assert.Equal(2, await DeclineAsync(db, ids[3]));
             }
 
             await using (var db = CreateContext(connectionString))
@@ -130,6 +159,12 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
 
         return (lead, buffer);
     }
+
+    private static Task<int> TriggerAsync(YallaDbContext db, Guid id) =>
+        db.Database.SqlQuery<int>($"SELECT ApprovalTrigger AS Value FROM dbo.Reservations WHERE Id = {id}").SingleAsync();
+
+    private static Task<int> DeclineAsync(YallaDbContext db, Guid id) =>
+        db.Database.SqlQuery<int>($"SELECT DeclineReason AS Value FROM dbo.Reservations WHERE Id = {id}").SingleAsync();
 
     private static YallaDbContext CreateContext(string connectionString) =>
         new(

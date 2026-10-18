@@ -124,8 +124,8 @@ internal sealed class ReservationWriter(
 
             // The table's evening - the bookings around the start, the open questions to their guests,
             // the party at it now - judged by the one rule every read shares.
-            var (verdict, sitting) = await JudgeUnderLockAsync(
-                table.Id, startUtc, policy, excludingReservationId: Guid.Empty, cancellationToken);
+            var (verdict, sitting) = await TableEvening.JudgeAsync(
+                db, table.Id, startUtc, policy, excludingReservationId: Guid.Empty, cancellationToken);
 
             if (Refusal(verdict, sitting) is { } refused)
             {
@@ -212,6 +212,7 @@ internal sealed class ReservationWriter(
         Guid dinerUserId,
         Guid clientCommandId,
         DateTime? acceptsFreeByUtc,
+        bool keepsItsSlot,
         Func<TableSequencingVerdict, CancellationToken, Task> applyAsync,
         CancellationToken cancellationToken)
     {
@@ -237,18 +238,24 @@ internal sealed class ReservationWriter(
 
             await ReadTableStatusUnderLockAsync(table, cancellationToken);
 
-            // The booking being moved is not in its own way, and nor is a question it asked: both are
-            // left out.
-            var (verdict, sitting) = await JudgeUnderLockAsync(
-                table.Id, startUtc, policy, excludingReservationId: reservation.Id, cancellationToken);
+            // The booking being moved is not in its own way, nor is a question it asked, nor a booking
+            // that is only asking for its table: all are left out (TableEvening).
+            var (verdict, sitting) = await TableEvening.JudgeAsync(
+                db, table.Id, startUtc, policy, excludingReservationId: reservation.Id, cancellationToken);
 
-            if (Refusal(verdict, sitting) is { } refused)
+            // A confirmed booking keeping its table and start is not judged again by the table's evening:
+            // nothing the venue said yes to got harder to keep, whoever booked around it since. Only a
+            // party sitting into it now still refuses it, as it always has.
+            var refusal = Refusal(verdict, sitting);
+
+            if (refusal is { } refused && (!keepsItsSlot || refused.Sitting is not null))
             {
                 return refused.Clash is { } clash ? MoveOutcome.Conflicted(clash) : MoveOutcome.OccupiedBy(refused.Sitting!);
             }
 
             // A promise the booking already made for exactly this time need not be made again.
-            if (verdict.MustFreeByUtc is { } required
+            if (!keepsItsSlot
+                && verdict.MustFreeByUtc is { } required
                 && !SameMinute(acceptsFreeByUtc, required)
                 && !(reservation.StartUtc == startUtc && SameMinute(reservation.PromisedFreeByUtc, required)))
             {
@@ -297,9 +304,11 @@ internal sealed class ReservationWriter(
     /// <para>
     /// The other direction of a move, and the same hazard: since the booking left that slot, another
     /// diner may have booked it, a walk-in may be sitting into it, or the table may have gone out of
-    /// service. So the slot is judged under the table's lock exactly as an insert or a move judges
-    /// one - the booking itself left out of the overlap check - and the answer, with whatever the
-    /// caller stages on it, commits in this one transaction.
+    /// service. So the slot is judged under the table's lock by the table's evening
+    /// (<see cref="TableEvening"/>) exactly as an insert or a move judges one - the booking itself left
+    /// out - and it is free to go back to only when nothing refuses it, nobody has to be asked, and no
+    /// booking since needs it gone before it ends. The answer, with whatever the caller stages on it,
+    /// commits in this one transaction.
     /// </para>
     /// <para>
     /// A slot that has already ended cannot be gone back to whatever else is true of it.
@@ -333,9 +342,11 @@ internal sealed class ReservationWriter(
         {
             var free = slot.EndUtc > nowUtc
                        && await TakesBookingsUnderLockAsync(tableId, cancellationToken)
-                       && await FindConflictAsync(
-                           tableId, slot, policy, cancellationToken, excludingReservationId: reservation.Id) is null
-                       && await FindOccupyingSessionAsync(tableId, slot, policy, cancellationToken) is null;
+                       && TableEvening.Holds(
+                           (await TableEvening.JudgeAsync(
+                               db, tableId, slot.StartUtc, policy, excludingReservationId: reservation.Id, cancellationToken))
+                           .Verdict,
+                           slot.EndUtc);
 
             await applyAsync(free, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
@@ -414,71 +425,6 @@ internal sealed class ReservationWriter(
                 cancellationToken);
 
     /// <summary>
-    /// The overlap re-check, as one indexed range read.
-    /// </summary>
-    /// <remarks>
-    /// The range predicate is the overlap rule rearranged so SQL Server can seek it - see
-    /// <see cref="ReservationOverlap.SearchWindow"/> - and every row it returns is then put through
-    /// <see cref="ReservationOverlap"/> itself. The rule proved at its boundaries by the unit tests
-    /// is therefore the rule that decides the insert, and the SQL is only an index-friendly way of
-    /// narrowing the candidates.
-    /// </remarks>
-    /// <param name="tableId">The table.</param>
-    /// <param name="proposed">The interval asked for.</param>
-    /// <param name="policy">The branch's policy, for the clearing time.</param>
-    /// <param name="cancellationToken">Cancellation.</param>
-    /// <param name="excludingReservationId">
-    /// A booking that is not in its own way: the one being moved. <see cref="Guid.Empty"/> - which no
-    /// booking's id can be - when there is none.
-    /// </param>
-    private async Task<Reservation?> FindConflictAsync(
-        Guid tableId,
-        BookedInterval proposed,
-        ReservationPolicy policy,
-        CancellationToken cancellationToken,
-        Guid excludingReservationId = default)
-    {
-        var (searchFromUtc, searchToUtc) = ReservationOverlap.SearchWindow(proposed, policy.BufferMinutes);
-
-        var candidates = await db.Reservations
-            .AsNoTracking()
-            .Where(r => r.DiningTableId == tableId
-                        && r.Id != excludingReservationId
-                        && (r.Status == ReservationStatus.Confirmed
-                            || r.Status == ReservationStatus.PendingApproval
-                            || r.Status == ReservationStatus.Seated)
-                        && r.EndUtc > searchFromUtc
-                        && r.StartUtc < searchToUtc)
-            .OrderBy(r => r.StartUtc)
-            .ToListAsync(cancellationToken);
-
-        return candidates.FirstOrDefault(r => ReservationOverlap.Conflicts(
-            proposed, BookedInterval.Of(r), r.Status, policy.BufferMinutes));
-    }
-
-    /// <summary>The open sitting whose projected interval runs into the requested one, if any.</summary>
-    private async Task<TableSession?> FindOccupyingSessionAsync(
-        Guid tableId,
-        BookedInterval proposed,
-        ReservationPolicy policy,
-        CancellationToken cancellationToken)
-    {
-        var open = await db.TableSessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.DiningTableId == tableId && s.ClosedAtUtc == null, cancellationToken);
-
-        if (open is null)
-        {
-            return null;
-        }
-
-        return SessionOccupancy.Conflicts(
-            proposed, open.SeatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes)
-            ? open
-            : null;
-    }
-
-    /// <summary>
     /// Saves the booking, re-rolling the door code if it collides, and answering a lost
     /// idempotency race with the booking that won.
     /// </summary>
@@ -534,63 +480,6 @@ internal sealed class ReservationWriter(
                 reservation.ReplaceCode(ReservationCode.Generate());
             }
         }
-    }
-
-    /// <summary>
-    /// Judges a start on a table by <see cref="TableSequencing"/>, from the rows as they stand inside
-    /// the lock: the live bookings around it - each with the promise its guest made and whether its guest
-    /// is being asked to free the table already - and the party at the table now.
-    /// </summary>
-    /// <remarks>
-    /// One indexed range read of <c>IX_Reservations_DiningTableId_StartUtc_EndUtc</c> over the window
-    /// the rule can see (<see cref="TableSequencing.Lookback"/>, <see cref="TableSequencing.Lookahead"/>),
-    /// and the open sitting off its filtered unique index. A question the booking being moved asked
-    /// itself is no question in its way.
-    /// </remarks>
-    internal async Task<(TableSequencingVerdict Verdict, TableSession? Sitting)> JudgeUnderLockAsync(
-        Guid tableId,
-        DateTime startUtc,
-        ReservationPolicy policy,
-        Guid excludingReservationId,
-        CancellationToken cancellationToken)
-    {
-        var fromUtc = startUtc - TableSequencing.Lookback(policy.BufferMinutes);
-        var toUtc = startUtc + TableSequencing.Lookahead(policy.TurnTimeMinutes, policy.BufferMinutes);
-
-        var rows = await db.Reservations
-            .AsNoTracking()
-            .Where(r => r.DiningTableId == tableId
-                        && r.Id != excludingReservationId
-                        && (r.Status == ReservationStatus.Confirmed
-                            || r.Status == ReservationStatus.PendingApproval
-                            || r.Status == ReservationStatus.Seated)
-                        && r.EndUtc > fromUtc
-                        && r.StartUtc < toUtc)
-            .Select(r => new
-            {
-                r.Id,
-                r.StartUtc,
-                r.EndUtc,
-                r.Status,
-                r.PromisedFreeByUtc,
-                IsBeingAsked = db.TableShareRequests.Any(q => q.EarlierReservationId == r.Id
-                                                              && q.Status == TableShareRequestStatus.Pending
-                                                              && q.LaterReservationId != excludingReservationId),
-            })
-            .ToListAsync(cancellationToken);
-
-        var open = await db.TableSessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.DiningTableId == tableId && s.ClosedAtUtc == null, cancellationToken);
-
-        var verdict = TableSequencing.Judge(
-            startUtc,
-            policy.TurnTimeMinutes,
-            policy.BufferMinutes,
-            rows.Select(r => new SequencedBooking(r.Id, r.StartUtc, r.EndUtc, r.Status, r.PromisedFreeByUtc, r.IsBeingAsked)),
-            open is null ? null : new OpenSitting(open.SeatedAtUtc, open.ReservationId));
-
-        return (verdict, open);
     }
 
     /// <summary>What a refused verdict comes to: the booking behind it, or the party sitting there.</summary>

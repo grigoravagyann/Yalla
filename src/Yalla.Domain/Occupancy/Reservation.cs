@@ -824,6 +824,21 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
+    /// A booking still waiting is now waiting for another reason - the question it asked the guest before
+    /// it went away, and something else still needs a human - with that reason's deadline, or none.
+    /// </summary>
+    /// <exception cref="DomainStateException">The booking is not waiting.</exception>
+    public void WaitInsteadFor(ApprovalTrigger trigger, DateTime? approvalExpiresAtUtc)
+    {
+        if (Status != ReservationStatus.PendingApproval)
+        {
+            throw new DomainStateException($"Booking {Code} is {Status}; only a waiting booking waits for a reason.");
+        }
+
+        AwaitDecision(Status, trigger, approvalExpiresAtUtc);
+    }
+
+    /// <summary>
     /// Whether a decline for this reason is the clock's - nobody answered in time - rather than
     /// somebody's no. The clock's declines happen only once the answer window has run out; somebody's
     /// only while it is open.

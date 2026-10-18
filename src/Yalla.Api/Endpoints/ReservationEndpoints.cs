@@ -431,7 +431,10 @@ public static class ReservationEndpoints
         + "answered in time (`declinedBecause` 2); approving also once the booking has started. "
         + "`context` carries `reservationId`, `status`, `startUtc` and `approvalExpiresAtUtc`. Drop the "
         + "request from the panel: the diner is told the venue did not answer in time. "
-        + "`conflicting-state`: the booking is not waiting for approval.";
+        + "`conflicting-state`: the booking is not waiting for approval. "
+        + "`reservation-awaiting-earlier-guest`: the booking waits on the guest before it on the table to answer "
+        + "in the app - theirs to answer, not the floor's (`context`: `reservationId`, `requestId`, `expiresAtUtc`). "
+        + "`table-request-not-pending`: approving a booking whose guest before has moved since they were asked.";
 
     private static void MapStaffDecisions(IEndpointRouteBuilder app)
     {

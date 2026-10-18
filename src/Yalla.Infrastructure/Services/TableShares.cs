@@ -73,11 +73,13 @@ internal static class TableShares
         DateTime freeByUtc,
         DateTime expiresAtUtc,
         bool asksEarlierGuest,
+        ApprovalTrigger? fallbackTrigger,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
         var request = new TableShareRequest(
-            earlierReservationId, later.Id, later.StartUtc, freeByUtc, nowUtc, expiresAtUtc, asksEarlierGuest);
+            earlierReservationId, later.Id, later.StartUtc, freeByUtc, nowUtc, expiresAtUtc, asksEarlierGuest,
+            fallbackTrigger);
 
         db.TableShareRequests.Add(request);
 
@@ -139,15 +141,30 @@ internal static class TableShares
         }
 
         var earlier = await db.Reservations.FirstOrDefaultAsync(r => r.Id == request.EarlierReservationId, cancellationToken);
-
-        request.Accept(nowUtc);
+        var later = await db.Reservations.FirstOrDefaultAsync(r => r.Id == laterReservationId, cancellationToken);
 
         // A booking that has gone since needs no promise: the table is free of it.
         if (earlier is null || !ReservationOverlap.Blocks(earlier.Status))
         {
+            request.Accept(nowUtc);
+
             return request;
         }
 
+        // Still the question that was asked: the earlier booking on the later one's table, starting
+        // before the time it is asked to leave by. A move under another table's lock can land between
+        // the question and the answer; then there is nothing to say yes to, and the answer is refused
+        // rather than written onto a booking it was never about.
+        if (later is null
+            || earlier.DiningTableId != later.DiningTableId
+            || earlier.StartUtc >= request.FreeByUtc
+            || earlier.StartUtc >= later.StartUtc)
+        {
+            throw new TableRequestNotPendingException(
+                earlier.Id, request.Id, TableShareRequestStatus.Withdrawn, request.ExpiresAtUtc);
+        }
+
+        request.Accept(nowUtc);
         earlier.PromiseToFreeBy(request.FreeByUtc);
 
         await TellEarlierDecidedAsync(db, outbox, earlier, request, branch, accepted: true, nowUtc, cancellationToken);
@@ -214,25 +231,35 @@ internal static class TableShares
                 cancellationToken);
 
     /// <summary>
-    /// The earlier booking moved, or ended: the questions open to its guest are settled by where it now
+    /// The earlier booking moved, or ended: every booking waiting on a question to its guest is judged
+    /// again by the table's evening (<see cref="TableEvening"/>), with the earlier booking where it now
     /// stands.
     /// </summary>
     /// <remarks>
     /// <list type="bullet">
     /// <item>
-    /// <b>Out of the later booking's way</b> - cancelled, released, declined, moved to another table, or
-    /// now starting at or after the later one: the request is withdrawn, and a later booking that was
-    /// waiting on this guest's answer alone is confirmed, its diner told. One the floor was deciding
-    /// stays with the floor.
+    /// <b>Still asking the same guest</b> - it is still the booking before, within three hours: the
+    /// question stands.
     /// </item>
     /// <item>
-    /// <b>Still before it, but promised in time</b> - the move accepted a time to leave by that covers
-    /// the one asked: the request is accepted, and a later booking waiting on this guest alone is
-    /// confirmed.
+    /// <b>Free now</b> - the earlier booking left, moved off the table, moved early enough, or promised a
+    /// time that covers it: the request is withdrawn and the later booking decided again without it
+    /// (<see cref="DecideWithoutTheQuestionAsync"/>): confirmed when nothing else needs a human, otherwise
+    /// left waiting for that reason - which is why a request stores <c>FallbackTrigger</c>.
     /// </item>
-    /// <item>Still before it, without that promise: the question stands.</item>
+    /// <item>
+    /// <b>Needing somebody else's yes</b> - another booking's sitting now runs into it: the request is
+    /// withdrawn and the floor decides the later booking from the awaiting list, with no clock.
+    /// </item>
+    /// <item>
+    /// <b>Crowded out</b> - the earlier booking now leaves it no room. A booking only asking for a table is
+    /// never forced on the booking that has it, so the earlier booking's change stands and is taken as its
+    /// guest's no: the later booking is declined, <c>EarlierGuestDeclined</c>. A later booking that was
+    /// itself a change of a confirmed one is declined outright here - going back to its old slot would
+    /// need that table's lock inside this one - the one case this does not restore.
+    /// </item>
     /// </list>
-    /// A later booking already past its deadline is left for the sweep.
+    /// A later booking already past its deadline, or already under way, is left for the sweep.
     /// </remarks>
     public static async Task EarlierChangedAsync(
         YallaDbContext db,
@@ -250,40 +277,101 @@ internal static class TableShares
         {
             var later = await db.Reservations.FirstOrDefaultAsync(r => r.Id == request.LaterReservationId, cancellationToken);
 
-            var outOfTheWay = later is null
-                              || !ReservationOverlap.Blocks(earlier.Status)
-                              || earlier.DiningTableId != later.DiningTableId
-                              || earlier.StartUtc >= later.StartUtc;
+            if (later is null || later.Status != ReservationStatus.PendingApproval)
+            {
+                request.Withdraw(nowUtc);
+                continue;
+            }
 
-            var promisedInTime = !outOfTheWay
-                                 && earlier.PromisedFreeByUtc is { } promise
-                                 && promise <= request.FreeByUtc;
-
-            if (!outOfTheWay && !promisedInTime)
+            if (later.ApprovalHasLapsedAt(nowUtc) || later.StartUtc <= nowUtc)
             {
                 continue;
             }
 
-            if (outOfTheWay)
+            var (verdict, _) = await TableEvening.JudgeAsync(
+                db,
+                later.DiningTableId,
+                later.StartUtc,
+                branch.ReservationPolicy,
+                excludingReservationId: later.Id,
+                cancellationToken,
+                overlay: earlier);
+
+            // Still the same question, to the same guest.
+            if (verdict is { NeedsEarlierGuest: true, Earlier: { } stillAsked } && stillAsked.ReservationId == earlier.Id)
             {
-                request.Withdraw(nowUtc);
-            }
-            else
-            {
-                request.Accept(nowUtc);
+                continue;
             }
 
-            if (later is { Status: ReservationStatus.PendingApproval }
-                && request.AsksEarlierGuest
-                && !later.ApprovalHasLapsedAt(nowUtc)
-                && later.StartUtc > nowUtc)
+            if (verdict.IsFree && TableEvening.Holds(verdict, later.EndUtc))
             {
+                request.Withdraw(nowUtc);
+                await DecideWithoutTheQuestionAsync(db, outbox, later, request, branch, nowUtc, cancellationToken);
+                continue;
+            }
+
+            if (verdict.NeedsEarlierGuest)
+            {
+                // Somebody else's guest is the one before it now - a long sitting, rare. Nothing new is
+                // pushed to anybody: the floor decides it from the awaiting list, with no clock, as any
+                // booking the floor decides.
+                request.Withdraw(nowUtc);
+                later.WaitInsteadFor(ApprovalTrigger.EarlierGuestConsent, approvalExpiresAtUtc: null);
+
+                continue;
+            }
+
+            request.Decline(nowUtc);
+            later.Reject(nowUtc, reason: null, DeclineReason.EarlierGuestDeclined);
+
+            await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", later.Id), cancellationToken);
+            await DinerNotices.CancelUnshownAsync(db, later.Id, nowUtc, cancellationToken);
+
+            var key = await ReservationService.DecisionKeyAsync(db, later.Id, "rejected", nowUtc, cancellationToken);
+
+            ReservationService.TellDinerDecided(
+                db, outbox, later, branch, approved: false, expired: false, key, nowUtc,
+                because: DeclineReason.EarlierGuestDeclined);
+        }
+    }
+
+    /// <summary>
+    /// A booking whose question to the guest before it went away is decided again without it, from the
+    /// reason it would have waited for anyway (<see cref="TableShareRequest.FallbackTrigger"/>): confirmed
+    /// when there is none - and its diner told - left as it is when that reason is short notice (it is
+    /// already the floor's, with its fifteen minutes), and otherwise waiting for that reason, as any such
+    /// booking waits, with no clock.
+    /// </summary>
+    public static async Task DecideWithoutTheQuestionAsync(
+        YallaDbContext db,
+        IOutbox outbox,
+        Reservation later,
+        TableShareRequest request,
+        Branch branch,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        if (later.Status != ReservationStatus.PendingApproval || later.ApprovalHasLapsedAt(nowUtc) || later.StartUtc <= nowUtc)
+        {
+            return;
+        }
+
+        switch (request.FallbackTrigger)
+        {
+            case null:
                 later.Confirm(nowUtc);
 
                 var key = await ReservationService.DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
 
                 ReservationService.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
-            }
+                break;
+
+            case ApprovalTrigger.ShortNotice:
+                break;
+
+            case { } other:
+                later.WaitInsteadFor(other, approvalExpiresAtUtc: null);
+                break;
         }
     }
 
@@ -368,3 +456,4 @@ internal static class TableShares
             requestedStartUtc = request.RequestedStartUtc.ToString("O", CultureInfo.InvariantCulture),
         };
 }
+

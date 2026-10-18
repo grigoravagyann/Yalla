@@ -158,7 +158,14 @@ internal sealed class BranchSettingsService(
                         && r.StartUtc > nowUtc
                         && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.PendingApproval))
             .Where(r => r.StartUtc > windowEndsUtc
-                        || EF.Functions.DateDiffMinute(r.StartUtc, r.EndUtc) != policy.TurnTimeMinutes)
+
+                        // A booking cut short by its guest's promise to free the table ends when they
+                        // promised, not a turn time after it starts: it is outside the new rules only if
+                        // it runs longer than the new turn time.
+                        || (r.PromisedFreeByUtc == null
+                            && EF.Functions.DateDiffMinute(r.StartUtc, r.EndUtc) != policy.TurnTimeMinutes)
+                        || (r.PromisedFreeByUtc != null
+                            && EF.Functions.DateDiffMinute(r.StartUtc, r.EndUtc) > policy.TurnTimeMinutes))
             .OrderBy(r => r.StartUtc)
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);

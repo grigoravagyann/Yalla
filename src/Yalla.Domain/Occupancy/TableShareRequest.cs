@@ -59,10 +59,25 @@ public sealed class TableShareRequest : Entity
     public bool AsksEarlierGuest { get; private set; }
 
     /// <summary>
-    /// The deadline: two hours from the request, never past the earlier booking's start - the same
-    /// instant as the later booking's <c>ApprovalExpiresAtUtc</c>.
+    /// Until when the question can be answered. Asked in the app: two hours from the request, never past
+    /// the earlier booking's start - the same instant as the later booking's <c>ApprovalExpiresAtUtc</c>,
+    /// past which the sweep declines it. Asked by the floor: tonight, the short-notice fifteen minutes;
+    /// another day, the later booking's start - the floor decides it as it decides any booking waiting
+    /// for approval, with no clock running.
     /// </summary>
     public DateTime ExpiresAtUtc { get; private set; }
+
+    /// <summary>
+    /// Why the later booking would still wait without this question - the reason it waits for the floor
+    /// anyway (a branch that approves every booking, a large party, a no-show history, short notice) -
+    /// or null when it would be confirmed at once.
+    /// </summary>
+    /// <remarks>
+    /// Stored so that when the earlier booking gets out of the way - cancelled, moved - the later one is
+    /// decided again without the question: confirmed when null, left waiting for this reason otherwise.
+    /// Always null for a question asked in the app, which is only asked when nothing else needs a human.
+    /// </remarks>
+    public ApprovalTrigger? FallbackTrigger { get; private set; }
 
     /// <summary>When it was answered, expired or withdrawn; null while it waits.</summary>
     public DateTime? DecidedAtUtc { get; private set; }
@@ -81,7 +96,8 @@ public sealed class TableShareRequest : Entity
         DateTime freeByUtc,
         DateTime createdAtUtc,
         DateTime expiresAtUtc,
-        bool asksEarlierGuest)
+        bool asksEarlierGuest,
+        ApprovalTrigger? fallbackTrigger = null)
         : base(Guid.CreateVersion7())
     {
         EarlierReservationId = Guard.NotEmpty(earlierReservationId, nameof(earlierReservationId));
@@ -111,7 +127,51 @@ public sealed class TableShareRequest : Entity
 
         ExpiresAtUtc = expiresAtUtc;
         AsksEarlierGuest = asksEarlierGuest;
+
+        if (asksEarlierGuest && fallbackTrigger is not null)
+        {
+            throw new ArgumentException(
+                "The earlier guest is asked in the app only when nothing else about the later booking needs a human.",
+                nameof(fallbackTrigger));
+        }
+
+        FallbackTrigger = fallbackTrigger is null ? null : Guard.Defined(fallbackTrigger.Value, nameof(fallbackTrigger));
         Status = TableShareRequestStatus.Pending;
+    }
+
+    /// <summary>
+    /// The later booking moved and still asks the same guest, the same way: the same question at its new
+    /// time, without asking again - in the app under the same deadline or a sooner one, never a later
+    /// one; by the floor until the new start, with the reason it would wait for anyway as it now is.
+    /// </summary>
+    /// <exception cref="DomainStateException">The request was already answered or withdrawn.</exception>
+    public void Retime(DateTime requestedStartUtc, DateTime freeByUtc, DateTime expiresAtUtc, ApprovalTrigger? fallbackTrigger)
+    {
+        if (Status != TableShareRequestStatus.Pending)
+        {
+            throw new DomainStateException($"This request for a table was already {Status}.");
+        }
+
+        if (Guard.NotLocalTime(freeByUtc, nameof(freeByUtc)) > Guard.NotLocalTime(requestedStartUtc, nameof(requestedStartUtc)))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(freeByUtc), freeByUtc, "The table has to be free by the time the later booking starts.");
+        }
+
+        RequestedStartUtc = requestedStartUtc;
+        FreeByUtc = freeByUtc;
+
+        var expires = Guard.NotLocalTime(expiresAtUtc, nameof(expiresAtUtc));
+
+        if (!AsksEarlierGuest)
+        {
+            ExpiresAtUtc = expires;
+            FallbackTrigger = fallbackTrigger is null ? null : Guard.Defined(fallbackTrigger.Value, nameof(fallbackTrigger));
+        }
+        else if (expires < ExpiresAtUtc)
+        {
+            ExpiresAtUtc = expires;
+        }
     }
 
     /// <summary>Whether it can still be answered at <paramref name="nowUtc"/>: waiting, and before its deadline.</summary>

@@ -148,6 +148,24 @@ public class TableSequencingTests
     }
 
     [Fact]
+    public void A_booking_right_after_one_that_promised_to_leave_in_time_is_not_refused_as_just_booked()
+    {
+        // X at 20:45 promised to be gone by 21:25 for a 21:30 booking. Judging that 21:30 again - a
+        // change of party size - must find the table free, not "just booked" forty-five minutes ago.
+        var x = new SequencedBooking(PreviousId, At(20, 45), At(21, 25), ReservationStatus.Confirmed, At(21, 25));
+
+        var verdict = Judge(At(21, 30), x);
+
+        Assert.True(verdict.IsFree);
+        Assert.Null(verdict.Refusal);
+
+        // A promise that is not soon enough is still the ninety-minute rule's.
+        var notSoonEnough = x with { EndUtc = At(21, 27), PromisedFreeByUtc = At(21, 27) };
+
+        Assert.Equal(ReservationRejectionReason.TableJustBooked, Judge(At(21, 30), notSoonEnough).Refusal);
+    }
+
+    [Fact]
     public void While_the_earlier_guest_is_being_asked_nobody_else_can_ask()
     {
         var verdict = Judge(At(19, 45), Previous(beingAsked: true));

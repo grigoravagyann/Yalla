@@ -618,6 +618,20 @@ internal static class ApiExceptionMapper
             },
             Errors: new Dictionary<string, string[]> { [FreeByNotAcceptedException.Field] = [e.Message] }),
 
+        // Staff deciding a booking that waits on the guest before it to answer in the app. Theirs to
+        // answer. Must stay ABOVE DomainStateException, which it derives from.
+        ReservationAwaitingEarlierGuestException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationAwaitingEarlierGuest,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["requestId"] = e.RequestId,
+                ["expiresAtUtc"] = e.ExpiresAtUtc,
+            }),
+
         // An answer to a request for a table that no longer waits. Its own code so the app drops the
         // card. Must stay ABOVE DomainStateException, which it derives from.
         TableRequestNotPendingException e => new MappedError(

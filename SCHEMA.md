@@ -170,8 +170,11 @@ have left by 19:40?". `EarlierReservationId` and `LaterReservationId` (both Rest
 `RequestedStartUtc` (the later start, what the earlier guest is told), `FreeByUtc` (that start less the
 branch's clearing time), `Status` (`Pending | Accepted | Declined | Expired | Withdrawn`),
 `AsksEarlierGuest` (true: the earlier guest is pushed and answers in the app; false: the floor asks them),
-`ExpiresAtUtc` (two hours from the request, never past the earlier booking's start - the later booking's
-`ApprovalExpiresAtUtc` too), `DecidedAtUtc` and `RowVersion`. Two filtered unique indexes on `Status = 1`
+`FallbackTrigger` (why the later booking would still wait without the question, null when it would be
+confirmed - so it is decided again when the earlier guest gets out of the way; `TableShareRequestFallback`),
+`ExpiresAtUtc` (in the app two hours from the request, never past the earlier booking's start - the later
+booking's `ApprovalExpiresAtUtc` too; the floor's tonight its fifteen minutes; the floor's another day the
+later booking's start, with no clock on the booking), `DecidedAtUtc` and `RowVersion`. Two filtered unique indexes on `Status = 1`
 hold **one open question per earlier booking** and one per later booking; every booker takes the table's
 lock before asking, so the writer settles a race itself and the indexes hold the rule for any writer that
 did not. A yes cuts the earlier booking's end to `FreeByUtc` (`Reservation.PromisedFreeByUtc`). See
