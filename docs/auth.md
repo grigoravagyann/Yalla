@@ -492,12 +492,50 @@ row is gone - is refused with `401 session-revoked`. All of them rather than onl
 the reason to end a session is the same whichever door the token is used on. Deactivation is not part of
 this check; the services still refuse an inactive staff member from the stored row, with 403.
 
-The generation moves (`StaffMember.EndSessions`) when the password is **reset** from a link and when the
-platform admin **changes** theirs. Both also revoke every refresh token; the change spends any reset link
-still unused and answers the caller a fresh pair under the new generation, so the console carries on
-(`docs/platform-admin.md` §5). A rehash at sign-in does not move it. **A token minted before `sgen`
+The generation moves (`StaffMember.EndSessions`) when the password is **reset** from a link, when the
+platform admin or a venue user **changes** theirs, and when a venue user **signs out everywhere else**.
+A reset and a change also revoke every refresh token; the change spends any reset link still unused and
+answers the caller a fresh pair under the new generation, so the console carries on
+(`docs/platform-admin.md` §5, and "The venue console's own account" below). A rehash at sign-in does
+not move it. **A token minted before `sgen`
 existed reads as generation 0**, which is where every row starts (migration `StaffSessionGeneration`), so
 those keep working until they expire unless a bump ends them first.
+
+### The venue console's own account
+
+`/api/venue/me` is Իմ հաշիվը for an **owner, general manager or branch manager signed in with email and
+password** (policy `VenueStaffAccount`: the `VenueUser` principal type and one of the three venue ranks).
+The platform admin has `/api/platform/me`; a manager's PIN session on a tablet is refused, because a
+tablet is not where a password is changed. No route takes an id: the row is the token's, re-checked from
+the store (active, a venue rank, a sign-in).
+
+| Route | What it does |
+|---|---|
+| `GET /api/venue/me` | `{ staffMemberId, fullName, email, role, venueId, branchId? }` - `branchId` only for a branch manager |
+| `PATCH /api/venue/me` | `{ fullName }`, 1-200 after trimming; audited `account.rename`, nothing written for the same name |
+| `POST /api/venue/me/password` | `{ currentPassword, newPassword }` - the platform admin's change: every problem in one 422 (`currentPassword` `conflict` when wrong - a form error, not a 401), ten wrong ones in 15 minutes lock it with `429 too-many-attempts` and `Retry-After`, the `auth` rate limit on top; ends every session and answers a fresh pair. Audited `account.password-change` / `account.password-change-failed` |
+| `GET /api/venue/me/sessions` | `{ sessions: [{ id, signedInAtUtc, lastActiveAtUtc, isCurrent }] }`, current first |
+| `POST /api/venue/me/sessions/sign-out-others` | `{ endedSessions }`; audited `account.sign-out-others` |
+
+- **The email is not theirs to change.** Whoever outranks them issues a new sign-in link for a new
+  address; an owner's is the platform's.
+- **One set of rules.** `OwnAccountChanges` holds the name bounds, the proof of the current password, the
+  lockout counted from the audit rows and the end of every session; the platform admin's account and this
+  one each pass their own audit slugs. The feed leaves out both `-failed` slugs: they are the lockout's
+  counter, not a change.
+- **A sign-in is a refresh chain**, the one per-session record there is. A session row is a chain with a
+  token that is neither revoked, rotated nor expired; `signedInAtUtc` is the chain's first token,
+  `lastActiveAtUtc` its live one - the last renewal, about every fifteen minutes while the console is in
+  use - and `isCurrent` compares the chain with the token's `rch` claim. **Nothing records the browser,
+  the device or the place**, so none of that is on the wire.
+- **Signing out everywhere else** revokes every other chain (reason `signed-out-elsewhere`) and moves the
+  generation, so their access tokens stop now rather than within fifteen minutes. The caller's access
+  token stops with them and **the caller's chain is kept**: the console refreshes and carries on. It
+  answers no fresh pair on purpose - an access token alone must never turn itself into a thirty-day
+  refresh token; the password change, which proves the password, is the one that does.
+- **The tablet PIN** stays where it was: a staff member sets their own through
+  `POST /api/venues/{venueId}/staff/{staffMemberId}/pin` with the ids `GET /api/venue/me` answers - 4 to 8
+  digits, `409 pin-taken` when somebody else on the same tablet taps it.
 
 ### The roles, and who reaches which branch
 
@@ -751,6 +789,7 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `ManagerOrAbove` | Role is Manager (a branch manager), GeneralManager or Owner. Says nothing about which branch - always paired with a scope policy |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner, general manager or branch manager acting inside their own venue; the services narrow a branch manager to their branch |
+| `VenueStaffAccount` | An owner, general manager or branch manager signed in to the admin panel: principal type `VenueUser` and one of the three venue ranks. The venue console's own account (`/api/venue/me`); not a tablet session, not the platform admin |
 | `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number. The token must also belong to a live session - an active, undeleted account on the token's `sgen` - which is checked on token validation, before the policy runs |
 
 Two of these are the real security of this system, and both have tests:

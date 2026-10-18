@@ -227,11 +227,14 @@ internal sealed class PlatformOverviewQuery(
 
         // Rows with no staff member behind them - the diner deleting their own account - name nobody
         // and are about nobody the console shows; they stay in the log and out of the feed. So do the
-        // wrong current passwords on the admin's own account: they are the lockout's counter (the log is
-        // where it counts them), a security record, not a change anybody made.
+        // wrong current passwords on a console user's own account - the admin's and a venue user's: they
+        // are the lockout's counter (the log is where it counts them), a security record, not a change
+        // anybody made.
         var logs = db.PlatformAuditLogs
             .AsNoTracking()
-            .Where(l => l.ActorRole != null && l.Action != PlatformAdminAccountService.PasswordChangeFailedAuditAction);
+            .Where(l => l.ActorRole != null
+                        && l.Action != PlatformAdminAccountService.PasswordChangeFailedAuditAction
+                        && l.Action != VenueUserAccountService.PasswordChangeFailedAuditAction);
 
         if (query.VenueId is { } venueId)
         {

@@ -117,8 +117,8 @@ public static class PlatformEndpoints
                 + "the branch it is about, never the reviewer), the `venue` it concerns by its current "
                 + "name, and `detail`, the row's JSON as written (shapes in `docs/platform-admin.md`). Rows "
                 + "the log keeps that are not a change are left out: a diner deleting their own account (no "
-                + "staff member behind it), and `admin.password-change-failed`, the password lockout's "
-                + "counter.\n\n"
+                + "staff member behind it), and `admin.password-change-failed` and "
+                + "`account.password-change-failed`, the password lockouts' counters.\n\n"
                 + "`limit` 1-100 (default 20). `venueId` narrows it to one venue.")
             .Produces<ActivityFeed>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`limit` out of range; `context.field` names it.")

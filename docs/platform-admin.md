@@ -483,8 +483,9 @@ token), `TargetDisplay`, and `VenueId`, the venue the row concerns. Migration
 `PlatformActivityAndReportDismissal` fills them for the rows already there from what their ids name
 today. A review's row is named by **its branch, never its author**; the diner deleting their own
 account writes the diner's id as the actor and keeps a null role and name, which is how the feed
-leaves it out. The feed leaves out `admin.password-change-failed` too: those rows are the password
-lockout's counter, a security record rather than a change anybody made, and they stay in the log.
+leaves it out. The feed leaves out `admin.password-change-failed` and `account.password-change-failed`
+too: those rows are the password lockout's counter, a security record rather than a change anybody made,
+and they stay in the log.
 
 ```json
 { "items": [ {
@@ -519,6 +520,10 @@ ones they had then. `detail` is the row's JSON as written:
 | `admin.rename` | platform | `before`, `after` |
 | `admin.password-change` | platform | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |
 | `admin.password-change-failed` | platform | `reason` (`current-password-wrong`) - never what was typed; these rows are the lockout's counter, kept in the log and **left out of the feed** |
+| `account.rename` | owner, general or branch manager, of themself | `before`, `after` |
+| `account.password-change` | owner, general or branch manager, of themself | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |
+| `account.password-change-failed` | owner, general or branch manager | `reason` (`current-password-wrong`); the venue console's lockout counter, **left out of the feed** like the admin's |
+| `account.sign-out-others` | owner, general or branch manager, of themself | `endedSessions` |
 
 **A tier change is its own entry.** `PATCH /api/platform/branches/{id}` that moves the tier writes
 `branch.tier-change`; anything else the same request changed is a `branch.update` beside it; a request
@@ -578,6 +583,9 @@ included.
 - **Rate limited** by the `auth` policy as well (per account, since the caller is signed in), on top of
   the counter.
 - Audited `admin.password-change`, with nothing about either password.
+
+The rules live in `OwnAccountChanges`, which the venue console's own account (`/api/venue/me`,
+`docs/auth.md` §4) shares with its own audit slugs - `account.*` rather than `admin.*`.
 
 ### The seed never overwrites the admin
 

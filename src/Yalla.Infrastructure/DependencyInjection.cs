@@ -279,8 +279,11 @@ public static class DependencyInjection
         services.AddScoped<IStaffAuthService, StaffAuthService>();
         services.AddScoped<IVenueUserAuthService, VenueUserAuthService>();
 
-        // The platform admin's own name and password. The address is configuration's, not theirs.
+        // A console user's own name and password - the platform admin's, and a venue owner's, general
+        // manager's or branch manager's, under one set of rules. Neither address is theirs to change.
+        services.AddScoped<OwnAccountChanges>();
         services.AddScoped<IPlatformAdminAccountService, PlatformAdminAccountService>();
+        services.AddScoped<IVenueUserAccountService, VenueUserAccountService>();
         services.AddScoped<ITokenRefreshService, TokenRefreshService>();
 
         // Identity type 1 has no sign-in flow of its own: the tab-scoped token is minted by the tab

@@ -27,7 +27,8 @@ namespace Yalla.UnitTests.Integration;
 /// The venue rows: anonymous 401; a tab participant, a diner, a waiter's and a cook's tablet session,
 /// another venue's manager, and a manager of this venue whose home branch is the sibling all 403; the
 /// branch's own manager, the venue's general manager, the owner and a platform admin admitted. The platform rows admit only the
-/// platform admin. The diner rows admit only the diner.
+/// platform admin. The venue console's own-account rows admit every venue rank with an admin-panel sign-in - each to their
+/// own row - and nobody else. The diner rows admit only the diner.
 /// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
@@ -165,6 +166,28 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
         ["POST /api/platform/reviews/{reviewId}/restore-reports"] = new(
             (w, c) => c.PostAsJsonAsync($"/api/platform/reviews/{w.ReviewId}/restore-reports", new { }),
             Platform),
+
+        // The venue console's own account: every venue rank's own row, wherever they work - so another
+        // venue's manager and the sibling branch's are admitted to theirs. Never the platform admin, whose
+        // account is /api/platform/me, nor a tablet session. The password change shares the group's policy
+        // and is proved in VenueAccountEndpointTests; it is not a row here because every caller would need
+        // their own current password for an admitted call to succeed.
+        ["GET /api/venue/me"] = new(
+            (_, c) => c.GetAsync("/api/venue/me"),
+            caller => VenueStaffOwn(caller, HttpStatusCode.OK)),
+
+        ["PATCH /api/venue/me"] = new(
+            (_, c) => c.PatchAsJsonAsync("/api/venue/me", new { fullName = "Matrix Manager" }),
+            caller => VenueStaffOwn(caller, HttpStatusCode.OK)),
+
+        ["GET /api/venue/me/sessions"] = new(
+            (_, c) => c.GetAsync("/api/venue/me/sessions"),
+            caller => VenueStaffOwn(caller, HttpStatusCode.OK)),
+
+        // Each admitted caller ends only their own other sign-ins, so one caller's call cannot touch the next.
+        ["POST /api/venue/me/sessions/sign-out-others"] = new(
+            (_, c) => c.PostAsync("/api/venue/me/sessions/sign-out-others", content: null),
+            caller => VenueStaffOwn(caller, HttpStatusCode.OK)),
     };
 
     private static readonly Dictionary<string, MatrixRoute> DinerRoutes = new(StringComparer.Ordinal)
@@ -241,6 +264,14 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
     {
         Caller.Anonymous => HttpStatusCode.Unauthorized,
         Caller.BranchManager or Caller.GeneralManager or Caller.Owner or Caller.PlatformAdmin => admitted,
+        _ => HttpStatusCode.Forbidden,
+    };
+
+    private static HttpStatusCode VenueStaffOwn(Caller caller, HttpStatusCode admitted) => caller switch
+    {
+        Caller.Anonymous => HttpStatusCode.Unauthorized,
+        Caller.OtherVenueManager or Caller.SiblingBranchManager or Caller.BranchManager or Caller.GeneralManager
+            or Caller.Owner => admitted,
         _ => HttpStatusCode.Forbidden,
     };
 
