@@ -899,6 +899,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("ApprovalExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ApprovalTrigger")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -930,6 +936,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int?>("DeclineReason")
+                        .HasColumnType("int");
 
                     b.Property<Guid?>("DinerUserId")
                         .HasColumnType("uniqueidentifier");
@@ -989,6 +998,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ApprovalExpiresAtUtc")
+                        .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc")
+                        .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL");
 
                     b.HasIndex("ClientCommandId")
                         .IsUnique()

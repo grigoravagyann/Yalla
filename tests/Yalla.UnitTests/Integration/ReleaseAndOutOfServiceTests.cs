@@ -19,6 +19,12 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
     private static readonly DateOnly BookingDate = new(2026, 9, 13);
 
     /// <summary>
+    /// Three days out: past the short-notice window, so a booking there is decided by the branch's
+    /// rules and the diner's record alone - which is what the no-show tests below are about.
+    /// </summary>
+    private static readonly DateOnly LaterDate = BookingDate.AddDays(3);
+
+    /// <summary>
     /// A threshold of two, so that three no-shows cross it and three venue cancellations do not.
     /// </summary>
     /// <remarks>
@@ -213,12 +219,14 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
                 c => c.DiningTableId == branch.TableIds[i] && c.ToStatus == TableStatus.Free));
         }
 
-        // The next booking now waits for a human.
+        // The next booking now waits for a human - one for another evening, so it is the record that
+        // holds it back and not tonight's short notice.
         await using var nextDb = fixture.CreateContext(clock);
         var next = await fixture.CreateReservationService(nextDb, clock, diner, Threshold)
-            .CreateAsync(Booking(branch, branch.TableIds[4], new TimeOnly(21, 0)));
+            .CreateAsync(Booking(branch, branch.TableIds[4], new TimeOnly(21, 0)) with { LocalDate = LaterDate });
 
         Assert.Equal(ReservationStatus.PendingApproval, next.Status);
+        Assert.Equal(ApprovalTrigger.NoShowHistory, next.AwaitingApprovalBecause);
     }
 
     /// <summary>
@@ -256,10 +264,11 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
         }
 
         // Three of them change nothing, under the same threshold that three no-shows crossed in the
-        // test above. That contrast is the whole reason there are two buttons.
+        // test above. That contrast is the whole reason there are two buttons. Another evening, as
+        // there, so tonight's short notice does not stand in for the record.
         await using var nextDb = fixture.CreateContext(clock);
         var next = await fixture.CreateReservationService(nextDb, clock, diner, Threshold)
-            .CreateAsync(Booking(branch, branch.TableIds[4], new TimeOnly(21, 0)));
+            .CreateAsync(Booking(branch, branch.TableIds[4], new TimeOnly(21, 0)) with { LocalDate = LaterDate });
 
         Assert.Equal(ReservationStatus.Confirmed, next.Status);
     }
@@ -483,6 +492,11 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
 
         var view = await fixture.CreateReservationService(db, clock, diner)
             .CreateAsync(Booking(branch, tableId, at));
+
+        // Tonight's booking is the floor's to confirm (short notice). The waiter says yes, as they
+        // would well before the party is late - these tests are about what happens after that.
+        await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .ApproveAsync(new DecideReservationCommand(view.Id));
 
         return view.Id;
     }

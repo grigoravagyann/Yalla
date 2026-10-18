@@ -324,10 +324,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 row.OpeningHours, localDate.ToDateTime(localTime), zone.ToLocal(endUtc));
 
         var proposed = new BookedInterval(startUtc, endUtc);
-        // Every reason knowable before booking: the branch approves everything by hand, or the party
-        // is over its threshold. It was the threshold alone, so a branch with auto-confirm off was
-        // promising an instant confirmation it was never going to give.
-        var needsApproval = ReservationRules.AwaitsApproval(request.PartySize, policy);
+        // Every reason knowable before booking: the slot is at short notice, the branch approves
+        // everything by hand, or the party is over its threshold. It was the threshold alone once, so
+        // a branch with auto-confirm off was promising an instant confirmation it was never going to
+        // give - and tonight's slot is the floor's to decide, whatever the branch's settings.
+        var needsApproval = ReservationRules.AwaitsApproval(
+            request.PartySize, policy, startUtc, localDate, nowUtc, zone.LocalDateAt(nowUtc));
 
         var tables = row.Tables
             .Select(t => ProjectTable(t, proposed, zone, policy, request.PartySize, requestReason, needsApproval, nowUtc))
@@ -511,9 +513,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var policy = row.Policy;
         var localToday = zone.LocalDateAt(nowUtc);
 
-        // Knowable before booking, and the same for every time of the day: see Project.
-        var needsApproval = ReservationRules.AwaitsApproval(request.PartySize, policy);
-
         var slots = new List<DaySlot>();
 
         for (var minutes = 0; minutes < MinutesPerDay; minutes += DaySlotStep.Minutes)
@@ -534,6 +533,11 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             }
 
             var time = localTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+
+            // Knowable before booking, and asked per time: see Project. Today's times wait for the
+            // floor, and so do tomorrow's under six hours away; the rest are confirmed on the spot.
+            var needsApproval = ReservationRules.AwaitsApproval(
+                request.PartySize, policy, startUtc, request.LocalDate, nowUtc, localToday);
 
             if (ReservationRules.CheckTiming(startUtc, nowUtc, request.LocalDate, localToday, policy) is { } timing)
             {

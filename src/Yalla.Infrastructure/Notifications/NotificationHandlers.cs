@@ -27,7 +27,8 @@ internal sealed record ReservationNotice(
     TimeOnly LocalStartTime,
     string ReservationCode,
     int GraceExtensionMinutes = 0,
-    bool Approved = false);
+    bool Approved = false,
+    bool Expired = false);
 
 internal sealed record TabNotice(Guid TabId, Guid ParticipantId, Guid DinerUserId, string TableLabel);
 
@@ -35,9 +36,18 @@ internal sealed record TabNotice(Guid TabId, Guid ParticipantId, Guid DinerUserI
 /// Sends the reminder, if the booking is still worth reminding anybody about.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The state check happens here rather than at write time, because hours pass in between. Cancelling
 /// a booking deletes its unsent reminder, so this is the belt to that braces - a booking seated early
 /// or cancelled by staff through some path that forgot still produces no push.
+/// </para>
+/// <para>
+/// A booking still waiting for the venue is reminded - a large party next week the venue has not got
+/// to yet is still the diner's plan - <b>except one waiting on a short-notice answer</b>. That one
+/// has a deadline minutes away, and "your table is at 20:00" about a table nobody has promised is the
+/// wrong thing to say; the answer itself says the right thing. Its reminder is not even written when
+/// it would fall before the deadline, so this is the braces for a sweep running behind.
+/// </para>
 /// </remarks>
 internal sealed class ReservationReminderHandler(
     YallaDbContext db,
@@ -50,17 +60,28 @@ internal sealed class ReservationReminderHandler(
     {
         var notice = Payload.Read<ReservationNotice>(payloadJson);
 
-        var status = await db.Reservations
+        var booking = await db.Reservations
             .AsNoTracking()
             .Where(r => r.Id == notice.ReservationId)
-            .Select(r => (ReservationStatus?)r.Status)
+            .Select(r => new { r.Status, AwaitsShortNoticeAnswer = r.ApprovalExpiresAtUtc != null })
             .FirstOrDefaultAsync(cancellationToken);
+
+        var status = booking?.Status;
 
         if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
         {
             logger.LogInformation(
                 "Skipping the reminder for booking {ReservationId}: it is {Status}.",
                 notice.ReservationId, status);
+
+            return;
+        }
+
+        if (status == ReservationStatus.PendingApproval && booking!.AwaitsShortNoticeAnswer)
+        {
+            logger.LogInformation(
+                "Skipping the reminder for booking {ReservationId}: it is still waiting on the venue's short-notice answer.",
+                notice.ReservationId);
 
             return;
         }
@@ -142,7 +163,14 @@ internal sealed class ReservationLateNudgeHandler(
     }
 }
 
-/// <summary>The manager approved or rejected a booking that was waiting.</summary>
+/// <summary>
+/// Staff approved or declined a booking that was waiting - or nobody answered a short-notice one in
+/// time and it was declined for them.
+/// </summary>
+/// <remarks>
+/// <c>expired</c> in the data tells the app which decline it is, so it can apologise rather than say
+/// the venue turned the diner down. A message written before the flag existed reads as not expired.
+/// </remarks>
 internal sealed class ReservationDecidedHandler(
     YallaDbContext db,
     INotificationChannel channel) : IOutboxHandler
@@ -154,9 +182,12 @@ internal sealed class ReservationDecidedHandler(
         var notice = Payload.Read<ReservationNotice>(payloadJson);
         var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
 
-        var (title, body) = notice.Approved
-            ? NotificationText.ReservationApproved(locale, notice.VenueName, notice.LocalStartTime)
-            : NotificationText.ReservationRejected(locale, notice.VenueName);
+        var (title, body) = notice switch
+        {
+            { Approved: true } => NotificationText.ReservationApproved(locale, notice.VenueName, notice.LocalStartTime),
+            { Expired: true } => NotificationText.ReservationExpired(locale, notice.VenueName),
+            _ => NotificationText.ReservationRejected(locale, notice.VenueName),
+        };
 
         await channel.SendAsync(
             new NotificationMessage(
@@ -168,6 +199,7 @@ internal sealed class ReservationDecidedHandler(
                     ["kind"] = "reservation-decided",
                     ["reservationId"] = notice.ReservationId.ToString(),
                     ["approved"] = notice.Approved ? "true" : "false",
+                    ["expired"] = notice.Expired ? "true" : "false",
                 }),
             cancellationToken);
     }

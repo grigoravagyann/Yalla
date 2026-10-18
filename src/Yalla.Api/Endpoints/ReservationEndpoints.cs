@@ -19,9 +19,9 @@ namespace Yalla.Api.Endpoints;
 /// <para>
 /// Identity comes from the policies, not from the handlers. Booking, cancelling and the diner's own
 /// list carry <see cref="YallaPolicies.VerifiedDiner"/>; approving and rejecting carry
-/// <see cref="YallaPolicies.ManagerOrAbove"/>. Availability is the only anonymous endpoint outside
-/// the sign-in flows: somebody deciding whether to eat here must be able to see the room before
-/// they are asked who they are.
+/// <see cref="YallaPolicies.WaiterOrAbove"/>, because short-notice bookings are the floor's to decide.
+/// Availability is the only anonymous endpoint outside the sign-in flows: somebody deciding whether to
+/// eat here must be able to see the room before they are asked who they are.
 /// </para>
 /// <para>
 /// Two boundaries the policies cannot draw are drawn in the service instead, deliberately.
@@ -77,7 +77,7 @@ public static class ReservationEndpoints
     {
         // Addressed by branch, so BranchScoped applies - in the house style of the branch settings
         // group. It widens a home-branch manager to the whole venue; the service narrows them back
-        // with the check approve and reject use, so what a manager can list and decide agree.
+        // with the stored-row branch check, so a manager lists only bookings they can decide.
         var group = app.MapGroup("/api/branches/{branchId:guid}")
             .WithTags(EndpointConventions.AdminTag)
             .RequireAuthorization(YallaPolicies.ManagerOrAbove)
@@ -91,10 +91,13 @@ public static class ReservationEndpoints
                 + "`reject`. `status` is required (`1` PendingApproval).\n\n"
                 + "Sorted by the branch's local date, then local start time. **No paging: at most "
                 + "200 rows**, the earliest first, so what a cap would cut is what is furthest away.\n\n"
-                + "Scoped like approve and reject: a manager whose record names a home branch lists "
-                + "that branch only; a manager or owner whose record names none, any branch of their "
-                + "venue; a platform admin, any branch. `awaitingApprovalBecause` is worked out "
-                + "against the branch's current policy.")
+                + "Manager or above: a branch manager lists their own branch only; an owner or general "
+                + "manager, any branch of their venue; a platform admin, any branch. (Approving and "
+                + "rejecting are open to the branch's waiters too; the floor's own list is "
+                + "`/reservations/awaiting`.) `awaitingApprovalBecause` is the reason stored when the "
+                + "booking went to approval - worked out against the branch's current policy only for "
+                + "a booking from before that was stored - and `approvalExpiresAtUtc` the short-notice "
+                + "deadline to count down to.")
             .Produces<IReadOnlyList<ReservationView>>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
@@ -102,7 +105,46 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblemDetails(
                 StatusCodes.Status422UnprocessableEntity, "`status` is missing or is not a booking status.");
+
+        // The floor's read: waiter or above, because the people deciding short-notice bookings are
+        // the ones on the floor. BranchScoped first, from the token; the service checks the stored
+        // staff row again, as it does for approve and reject.
+        var floor = app.MapGroup("/api/branches/{branchId:guid}")
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
+
+        floor.MapGet("/reservations/awaiting", ListAwaitingApprovalAsync)
+            .WithName("listAwaitingApproval")
+            .WithSummary("The bookings waiting for the floor's yes or no, with each table's evening")
+            .WithDescription(
+                "What the staff tablet's *awaiting approval* panel polls (every ten seconds or so) before "
+                + "calling `approve` or `reject`. The branch's bookings in `PendingApproval` that can still "
+                + "be answered - not past `approvalExpiresAtUtc`, not started - **soonest deadline first**, "
+                + "then those with no deadline by start. At most 200; no paging.\n\n"
+                + "Each item: `reservation` (the `ReservationView` - code, start, party, table, room, guest "
+                + "name, and `guestPhone` for calling), `approvalExpiresAtUtc` (count down to it; null for "
+                + "a booking that waits as long as it takes), `trigger` (the `ApprovalTrigger`, 4 "
+                + "ShortNotice), and the table's context that day: `previousBooking` (`reservationId`, "
+                + "`startUtc`, `localStartTime`, `partySize`, `guestName`, `guestPhone`, `status` - the "
+                + "booking before it, cancelled ones skipped), `nextBooking` (`reservationId`, `startUtc`, "
+                + "`localStartTime`, `partySize`) and `currentSitting` (`seatedAtUtc`, `partySize` - absent "
+                + "when a diner's scan opened the table and only guessed). Each is absent when there is "
+                + "none, like every null in this API.\n\n"
+                + "One query however many are waiting. A waiter or above at this branch; an owner or "
+                + "general manager at any branch of their venue. A platform admin reads the list with "
+                + "every guest number blank (`guestPhone` empty, `previousBooking.guestPhone` absent).")
+            .Produces<IReadOnlyList<AwaitingApproval>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
     }
+
+    private static async Task<IResult> ListAwaitingApprovalAsync(
+        Guid branchId,
+        IReservationService reservations,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await reservations.ListAwaitingApprovalAsync(branchId, cancellationToken));
 
     private static async Task<IResult> ListBranchReservationsAsync(
         Guid branchId,
@@ -220,8 +262,15 @@ public static class ReservationEndpoints
             .WithDescription(
                 "Idempotent on `clientCommandId`: a retry returns the original booking and creates "
                 + "nothing, answering 200 rather than 201. Lands as `Confirmed`, or "
-                + "`PendingApproval` when the branch approves every booking, the party is over the "
-                + "branch's threshold, or the diner is over the rolling no-show threshold.")
+                + "`PendingApproval` (`awaitingApprovalBecause` says why) when the booking is at **short "
+                + "notice** - for the branch's today, or starting under six hours from now - the branch "
+                + "approves every booking, the party is over the branch's threshold, or the diner is over "
+                + "the rolling no-show threshold.\n\n"
+                + "A short-notice booking (`awaitingApprovalBecause` 4) is the floor's to decide, by "
+                + "`approvalExpiresAtUtc` - fifteen minutes from now, or the start if sooner. Unanswered "
+                + "by then it is declined (`CancelledByVenue`, `declinedBecause` 2 NoAnswer) and the diner "
+                + "gets a `reservation-decided` push with `expired` true. Count down to "
+                + "`approvalExpiresAtUtc`; read the booking again to see the answer.")
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
@@ -250,9 +299,13 @@ public static class ReservationEndpoints
                 + "because of itself - and the 409's fresh floor shows the diner's own table free.\n\n"
                 + "**The status is decided again** by the create rules: the move can keep it `Confirmed`, "
                 + "confirm a pending one, or send it back to `PendingApproval` (`awaitingApprovalBecause` "
-                + "says why). A `Confirmed` booking whose party does not grow keeps its confirmation "
-                + "against the party-size threshold - the venue already said yes to that many people - "
-                + "but not against a branch that approves every booking or the diner's no-show history.\n\n"
+                + "says why). A `Confirmed` booking that keeps its **table and start** and does not grow "
+                + "stays `Confirmed`, today included - nothing about it got harder to keep. Otherwise a "
+                + "move into the short-notice window (today, or under six hours away) goes to "
+                + "`PendingApproval` with a **fresh** fifteen-minute `approvalExpiresAtUtc`. A `Confirmed` "
+                + "booking whose party does not grow keeps its confirmation against the party-size "
+                + "threshold - the venue already said yes to that many people - but not against a branch "
+                + "that approves every booking or the diner's no-show history.\n\n"
                 + "The reminder and late nudge are replaced with ones for the new time. Idempotent on "
                 + "`clientCommandId`: a retry of the same change answers `200` with the booking **as it "
                 + "stands now** and `wasReplay: true`, moving nothing; the same id on another command, "
@@ -325,25 +378,40 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
     }
 
+    private const string DecisionExpiredDescription =
+        "`reservation-approval-expired`: too late to answer - the short-notice answer window "
+        + "(`approvalExpiresAtUtc`) has closed, or the booking was already declined because nobody "
+        + "answered in time (`declinedBecause` 2); approving also once the booking has started. "
+        + "`context` carries `reservationId`, `status`, `startUtc` and `approvalExpiresAtUtc`. Drop the "
+        + "request from the panel: the diner is told the venue did not answer in time. "
+        + "`conflicting-state`: the booking is not waiting for approval.";
+
     private static void MapStaffDecisions(IEndpointRouteBuilder app)
     {
-        // A separate group because the identity is different. ManagerOrAbove carries no route
+        // A separate group because the identity is different. WaiterOrAbove carries no route
         // dependency, so it works on a route addressed by reservation id; BranchScoped would not,
-        // and the service does that half.
+        // and the service does that half. Waiter or above, not manager: a short-notice booking is a
+        // question about a table somebody may have just sat down at, which the person on the floor
+        // can see and the office cannot - and the answer is due within fifteen minutes. No
+        // clientCommandId filter: the body is unchanged, and deciding twice is refused by the state.
         var group = app.MapGroup("/api/reservations")
             .WithTags(EndpointConventions.StaffTag, EndpointConventions.AdminTag)
-            .RequireAuthorization(YallaPolicies.ManagerOrAbove);
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove);
 
         group.MapPost("/{id:guid}/approve", ApproveAsync)
             .WithName("approveReservation")
             .WithSummary("Accept a booking that is waiting for approval")
             .WithDescription(
-                "Scoped to the acting staff member's own branch and venue. A manager of one venue "
-                + "cannot decide another's bookings by guessing an id.")
+                "A waiter or above at the booking's own branch - an owner or general manager at any "
+                + "branch of their venue, a platform admin anywhere. Staff of one branch cannot decide "
+                + "another's bookings by guessing an id.\n\n"
+                + "A short-notice booking (`awaitingApprovalBecause` 4) can be approved until "
+                + "`approvalExpiresAtUtc`, and no booking once it has started.")
             .Produces<ReservationView>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, DecisionExpiredDescription);
 
         // Waiter or above, not manager: the person standing at the table is the one who knows
         // nobody came, and a hold that waits for somebody senior to walk past is a hold nobody
@@ -399,11 +467,17 @@ public static class ReservationEndpoints
         group.MapPost("/{id:guid}/reject", RejectAsync)
             .WithName("rejectReservation")
             .WithSummary("Decline a booking that is waiting for approval")
-            .WithDescription("Refuses a booking that was already confirmed: the diner has been told it is theirs.")
+            .WithDescription(
+                "Scoped as `approve`. Refuses a booking that was already confirmed: the diner has been told "
+                + "it is theirs. `reason` is optional and recorded as `cancellationReason`; the booking "
+                + "answers `declinedBecause` 1 (StaffDeclined). A short-notice booking can be declined "
+                + "until `approvalExpiresAtUtc` - after that it is declined for nobody answering, and the "
+                + "diner is told that instead.")
             .Produces<ReservationView>()
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a manager of this booking's branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, StateDescription);
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, DecisionExpiredDescription);
     }
 
     private static async Task<IResult> MarkNoShowAsync(

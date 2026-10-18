@@ -40,14 +40,36 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 |---|---|---|---|
 | `reservation.reminder` | A booking is created | `StartUtc − ReminderHoursBefore` (default 3h) | The diner |
 | `reservation.late-nudge` | A booking is created | `StartUtc + LateNudgeAfterMinutes` (default 10m) | The diner |
-| `reservation.decided` | A manager approves or rejects a pending booking | Immediately | The diner |
+| `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, or the approval sweep declines a short-notice one nobody answered | Immediately | The diner |
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
 | `tab.order-ready` | An order moves to `Ready` | Immediately | Whoever ordered it |
 
 Both reservation messages are written when the booking is made, hours before either is due. A
 reminder whose moment has **already passed** is not written at all: a booking made an hour before it
 starts has no three-hours-before, and queueing one in the past only feeds the staleness rule with a
-log line implying something went wrong.
+log line implying something went wrong. Nor is one that would fall while a short-notice booking is
+still inside its fifteen-minute answer window - "your table is at 20:00" about a table nobody has
+promised is the wrong thing to say, and the approval push says the right thing minutes later. When a
+reminder fires, the handler sends it for a confirmed booking and for a pending one with no deadline (a
+large party next week the venue has not got to), never for one still waiting on a short-notice answer.
+
+### `reservation.decided`, and the apology
+
+One message for every way a waiting booking is decided. Its data carries `kind: "reservation-decided"`,
+`reservationId`, `approved` and **`expired`** (all strings, `"true"`/`"false"`):
+
+| `approved` | `expired` | What happened | Words (`NotificationText`) |
+|---|---|---|---|
+| `true` | `false` | Staff said yes | `ReservationApproved` - "Booking confirmed - {venue} is expecting you at 20:00." |
+| `false` | `false` | Staff said no | `ReservationRejected` - "{venue} could not take this booking. Try another time." |
+| `false` | `true` | Nobody answered a short-notice booking within 15 minutes | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
+
+The expired one is an apology, not the venue's "no": the venue did not turn the diner down, it did not
+look in time. It is written by `ApprovalExpirySweep` - a loop of its own (`ApprovalExpiryHostedService`,
+every `ApprovalExpiry:SweepIntervalSeconds`, default 20), not a scheduled outbox message, because the
+staleness rule below would dead-letter a deadline the machine slept through and leave the diner waiting
+for good. See [reservations.md](reservations.md#3d-short-notice-tonight-is-the-floors-to-decide). A
+message written before `expired` existed reads as `false`.
 
 `tab.order-ready` is **off by default**, per branch, on `Branch.NotifyOnOrderReady`. It is noise in a
 cafe where a waiter carries the plate ten feet and genuinely useful in a canteen where the diner
@@ -62,7 +84,9 @@ A push is gone once it is read or swiped away, so the diner app also lists what 
 row is added to the same unit of work - whether or not the diner has a device, because the feed is what
 a diner without push reads. It carries a `kind` and string `params`, never rendered text: the app writes
 the words in the diner's language. A reminder's row carries its due time and does not show before then,
-and cancelling a booking deletes it with the unsent message. Two entries have no push beside them - a
+and cancelling a booking deletes it with the unsent message. A `booking-declined` entry carries
+`expired` in its `params` - `"true"` when nobody answered in time, `"false"` when staff said no; one
+written before the key existed has none and was a staff decline. Two entries have no push beside them - a
 booking the venue lets go, and a review moderation takes down - and are written with that change. The
 late nudge and the participant approval write none. Rows older than 90 days are deleted by this loop's
 host, `OutboxHostedService`, about hourly.
@@ -98,6 +122,7 @@ reservation:{reservationId}:reminder:{startUtc:yyyyMMddHHmm}      (a moved booki
 reservation:{reservationId}:late-nudge:{startUtc:yyyyMMddHHmm}    (a moved booking's)
 reservation:{reservationId}:approved      (or :rejected)
 reservation:{reservationId}:approved:{yyyyMMddHHmmssfff}          (a second approval)
+reservation:{reservationId}:expired       (declined by the sweep: nobody answered in time)
 participant:{participantId}:approved
 order:{orderId}:ready
 ```
@@ -255,9 +280,9 @@ A Russian-speaking regular at an Armenian venue is written to in Russian, and a 
 languages does not have to pick one on their diners' behalf. Anything unrecognised falls back to
 Armenian.
 
-Every word lives in `NotificationText` — eleven strings, three languages, in one file, because the
-translator is a person reading the file and not a tool. They are short on purpose: a push is read on
-a lock screen at a glance and the second sentence is never read at all.
+Every word lives in `NotificationText` — seven messages of a title and a body each, three languages,
+in one file, because the translator is a person reading the file and not a tool. They are short on
+purpose: a push is read on a lock screen at a glance and the second sentence is never read at all.
 
 The **reminder is the point of the whole feature**, and its body says what it is for:
 
@@ -279,6 +304,10 @@ bookings, no automatic no-show.
 
 **A waiter releases a table, and only a waiter.** `POST /api/reservations/{id}/no-show` and
 `POST /api/reservations/{id}/release` are things a person taps.
+
+The approval sweep is not an exception. It declines a short-notice *request* nobody answered within
+fifteen minutes - a booking that was never promised, so there is no hold to let go and nothing on the
+floor changes. A booking anybody said yes to is never touched by it.
 
 The reason is that the system cannot see the dining room. The party may be standing at the door. They
 may have been seated by a colleague who has not tapped anything yet. They may have telephoned. A

@@ -338,6 +338,16 @@ public static class ErrorCodes
     public const string ReservationNotChangeable = "reservation-not-changeable";
 
     /// <summary>
+    /// Approving or declining a booking whose chance to be answered has gone: its short-notice answer
+    /// window closed, it was already declined because nobody answered in time, or - approving only -
+    /// it has started. HTTP 409, with <c>context.reservationId</c>, <c>context.status</c>,
+    /// <c>context.startUtc</c> and <c>context.approvalExpiresAtUtc</c> (null once declined). Minted by
+    /// <c>ReservationApprovalExpiredException</c>. The tablet drops the request: the diner has been, or
+    /// is about to be, told the venue did not answer in time.
+    /// </summary>
+    public const string ReservationApprovalExpired = "reservation-approval-expired";
+
+    /// <summary>
     /// A booking from the diner app at a branch that is not taking app bookings (K9): online bookings
     /// are switched off, or nobody has saved the branch's reservation policy. HTTP 409, with
     /// <c>context.branchId</c>. The app reads <c>acceptsAppBookings</c> to hide the button.
@@ -423,6 +433,7 @@ public static class ErrorCodes
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
         ReservationNotChangeable => "Booking can no longer be changed",
+        ReservationApprovalExpired => "Too late to answer this booking",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         InternalError => "Internal error",

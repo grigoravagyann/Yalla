@@ -117,7 +117,11 @@ public sealed class OccupancyAwareAvailabilityTests(SqlServerFixture fixture)
         var booked = await fixture.CreateReservationService(bookDb, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, tableId, Now.AddMinutes(105)));
 
-        Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+        // Accepted by the occupancy rule. Being tonight, it is the floor's to confirm (short notice) -
+        // which is the point of that rule: somebody is sitting there, and only the floor can see when
+        // they will go.
+        Assert.Equal(ReservationStatus.PendingApproval, booked.Status);
+        Assert.Equal(ApprovalTrigger.ShortNotice, booked.AwaitingApprovalBecause);
 
         // One minute earlier leaves fourteen minutes to clear a table the branch says needs fifteen.
         await using var tooSoonDb = fixture.CreateContext(clock);
@@ -149,7 +153,9 @@ public sealed class OccupancyAwareAvailabilityTests(SqlServerFixture fixture)
         var booked = await fixture.CreateReservationService(bookDb, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, tableId, Now.AddMinutes(45)));
 
-        Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+        // Accepted - nothing is sitting there any more - and, being tonight, the floor's to confirm.
+        Assert.Equal(ReservationStatus.PendingApproval, booked.Status);
+        Assert.Equal(ApprovalTrigger.ShortNotice, booked.AwaitingApprovalBecause);
     }
 
     // ------------------------------------------------------------ 5 and 6. now versus later

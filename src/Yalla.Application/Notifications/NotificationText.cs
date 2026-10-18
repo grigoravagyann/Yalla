@@ -111,6 +111,26 @@ public static class NotificationText
                   $"{venue}-ը չկարողացավ ընդունել այս ամրագրումը։ Փորձեք այլ ժամ։"),
         };
 
+    /// <summary>
+    /// Nobody at the venue answered a short-notice booking within the fifteen minutes, so it was
+    /// declined for them.
+    /// </summary>
+    /// <remarks>
+    /// An apology, and not the venue's "no": the venue did not turn this diner down, it did not look in
+    /// time. The body sends them on - another time, or another place - while there is still an evening
+    /// to book.
+    /// </remarks>
+    public static (string Title, string Body) ReservationExpired(string locale, string venue) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронь не подтверждена вовремя",
+                     $"Извините, {venue} не успел подтвердить бронь. Попробуйте другое время или другое место."),
+            "en" => ("Booking not confirmed in time",
+                     $"Sorry, {venue} could not confirm in time. Try another time or place."),
+            _ => ("Ամրագրումը ժամանակին չհաստատվեց",
+                  $"Ներողություն, {venue}-ը չհասցրեց հաստատել ամրագրումը։ Փորձեք այլ ժամ կամ այլ վայր։"),
+        };
+
     // ---------------------------------------------------------------- the tab
 
     /// <summary>

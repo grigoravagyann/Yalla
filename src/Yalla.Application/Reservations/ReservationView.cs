@@ -107,11 +107,32 @@ public sealed record ReservationView
     /// Why the booking is waiting for a human, when it is. Null for a confirmed booking.
     /// </summary>
     /// <remarks>
-    /// Three different situations land in <c>PendingApproval</c> and a diner deserves to know
-    /// which: the branch approves everything by hand, the party is over the branch's threshold, or
-    /// the diner has run up no-shows. Only the last is about them.
+    /// Four different situations land in <c>PendingApproval</c> and a diner deserves to know
+    /// which: the booking is at short notice and the floor has to check the table, the branch
+    /// approves everything by hand, the party is over the branch's threshold, or the diner has run up
+    /// no-shows. Only the last is about them. The reason stored when the booking went to approval -
+    /// see <see cref="ApprovalTrigger"/> for which one wins when several apply.
     /// </remarks>
     public ApprovalTrigger? AwaitingApprovalBecause { get; init; }
+
+    /// <summary>
+    /// When the venue's chance to answer runs out, for a booking waiting on a short-notice decision;
+    /// null for every other booking, and once it is decided.
+    /// </summary>
+    /// <remarks>
+    /// Fifteen minutes from the request, or the start if that is sooner. Past it nobody can approve or
+    /// decline the booking - both answer <c>409 reservation-approval-expired</c> - and the server
+    /// declines it within moments, with <see cref="DeclinedBecause"/> <c>NoAnswer</c> and an apology
+    /// to the diner. Count down to this, never to a client-side fifteen minutes.
+    /// </remarks>
+    public DateTime? ApprovalExpiresAtUtc { get; init; }
+
+    /// <summary>
+    /// Why a booking that was waiting for the venue was declined: a member of staff said no, or
+    /// nobody answered in time. Null for every booking that was not declined - a venue letting an
+    /// accepted booking go is <c>CancelledByVenue</c> without one.
+    /// </summary>
+    public DeclineReason? DeclinedBecause { get; init; }
 
     /// <summary>
     /// The plaintext manage token, <b>returned exactly once</b> - in the response to the request
@@ -130,22 +151,6 @@ public sealed record ReservationView
     /// </para>
     /// </remarks>
     public string? ManageToken { get; init; }
-}
-
-/// <summary>Why a booking needs a human before it is promised.</summary>
-public enum ApprovalTrigger
-{
-    /// <summary>The branch does not auto-confirm anything.</summary>
-    BranchApprovesEveryBooking = 1,
-
-    /// <summary>The party is above the branch's <c>ApprovalRequiredAbovePartySize</c>.</summary>
-    LargeParty = 2,
-
-    /// <summary>
-    /// The diner is over the rolling no-show threshold. See <see cref="NoShowPolicy"/> - this
-    /// costs instant confirmation and nothing else.
-    /// </summary>
-    NoShowHistory = 3,
 }
 
 /// <summary>The branch booking list the console's approval panel reads.</summary>

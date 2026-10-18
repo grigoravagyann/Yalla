@@ -62,7 +62,9 @@ internal sealed class PublicBookingService(
                 r.CancelledAfterDeadline,
                 r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
                 r.Note,
-                r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name))
+                r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
+                r.ApprovalExpiresAtUtc,
+                r.DeclineReason))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -117,7 +119,13 @@ internal sealed class PublicBookingService(
         Note: row.Note,
 
         // Where the table is, which is about the venue rather than about anybody else.
-        RoomName: row.RoomName);
+        RoomName: row.RoomName,
+
+        // The countdown a short-notice booking waits under, and why a declined one was: the same
+        // facts the app shows, about nothing but the link holder's own booking. The column is cleared
+        // once the booking stops waiting, so it is only ever a live deadline.
+        ApprovalExpiresAtUtc: row.ApprovalExpiresAtUtc,
+        DeclinedBecause: row.DeclineReason);
 
     private sealed record Row(
         string VenueName,
@@ -135,5 +143,7 @@ internal sealed class PublicBookingService(
         bool CancelledAfterDeadline,
         int CancellationDeadlineMinutes,
         string? Note,
-        string? RoomName);
+        string? RoomName,
+        DateTime? ApprovalExpiresAtUtc,
+        Domain.Enums.DeclineReason? DeclineReason);
 }

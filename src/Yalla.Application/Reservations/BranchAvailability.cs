@@ -192,8 +192,9 @@ public sealed record TableAvailability
 
     /// <summary>
     /// True when booking this table will land as <c>PendingApproval</c> rather than confirmed: the
-    /// branch approves every booking by hand, or the party is over its threshold. Not a refusal,
-    /// and worth saying before the diner commits.
+    /// slot is at short notice (today at the branch, or under six hours away - the floor decides,
+    /// within fifteen minutes), the branch approves every booking by hand, or the party is over its
+    /// threshold. Not a refusal, and worth saying before the diner commits.
     /// </summary>
     /// <remarks>
     /// The one reason it cannot know is the diner's own no-show record, which needs the diner and is

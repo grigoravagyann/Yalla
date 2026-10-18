@@ -392,6 +392,11 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
                 GuestPhone: "+37411223344",
                 ClientCommandId: Guid.CreateVersion7()));
 
+        // Half an hour away, so it is short notice and waits for the floor; the branch's waiter says
+        // yes, which is what makes it the confirmed booking both handlers send for.
+        await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+            .ApproveAsync(new DecideReservationCommand(view.Id));
+
         return view.Id;
     }
 

@@ -106,19 +106,50 @@ public interface IReservationService
         string? reason = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Staff accept a booking that was waiting for approval. Manager or above.</summary>
+    /// <summary>
+    /// Staff accept a booking that was waiting for approval. A waiter or above at the booking's own
+    /// branch - an owner or general manager at any branch of their venue.
+    /// </summary>
+    /// <exception cref="Domain.Staff.StaffPermissionException">Not a waiter or above at this booking's branch.</exception>
+    /// <exception cref="Domain.Occupancy.ReservationApprovalExpiredException">
+    /// The answer window has closed, the booking was already declined for nobody answering, or it has
+    /// started.
+    /// </exception>
     Task<ReservationView> ApproveAsync(DecideReservationCommand command, CancellationToken cancellationToken = default);
 
-    /// <summary>Staff decline a booking that was waiting for approval. Manager or above.</summary>
+    /// <summary>
+    /// Staff decline a booking that was waiting for approval. Scoped as <see cref="ApproveAsync"/>.
+    /// </summary>
+    /// <exception cref="Domain.Staff.StaffPermissionException">Not a waiter or above at this booking's branch.</exception>
+    /// <exception cref="Domain.Occupancy.ReservationApprovalExpiredException">
+    /// The answer window has closed, or the booking was already declined for nobody answering.
+    /// </exception>
     Task<ReservationView> RejectAsync(DecideReservationCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The branch's bookings still waiting for a yes or no that can still be given - soonest deadline
+    /// first, then those with none by start - each with its table's evening around it: the booking
+    /// before it and its guest's number, the one after, and whoever is sitting there now. At most
+    /// <see cref="BranchReservationList.MaxRows"/>, in one query.
+    /// </summary>
+    /// <remarks>
+    /// The floor's read: a waiter or above at the branch, scoped as <see cref="ApproveAsync"/>. A
+    /// booking past its answer window or its start is left out - nobody can say yes to it any more.
+    /// A platform admin reads the list without the guests' numbers.
+    /// </remarks>
+    /// <exception cref="Domain.Staff.StaffPermissionException">Not a waiter or above at this branch.</exception>
+    Task<IReadOnlyList<AwaitingApproval>> ListAwaitingApprovalAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>The calling diner's own bookings, upcoming and past.</summary>
     Task<MyReservations> GetMineAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// One branch's bookings in one status, by local date then start time, at most
-    /// <see cref="BranchReservationList.MaxRows"/>. Manager or above, scoped exactly as approve and
-    /// reject are, so a manager sees precisely the bookings they can decide.
+    /// <see cref="BranchReservationList.MaxRows"/>. The console's queue: manager or above at the
+    /// branch, so a manager sees precisely the bookings they can decide. The floor's own list is
+    /// <see cref="ListAwaitingApprovalAsync"/>.
     /// </summary>
     Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
         Guid branchId,

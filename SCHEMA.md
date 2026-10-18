@@ -148,7 +148,12 @@ the diner booked and sees while turnaround padding remains a setting the owner c
 tomorrow without rewriting history. `(DiningTableId, StartUtc, EndUtc)` is the index every
 overlap check hits. `Code` is unique — it is what the diner quotes at the door. `HoldExpiresAtUtc`
 covers the brief hold while a booking is being completed; `GraceExtensionsUsed` stops "just five
-more minutes" being granted indefinitely.
+more minutes" being granted indefinitely. `ApprovalTrigger` stores why a booking went to
+`PendingApproval` (short notice, the branch approves everything, a large party, a no-show history) so
+later reads do not re-derive it from a policy that may have changed; `ApprovalExpiresAtUtc` is the
+short-notice answer deadline, cleared the moment the booking stops waiting, behind a filtered index
+the approval sweep reads; `DeclineReason` records whether a decline was a member of staff's or nobody
+answering in time. See `docs/reservations.md` §3d.
 
 ### TableSession
 

@@ -229,6 +229,23 @@ public class PersistedEnumValueTests
         Assert.Equal(3, (int)ReservationChannel.Staff);
     }
 
+    /// <summary>
+    /// Why a booking waited and how a decline came about. Both were on the wire as numbers before
+    /// they were columns - the trigger as <c>awaitingApprovalBecause</c> - so the numbers the apps
+    /// already switch on are the ones stored; short notice took the next free one.
+    /// </summary>
+    [Fact]
+    public void Approval_trigger_and_decline_reason_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)ApprovalTrigger.BranchApprovesEveryBooking);
+        Assert.Equal(2, (int)ApprovalTrigger.LargeParty);
+        Assert.Equal(3, (int)ApprovalTrigger.NoShowHistory);
+        Assert.Equal(4, (int)ApprovalTrigger.ShortNotice);
+
+        Assert.Equal(1, (int)DeclineReason.StaffDeclined);
+        Assert.Equal(2, (int)DeclineReason.NoAnswer);
+    }
+
     [Fact]
     public void Tab_values_are_pinned_to_what_is_stored()
     {
@@ -308,7 +325,8 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActorType), nameof(AdjustmentKind), nameof(BillScope), nameof(DerivedTableState), nameof(ParticipantRole),
+            nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(DeclineReason),
+            nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
