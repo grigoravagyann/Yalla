@@ -80,16 +80,18 @@ public class ReservationFloorEndpointTests(SqlServerFixture fixture)
     // ------------------------------------------------------------ reject
 
     /// <summary>
-    /// A manager rejects a booking that is waiting for approval, and cannot reject a promised one.
+    /// Staff at the branch reject a booking that is waiting for approval, and cannot reject a promised
+    /// one.
     /// </summary>
     /// <remarks>
     /// The 409 is the point. Rejecting applies to a booking that was never promised; refusing one
     /// that is already <c>Confirmed</c> is what stops a manager quietly un-promising a table the
     /// diner has been told is theirs. That rule lives in the domain, and this proves the mapper
-    /// carries it out as a conflict rather than a 400 or a 500.
+    /// carries it out as a conflict rather than a 400 or a 500. Since short-notice bookings became
+    /// the floor's to decide, a waiter at the branch may reject as well as a manager.
     /// </remarks>
     [SkippableFact]
-    public async Task Rejecting_is_manager_only_and_refuses_a_booking_already_promised()
+    public async Task Rejecting_is_for_staff_at_the_branch_and_refuses_a_booking_already_promised()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -118,16 +120,12 @@ public class ReservationFloorEndpointTests(SqlServerFixture fixture)
                 (await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == pending)).Status);
         }
 
-        // A waiter is not a manager. Approving and rejecting are the two decisions the group
-        // reserves for ManagerOrAbove.
+        // The branch's waiter decides it: approving and rejecting are WaiterOrAbove, because a
+        // short-notice booking is a question about a table the floor can see and the office cannot.
         using var waiter = factory.CreateClientWithToken(
             await StaffAuthTests.SignInWaiterAsync(factory, world.Branch));
 
-        Assert.Equal(
-            HttpStatusCode.Forbidden,
-            (await waiter.PostAsJsonAsync($"/api/reservations/{pending}/reject", new { })).StatusCode);
-
-        var rejected = await manager.PostAsJsonAsync(
+        var rejected = await waiter.PostAsJsonAsync(
             $"/api/reservations/{pending}/reject", new { reason = "fully committed that evening" });
 
         Assert.Equal(HttpStatusCode.OK, rejected.StatusCode);

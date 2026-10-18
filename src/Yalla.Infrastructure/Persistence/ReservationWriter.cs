@@ -259,6 +259,77 @@ internal sealed class ReservationWriter(
     }
 
     /// <summary>
+    /// Takes the lock of the table a waiting change came from, decides whether the booking can go back
+    /// to the confirmed slot it had, and has the caller stage that - or the decline - inside the lock.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other direction of a move, and the same hazard: since the booking left that slot, another
+    /// diner may have booked it, a walk-in may be sitting into it, or the table may have gone out of
+    /// service. So the slot is judged under the table's lock exactly as an insert or a move judges
+    /// one - the booking itself left out of the overlap check - and the answer, with whatever the
+    /// caller stages on it, commits in this one transaction.
+    /// </para>
+    /// <para>
+    /// A slot that has already ended cannot be gone back to whatever else is true of it.
+    /// </para>
+    /// <para>
+    /// <paramref name="applyAsync"/> is told whether the slot is still free and stages either way. It
+    /// must not save. The booking's row version guards the save as it guards a move: a booking decided
+    /// or changed since it was read raises <see cref="DbUpdateConcurrencyException"/> and nothing is
+    /// written.
+    /// </para>
+    /// </remarks>
+    /// <returns>Whether the slot was still free - what <paramref name="applyAsync"/> was told.</returns>
+    /// <exception cref="TableLockTimeoutException">The table's lock could not be had in time. Nothing was changed.</exception>
+    /// <exception cref="DbUpdateConcurrencyException">The booking changed since it was read.</exception>
+    public async Task<bool> ReturnUnderTableLockAsync(
+        Reservation reservation,
+        Guid tableId,
+        string tableLabel,
+        BookedInterval slot,
+        ReservationPolicy policy,
+        DateTime nowUtc,
+        Func<bool, CancellationToken, Task> applyAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(applyAsync);
+
+        await using var locked = await tableLock.AcquireAsync(tableId, tableLabel, cancellationToken);
+
+        try
+        {
+            var free = slot.EndUtc > nowUtc
+                       && await TakesBookingsUnderLockAsync(tableId, cancellationToken)
+                       && await FindConflictAsync(
+                           tableId, slot, policy, cancellationToken, excludingReservationId: reservation.Id) is null
+                       && await FindOccupyingSessionAsync(tableId, slot, policy, cancellationToken) is null;
+
+            await applyAsync(free, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            await locked.CommitAsync(cancellationToken);
+
+            return free;
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
+            throw new TableLockTimeoutException(locked.TableId, locked.TableLabel, locked.TimeoutMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Whether the table still takes bookings, read inside its lock - the answer
+    /// <see cref="ReadTableStatusUnderLockAsync"/> gives by refusing, given as a yes or no.
+    /// </summary>
+    private async Task<bool> TakesBookingsUnderLockAsync(Guid tableId, CancellationToken cancellationToken) =>
+        await db.DiningTables
+            .AsNoTracking()
+            .AnyAsync(
+                t => t.Id == tableId && t.IsActive && t.IsBookable && t.Status != TableStatus.OutOfService,
+                cancellationToken);
+
+    /// <summary>
     /// Refuses a table that stopped being bookable while this booking was being validated.
     /// </summary>
     /// <remarks>

@@ -317,6 +317,32 @@ public class ApiExceptionMapperTests
     }
 
     /// <summary>
+    /// A yes or no that comes after the short-notice window is its own 409 - not the generic
+    /// conflicting-state its base type would map to - so the tablet drops the request instead of the
+    /// waiter tapping again.
+    /// </summary>
+    [Fact]
+    public void A_decision_that_comes_too_late_becomes_a_409_reservation_approval_expired()
+    {
+        var reservationId = Guid.CreateVersion7();
+        var startUtc = new DateTime(2026, 9, 13, 16, 0, 0, DateTimeKind.Utc);
+        var deadline = new DateTime(2026, 9, 13, 12, 15, 0, DateTimeKind.Utc);
+
+        var mapped = ApiExceptionMapper.Map(new ReservationApprovalExpiredException(
+            reservationId, "K7Q2LM", ReservationStatus.PendingApproval, startUtc, deadline, "Too late for K7Q2LM."));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("reservation-approval-expired", mapped.Code);
+        Assert.Equal(ErrorCodes.ReservationApprovalExpired, mapped.Code);
+        Assert.Equal(reservationId, mapped.Context!["reservationId"]);
+        Assert.Equal((int)ReservationStatus.PendingApproval, mapped.Context["status"]);
+        Assert.Equal(startUtc, mapped.Context["startUtc"]);
+        Assert.Equal(deadline, mapped.Context["approvalExpiresAtUtc"]);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Too late to answer this booking", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
     /// Deleting a table, or leaving it out of the plan, while a booking is still to come is its own
     /// 409, naming the tables and the booking codes so the console can say what to move.
     /// </summary>

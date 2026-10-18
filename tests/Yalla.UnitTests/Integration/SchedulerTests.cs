@@ -34,8 +34,15 @@ namespace Yalla.UnitTests.Integration;
 [Collection(SqlServerCollection.Name)]
 public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper output)
 {
-    /// <summary>Midday UTC is four in the afternoon in Yerevan, so an evening booking is bookable.</summary>
-    private static readonly DateTime Now = new(2026, 9, 13, 12, 0, 0, DateTimeKind.Utc);
+    /// <summary>
+    /// Four in the afternoon in Yerevan, the day before the dinner these tests book.
+    /// </summary>
+    /// <remarks>
+    /// The day before, so a booking made now is confirmed on the spot. On the day itself it would wait
+    /// for the floor's short-notice answer (<c>ShortNoticeApprovalTests</c>), and these tests are about
+    /// what is sent for a booking somebody has already said yes to.
+    /// </remarks>
+    private static readonly DateTime Now = new(2026, 9, 12, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly DateOnly BookingDate = new(2026, 9, 13);
 

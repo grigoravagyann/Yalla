@@ -492,6 +492,20 @@ public sealed class SqlServerFixture : IAsyncLifetime
         await db.OutboxMessages.ExecuteDeleteAsync();
     }
 
+    /// <summary>
+    /// The short-notice approval sweep over one context, as one pass of the hosted service runs it.
+    /// </summary>
+    internal ApprovalExpirySweep CreateApprovalExpirySweep(
+        YallaDbContext db,
+        IClock clock,
+        Microsoft.Extensions.Logging.ILogger<ApprovalExpirySweep>? logger = null) =>
+        new(
+            db,
+            clock,
+            CreateOutbox(db, clock),
+            CreateReservationWriter(db),
+            logger ?? NullLogger<ApprovalExpirySweep>.Instance);
+
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
     internal ReservationWriter CreateReservationWriter(
         YallaDbContext db,

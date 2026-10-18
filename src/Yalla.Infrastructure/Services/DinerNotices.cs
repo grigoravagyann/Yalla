@@ -41,15 +41,56 @@ internal static class DinerNotices
         Booking(db, DinerNotificationKinds.BookingReminder, reservation, venueName, branchName, dueAtUtc);
 
     /// <summary>A pending booking approved or declined.</summary>
+    /// <remarks>
+    /// <para>
+    /// A decline carries <c>expired</c> - <c>"true"</c> when nobody at the venue answered a short-notice
+    /// booking in time, <c>"false"</c> when somebody said no - so the app apologises for the right
+    /// thing. Declines written before it existed have no such key and were all somebody's no.
+    /// </para>
+    /// <para>
+    /// It also carries <c>wasChange</c> and <c>originalKept</c>: a declined <i>change</i> of a
+    /// confirmed booking either left the booking standing at the slot it had (<c>originalKept</c>
+    /// <c>"true"</c>; <c>date</c> and <c>time</c> are that slot) or ended it because that slot had gone
+    /// too. A change also carries <c>requestedDate</c> and <c>requestedTime</c>, the slot it asked for.
+    /// </para>
+    /// </remarks>
     public static void BookingDecided(
-        YallaDbContext db, Reservation reservation, string venueName, string branchName, bool approved, DateTime atUtc) =>
+        YallaDbContext db,
+        Reservation reservation,
+        string venueName,
+        string branchName,
+        bool approved,
+        bool expired,
+        DateTime atUtc,
+        DeclinedChange? change = null)
+    {
+        Dictionary<string, string>? extra = null;
+
+        if (!approved)
+        {
+            extra = new Dictionary<string, string>
+            {
+                ["expired"] = expired ? "true" : "false",
+                ["wasChange"] = change is not null ? "true" : "false",
+                ["originalKept"] = change?.OriginalKept == true ? "true" : "false",
+            };
+
+            if (change is not null)
+            {
+                extra["requestedDate"] = change.RequestedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                extra["requestedTime"] = change.RequestedTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+            }
+        }
+
         Booking(
             db,
             approved ? DinerNotificationKinds.BookingConfirmed : DinerNotificationKinds.BookingDeclined,
             reservation,
             venueName,
             branchName,
-            atUtc);
+            atUtc,
+            extra);
+    }
 
     /// <summary>An accepted booking the venue let go.</summary>
     public static void BookingCancelledByVenue(
@@ -130,7 +171,8 @@ internal static class DinerNotices
         Reservation reservation,
         string venueName,
         string branchName,
-        DateTime showAtUtc)
+        DateTime showAtUtc,
+        Dictionary<string, string>? extra = null)
     {
         // A booking made on the web with no account has nobody's feed to go into.
         if (reservation.DinerUserId is not { } dinerUserId)
@@ -138,18 +180,28 @@ internal static class DinerNotices
             return;
         }
 
+        var values = new Dictionary<string, string>
+        {
+            ["venueName"] = venueName,
+            ["branchName"] = branchName,
+            ["date"] = reservation.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["time"] = reservation.LocalStartTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+            ["partySize"] = reservation.PartySize.ToString(CultureInfo.InvariantCulture),
+            ["reservationCode"] = reservation.Code,
+        };
+
+        if (extra is not null)
+        {
+            foreach (var (key, value) in extra)
+            {
+                values[key] = value;
+            }
+        }
+
         db.DinerNotifications.Add(new DinerNotification(
             dinerUserId,
             kind,
-            Params(new()
-            {
-                ["venueName"] = venueName,
-                ["branchName"] = branchName,
-                ["date"] = reservation.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                ["time"] = reservation.LocalStartTime.ToString("HH:mm", CultureInfo.InvariantCulture),
-                ["partySize"] = reservation.PartySize.ToString(CultureInfo.InvariantCulture),
-                ["reservationCode"] = reservation.Code,
-            }),
+            Params(values),
             showAtUtc,
             reservation.BranchId,
             reservation.Id));

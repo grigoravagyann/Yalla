@@ -614,6 +614,23 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
             }),
 
+        // A yes or no that came too late: the short-notice window closed, the booking was already
+        // declined for no answer, or it has started. Its own code so the tablet drops the request and
+        // says why, rather than showing a conflict the waiter answers by tapping again. Must stay ABOVE
+        // DomainStateException, which it derives from.
+        ReservationApprovalExpiredException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationApprovalExpired,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["startUtc"] = e.StartUtc,
+                ["approvalExpiresAtUtc"] = e.ApprovalExpiresAtUtc,
+            }),
+
         // "I'm at my table" refused, and which refusal: too early, over, or a booking not expecting
         // its party. Each its own code with the booking's facts, so the app can say "from 19:10" or
         // "this booking was cancelled" rather than that something went wrong. Must stay ABOVE

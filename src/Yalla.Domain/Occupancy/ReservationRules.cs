@@ -163,20 +163,43 @@ public static class ReservationRules
     }
 
     /// <summary>
-    /// Whether a booking will wait for a human for a reason that is knowable before it is made: the
-    /// branch approves every booking by hand, or the party is over its threshold.
+    /// Whether a booking for this slot will wait for a human for a reason that is knowable before it
+    /// is made: it is short notice, the branch approves every booking by hand, or the party is over
+    /// its threshold.
     /// </summary>
     /// <remarks>
-    /// What availability tells a diner before they commit. The third reason - their own no-show
-    /// record - needs the diner, so it is only known once they book, and the booking says so in
-    /// <c>awaitingApprovalBecause</c>. Availability used <see cref="NeedsApproval"/> alone, so a
-    /// branch with auto-confirm off promised an instant confirmation it was never going to give.
+    /// <para>
+    /// What availability tells a diner before they commit, slot by slot - which is why it takes the
+    /// slot. Tonight's times wait for the floor (<see cref="ShortNoticeRule"/>) while next week's at
+    /// the same branch are confirmed on the spot, and a time picker that said one thing for the whole
+    /// day would be wrong about half of it.
+    /// </para>
+    /// <para>
+    /// The fourth reason - the diner's own no-show record - needs the diner, so it is only known once
+    /// they book, and the booking says so in <c>awaitingApprovalBecause</c>. Availability used
+    /// <see cref="NeedsApproval"/> alone once, so a branch with auto-confirm off promised an instant
+    /// confirmation it was never going to give.
+    /// </para>
     /// </remarks>
-    public static bool AwaitsApproval(int partySize, ReservationPolicy policy)
+    /// <param name="partySize">How many are coming.</param>
+    /// <param name="policy">The branch's policy.</param>
+    /// <param name="startUtc">The slot's start.</param>
+    /// <param name="localDate">The slot's local date at the branch.</param>
+    /// <param name="nowUtc">Now.</param>
+    /// <param name="localToday">The branch's date now, in its own zone.</param>
+    public static bool AwaitsApproval(
+        int partySize,
+        ReservationPolicy policy,
+        DateTime startUtc,
+        DateOnly localDate,
+        DateTime nowUtc,
+        DateOnly localToday)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
-        return !policy.AutoConfirm || NeedsApproval(partySize, policy);
+        return ShortNoticeRule.Applies(startUtc, localDate, nowUtc, localToday)
+               || !policy.AutoConfirm
+               || NeedsApproval(partySize, policy);
     }
 
     /// <summary>

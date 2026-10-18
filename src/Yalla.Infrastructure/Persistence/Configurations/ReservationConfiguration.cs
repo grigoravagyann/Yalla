@@ -115,5 +115,25 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
 
         // Derived from EndUtc and a constant; nothing to store and nothing to keep in sync.
         builder.Ignore(r => r.ManageTokenExpiresAtUtc);
+
+        // Why the booking waited, and how a decline came about - both stored as their numbers, both
+        // nullable: most bookings never wait, and rows from before the columns have neither.
+        builder.Property(r => r.ApprovalTrigger);
+        builder.Property(r => r.DeclineReason);
+
+        // The confirmed slot a waiting change can fall back to, all null when none is waiting. Wall
+        // clock beside the instants, as for the booking's own slot. No foreign key on the table: it is
+        // the table the booking was on, kept to go back to, and the booking's own key covers the one it
+        // is on now.
+        builder.Ignore(r => r.HasConfirmedSlotToReturnTo);
+        builder.Property(r => r.PreviousLocalDate).HasColumnType("date");
+        builder.Property(r => r.PreviousLocalStartTime).HasColumnType("time");
+
+        // The approval sweep's only read: "which requests have run out of time?". Filtered, because
+        // the column is cleared the moment a booking stops waiting, so the index holds the handful
+        // of short-notice requests open right now and nothing else.
+        builder.HasIndex(r => r.ApprovalExpiresAtUtc)
+            .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL")
+            .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc");
     }
 }

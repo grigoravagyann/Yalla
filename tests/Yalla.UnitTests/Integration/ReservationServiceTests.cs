@@ -580,8 +580,12 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         Assert.Equal("no space", rejected.CancellationReason);
     }
 
+    /// <summary>
+    /// The floor decides too: a waiter at the branch approves, a cook does not. Short-notice bookings
+    /// made this the waiters' decision as much as the managers' - see <see cref="ShortNoticeApprovalTests"/>.
+    /// </summary>
     [SkippableFact]
-    public async Task A_waiter_may_not_approve_a_booking()
+    public async Task A_waiter_at_the_branch_may_approve_a_booking_and_a_cook_may_not()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -592,10 +596,17 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var booking = await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.FirstTableId));
 
-        var waiter = fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId));
+        var cook = fixture.CreateReservationService(
+            db, clock, new TestActor(ActorType.Staff, Guid.CreateVersion7(), StaffRole.Kitchen));
 
         await Assert.ThrowsAsync<StaffPermissionException>(
-            () => waiter.ApproveAsync(new DecideReservationCommand(booking.Id)));
+            () => cook.ApproveAsync(new DecideReservationCommand(booking.Id)));
+
+        var waiter = fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId));
+
+        Assert.Equal(
+            ReservationStatus.Confirmed,
+            (await waiter.ApproveAsync(new DecideReservationCommand(booking.Id))).Status);
     }
 
     [SkippableFact]

@@ -64,8 +64,16 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
                 GuestPhone: "+37411998877",
                 ClientCommandId: Guid.CreateVersion7()));
 
-            Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+            // Half an hour away: short notice, so it waits for the floor to look at table 7.
+            Assert.Equal(ReservationStatus.PendingApproval, booked.Status);
+            Assert.Equal(ApprovalTrigger.ShortNotice, booked.AwaitingApprovalBecause);
             bookingId = booked.Id;
+
+            // The waiter sees the request on the tablet, table 7 is free, and says yes.
+            var approved = await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
+                .ApproveAsync(new DecideReservationCommand(bookingId));
+
+            Assert.Equal(ReservationStatus.Confirmed, approved.Status);
         }
 
         // ---------------------------------------------------------- 3. a walk-in at table 3, then a scan
