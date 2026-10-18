@@ -449,10 +449,13 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         // of it would pass against a rule that fired on the first no-show.
         await using (var stillFineDb = fixture.CreateContext(clock))
         {
-            var stillFine = await fixture.CreateReservationService(stillFineDb, clock, diner, Threshold)
-                .CreateAsync(Booking(branch, branch.TableIds[5], new TimeOnly(21, 0)));
+            var stillFineService = fixture.CreateReservationService(stillFineDb, clock, diner, Threshold);
+            var stillFine = await stillFineService.CreateAsync(Booking(branch, branch.TableIds[5], new TimeOnly(21, 0)));
 
             Assert.Equal(ReservationStatus.Confirmed, stillFine.Status);
+
+            // Called off again, so the booking below is not refused as this diner's second table at once.
+            await stillFineService.CancelAsync(new CancelReservationCommand(stillFine.Id));
         }
 
         var third = await NoShowAsync(branch, branch.TableIds[2], new TimeOnly(20, 0), clock, diner);

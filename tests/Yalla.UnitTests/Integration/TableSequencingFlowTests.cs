@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
+using Yalla.Application.Public;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
@@ -10,6 +11,7 @@ using Yalla.Domain.Occupancy;
 using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Notifications;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -74,11 +76,12 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
         Assert.Equal(ThursdayAt(19, 25), request.FreeByUtc);
         Assert.Equal(TableShareRequestStatus.Pending, request.Status);
 
-        // The guest before booked with no phone to push to, so the floor asks them - with no clock, as
-        // the floor decides any booking that waits for it; the question is open until the start.
+        // The guest before booked with no phone to push to, so the floor asks them - with the same two
+        // hours the guest would have had in the app, the booking's deadline and the question's alike.
         Assert.False(request.AsksEarlierGuest);
-        Assert.Null(asked.ApprovalExpiresAtUtc);
-        Assert.Equal(ThursdayAt(19, 30), request.ExpiresAtUtc);
+        Assert.False(asked.AwaitsEarlierGuestAnswer);
+        Assert.Equal(Now.AddHours(2), asked.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddHours(2), request.ExpiresAtUtc);
         Assert.Null(request.FallbackTrigger);
     }
 
@@ -179,11 +182,19 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         // 19:30: ninety minutes after hers, so she is asked to leave by 19:25 - sooner than her booking's
         // 19:30 end, which her yes cuts.
-        var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 30));
+        var gor = TestActor.Diner();
+        var later = await BookAsync(clock, gor, branch, new TimeOnly(19, 30));
         var request = await RequestForLaterAsync(clock, later.Id);
 
         Assert.True(request.AsksEarlierGuest);
         Assert.Equal(ThursdayAt(19, 25), request.FreeByUtc);
+
+        // The later booking says whose answer it waits on - hers, in the app - on every view of it, the
+        // console's list of pending bookings included, so nobody offers the floor's approve and reject.
+        Assert.True(later.AwaitsEarlierGuestAnswer);
+        Assert.True(Assert.Single(await PendingForBranchAsync(clock, branch)).AwaitsEarlierGuestAnswer);
+        Assert.True((await LinkAsync(clock, later.ManageToken!)).AwaitsEarlierGuestAnswer);
+        Assert.True(Assert.Single((await MineAsync(clock, gor)).Upcoming).AwaitsEarlierGuestAnswer);
 
         // Her booking carries the question while it is open, on her own reads only.
         var mine = await MineAsync(clock, anna);
@@ -373,7 +384,10 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
         var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 45));
 
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, later.AwaitingApprovalBecause);
-        Assert.Null(later.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddHours(2), later.ApprovalExpiresAtUtc);
+        Assert.False(later.AwaitsEarlierGuestAnswer);
+        Assert.False(Assert.Single(await PendingForBranchAsync(clock, branch)).AwaitsEarlierGuestAnswer);
+        Assert.False((await LinkAsync(clock, later.ManageToken!)).AwaitsEarlierGuestAnswer);
         Assert.False((await RequestForLaterAsync(clock, later.Id)).AsksEarlierGuest);
 
         // Nothing on her booking to answer: the floor calls her.
@@ -384,7 +398,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         Assert.Equal(later.Id, card.Reservation.Id);
         Assert.Equal(ApprovalTrigger.EarlierGuestConsent, card.Trigger);
-        Assert.Null(card.ApprovalExpiresAtUtc);
+        Assert.Equal(Now.AddHours(2), card.ApprovalExpiresAtUtc);
         Assert.Equal(ThursdayAt(19, 40), card.EarlierGuestFreeByUtc);
         Assert.Equal(earlier.Id, card.PreviousBooking?.ReservationId);
         Assert.NotNull(card.PreviousBooking?.GuestPhone);
@@ -405,26 +419,45 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_guest_with_no_phone_to_push_to_is_asked_by_the_floor_with_no_clock()
+    public async Task A_guest_with_no_phone_to_push_to_is_asked_by_the_floor_for_two_hours_then_declined_for_the_venue_not_answering()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(Now);
+        await fixture.ClearOutboxAsync(clock);
         var branch = await BranchAsync(clock);
-        await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(18, 0));
+        var earlier = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(18, 0));
         var later = await BookAsync(clock, TestActor.Diner(), branch, new TimeOnly(19, 45));
+        var request = await RequestForLaterAsync(clock, later.Id);
 
-        Assert.Single(await AwaitingAsync(clock, branch));
+        // The floor has the same two hours the guest would have had in the app, counted down on the card.
+        Assert.Equal(Now.AddHours(2), Assert.Single(await AwaitingAsync(clock, branch)).ApprovalExpiresAtUtc);
 
-        // Two hours and more on, nothing has run out: the floor's question waits for the floor.
-        clock.UtcNow = Now.AddHours(3);
+        // A minute short, nothing has run out.
+        clock.UtcNow = Now.AddHours(2).AddMinutes(-1);
+        await SweepAsync(clock);
+        Assert.Equal(ReservationStatus.PendingApproval, (await StoredAsync(clock, later.Id)).Status);
+
+        clock.UtcNow = Now.AddHours(2);
         await SweepAsync(clock);
 
-        var waiting = await StoredAsync(clock, later.Id);
-        Assert.Equal(ReservationStatus.PendingApproval, waiting.Status);
-        Assert.Null(waiting.ApprovalExpiresAtUtc);
-        Assert.Equal(TableShareRequestStatus.Pending, (await RequestForLaterAsync(clock, later.Id)).Status);
-        Assert.Single(await AwaitingAsync(clock, branch));
+        // The venue did not answer: declined as any request the venue let run out, the question with it.
+        var lapsed = await StoredAsync(clock, later.Id);
+        Assert.Equal(ReservationStatus.CancelledByVenue, lapsed.Status);
+        Assert.Equal(DeclineReason.NoAnswer, lapsed.DeclineReason);
+        Assert.Equal(TableShareRequestStatus.Expired, (await RequestAsync(clock, request.Id)).Status);
+        Assert.Empty(await AwaitingAsync(clock, branch));
+
+        var untouched = await StoredAsync(clock, earlier.Id);
+        Assert.Equal(ReservationStatus.Confirmed, untouched.Status);
+        Assert.Null(untouched.PromisedFreeByUtc);
+
+        var channel = new RecordingChannel();
+        await DispatchAsync(clock, channel);
+
+        var told = Assert.Single(For(channel, "reservation-decided", later.Id));
+        Assert.Equal("2", told.Data["declinedBecause"]);
+        Assert.Equal("true", told.Data["expired"]);
     }
 
     [SkippableFact]
@@ -865,6 +898,24 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         return await fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId))
             .ListAwaitingApprovalAsync(branch.BranchId);
+    }
+
+    /// <summary>The console's list of the branch's pending bookings, as a manager reads it.</summary>
+    private async Task<IReadOnlyList<ReservationView>> PendingForBranchAsync(IClock clock, TestBranch branch)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        return await fixture.CreateReservationService(db, clock, TestActor.Manager(branch.ManagerId))
+            .ListForBranchAsync(branch.BranchId, ReservationStatus.PendingApproval);
+    }
+
+    /// <summary>The booking as its manage link shows it - what the web confirmation page reads.</summary>
+    private async Task<PublicBookingView> LinkAsync(IClock clock, string manageToken)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        return await new PublicBookingService(db, clock, fixture.CreateReservationService(db, clock, TestActor.Diner()))
+            .GetAsync(manageToken);
     }
 
     private async Task<int> SweepAsync(IClock clock)

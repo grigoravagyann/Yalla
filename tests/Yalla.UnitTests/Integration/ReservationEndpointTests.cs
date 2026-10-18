@@ -649,9 +649,12 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
         var mineId = (await (await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch)))
             .Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
 
+        // The other table by somebody else: one diner holds one table at a branch at a time.
+        using var another = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+
         Assert.Equal(
             HttpStatusCode.Created,
-            (await diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch, tableId: branch.TableIds[1]))).StatusCode);
+            (await another.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch, tableId: branch.TableIds[1]))).StatusCode);
 
         var full = await anonymous.GetFromJsonAsync<JsonElement>(
             $"/api/branches/{branch.BranchId}/availability/slots?date={day}&partySize=2");

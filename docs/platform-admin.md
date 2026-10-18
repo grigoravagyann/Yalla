@@ -483,7 +483,8 @@ token), `TargetDisplay`, and `VenueId`, the venue the row concerns. Migration
 `PlatformActivityAndReportDismissal` fills them for the rows already there from what their ids name
 today. A review's row is named by **its branch, never its author**; the diner deleting their own
 account writes the diner's id as the actor and keeps a null role and name, which is how the feed
-leaves it out.
+leaves it out. The feed leaves out `admin.password-change-failed` too: those rows are the password
+lockout's counter, a security record rather than a change anybody made, and they stay in the log.
 
 ```json
 { "items": [ {
@@ -517,7 +518,7 @@ ones they had then. `detail` is the row's JSON as written:
 | `table.regenerate-qr` | manager or platform | `branchId`, `label`, `previousQrToken` (dead the moment it was replaced) |
 | `admin.rename` | platform | `before`, `after` |
 | `admin.password-change` | platform | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |
-| `admin.password-change-failed` | platform | `reason` (`current-password-wrong`) - never what was typed; these rows are the lockout's counter |
+| `admin.password-change-failed` | platform | `reason` (`current-password-wrong`) - never what was typed; these rows are the lockout's counter, kept in the log and **left out of the feed** |
 
 **A tier change is its own entry.** `PATCH /api/platform/branches/{id}` that moves the tier writes
 `branch.tier-change`; anything else the same request changed is a `branch.update` beside it; a request

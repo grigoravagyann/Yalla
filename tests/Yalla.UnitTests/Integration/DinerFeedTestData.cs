@@ -64,7 +64,8 @@ internal static class DinerFeedTestData
         AuthBranch branch,
         Guid tableId,
         int daysOut,
-        int partySize = 2)
+        int partySize = 2,
+        string time = "18:00")
     {
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
         var localNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(factory.Clock.UtcNow, DateTimeKind.Utc), zone);
@@ -76,7 +77,7 @@ internal static class DinerFeedTestData
                 branchId = branch.BranchId,
                 tableId,
                 date = DateOnly.FromDateTime(localNow).AddDays(daysOut).ToString("yyyy-MM-dd"),
-                time = "18:00",
+                time,
                 partySize,
                 guestName = "Ani Feed",
                 guestPhone = ReviewTestData.NextPhone(),

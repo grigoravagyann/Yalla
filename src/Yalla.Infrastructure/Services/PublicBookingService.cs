@@ -64,7 +64,12 @@ internal sealed class PublicBookingService(
                 r.Note,
                 r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 r.ApprovalExpiresAtUtc,
-                r.DeclineReason))
+                r.DeclineReason,
+
+                // Waiting on the guest before it to answer in the app, beside the row in the same statement.
+                db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
+                                               && q.Status == Domain.Enums.TableShareRequestStatus.Pending
+                                               && q.AsksEarlierGuest)))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -115,13 +120,17 @@ internal sealed class PublicBookingService(
         CanCancel: ReservationService.CanStillCancel(row.Status),
         CancelledAfterDeadline: row.CancelledAfterDeadline,
 
+        // Whose answer a waiting booking waits for: the guest before it, in the app, or the venue.
+        AwaitsEarlierGuestAnswer: row.AsksEarlierGuest && row.Status == Domain.Enums.ReservationStatus.PendingApproval,
+
         // The diner's own words to the venue (K9): nothing the link holder did not write.
         Note: row.Note,
 
         // Where the table is, which is about the venue rather than about anybody else.
         RoomName: row.RoomName,
 
-        // The countdown a short-notice booking waits under, and why a declined one was: the same
+        // The countdown a waiting booking waits under - short notice, or the guest before it - and why a
+        // declined one was: the same
         // facts the app shows, about nothing but the link holder's own booking. The column is cleared
         // once the booking stops waiting, so it is only ever a live deadline.
         ApprovalExpiresAtUtc: row.ApprovalExpiresAtUtc,
@@ -145,5 +154,6 @@ internal sealed class PublicBookingService(
         string? Note,
         string? RoomName,
         DateTime? ApprovalExpiresAtUtc,
-        Domain.Enums.DeclineReason? DeclineReason);
+        Domain.Enums.DeclineReason? DeclineReason,
+        bool AsksEarlierGuest);
 }

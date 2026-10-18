@@ -59,6 +59,15 @@ public static class ReservationEndpoints
         + "409, this one is worth retrying - with the same `clientCommandId`, so a retry that "
         + "crosses with a late-committing original is recognised as a replay.";
 
+    private const string OverlapsOwnDescription =
+        "**One table at a time per diner at a branch**: a sitting that overlaps another of the diner's "
+        + "own live bookings there (pending, confirmed or seated) is `409 reservation-overlaps-own`, with "
+        + "`context` naming the booking already held - `reservationId`, `code` (its door code), "
+        + "`localDate` (`\"2026-10-22\"`, the branch's calendar - say the day when it differs), "
+        + "`localStartTime` (`\"19:30:00\"`) and `tableLabel` - so the app can say \"You already have a "
+        + "booking at 19:30 (table 2)\". Sittings that only touch do not overlap; another branch is not "
+        + "refused. A retry with the same `clientCommandId` still answers as a replay.";
+
     private const string StateDescription =
         "The booking is not in a state that permits this - cancelling one that is already seated, "
         + "or approving one that was never pending.";
@@ -96,8 +105,12 @@ public static class ReservationEndpoints
                 + "rejecting are open to the branch's waiters too; the floor's own list is "
                 + "`/reservations/awaiting`.) `awaitingApprovalBecause` is the reason stored when the "
                 + "booking went to approval - worked out against the branch's current policy only for "
-                + "a booking from before that was stored - and `approvalExpiresAtUtc` the short-notice "
-                + "deadline to count down to.")
+                + "a booking from before that was stored - and `approvalExpiresAtUtc` the deadline to count "
+                + "down to: fifteen minutes at short notice, two hours for a booking waiting on the guest "
+                + "before it (`awaitingApprovalBecause` 5). `awaitsEarlierGuestAnswer` true means that guest "
+                + "answers in the app and only they can - approve and reject are `409 "
+                + "reservation-awaiting-earlier-guest` - so show the countdown, not the buttons; false, the "
+                + "floor decides it after calling them.")
             .Produces<IReadOnlyList<ReservationView>>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
@@ -123,7 +136,9 @@ public static class ReservationEndpoints
                 + "be answered - not past `approvalExpiresAtUtc`, not started - **soonest deadline first**, "
                 + "then those with no deadline by start. At most 200; no paging.\n\n"
                 + "Each item: `reservation` (the `ReservationView` - code, start, party, table, room, guest "
-                + "name, and `guestPhone` for calling), `approvalExpiresAtUtc` (count down to it; null for "
+                + "name, and `guestPhone` for calling), `approvalExpiresAtUtc` (count down to it - fifteen "
+                + "minutes at short notice, two hours for a booking waiting on the guest before it, whom the "
+                + "floor calls; null for "
                 + "a booking that waits as long as it takes), `trigger` (the `ApprovalTrigger`, 4 "
                 + "ShortNotice), and the table's context that day: `previousBooking` (`reservationId`, "
                 + "`startUtc`, `localStartTime`, `partySize`, `guestName`, `guestPhone`, `status` - the "
@@ -286,12 +301,24 @@ public static class ReservationEndpoints
                 + "`approvalExpiresAtUtc` - fifteen minutes from now, or the start if sooner. Unanswered "
                 + "by then it is declined (`CancelledByVenue`, `declinedBecause` 2 NoAnswer) and the diner "
                 + "gets a `reservation-decided` push with `expired` true. Count down to "
-                + "`approvalExpiresAtUtc`; read the booking again to see the answer.")
+                + "`approvalExpiresAtUtc`; read the booking again to see the answer.\n\n"
+                + "A booking for a table whose previous booking started under three hours before "
+                + "(`awaitingApprovalBecause` 5 EarlierGuestConsent) waits on that guest's yes, for **two "
+                + "hours** at most (`approvalExpiresAtUtc`, never past their start nor this one's). When "
+                + "`awaitsEarlierGuestAnswer` is true they are asked in the app and only they answer - "
+                + "unanswered it is declined with `declinedBecause` 4 EarlierGuestNoAnswer. When it is false "
+                + "the floor calls them and decides, by the same deadline - unanswered it is declined with "
+                + "`declinedBecause` 2 NoAnswer.\n\n"
+                + OverlapsOwnDescription)
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, ConflictDescription)
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
+                + " `reservation-overlaps-own`: the diner already has a booking at this branch then - "
+                + "`context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel` name it.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
@@ -325,7 +352,11 @@ public static class ReservationEndpoints
                 + "the deadline it cannot be moved at all - `409 reservation-approval-expired`. A `Confirmed` "
                 + "booking whose party does not grow keeps its confirmation against the party-size "
                 + "threshold - the venue already said yes to that many people - but not against a branch "
-                + "that approves every booking or the diner's no-show history.\n\n"
+                + "that approves every booking or the diner's no-show history. A booking waiting on the "
+                + "guest before it (`awaitingApprovalBecause` 5) keeps its two-hour deadline through a move "
+                + "in the same way, whoever answers - the floor or that guest in the app.\n\n"
+                + OverlapsOwnDescription + " The booking being moved is left out of that check, and a "
+                + "change that keeps its table, start and end (a party size) is not judged by it.\n\n"
                 + "The reminder and late nudge are replaced with ones for the new time. Idempotent on "
                 + "`clientCommandId`: a retry of the same change answers `200` with the booking **as it "
                 + "stands now** and `wasReplay: true`, moving nothing; the same id on another command, "
@@ -341,6 +372,8 @@ public static class ReservationEndpoints
                 StatusCodes.Status409Conflict,
                 "`reservation-not-changeable`: the booking is finished with or has started. "
                 + "`table-already-booked` / `table-currently-occupied`: the new slot is taken - " + ConflictDescription
+                + " `reservation-overlaps-own`: another of the diner's bookings at this branch runs then - "
+                + "`context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel` name it."
                 + " `concurrent-update`: the booking was cancelled, approved or seated while this was in "
                 + "flight; read it again. `bookings-not-accepted`, `web-bookings-not-accepted`, "
                 + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`: "

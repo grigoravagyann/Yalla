@@ -110,7 +110,8 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
         }
 
         var keptId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
-        var cancelledId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2);
+        // At 20:00, after the kept one's sitting: one diner holds one table at a branch at a time.
+        var cancelledId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2, time: "20:00");
 
         // Written, not yet shown.
         var now = await diner.GetFromJsonAsync<JsonElement>("/api/diner/notifications");
@@ -166,7 +167,8 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
         }
 
         var seatedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
-        var finishedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2);
+        // At 20:00, after the other's sitting: one diner holds one table at a branch at a time.
+        var finishedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2, time: "20:00");
 
         DateTime dueAtUtc;
         await using (var db = fixture.CreateContext(factory.Clock))

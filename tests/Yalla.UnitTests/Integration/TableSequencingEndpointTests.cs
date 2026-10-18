@@ -36,6 +36,7 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         var (annaToken, _) = await DinerFeedTestData.SignInDinerAsync(factory);
         using var anna = factory.CreateClientWithToken(annaToken);
         using var gor = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
+        using var aram = factory.CreateClientWithToken((await DinerFeedTestData.SignInDinerAsync(factory)).AccessToken);
         using var anonymous = factory.CreateClient();
 
         // Anna has the app on her phone, so she is the one asked.
@@ -91,10 +92,26 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
 
         var accepted = await BookAsync(gor, branch, branch.TableIds[1], day, "20:45", acceptsFreeByUtc: mustFreeBy);
         Assert.Equal(HttpStatusCode.Created, accepted.StatusCode);
-        Assert.Equal(mustFreeBy, (await accepted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("promisedFreeByUtc").GetDateTime());
+        var gors = await accepted.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(mustFreeBy, gors.GetProperty("promisedFreeByUtc").GetDateTime());
 
-        // Gor asks for table 1 at 19:45: he waits, and Anna is asked.
-        var waiting = await BookAsync(gor, branch, branch.TableIds[0], day, "19:45");
+        // Table 1 at 19:45 as well would be Gor's second table that evening at once: refused, naming the
+        // booking he already has, so the app can say "You already have a booking at 20:45 (table 2)".
+        var twice = await BookAsync(gor, branch, branch.TableIds[0], day, "19:45");
+        Assert.Equal(HttpStatusCode.Conflict, twice.StatusCode);
+
+        var overlap = await twice.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("reservation-overlaps-own", overlap.GetProperty("code").GetString());
+
+        var own = overlap.GetProperty("context");
+        Assert.Equal(gors.GetProperty("id").GetGuid(), own.GetProperty("reservationId").GetGuid());
+        Assert.Equal(gors.GetProperty("code").GetString(), own.GetProperty("code").GetString());
+        Assert.Equal("20:45:00", own.GetProperty("localStartTime").GetString());
+        Assert.Equal(day, own.GetProperty("localDate").GetString());
+        Assert.Equal(gors.GetProperty("tableLabel").GetString(), own.GetProperty("tableLabel").GetString());
+
+        // Aram asks for table 1 at 19:45: he waits, and Anna is asked.
+        var waiting = await BookAsync(aram, branch, branch.TableIds[0], day, "19:45");
         Assert.Equal(HttpStatusCode.Created, waiting.StatusCode);
 
         var waitingBody = await waiting.Content.ReadFromJsonAsync<JsonElement>();
@@ -102,6 +119,8 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         Assert.Equal((int)ReservationStatus.PendingApproval, waitingBody.GetProperty("status").GetInt32());
         Assert.Equal((int)ApprovalTrigger.EarlierGuestConsent, waitingBody.GetProperty("awaitingApprovalBecause").GetInt32());
         Assert.Equal(noonUtc.AddHours(2), waitingBody.GetProperty("approvalExpiresAtUtc").GetDateTime());
+        Assert.True(waitingBody.GetProperty("awaitsEarlierGuestAnswer").GetBoolean());
+        Assert.False(gors.GetProperty("awaitsEarlierGuestAnswer").GetBoolean());
 
         var mine = await anna.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
         var hers = mine.GetProperty("upcoming").EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == annasId);
@@ -114,9 +133,9 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         Assert.True(card.TryGetProperty("requestedStartUtc", out _));
         Assert.True(card.TryGetProperty("freeByUtc", out _));
 
-        // Gor's own view of his booking shows no question - it is not his to answer.
-        var gorsMine = await gor.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
-        Assert.All(gorsMine.GetProperty("upcoming").EnumerateArray(), r => Assert.False(r.TryGetProperty("incomingTableRequest", out _)));
+        // Aram's own view of his booking shows no question - it is not his to answer.
+        var aramsMine = await aram.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
+        Assert.All(aramsMine.GetProperty("upcoming").EnumerateArray(), r => Assert.False(r.TryGetProperty("incomingTableRequest", out _)));
 
         var route = $"/api/reservations/{annasId}/table-requests/{requestId}/answer";
 
@@ -146,10 +165,10 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         Assert.Equal("table-request-not-pending", late.GetProperty("code").GetString());
         Assert.Equal((int)TableShareRequestStatus.Accepted, late.GetProperty("context").GetProperty("status").GetInt32());
 
-        var gorsNow = await gor.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
+        var aramsNow = await aram.GetFromJsonAsync<JsonElement>("/api/reservations/mine");
         Assert.Equal(
             (int)ReservationStatus.Confirmed,
-            gorsNow.GetProperty("upcoming").EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == waitingId)
+            aramsNow.GetProperty("upcoming").EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == waitingId)
                 .GetProperty("status").GetInt32());
     }
 

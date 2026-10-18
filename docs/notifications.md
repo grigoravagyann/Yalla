@@ -66,7 +66,7 @@ One message for every way a waiting booking is decided. Its data carries `kind: 
 |---|---|---|---|---|---|
 | `true` | `false` | `false` | `false` | Staff said yes | `ReservationApproved` - "Booking confirmed - {venue} is expecting you at 20:00." |
 | `false` | `false` | `false` | `false` | Staff said no | `ReservationRejected` - "{venue} could not take this booking. Try another time." |
-| `false` | `true` | `false` | `false` | Nobody answered a short-notice booking within 15 minutes | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
+| `false` | `true` | `false` | `false` | Nobody at the venue answered in time (`declinedBecause` `"2"`): a short-notice booking within 15 minutes, or one the floor was to decide after calling the guest before it within two hours | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
 | `false` | either | `true` | `true` | A change of a confirmed booking was declined (or not answered); the booking is back at the slot it had | `ReservationChangeDeclined` - "Change not confirmed - {venue} could not take the change. Your booking at 19:00 stands." (the expired form apologises) |
 | `false` | either | `true` | `false` | The same, but that slot had been taken or was over, so the booking ended | `ReservationChangeDeclinedOriginalGone` - "...and your earlier time has been taken since. Try another time or place." |
 | `false` | `false` | `false` | `false` | `declinedBecause` `"3"`: the guest with the table before said they would not have left in time | `ReservationEarlierGuestDeclined` - "That table is not free then - {venue}: the guests before you will not have left by 19:45. Try another time or table." |

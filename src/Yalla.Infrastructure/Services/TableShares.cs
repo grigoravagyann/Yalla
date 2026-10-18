@@ -249,7 +249,8 @@ internal static class TableShares
     /// </item>
     /// <item>
     /// <b>Needing somebody else's yes</b> - another booking's sitting now runs into it: the request is
-    /// withdrawn and the floor decides the later booking from the awaiting list, with no clock.
+    /// withdrawn and the floor decides the later booking from the awaiting list, by the deadline it
+    /// already had, never past the new guest's start.
     /// </item>
     /// <item>
     /// <b>Crowded out</b> - the earlier booking now leaves it no room. A booking only asking for a table is
@@ -313,10 +314,18 @@ internal static class TableShares
             if (verdict.NeedsEarlierGuest)
             {
                 // Somebody else's guest is the one before it now - a long sitting, rare. Nothing new is
-                // pushed to anybody: the floor decides it from the awaiting list, with no clock, as any
-                // booking the floor decides.
+                // pushed to anybody: the floor decides it from the awaiting list, by the deadline the
+                // booking already had - a wait never gets a later one - but never past the new guest's
+                // start; one from before every such wait had a clock gets the two hours a new one would.
                 request.Withdraw(nowUtc);
-                later.WaitInsteadFor(ApprovalTrigger.EarlierGuestConsent, approvalExpiresAtUtc: null);
+                later.WaitInsteadFor(
+                    ApprovalTrigger.EarlierGuestConsent,
+                    TableSequencing.AnswerDeadlineNoLaterThan(
+                        later.ApprovalExpiresAtUtc,
+                        nowUtc,
+                        TableShareRequest.AnswerWindowMinutes,
+                        verdict.Earlier!.Value.StartUtc,
+                        later.StartUtc));
 
                 continue;
             }
@@ -340,7 +349,7 @@ internal static class TableShares
     /// reason it would have waited for anyway (<see cref="TableShareRequest.FallbackTrigger"/>): confirmed
     /// when there is none - and its diner told - left as it is when that reason is short notice (it is
     /// already the floor's, with its fifteen minutes), and otherwise waiting for that reason, as any such
-    /// booking waits, with no clock.
+    /// booking waits, with no clock - the two hours were the question's, and the question is gone.
     /// </summary>
     public static async Task DecideWithoutTheQuestionAsync(
         YallaDbContext db,

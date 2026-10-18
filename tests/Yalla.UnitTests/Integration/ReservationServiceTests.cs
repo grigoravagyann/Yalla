@@ -100,9 +100,11 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
 
         var first = await service.CreateAsync(Booking(branch, branch.FirstTableId));
 
-        // A minute short of the ninety minutes after its start, the table is not even asked for.
+        // A minute short of the ninety minutes after its start, the table is not even asked for - by
+        // somebody else (the same diner would be told they already have a booking then).
         var conflict = await Assert.ThrowsAsync<TableAlreadyBookedException>(
-            () => service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 29))));
+            () => fixture.CreateReservationService(db, clock, TestActor.Diner())
+                .CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 29))));
 
         Assert.Equal(ReservationRejectionReason.TableJustBooked, conflict.Reason);
         Assert.Equal(first.Id, conflict.ConflictingReservationId);
@@ -129,14 +131,15 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var service = fixture.CreateReservationService(db, clock, diner);
 
         var first = await service.CreateAsync(Booking(branch, branch.FirstTableId));
+        var somebodyElse = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         await Assert.ThrowsAsync<TableAlreadyBookedException>(
-            () => service.CreateAsync(Booking(branch, branch.FirstTableId)));
+            () => somebodyElse.CreateAsync(Booking(branch, branch.FirstTableId)));
 
         await service.CancelAsync(new CancelReservationCommand(first.Id, "plans changed"));
 
         // Same slot, same table, and now free - which is the whole point of the status filter.
-        var replacement = await service.CreateAsync(Booking(branch, branch.FirstTableId));
+        var replacement = await somebodyElse.CreateAsync(Booking(branch, branch.FirstTableId));
 
         Assert.Equal(ReservationStatus.Confirmed, replacement.Status);
     }
@@ -307,7 +310,8 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         // Offering the slot to somebody else while a manager decides is how one of the two parties
         // gets turned away at the door.
         await Assert.ThrowsAsync<TableAlreadyBookedException>(
-            () => service.CreateAsync(Booking(branch, branch.FirstTableId)));
+            () => fixture.CreateReservationService(db, clock, TestActor.Diner())
+                .CreateAsync(Booking(branch, branch.FirstTableId)));
     }
 
     [SkippableFact]
@@ -571,10 +575,10 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, policy: PolicyWith(autoConfirm: false));
-        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
-
-        var toApprove = await diner.CreateAsync(Booking(branch, branch.TableIds[0]));
-        var toReject = await diner.CreateAsync(Booking(branch, branch.TableIds[1]));
+        var toApprove = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[0]));
+        var toReject = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1]));
 
         var manager = fixture.CreateReservationService(db, clock, TestActor.Manager(branch.ManagerId));
 
@@ -647,9 +651,10 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var diner = TestActor.Diner();
         var service = fixture.CreateReservationService(db, clock, diner);
 
-        var upcoming = await service.CreateAsync(Booking(branch, branch.TableIds[0]));
+        // Called off before the other is made: one diner holds one table at a branch at a time.
         var cancelled = await service.CreateAsync(Booking(branch, branch.TableIds[1]));
         await service.CancelAsync(new CancelReservationCommand(cancelled.Id));
+        var upcoming = await service.CreateAsync(Booking(branch, branch.TableIds[0]));
 
         // Somebody else's booking, which must not appear at all.
         await fixture.CreateReservationService(db, clock, TestActor.Diner())

@@ -120,7 +120,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var tomorrow = Today.AddDays(1);
 
         var fiveFiftyNine = await diner.CreateAsync(Booking(branch, branch.TableIds[0], tomorrow, new TimeOnly(3, 59)));
-        var sixHours = await diner.CreateAsync(Booking(branch, branch.TableIds[1], tomorrow, new TimeOnly(4, 0)));
+        // Another diner: one diner holds one table at a branch at a time.
+        var sixHours = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], tomorrow, new TimeOnly(4, 0)));
 
         Assert.Equal(ReservationStatus.PendingApproval, fiveFiftyNine.Status);
         Assert.Equal(ApprovalTrigger.ShortNotice, fiveFiftyNine.AwaitingApprovalBecause);
@@ -241,7 +243,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         clock.Advance(TimeSpan.FromMinutes(10));
         var second = await diner.CreateAsync(Booking(branch, branch.TableIds[1], today, EightPm));
         var largeNextWeek = await diner.CreateAsync(Booking(branch, tenSeater.Id, today.AddDays(7), EightPm, partySize: 9));
-        var answered = await diner.CreateAsync(Booking(branch, branch.TableIds[2], today, EightPm));
+        // Another diner: one diner holds one table at a branch at a time.
+        var answered = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[2], today, EightPm));
 
         clock.Advance(TimeSpan.FromMinutes(1));
         await waiter.ApproveAsync(new DecideReservationCommand(answered.Id));
@@ -448,7 +452,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
         var toApprove = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm));
-        var toDecline = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm));
+        // Another diner: one diner holds one table at a branch at a time.
+        var toDecline = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm));
 
         // Another venue's waiter, a waiter at a sibling branch of the same venue, and a cook.
         await Assert.ThrowsAsync<StaffPermissionException>(() =>
@@ -827,7 +833,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         // 15:10 is three hours and ten minutes away: its reminder would fall at 12:10, inside the window.
         var soon = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(15, 10)));
         var unanswered = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm));
-        var approved = await diner.CreateAsync(Booking(branch, branch.TableIds[2], Today, EightPm));
+        // Another diner: one diner holds one table at a branch at a time.
+        var approved = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[2], Today, EightPm));
 
         Assert.DoesNotContain(
             await MessagesForAsync(soon.Id, clock), m => m.Type == OutboxMessageTypes.ReservationReminder);
@@ -1118,7 +1126,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         var poisoned = await diner.CreateAsync(Booking(branch, branch.TableIds[0], today, EightPm));
         clock.Advance(TimeSpan.FromMinutes(1));
-        var healthy = await diner.CreateAsync(Booking(branch, branch.TableIds[1], today, EightPm));
+        // Another diner: one diner holds one table at a branch at a time.
+        var healthy = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], today, EightPm));
 
         clock.UtcNow = now.AddMinutes(17);
 
@@ -1221,7 +1231,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var toApprove = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm, guestPhone: "+37499333444"));
-        var toDecline = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm, guestPhone: "+37499333444"));
+        // Another diner: one diner holds one table at a branch at a time.
+        var toDecline = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm, guestPhone: "+37499333444"));
 
         var platform = fixture.CreateReservationService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
 

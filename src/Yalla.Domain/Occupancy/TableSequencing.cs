@@ -327,6 +327,24 @@ public static class TableSequencing
     }
 
     /// <summary>
+    /// The deadline of a wait handed to another guest before it - the one it had, never later than a new
+    /// wait would get now (<see cref="AnswerDeadline"/>): a wait never gets a later deadline, and never
+    /// runs past the start of the guest it now waits on. One with none (from before every such wait had a
+    /// clock) gets the new one.
+    /// </summary>
+    public static DateTime AnswerDeadlineNoLaterThan(
+        DateTime? had,
+        DateTime nowUtc,
+        int windowMinutes,
+        DateTime earlierStartUtc,
+        DateTime laterStartUtc)
+    {
+        var fresh = AnswerDeadline(nowUtc, windowMinutes, earlierStartUtc, laterStartUtc);
+
+        return had is { } kept && kept < fresh ? kept : fresh;
+    }
+
+    /// <summary>
     /// A booking seated now and still running past its booked end - a party that sat down late - is
     /// judged as sitting until its projected end, unless its guest promised a time to leave by.
     /// </summary>
