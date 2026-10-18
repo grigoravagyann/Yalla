@@ -95,9 +95,10 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         var atSix = await availability.GetAvailabilityAsync(new AvailabilityRequest(branch.BranchId, 2, BookingDate, SixPm));
         Assert.True(atSix!.Tables.Single(t => t.TableId == branch.TableIds[0]).IsAvailable);
 
+        // Taken at the very start of the moved booking: refused as just booked (TableSequencing).
         var atEight = await availability.GetAvailabilityAsync(new AvailabilityRequest(branch.BranchId, 2, BookingDate, EightPm));
         Assert.Equal(
-            ReservationRejectionReason.TableAlreadyBooked,
+            ReservationRejectionReason.TableJustBooked,
             atEight!.Tables.Single(t => t.TableId == branch.TableIds[1]).UnavailableReason);
     }
 
@@ -179,9 +180,9 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         await Assert.ThrowsAsync<OutsideOpeningHoursException>(
             () => service.RescheduleAsync(Move(booked.Id, branch.FirstTableId, new TimeOnly(22, 0))));
 
-        // Today at 12:10, inside the 30-minute lead.
+        // Today at 12:05, inside the 10-minute lead.
         await Assert.ThrowsAsync<LeadTimeTooShortException>(
-            () => service.RescheduleAsync(Move(booked.Id, branch.FirstTableId, new TimeOnly(12, 10), date: new DateOnly(2026, 9, 10))));
+            () => service.RescheduleAsync(Move(booked.Id, branch.FirstTableId, new TimeOnly(12, 5), date: new DateOnly(2026, 9, 10))));
 
         await Assert.ThrowsAsync<OutsideBookingWindowException>(
             () => service.RescheduleAsync(Move(booked.Id, branch.FirstTableId, SixPm, date: new DateOnly(2026, 9, 30))));

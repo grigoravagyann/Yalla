@@ -23,8 +23,9 @@ namespace Yalla.UnitTests.Integration;
 /// </para>
 /// <para>
 /// The branch throughout is in <c>Asia/Yerevan</c> (UTC+4) with the shipped restaurant policy: a
-/// 90-minute turn, 15 minutes of clearing time, 30 minutes of lead, a 14-day window, approval
-/// above 8 guests, and at most 2 seats left empty.
+/// 90-minute turn, 5 minutes of clearing time, 10 minutes of lead, a 14-day window, approval
+/// above 8 guests, and at most 2 seats left empty. How bookings follow one another on a table - the
+/// ninety minutes, the forty-five, asking the guest before - is <see cref="TableSequencingFlowTests"/>.
 /// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
@@ -68,7 +69,7 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_second_sitting_starting_exactly_at_the_end_plus_the_buffer_is_accepted()
+    public async Task A_sitting_ending_exactly_the_clearing_time_before_the_next_booking_is_accepted()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -77,11 +78,14 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var service = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
-        // 18:00 + 90 = 19:30, plus 15 minutes of clearing time = 19:45.
+        // 16:25 + 90 = 17:55, plus 5 minutes of clearing time = 18:00: back to back, a full sitting,
+        // and nothing to promise.
         await service.CreateAsync(Booking(branch, branch.FirstTableId));
-        var second = await service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 45)));
+        var before = await service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(16, 25)));
 
-        Assert.Equal(ReservationStatus.Confirmed, second.Status);
+        Assert.Equal(ReservationStatus.Confirmed, before.Status);
+        Assert.Null(before.PromisedFreeByUtc);
+        Assert.Equal(new TimeOnly(17, 55), before.LocalEndTime);
     }
 
     [SkippableFact]
@@ -96,9 +100,11 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
 
         var first = await service.CreateAsync(Booking(branch, branch.FirstTableId));
 
+        // A minute short of the ninety minutes after its start, the table is not even asked for.
         var conflict = await Assert.ThrowsAsync<TableAlreadyBookedException>(
-            () => service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 44))));
+            () => service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 29))));
 
+        Assert.Equal(ReservationRejectionReason.TableJustBooked, conflict.Reason);
         Assert.Equal(first.Id, conflict.ConflictingReservationId);
         Assert.Equal(first.StartUtc, conflict.Conflicting.StartUtc);
         Assert.Equal(first.EndUtc, conflict.Conflicting.EndUtc);
@@ -157,9 +163,9 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
 
         var failures = new List<ReservationRejectedException>
         {
-            // Today at 12:10 local, with 30 minutes of lead required.
+            // Today at 12:05 local, with 10 minutes of lead required.
             await Refused(() => service.CreateAsync(
-                Booking(branch, branch.FirstTableId, new TimeOnly(12, 10), new DateOnly(2026, 9, 10)))),
+                Booking(branch, branch.FirstTableId, new TimeOnly(12, 5), new DateOnly(2026, 9, 10)))),
 
             // Twenty days out, with a 14-day window.
             await Refused(() => service.CreateAsync(
@@ -407,8 +413,9 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         var (a, b) = await RaceAsync(
             () => serviceA.CreateAsync(Booking(branch, branch.FirstTableId, SixPm)),
 
-            // 19:45 is exactly 18:00 + 90 minutes of sitting + 15 minutes of clearing time.
-            () => serviceB.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(19, 45))));
+            // 21:00 is three hours after 18:00, and 18:00 a full sitting and its clearing before 21:00:
+            // free whichever commits first.
+            () => serviceB.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(21, 0))));
 
         Assert.Null(a.Error);
         Assert.Null(b.Error);

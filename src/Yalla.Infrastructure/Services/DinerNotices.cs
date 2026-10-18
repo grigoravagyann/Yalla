@@ -62,7 +62,8 @@ internal static class DinerNotices
         bool approved,
         bool expired,
         DateTime atUtc,
-        DeclinedChange? change = null)
+        DeclinedChange? change = null,
+        Yalla.Domain.Enums.DeclineReason? because = null)
     {
         Dictionary<string, string>? extra = null;
 
@@ -74,6 +75,13 @@ internal static class DinerNotices
                 ["wasChange"] = change is not null ? "true" : "false",
                 ["originalKept"] = change?.OriginalKept == true ? "true" : "false",
             };
+
+            // Whose no, or whose silence, as the DeclineReason number: "3" the guest with the table
+            // before said they would not have left in time, "4" they did not answer.
+            if (because is { } reason)
+            {
+                extra["declinedBecause"] = ((int)reason).ToString(CultureInfo.InvariantCulture);
+            }
 
             if (change is not null)
             {
@@ -91,6 +99,68 @@ internal static class DinerNotices
             atUtc,
             extra);
     }
+
+    /// <summary>
+    /// Somebody would like the table after this booking: "will you have left by 19:40?". The entry is the
+    /// record; the answer is given on the booking's <c>incomingTableRequest</c>.
+    /// </summary>
+    /// <remarks>
+    /// Carries the booking's own <c>date</c> and <c>time</c> like every booking entry, plus
+    /// <c>requestedTime</c> (when the other guest would sit down), <c>freeByTime</c> (the time to have left
+    /// by) and <c>requestId</c>. The other guest stays anonymous.
+    /// </remarks>
+    public static void TableRequested(
+        YallaDbContext db,
+        Reservation earlier,
+        string venueName,
+        string branchName,
+        Guid requestId,
+        TimeOnly requestedLocalTime,
+        TimeOnly freeByLocalTime,
+        DateTime atUtc) =>
+        Booking(
+            db,
+            DinerNotificationKinds.TableRequest,
+            earlier,
+            venueName,
+            branchName,
+            atUtc,
+            new Dictionary<string, string>
+            {
+                ["requestId"] = requestId.ToString(),
+                ["requestedTime"] = requestedLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+                ["freeByTime"] = freeByLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+            });
+
+    /// <summary>
+    /// The answer to a request for this booking's table took effect: <c>accepted</c> <c>"true"</c> - the
+    /// guest promised to leave by <c>freeByTime</c>, by their own yes or the floor's for them - or
+    /// <c>"false"</c>, they said no.
+    /// </summary>
+    public static void TableRequestDecided(
+        YallaDbContext db,
+        Reservation earlier,
+        string venueName,
+        string branchName,
+        Guid requestId,
+        bool accepted,
+        TimeOnly requestedLocalTime,
+        TimeOnly freeByLocalTime,
+        DateTime atUtc) =>
+        Booking(
+            db,
+            DinerNotificationKinds.TableRequestDecided,
+            earlier,
+            venueName,
+            branchName,
+            atUtc,
+            new Dictionary<string, string>
+            {
+                ["requestId"] = requestId.ToString(),
+                ["accepted"] = accepted ? "true" : "false",
+                ["requestedTime"] = requestedLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+                ["freeByTime"] = freeByLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+            });
 
     /// <summary>An accepted booking the venue let go.</summary>
     public static void BookingCancelledByVenue(

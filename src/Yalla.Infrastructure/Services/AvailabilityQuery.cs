@@ -11,7 +11,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The availability read model, assembled in one SQL statement - for one slot, or for every half hour
+/// The availability read model, assembled in one SQL statement - for one slot, or for every quarter hour
 /// of one day.
 /// </summary>
 /// <remarks>
@@ -44,10 +44,10 @@ namespace Yalla.Infrastructure.Services;
 /// turn time, while still being a handful of rows per table.
 /// </para>
 /// <para>
-/// <b>The day read is the same statement, judged forty-eight times.</b> The day needs the same rows as
+/// <b>The day read is the same statement, judged ninety-six times.</b> The day needs the same rows as
 /// one slot on it - the bookings around it, the open sittings, its opening blocks and the evening
-/// before's - so the day is one round trip too, and each half hour goes through
-/// <see cref="TableReason"/>, the one per-table judgement the single-slot read makes. The time picker
+/// before's - so the day is one round trip too, and each quarter hour goes through
+/// <see cref="Answer"/>, the one per-table judgement the single-slot read makes. The time picker
 /// and the room screen therefore cannot disagree about a table at a time; a test asks both about
 /// every listed time and compares.
 /// </para>
@@ -120,7 +120,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// </summary>
     /// <remarks>
     /// Noon so the guard window sits evenly over the day: the earliest start (midnight, fourteen
-    /// hours ahead of UTC) and the latest sitting's end (23:30 plus the longest turn and clearing
+    /// hours ahead of UTC) and the latest sitting's end (23:45 plus the longest turn and clearing
     /// time, twelve hours behind) are both well inside two days of it. The opening blocks are the
     /// day's and the evening before it, exactly as for one slot on that day.
     /// </remarks>
@@ -226,6 +226,13 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                             .Select(s => (Guid?)s.Id)
                             .FirstOrDefault(),
 
+                        // The booking the party sitting there came on, so their sitting is judged as that
+                        // booking rather than as a walk-in in its way.
+                        OpenSessionReservationId = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Select(s => s.ReservationId)
+                            .FirstOrDefault(),
+
                         // The left join. A table with none of these is not dropped - it is the
                         // most available table in the room. Served by
                         // IX_Reservations_DiningTableId_StartUtc_EndUtc.
@@ -235,8 +242,15 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval
                                             || r.Status == ReservationStatus.Seated)
-                                        && r.EndUtc > guardFromUtc
-                                        && r.StartUtc < guardToUtc)
+                                        && (r.EndUtc > guardFromUtc || r.Status == ReservationStatus.Seated)
+                                        && r.StartUtc < guardToUtc
+
+                                        // Nor a booking only asking for the left-out booking's table: a
+                                        // diner changing their booking is not held to its question, as
+                                        // the move itself is not (TableEvening).
+                                        && !db.TableShareRequests.Any(q => q.EarlierReservationId == excludedId
+                                                                           && q.LaterReservationId == r.Id
+                                                                           && q.Status == TableShareRequestStatus.Pending))
                             .OrderBy(r => r.StartUtc)
                             .Select(r => new AvailabilityBookingRow
                             {
@@ -244,6 +258,14 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                                 StartUtc = r.StartUtc,
                                 EndUtc = r.EndUtc,
                                 Status = r.Status,
+                                PromisedFreeByUtc = r.PromisedFreeByUtc,
+
+                                // Whether its guest is already being asked to free the table for
+                                // somebody - other than the booking being changed, which is not in its
+                                // own way.
+                                IsBeingAsked = db.TableShareRequests.Any(q => q.EarlierReservationId == r.Id
+                                                                             && q.Status == TableShareRequestStatus.Pending
+                                                                             && q.LaterReservationId != excludedId),
                             })
                             .ToList(),
                     })
@@ -371,20 +393,32 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         bool needsApproval,
         DateTime nowUtc)
     {
-        // The next booking that still matters at the requested instant: the earliest one not
-        // already over by then. Drives both the derived state and the window.
+        // The booking that still matters at the requested instant: the earliest one not already over
+        // by then - which, for a table that can only be asked for, is the one still sitting there.
+        // Drives the derived state.
         var next = table.Bookings
             .Where(b => b.EndUtc > proposed.StartUtc)
             .MinBy(b => b.StartUtc);
 
-        var reason = requestReason ?? TableReason(table, proposed, policy, partySize, nowUtc);
+        // The first one after the requested start, which is what bounds the window.
+        var following = table.Bookings
+            .Where(b => b.StartUtc > proposed.StartUtc)
+            .MinBy(b => b.StartUtc);
 
+        var answer = requestReason is { } refused
+            ? new TableAnswer(refused, null)
+            : Answer(table, proposed.StartUtc, policy, partySize, nowUtc);
+
+        var reason = answer.Reason;
         var isAvailable = reason is null;
+        var requestable = answer.IsRequestable;
+        var mustFreeBy = isAvailable ? answer.Verdict?.MustFreeByUtc : null;
 
         // Null means no limit, and no limit is the answer a diner would rather have. The same
-        // arithmetic the floor plan uses for "how long can I give this table away for?".
+        // arithmetic the floor plan uses for "how long can I give this table away for?" - which is the
+        // time to free it by when a full sitting would run into the next booking.
         var availableUntilUtc = isAvailable
-            ? TableStateProjection.FreeUntil(next?.StartUtc, policy.BufferMinutes)
+            ? TableStateProjection.FreeUntil(following?.StartUtc, policy.BufferMinutes)
             : null;
 
         var windowMinutes = availableUntilUtc is null
@@ -419,13 +453,18 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
             IsAvailable = isAvailable,
             UnavailableReason = reason,
-            RequiresApproval = needsApproval,
+
+            // A table that can only be asked for waits for somebody's yes, whatever else is true.
+            RequiresApproval = needsApproval || requestable,
+            IsRequestable = requestable,
+            MustFreeByUtc = mustFreeBy,
+            MustFreeByLocal = mustFreeBy is { } until ? zone.LocalTimeAt(until) : null,
 
             Window = isAvailable
                 ? new TableAvailabilityWindow(
                     AvailableFromUtc: proposed.StartUtc,
                     AvailableUntilUtc: availableUntilUtc,
-                    HasNoLaterBooking: next is null,
+                    HasNoLaterBooking: following is null,
                     WindowMinutes: windowMinutes,
                     IsShorterThanTurnTime: windowMinutes is { } minutes && minutes < policy.TurnTimeMinutes,
                     AvailableFromLocal: zone.LocalTimeAt(proposed.StartUtc),
@@ -438,31 +477,33 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     }
 
     /// <summary>
-    /// Why this table cannot take this party for this interval, or null when it can - the one
-    /// per-table judgement both reads make.
+    /// Whether this table can take this party at this start - free, only once the guest before agrees,
+    /// or not, and why - the one per-table judgement both reads make.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Every rule here is the one the booking service applies inside the table's lock, so a table
-    /// either read offers is a table a booking accepts. The day read calls this for every half hour
-    /// and the single-slot read for the one asked about; keeping it in one place is what stops the
+    /// Every rule here is the one the booking writer applies inside the table's lock - the table's own
+    /// rules, then <see cref="TableSequencing.Judge"/> over the same bookings, promises, open questions
+    /// and sitting - so a table either read offers is a table a booking accepts, and one it says must be
+    /// freed by 21:25 is one a booking must accept 21:25 for. The day read calls this for every quarter
+    /// hour and the single-slot read for the one asked about; keeping it in one place is what stops the
     /// time picker striking a time the room screen would have offered a table at, or the reverse.
     /// </para>
     /// <para>
     /// The order is the order of the reasons a diner can act on: the table itself (does not take
-    /// bookings, is broken, does not fit them), then somebody sitting there now, then a booking.
+    /// bookings, is broken, does not fit them), then the table's evening.
     /// </para>
     /// </remarks>
-    private static ReservationRejectionReason? TableReason(
+    private static TableAnswer Answer(
         AvailabilityTableRow table,
-        BookedInterval proposed,
+        DateTime startUtc,
         ReservationPolicy policy,
         int partySize,
         DateTime nowUtc)
     {
         // Physical status is checked by CheckTable only for the here and now; beyond the horizon it
         // would be a statement about tonight applied to tomorrow.
-        var physicalReason = TableStateProjection.IsWithinPhysicalHorizon(proposed.StartUtc, nowUtc)
+        var physicalReason = TableStateProjection.IsWithinPhysicalHorizon(startUtc, nowUtc)
             ? ReservationRules.CheckTable(table.Status, table.IsBookable, table.Seats, partySize, policy)
             : ReservationRules.CheckTable(
                 table.Status == TableStatus.OutOfService ? TableStatus.OutOfService : TableStatus.Free,
@@ -473,28 +514,24 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         if (physicalReason is not null)
         {
-            return physicalReason;
+            return new TableAnswer(physicalReason, null);
         }
 
-        // The people already sitting there, projected forward by the branch's turn time. The same
-        // rule the booking service applies inside its lock, so the sheet and the refusal agree.
-        if (table.OpenSessionSeatedAtUtc is { } seatedAtUtc
-            && SessionOccupancy.Conflicts(proposed, seatedAtUtc, policy.TurnTimeMinutes, policy.BufferMinutes))
-        {
-            return ReservationRejectionReason.TableCurrentlyOccupied;
-        }
+        var verdict = TableSequencing.Judge(
+            startUtc,
+            policy.TurnTimeMinutes,
+            policy.BufferMinutes,
+            table.Bookings.Select(b => new SequencedBooking(
+                b.ReservationId, b.StartUtc, b.EndUtc, b.Status, b.PromisedFreeByUtc, b.IsBeingAsked)),
+            table.OpenSessionSeatedAtUtc is { } seatedAtUtc
+                ? new OpenSitting(seatedAtUtc, table.OpenSessionReservationId)
+                : null);
 
-        // The same pure overlap rule the creation service applies inside its lock, over the same
-        // statuses.
-        return table.Bookings.Any(b =>
-            ReservationOverlap.Conflicts(
-                proposed, new BookedInterval(b.StartUtc, b.EndUtc), b.Status, policy.BufferMinutes))
-            ? ReservationRejectionReason.TableAlreadyBooked
-            : null;
+        return new TableAnswer(verdict.Refusal, verdict);
     }
 
     /// <summary>
-    /// Every half hour of the day whose sitting fits one opening block, each judged on its tables.
+    /// Every quarter of an hour of the day whose sitting fits one opening block, each judged on its tables.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -504,7 +541,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// skip does not exist and is left out too.
     /// </para>
     /// <para>
-    /// Everything else is <see cref="TableReason"/> over the very rows the single-slot read judges.
+    /// Everything else is <see cref="Answer"/> over the very rows the single-slot read judges.
     /// </para>
     /// </remarks>
     private static BranchDaySlots ProjectDay(AvailabilityRow row, DaySlotsRequest request, DateTime nowUtc)
@@ -554,20 +591,32 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 continue;
             }
 
-            var proposed = new BookedInterval(startUtc, endUtc);
-            var reasons = row.Tables
-                .Select(t => TableReason(t, proposed, policy, request.PartySize, nowUtc))
+            var answers = row.Tables
+                .Select(t => Answer(t, startUtc, policy, request.PartySize, nowUtc))
                 .ToList();
-            var free = reasons.Count(r => r is null);
+            var free = answers.Count(a => a.IsFree);
+            var requestable = answers.Count(a => a.IsRequestable);
+            var available = answers.Where(a => a.IsAvailable).ToList();
+
+            // "Until 21:25" only when no table on offer gives a full sitting; then the most generous.
+            var mustFreeBy = available.Count > 0 && available.All(a => a.Verdict!.MustFreeByUtc is not null)
+                ? available.Max(a => a.Verdict!.MustFreeByUtc)
+                : null;
 
             slots.Add(new DaySlot
             {
                 Time = time,
                 StartUtc = startUtc,
-                IsAvailable = free > 0,
-                RequiresApproval = needsApproval,
+                IsAvailable = free + requestable > 0,
+                IsRequestable = free == 0 && requestable > 0,
+                RequiresApproval = needsApproval || (free == 0 && requestable > 0),
                 FreeTableCount = free,
-                UnavailableReason = free > 0 ? null : StruckReason(reasons),
+                RequestableTableCount = requestable,
+                MustFreeByUtc = mustFreeBy,
+                MustFreeByLocal = mustFreeBy is { } until
+                    ? zone.LocalTimeAt(until).ToString("HH:mm", CultureInfo.InvariantCulture)
+                    : null,
+                UnavailableReason = free + requestable > 0 ? null : StruckReason(answers.Select(a => a.Reason).ToList()),
             });
         }
 
@@ -605,7 +654,10 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var known = reasons.OfType<ReservationRejectionReason>().ToList();
 
         return Commonest(known.Where(r => r is ReservationRejectionReason.TableAlreadyBooked
-                             or ReservationRejectionReason.TableCurrentlyOccupied))
+                             or ReservationRejectionReason.TableCurrentlyOccupied
+                             or ReservationRejectionReason.TableJustBooked
+                             or ReservationRejectionReason.NextBookingTooSoon
+                             or ReservationRejectionReason.EarlierGuestBeingAsked))
                ?? Commonest(known)
                ?? ReservationRejectionReason.TableNotBookable;
     }
@@ -738,6 +790,8 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public Guid? OpenSessionId { get; init; }
 
+        public Guid? OpenSessionReservationId { get; init; }
+
         public List<AvailabilityBookingRow> Bookings { get; init; } = [];
     }
 
@@ -750,5 +804,22 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         public DateTime EndUtc { get; init; }
 
         public ReservationStatus Status { get; init; }
+
+        public DateTime? PromisedFreeByUtc { get; init; }
+
+        public bool IsBeingAsked { get; init; }
+    }
+
+    /// <summary>
+    /// One table's answer at one start: the table's own reason it cannot be had (it takes no bookings, is
+    /// broken, does not fit the party), or the table's evening's verdict.
+    /// </summary>
+    private sealed record TableAnswer(ReservationRejectionReason? Reason, TableSequencingVerdict? Verdict)
+    {
+        public bool IsFree => Reason is null && Verdict is { IsFree: true };
+
+        public bool IsRequestable => Reason is null && Verdict is { NeedsEarlierGuest: true };
+
+        public bool IsAvailable => Reason is null;
     }
 }

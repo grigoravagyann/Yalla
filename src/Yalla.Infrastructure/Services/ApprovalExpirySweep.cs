@@ -8,7 +8,8 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// Declines the short-notice bookings nobody at the venue answered in time, and tells their diners.
+/// Declines the waiting bookings nobody answered in time - short-notice ones the venue did not get to,
+/// and ones waiting on the guest before them on the table - and tells their diners.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -136,6 +137,15 @@ internal sealed class ApprovalExpirySweep(
             .Include(b => b.Venue)
             .FirstAsync(b => b.Id == reservation.BranchId, cancellationToken);
 
+        // Whose silence: the guest before this booking on the table, when it was waiting on their answer
+        // in the app; otherwise the venue's.
+        var waitedOnEarlierGuest = reservation.ApprovalTrigger == ApprovalTrigger.EarlierGuestConsent
+                                   && await db.TableShareRequests.AnyAsync(
+                                       q => q.LaterReservationId == reservation.Id
+                                            && q.Status == TableShareRequestStatus.Pending
+                                            && q.AsksEarlierGuest,
+                                       cancellationToken);
+
         PendingDeclineOutcome outcome;
 
         try
@@ -147,7 +157,7 @@ internal sealed class ApprovalExpirySweep(
                 writer,
                 reservation,
                 branch,
-                DeclineReason.NoAnswer,
+                waitedOnEarlierGuest ? DeclineReason.EarlierGuestNoAnswer : DeclineReason.NoAnswer,
                 reason: null,
                 quietIfAlreadyStarted: true,
                 nowUtc,

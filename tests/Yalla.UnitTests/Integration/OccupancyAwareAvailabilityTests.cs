@@ -111,11 +111,11 @@ public sealed class OccupancyAwareAvailabilityTests(SqlServerFixture fixture)
         await machine.SeatWalkInAsync(
             new SeatWalkInCommand(branch.BranchId, secondTableId, PartySize: 2, Guid.CreateVersion7()));
 
-        // Seated 18:00 local, 90-minute turn, 15-minute clearing: bookable from exactly +105.
+        // Seated 18:00 local, 90-minute turn, 5-minute clearing: bookable from exactly +95.
         await using var bookDb = fixture.CreateContext(clock);
 
         var booked = await fixture.CreateReservationService(bookDb, clock, TestActor.Diner())
-            .CreateAsync(Booking(branch, tableId, Now.AddMinutes(105)));
+            .CreateAsync(Booking(branch, tableId, Now.AddMinutes(95)));
 
         // Accepted by the occupancy rule. Being tonight, it is the floor's to confirm (short notice) -
         // which is the point of that rule: somebody is sitting there, and only the floor can see when
@@ -123,12 +123,12 @@ public sealed class OccupancyAwareAvailabilityTests(SqlServerFixture fixture)
         Assert.Equal(ReservationStatus.PendingApproval, booked.Status);
         Assert.Equal(ApprovalTrigger.ShortNotice, booked.AwaitingApprovalBecause);
 
-        // One minute earlier leaves fourteen minutes to clear a table the branch says needs fifteen.
+        // One minute earlier leaves four minutes to clear a table the branch says needs five.
         await using var tooSoonDb = fixture.CreateContext(clock);
 
         await Assert.ThrowsAsync<TableCurrentlyOccupiedException>(
             () => fixture.CreateReservationService(tooSoonDb, clock, TestActor.Diner())
-                .CreateAsync(Booking(branch, secondTableId, Now.AddMinutes(104))));
+                .CreateAsync(Booking(branch, secondTableId, Now.AddMinutes(94))));
     }
 
     /// <summary>A closed sitting is history and blocks nothing.</summary>
@@ -299,7 +299,7 @@ public sealed class OccupancyAwareAvailabilityTests(SqlServerFixture fixture)
 
         await TestBranchBuilder.AddConfirmedReservationAsync(db, branch, bookedId, Now.AddHours(3));
 
-        // 45 minutes out: past the branch's 30-minute lead time, and still inside the sitting that
+        // 45 minutes out: past the branch's 10-minute lead time, and still inside the sitting that
         // started now, so the seated table has a reason to be refused.
         var slot = TimeZoneInfo.ConvertTimeFromUtc(Now.AddMinutes(45), Yerevan);
 

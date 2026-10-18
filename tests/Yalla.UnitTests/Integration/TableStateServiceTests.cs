@@ -299,8 +299,8 @@ public sealed class TableStateServiceTests(SqlServerFixture fixture)
         Assert.Contains("table 1 reserved", warning.Message);
         Assert.Equal(bookingStartUtc, result.NextReservationStartUtc);
 
-        // Free-until is the booking less the branch's 15-minute turnaround.
-        Assert.Equal(bookingStartUtc.AddMinutes(-15), result.FreeUntilUtc);
+        // Free-until is the booking less the branch's 5-minute turnaround.
+        Assert.Equal(bookingStartUtc.AddMinutes(-5), result.FreeUntilUtc);
     }
 
     [SkippableFact]

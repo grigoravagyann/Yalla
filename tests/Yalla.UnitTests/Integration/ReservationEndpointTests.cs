@@ -378,7 +378,9 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
 
         var context = problem.GetProperty("context");
 
-        Assert.Equal((int)ReservationRejectionReason.TableAlreadyBooked, context.GetProperty("reason").GetInt32());
+        // The same table at the same start: refused as just booked - the table's evening's own reason,
+        // under the same code (TableSequencing).
+        Assert.Equal((int)ReservationRejectionReason.TableJustBooked, context.GetProperty("reason").GetInt32());
         Assert.True(context.TryGetProperty("conflictingStartUtc", out _));
 
         // The floor as it stands now, so the app can redraw and show what changed rather than
@@ -629,7 +631,7 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
         Assert.Equal(branch.BranchId, answer.GetProperty("branchId").GetGuid());
         Assert.Equal(day, answer.GetProperty("date").GetString());
         Assert.Equal(2, answer.GetProperty("partySize").GetInt32());
-        Assert.Equal(30, answer.GetProperty("stepMinutes").GetInt32());
+        Assert.Equal(15, answer.GetProperty("stepMinutes").GetInt32());
         Assert.False(answer.TryGetProperty("unavailableReason", out _), "a day with free times has no day-level reason");
 
         var first = answer.GetProperty("slots")[0];
@@ -657,7 +659,7 @@ public class ReservationEndpointTests(SqlServerFixture fixture)
 
         Assert.False(six.GetProperty("isAvailable").GetBoolean());
         Assert.Equal(0, six.GetProperty("freeTableCount").GetInt32());
-        Assert.Equal((int)ReservationRejectionReason.TableAlreadyBooked, six.GetProperty("unavailableReason").GetInt32());
+        Assert.Equal((int)ReservationRejectionReason.TableJustBooked, six.GetProperty("unavailableReason").GetInt32());
 
         // The diner changing their own booking sees their table free, on both reads.
         var mine = await anonymous.GetFromJsonAsync<JsonElement>(

@@ -242,8 +242,23 @@ public class PersistedEnumValueTests
         Assert.Equal(3, (int)ApprovalTrigger.NoShowHistory);
         Assert.Equal(4, (int)ApprovalTrigger.ShortNotice);
 
+        // Booking times: the guest before is asked whether they will have left in time.
+        Assert.Equal(5, (int)ApprovalTrigger.EarlierGuestConsent);
+
         Assert.Equal(1, (int)DeclineReason.StaffDeclined);
         Assert.Equal(2, (int)DeclineReason.NoAnswer);
+        Assert.Equal(3, (int)DeclineReason.EarlierGuestDeclined);
+        Assert.Equal(4, (int)DeclineReason.EarlierGuestNoAnswer);
+    }
+
+    [Fact]
+    public void Table_share_request_status_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)TableShareRequestStatus.Pending);
+        Assert.Equal(2, (int)TableShareRequestStatus.Accepted);
+        Assert.Equal(3, (int)TableShareRequestStatus.Declined);
+        Assert.Equal(4, (int)TableShareRequestStatus.Expired);
+        Assert.Equal(5, (int)TableShareRequestStatus.Withdrawn);
     }
 
     [Fact]
@@ -332,7 +347,8 @@ public class PersistedEnumValueTests
             nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
-            nameof(TableSessionSource), nameof(TableStatus), nameof(TelegramVerificationStatus),
+            nameof(TableSessionSource), nameof(TableShareRequestStatus), nameof(TableStatus),
+            nameof(TelegramVerificationStatus),
             nameof(VenueType),
         ];
 

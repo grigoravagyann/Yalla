@@ -34,13 +34,15 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 
 ---
 
-## 2. The six message types
+## 2. The eight message types
 
 | Type | Written when | Due at | Sent to |
 |---|---|---|---|
 | `reservation.reminder` | A booking is created | `StartUtc − ReminderHoursBefore` (default 3h) | The diner |
 | `reservation.late-nudge` | A booking is created | `StartUtc + LateNudgeAfterMinutes` (default 10m) | The diner |
-| `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, or the approval sweep declines a short-notice one nobody answered | Immediately | The diner |
+| `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, the guest before it on the table says yes or no, or the approval sweep declines one nobody answered | Immediately | The diner |
+| `reservation.table-request` | A booking asks the booking before it on the same table to free the table in time, and that guest is asked in the app | Immediately | The earlier guest |
+| `reservation.table-request-decided` | The earlier guest's yes - theirs, or the floor's for them - takes effect | Immediately | The earlier guest |
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
 | `tab.join-requested` | Somebody joins a tab and lands pending | Immediately | The host |
 | `tab.order-ready` | An order moves to `Ready` | Immediately | Whoever ordered it |
@@ -67,6 +69,12 @@ One message for every way a waiting booking is decided. Its data carries `kind: 
 | `false` | `true` | `false` | `false` | Nobody answered a short-notice booking within 15 minutes | `ReservationExpired` - "Sorry, {venue} could not confirm in time. Try another time or place." |
 | `false` | either | `true` | `true` | A change of a confirmed booking was declined (or not answered); the booking is back at the slot it had | `ReservationChangeDeclined` - "Change not confirmed - {venue} could not take the change. Your booking at 19:00 stands." (the expired form apologises) |
 | `false` | either | `true` | `false` | The same, but that slot had been taken or was over, so the booking ended | `ReservationChangeDeclinedOriginalGone` - "...and your earlier time has been taken since. Try another time or place." |
+| `false` | `false` | `false` | `false` | `declinedBecause` `"3"`: the guest with the table before said they would not have left in time | `ReservationEarlierGuestDeclined` - "That table is not free then - {venue}: the guests before you will not have left by 19:45. Try another time or table." |
+| `false` | `true` | `false` | `false` | `declinedBecause` `"4"`: that guest did not answer within the two hours | `ReservationEarlierGuestNoAnswer` - "Booking not confirmed in time - {venue}: we could not confirm the table for 19:45 in time. Try another time or table." |
+
+The data also carries **`declinedBecause`**, the `DeclineReason` number as a string - `"1"` staff said
+no, `"2"` nobody at the venue answered, `"3"` the guest before said no, `"4"` they did not answer - and an
+empty string for an approval or a decline written before the key existed.
 
 A declined change leaves a confirmed booking standing, so it can be declined again later; a second
 `rejected` or `expired` key for the same booking carries its moment after it, like a second approval.
@@ -95,6 +103,30 @@ cafe where a waiter carries the plate ten feet and genuinely useful in a canteen
 collects it. Defaulting it on would train a city to switch our notifications off, and the two that
 matter would go with them.
 
+### `reservation.table-request`: "will you have left by 19:40?"
+
+To the guest with a table first, when a later booking asks for it - see
+[reservations.md](reservations.md#3e-a-tables-evening-when-one-booking-may-follow-another). Only when
+they booked from the app (not the web), the account is live and it has a live push device
+(`LiveDevices`), and nothing else about the later booking needs a human; otherwise the floor asks them
+by telephone from the awaiting list and nothing is pushed. Title and body
+(`NotificationText.TableRequested`): "Someone would like your table at 19:45" / "{venue}: will you have
+left by 19:40?". The later guest stays anonymous.
+
+`categoryId` **`table-request`** - the app registers Yes and No actions on it, which call
+`POST /api/reservations/{reservationId}/table-requests/{requestId}/answer`. Data: `kind` =
+`table-request`, `reservationId` (the earlier guest's own booking), `requestId`, `requestedTime` and
+`freeByTime` (`HH:mm`, branch wall clock), `freeByUtc` (ISO 8601). Keyed
+`reservation:{earlierId}:table-request:{requestId}`, so cancelling the earlier booking cancels an unsent
+one; the handler also sends it only while the request is still open - answered on the card, withdrawn,
+or past its deadline, it is skipped.
+
+`reservation.table-request-decided` follows a yes: "Thank you - {venue}: please free the table by 19:40 -
+the next guests are coming after you." (`TableRequestAccepted`). Data: `kind` =
+`table-request-decided`, `reservationId`, `requestId`, `accepted` `"true"`, `freeByTime`, `freeByUtc`. No
+category. Sent while the booking still holds its table. A no has no push to the earlier guest - they gave
+it - and neither does the clock running out: their booking is unchanged.
+
 ### The feed beside the pushes
 
 A push is gone once it is read or swiped away, so the diner app also lists what it was told
@@ -108,7 +140,10 @@ and cancelling a booking deletes it with the unsent message. A `booking-declined
 written before the key existed has none and was a staff decline. It also carries `wasChange` and
 `originalKept` as the push does, and a declined change adds `requestedDate` and `requestedTime` - the
 slot it asked for; `date` and `time` are the booking as it now stands, which for a kept original is
-that slot. Two entries have no push beside them - a
+that slot. A decline because of the guest before carries `declinedBecause` `"3"` or `"4"`. The earlier
+guest's feed gets **`table-request`** when they are asked in the app (`requestId`, `requestedTime`,
+`freeByTime` beside the booking's own `date` and `time`) and **`table-request-decided`** when their
+answer takes effect (`accepted` `"true"`/`"false"`, the same times). Two entries have no push beside them - a
 booking the venue lets go, and a review moderation takes down - and are written with that change. The
 late nudge, the participant approval and the join request write none. Rows older than 90 days are
 deleted by this loop's host, `OutboxHostedService`, about hourly.

@@ -88,11 +88,9 @@ public sealed class TableAlreadyBookedException(
     BookedInterval requested,
     BookedInterval conflicting,
     Guid conflictingReservationId,
-    BranchAvailability? availability = null)
-    : Exception(
-        $"Table {tableLabel} is already booked from {conflicting.StartUtc:HH:mm} to "
-        + $"{conflicting.EndUtc:HH:mm} UTC, which clashes with a "
-        + $"{requested.StartUtc:HH:mm}-{requested.EndUtc:HH:mm} sitting once clearing time is allowed for.")
+    BranchAvailability? availability = null,
+    ReservationRejectionReason reason = ReservationRejectionReason.TableAlreadyBooked)
+    : Exception(MessageFor(tableLabel, requested, conflicting, reason))
 {
     public Guid BranchId { get; } = branchId;
 
@@ -114,7 +112,37 @@ public sealed class TableAlreadyBookedException(
     /// </summary>
     public BranchAvailability? Availability { get; } = availability;
 
-    public ReservationRejectionReason Reason => ReservationRejectionReason.TableAlreadyBooked;
+    /// <summary>
+    /// Which of the table's rules refused it: the booking's interval clashes
+    /// (<see cref="ReservationRejectionReason.TableAlreadyBooked"/>), the previous booking started less
+    /// than ninety minutes before (<see cref="ReservationRejectionReason.TableJustBooked"/>), the next one
+    /// starts less than forty-five minutes after (<see cref="ReservationRejectionReason.NextBookingTooSoon"/>),
+    /// or the guest before is already being asked to free the table for somebody else
+    /// (<see cref="ReservationRejectionReason.EarlierGuestBeingAsked"/>). The same code on the wire,
+    /// <c>table-already-booked</c>, with this in <c>context.reason</c>.
+    /// </summary>
+    public ReservationRejectionReason Reason { get; } = reason;
+
+    private static string MessageFor(
+        string tableLabel,
+        BookedInterval requested,
+        BookedInterval conflicting,
+        ReservationRejectionReason reason) => reason switch
+    {
+        ReservationRejectionReason.TableJustBooked =>
+            $"Table {tableLabel} has a booking from {conflicting.StartUtc:HH:mm} UTC, less than ninety minutes "
+            + $"before {requested.StartUtc:HH:mm} UTC. From ninety minutes after it the table can be asked for.",
+        ReservationRejectionReason.NextBookingTooSoon =>
+            $"Table {tableLabel} has a booking from {conflicting.StartUtc:HH:mm} UTC, less than forty-five "
+            + $"minutes after {requested.StartUtc:HH:mm} UTC - too little time to sit down.",
+        ReservationRejectionReason.EarlierGuestBeingAsked =>
+            $"The guest at table {tableLabel} before {requested.StartUtc:HH:mm} UTC is already being asked to "
+            + "free it for somebody else. Try another table, or this one again once they have answered.",
+        _ =>
+            $"Table {tableLabel} is already booked from {conflicting.StartUtc:HH:mm} to "
+            + $"{conflicting.EndUtc:HH:mm} UTC, which clashes with a "
+            + $"{requested.StartUtc:HH:mm}-{requested.EndUtc:HH:mm} sitting once clearing time is allowed for.",
+    };
 }
 
 /// <summary>

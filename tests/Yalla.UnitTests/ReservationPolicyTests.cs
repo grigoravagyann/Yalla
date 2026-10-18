@@ -21,11 +21,12 @@ public class ReservationPolicyTests
     {
         var policy = ReservationPolicy.DefaultFor(VenueType.Restaurant);
 
-        Assert.Equal(15, policy.BufferMinutes);
+        // Five minutes to clear a table and ten of lead since the booking-times change (were 15 and 30).
+        Assert.Equal(5, policy.BufferMinutes);
         Assert.Equal(15, policy.GraceMinutes);
         Assert.Equal(10, policy.LateNudgeAfterMinutes);
         Assert.Equal(10, policy.GraceExtensionMinutes);
-        Assert.Equal(30, policy.MinLeadMinutes);
+        Assert.Equal(10, policy.MinLeadMinutes);
         Assert.Equal(14, policy.BookingWindowDays);
         Assert.Equal(120, policy.CancellationDeadlineMinutes);
         Assert.True(policy.AutoConfirm);
@@ -33,6 +34,7 @@ public class ReservationPolicyTests
         Assert.True(policy.PricesIncludeVat);
         Assert.Equal(2, policy.MaxSeatOverhang);
         Assert.Equal(8, policy.ApprovalRequiredAbovePartySize);
+        Assert.Equal(30, policy.WalkInHoldbackMinutes);
     }
 
     [Fact]

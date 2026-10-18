@@ -48,6 +48,9 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<Reservation> Reservations => Set<Reservation>();
 
+    /// <summary>Later bookings asking the booking before them to free the table - see <see cref="TableShareRequest"/>.</summary>
+    public DbSet<TableShareRequest> TableShareRequests => Set<TableShareRequest>();
+
     public DbSet<TableSession> TableSessions => Set<TableSession>();
 
     public DbSet<Tab> Tabs => Set<Tab>();

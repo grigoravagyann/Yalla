@@ -161,7 +161,10 @@ clamped**: a turn time of 5 minutes or 12 hours gets a 400 that names the field 
 And **changing a policy never invalidates an existing reservation.** Shortening the window or the
 turn time applies to future bookings; the ones already made that fall outside the new rules are
 counted in `affectedExistingReservations` and listed by id, and are otherwise left exactly as
-booked. A settings change never rewrites or cancels a booking as a side effect.
+booked. A booking cut short by its guest's promise to free the table (`promisedFreeByUtc`, see
+[reservations.md](reservations.md#3e-a-tables-evening-when-one-booking-may-follow-another)) ends when they
+promised rather than a turn time after its start, so it counts only when it runs longer than the new
+turn time. A settings change never rewrites or cancels a booking as a side effect.
 
 **Opening hours** (`GET`/`PUT /api/branches/{id}/opening-hours`) — the whole week, replaced
 atomically. `closesNextDay` is derived — a closing time at or before the opening time means after

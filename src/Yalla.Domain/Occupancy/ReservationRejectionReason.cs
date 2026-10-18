@@ -58,4 +58,24 @@ public enum ReservationRejectionReason
     /// Distinct from <see cref="TableAlreadyBooked"/>: nobody booked it, and it may free up early.
     /// </summary>
     TableCurrentlyOccupied = 10,
+
+    /// <summary>
+    /// The table's previous booking starts less than ninety minutes before this one. Whoever has it is
+    /// barely seated, so the table is not on offer - from ninety minutes after their start it can be
+    /// asked for. See <c>TableSequencing.JustBookedMinutes</c>.
+    /// </summary>
+    TableJustBooked = 11,
+
+    /// <summary>
+    /// The table's next booking starts less than forty-five minutes after this one - too little time
+    /// to be worth sitting down. See <c>TableSequencing.LatestStartBeforeNextMinutes</c>.
+    /// </summary>
+    NextBookingTooSoon = 12,
+
+    /// <summary>
+    /// Somebody else has already asked the guest before this slot to free the table, and the answer is
+    /// not in yet. One question to one guest at a time; the table can be asked for again once it is
+    /// answered.
+    /// </summary>
+    EarlierGuestBeingAsked = 13,
 }

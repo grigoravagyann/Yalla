@@ -608,6 +608,54 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
             }),
 
+        // A table whose next booking cuts the sitting short, booked without accepting the time to leave
+        // by. 422 naming the field, with the time to accept, so the app asks "will you free the table by
+        // 21:25?" and sends it again.
+        FreeByNotAcceptedException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.ReservationFreeByRequired,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["field"] = FreeByNotAcceptedException.Field,
+                ["requiredFreeByUtc"] = e.RequiredFreeByUtc,
+                ["requiredFreeByLocal"] = e.RequiredFreeByLocal.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                ["nextBookingStartUtc"] = e.NextBookingStartUtc,
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+            },
+            Errors: new Dictionary<string, string[]> { [FreeByNotAcceptedException.Field] = [e.Message] }),
+
+        // Staff deciding a booking that waits on the guest before it to answer in the app. Theirs to
+        // answer. Must stay ABOVE DomainStateException, which it derives from.
+        ReservationAwaitingEarlierGuestException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationAwaitingEarlierGuest,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["requestId"] = e.RequestId,
+                ["expiresAtUtc"] = e.ExpiresAtUtc,
+            }),
+
+        // An answer to a request for a table that no longer waits. Its own code so the app drops the
+        // card. Must stay ABOVE DomainStateException, which it derives from.
+        TableRequestNotPendingException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableRequestNotPending,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["requestId"] = e.RequestId,
+                ["status"] = (int)e.Status,
+                ["expiresAtUtc"] = e.ExpiresAtUtc,
+            }),
+
         // A change to a booking that is finished with or under way. Its own code so the app can say
         // "this booking can no longer be changed" rather than offer another slot that will be refused
         // the same way. Must stay ABOVE DomainStateException, which it derives from.

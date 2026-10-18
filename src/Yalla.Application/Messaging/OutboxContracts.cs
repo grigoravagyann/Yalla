@@ -139,6 +139,15 @@ public static class OutboxMessageTypes
 
     public const string ReservationDecided = "reservation.decided";
 
+    /// <summary>
+    /// To the guest with a table first: somebody would like it after them - will they have left in time?
+    /// Keyed on their booking, <c>reservation:{id}:table-request:{requestId}</c>.
+    /// </summary>
+    public const string ReservationTableRequest = "reservation.table-request";
+
+    /// <summary>To the same guest: their yes took effect - free the table by the time they promised.</summary>
+    public const string ReservationTableRequestDecided = "reservation.table-request-decided";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

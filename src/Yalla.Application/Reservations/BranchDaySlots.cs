@@ -3,7 +3,7 @@ using Yalla.Domain.Occupancy;
 namespace Yalla.Application.Reservations;
 
 /// <summary>
-/// One day at a branch, answered every half hour: which start times have a table for this party.
+/// One day at a branch, answered every quarter of an hour: which start times have a table for this party.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,7 +30,7 @@ public sealed record BranchDaySlots
 
     public required int PartySize { get; init; }
 
-    /// <summary>Minutes between listed start times. Always <see cref="DaySlotStep.Minutes"/>.</summary>
+    /// <summary>Minutes between listed start times. Always <see cref="DaySlotStep.Minutes"/> - fifteen.</summary>
     public required int StepMinutes { get; init; }
 
     /// <summary>
@@ -63,10 +63,32 @@ public sealed record DaySlot
 
     /// <summary>
     /// Whether at least one table can be booked for this party at this time: a bookable table pinned
-    /// on a photo of its room that seats them, within the branch's seat-overhang limit, with no
-    /// booking or sitting running into the sitting once clearing time is allowed for.
+    /// on a photo of its room that seats them, within the branch's seat-overhang limit, that the
+    /// table's evening allows - free outright (<see cref="FreeTableCount"/>), or once the guest before
+    /// agrees to leave in time (<see cref="RequestableTableCount"/>).
     /// </summary>
     public required bool IsAvailable { get; init; }
+
+    /// <summary>
+    /// True when the only tables at this time are ones the guest before has to agree to free first:
+    /// show the time as available, labelled "the guest before you will be asked" (or, tonight, the
+    /// floor's short-notice wait). <see cref="RequiresApproval"/> is true with it.
+    /// </summary>
+    public bool IsRequestable { get; init; }
+
+    /// <summary>How many tables at this time can be had once the guest before agrees to leave in time.</summary>
+    public int RequestableTableCount { get; init; }
+
+    /// <summary>
+    /// When every table on offer at this time has to be free again before a full sitting is over -
+    /// another booking follows it - the latest of those times; absent when at least one table gives a
+    /// full sitting. "Until 21:25". The table the diner picks says its own, which they accept before
+    /// booking.
+    /// </summary>
+    public DateTime? MustFreeByUtc { get; init; }
+
+    /// <summary><see cref="MustFreeByUtc"/> on the branch's wall clock, <c>HH:mm</c>.</summary>
+    public string? MustFreeByLocal { get; init; }
 
     /// <summary>
     /// True when a booking made at this time will land waiting for approval: the time is at short
@@ -77,15 +99,19 @@ public sealed record DaySlot
     /// </summary>
     public required bool RequiresApproval { get; init; }
 
-    /// <summary>How many tables the single-slot read would offer at this time. Zero when struck.</summary>
+    /// <summary>
+    /// How many tables the single-slot read offers at this time with nobody to ask first. Zero when
+    /// struck, and when the only tables are requestable ones.
+    /// </summary>
     public required int FreeTableCount { get; init; }
 
     /// <summary>
     /// Why nothing is free, when nothing is. <c>LeadTimeTooShort</c> or <c>OutsideBookingWindow</c>
-    /// when the time itself is refused; otherwise the tables' reason - <c>TableAlreadyBooked</c> (or
-    /// <c>TableCurrentlyOccupied</c>) when tables that fit the party are taken, else the commonest
-    /// reason across the tables, e.g. <c>PartyExceedsCapacity</c> when no table seats them. Null
-    /// when available.
+    /// when the time itself is refused; otherwise the tables' reason - when tables that fit the party
+    /// are taken, the commonest of <c>TableAlreadyBooked</c>, <c>TableCurrentlyOccupied</c>,
+    /// <c>TableJustBooked</c>, <c>NextBookingTooSoon</c> and <c>EarlierGuestBeingAsked</c>; else the
+    /// commonest reason across the tables, e.g. <c>PartyExceedsCapacity</c> when no table seats them.
+    /// Null when available.
     /// </summary>
     public ReservationRejectionReason? UnavailableReason { get; init; }
 }
@@ -94,8 +120,8 @@ public sealed record DaySlot
 public static class DaySlotStep
 {
     /// <summary>
-    /// Every half hour from midnight. The grid the app has always offered, so striking chips changes
-    /// what it shows and not where the chips are.
+    /// Every quarter of an hour from midnight - 00, 15, 30 and 45 - the minutes the diner's wheel and
+    /// the public page's list offer. It was every half hour until the booking-times change.
     /// </summary>
-    public const int Minutes = 30;
+    public const int Minutes = 15;
 }

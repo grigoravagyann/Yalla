@@ -13,7 +13,7 @@ namespace Yalla.UnitTests.Integration;
 public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
 {
     /// <summary>Midday UTC is four in the afternoon in Yerevan, so an evening booking is ahead of
-    /// the branch's thirty-minute lead time and inside its opening hours.</summary>
+    /// the branch's ten-minute lead time and inside its opening hours.</summary>
     private static readonly DateTime Now = new(2026, 9, 13, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly DateOnly BookingDate = new(2026, 9, 13);

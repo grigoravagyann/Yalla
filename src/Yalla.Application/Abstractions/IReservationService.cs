@@ -73,6 +73,21 @@ public interface IReservationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The earlier guest's answer to a later guest's request for their table. Yes: the later booking is
+    /// confirmed, and this booking promises to free the table by the time asked - its end is cut to it.
+    /// No: the later booking is declined. Both diners are told.
+    /// </summary>
+    /// <returns>The earlier guest's own booking, as it now stands.</returns>
+    /// <exception cref="KeyNotFoundException">No such booking of the caller's, or no such request on it.</exception>
+    /// <exception cref="Domain.Occupancy.TableRequestNotPendingException">
+    /// The request was answered another way already, ran out of time, or went away.
+    /// </exception>
+    /// <exception cref="ClientCommandIdAlreadyUsedException">The id belongs to another command or another answer.</exception>
+    Task<ReservationView> AnswerTableRequestAsync(
+        AnswerTableRequestCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Cancels a booking on behalf of the diner who made it.
     /// </summary>
     /// <remarks>

@@ -94,6 +94,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     NextReservationStartUtc = t.NextReservationStartUtc,
                     FreeUntilUtc = TableStateProjection.FreeUntil(
                         t.NextReservationStartUtc, row.BufferMinutes),
+                    NextReservationPromisedFreeByUtc = t.NextReservationPromisedFreeByUtc,
+                    SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
                 })
                 // Ordered here rather than in SQL: the client draws by area then label, and
                 // "7" before "10" needs natural ordering that SQL collation will not give.
@@ -252,6 +254,25 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                             .OrderBy(r => r.StartUtc)
                             .Select(r => (DateTime?)r.StartUtc)
                             .FirstOrDefault(),
+
+                        // "Must free by 21:25" on the next-booking line: the promise its guest made.
+                        NextReservationPromisedFreeByUtc = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.PromisedFreeByUtc)
+                            .FirstOrDefault(),
+
+                        // And the party sitting here now, when they came on a booking that promised one.
+                        SittingPromisedFreeByUtc = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null && s.ReservationId != null)
+                            .Select(s => db.Reservations
+                                .Where(r => r.Id == s.ReservationId)
+                                .Select(r => r.PromisedFreeByUtc)
+                                .FirstOrDefault())
+                            .FirstOrDefault(),
                     })
                     .ToList(),
             });
@@ -312,5 +333,9 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public Guid? NextReservationId { get; init; }
 
         public DateTime? NextReservationStartUtc { get; init; }
+
+        public DateTime? NextReservationPromisedFreeByUtc { get; init; }
+
+        public DateTime? SittingPromisedFreeByUtc { get; init; }
     }
 }

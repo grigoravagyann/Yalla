@@ -56,6 +56,28 @@ public sealed record ReservationView
     /// <summary>Wall-clock end, derived from the stored interval for display.</summary>
     public required TimeOnly LocalEndTime { get; init; }
 
+    /// <summary>
+    /// The time the guest promised to have left the table by, or absent.
+    /// </summary>
+    /// <remarks>
+    /// Set when the diner booked a table whose next booking cut the sitting short - they accepted
+    /// "I'll free the table by 21:25" (<c>acceptsFreeByUtc</c>) - or said yes when a later guest asked
+    /// for their table. <see cref="EndUtc"/> is that time too when it is sooner. Show it on the booking
+    /// ("please free the table by 21:25"); staff see it on the awaiting list and the floor.
+    /// </remarks>
+    public DateTime? PromisedFreeByUtc { get; init; }
+
+    /// <summary>
+    /// Somebody would like this booking's table after it, and this guest is asked whether they will have
+    /// left in time - or absent. Only on the diner's own booking, only while the question is open.
+    /// </summary>
+    /// <remarks>
+    /// "Someone would like your table at 19:45. Will you have left by 19:40?" - answer with
+    /// <c>POST /api/reservations/{id}/table-requests/{requestId}/answer</c> before
+    /// <c>expiresAtUtc</c>. The other guest stays anonymous.
+    /// </remarks>
+    public IncomingTableRequest? IncomingTableRequest { get; init; }
+
     public required ReservationStatus Status { get; init; }
 
     public required string GuestName { get; init; }
@@ -128,9 +150,10 @@ public sealed record ReservationView
     public DateTime? ApprovalExpiresAtUtc { get; init; }
 
     /// <summary>
-    /// Why a booking that was waiting for the venue was declined: a member of staff said no, or
-    /// nobody answered in time. Null for every booking that was not declined - a venue letting an
-    /// accepted booking go is <c>CancelledByVenue</c> without one.
+    /// Why a booking that was waiting was declined: a member of staff said no (1), nobody at the venue
+    /// answered in time (2), the guest with the table before said they would not have left in time (3),
+    /// or did not answer within the two hours (4). Null for every booking that was not declined - a venue
+    /// letting an accepted booking go is <c>CancelledByVenue</c> without one.
     /// </summary>
     public DeclineReason? DeclinedBecause { get; init; }
 
@@ -152,6 +175,23 @@ public sealed record ReservationView
     /// </remarks>
     public string? ManageToken { get; init; }
 }
+
+/// <summary>
+/// A later guest's request for a booking's table, as the booking's own guest is shown it.
+/// </summary>
+/// <param name="RequestId">The request, to answer it by.</param>
+/// <param name="RequestedStartUtc">When the later guest would sit down - "someone would like your table at 19:45".</param>
+/// <param name="FreeByUtc">The time this guest is asked to have left by - "will you have left by 19:40?".</param>
+/// <param name="ExpiresAtUtc">The deadline to answer by. Past it the request lapses and this booking is unchanged.</param>
+/// <param name="RequestedLocalTime"><paramref name="RequestedStartUtc"/> on the branch's wall clock.</param>
+/// <param name="FreeByLocalTime"><paramref name="FreeByUtc"/> on the branch's wall clock.</param>
+public sealed record IncomingTableRequest(
+    Guid RequestId,
+    DateTime RequestedStartUtc,
+    DateTime FreeByUtc,
+    DateTime ExpiresAtUtc,
+    TimeOnly RequestedLocalTime,
+    TimeOnly FreeByLocalTime);
 
 /// <summary>The branch booking list the console's approval panel reads.</summary>
 public static class BranchReservationList

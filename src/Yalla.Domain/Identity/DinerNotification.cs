@@ -119,9 +119,21 @@ public static class DinerNotificationKinds
     /// <summary>Moderation took the diner's review down.</summary>
     public const string ReviewHidden = "review-hidden";
 
+    /// <summary>
+    /// Somebody would like the diner's table after their booking, and asks whether they will have left
+    /// in time. Answered from the booking's <c>incomingTableRequest</c>; the entry is the record.
+    /// </summary>
+    public const string TableRequest = "table-request";
+
+    /// <summary>The diner's answer to a request for their table took effect: they promised a time to leave by, or said no.</summary>
+    public const string TableRequestDecided = "table-request-decided";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
     public static readonly IReadOnlyList<string> All =
-        [BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden];
+    [
+        BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
+        TableRequest, TableRequestDecided,
+    ];
 }

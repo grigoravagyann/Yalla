@@ -48,6 +48,20 @@ public sealed record AwaitingApproval
 
     /// <summary>The party sitting at the table right now, or null when nobody is.</summary>
     public AwaitingCurrentSitting? CurrentSitting { get; init; }
+
+    /// <summary>
+    /// The time the guest of <see cref="PreviousBooking"/> is asked to have left by for this booking -
+    /// its start less the clearing time - when saying yes means holding them to it; null when nobody
+    /// before has to be asked.
+    /// </summary>
+    /// <remarks>
+    /// "Call Anna: will they have left by 19:40?" Approving this booking records that promise on the
+    /// previous booking - its end is cut to it - so it is the floor saying yes for them. Set for
+    /// <see cref="Yalla.Domain.Enums.ApprovalTrigger.EarlierGuestConsent"/> bookings the floor decides
+    /// (the earlier guest booked on the web or has no phone to push to) and for short-notice ones whose
+    /// table is still within three hours of its previous booking.
+    /// </remarks>
+    public DateTime? EarlierGuestFreeByUtc { get; init; }
 }
 
 /// <summary>The booking before one awaiting approval, on its table, that day.</summary>
@@ -64,6 +78,9 @@ public sealed record AwaitingApproval
 /// Where it stands: <c>Confirmed</c> (still to come, or late), <c>Seated</c> (at the table),
 /// <c>Completed</c> (gone), <c>NoShow</c>, or <c>PendingApproval</c>.
 /// </param>
+/// <param name="PromisedFreeByUtc">
+/// The time its guest already promised to have left by, or null - see <c>ReservationView.PromisedFreeByUtc</c>.
+/// </param>
 public sealed record AwaitingPreviousBooking(
     Guid ReservationId,
     DateTime StartUtc,
@@ -71,18 +88,21 @@ public sealed record AwaitingPreviousBooking(
     int PartySize,
     string GuestName,
     string? GuestPhone,
-    ReservationStatus Status);
+    ReservationStatus Status,
+    DateTime? PromisedFreeByUtc = null);
 
 /// <summary>The booking after one awaiting approval, on its table, that day.</summary>
 /// <param name="ReservationId">The later booking.</param>
 /// <param name="StartUtc">When it starts.</param>
 /// <param name="LocalStartTime">When it starts, on the branch's wall clock.</param>
 /// <param name="PartySize">How many it is for.</param>
+/// <param name="PromisedFreeByUtc">The time its guest promised to have left by, or null.</param>
 public sealed record AwaitingNextBooking(
     Guid ReservationId,
     DateTime StartUtc,
     TimeOnly LocalStartTime,
-    int PartySize);
+    int PartySize,
+    DateTime? PromisedFreeByUtc = null);
 
 /// <summary>The party at the table of a booking awaiting approval, right now.</summary>
 /// <param name="SeatedAtUtc">Since when they have been sitting there.</param>

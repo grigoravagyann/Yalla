@@ -311,7 +311,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided')");
                         });
                 });
 
@@ -1018,7 +1018,13 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int?>("PreviousPartySize")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("PreviousPromisedFreeByUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("PreviousStartUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("PromisedFreeByUtc")
                         .HasColumnType("datetime2");
 
                     b.Property<byte[]>("RowVersion")
@@ -1125,6 +1131,68 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("DiningTableId", "SeatedAtUtc");
 
                     b.ToTable("TableSessions", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Occupancy.TableShareRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("AsksEarlierGuest")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("EarlierReservationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FallbackTrigger")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("FreeByUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("LaterReservationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("RequestedStartUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EarlierReservationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TableShareRequests_EarlierReservationId_Pending")
+                        .HasFilter("[Status] = 1");
+
+                    b.HasIndex("LaterReservationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TableShareRequests_LaterReservationId_Pending")
+                        .HasFilter("[Status] = 1");
+
+                    b.HasIndex("EarlierReservationId", "CreatedAtUtc")
+                        .HasDatabaseName("IX_TableShareRequests_EarlierReservationId_CreatedAtUtc");
+
+                    b.HasIndex("LaterReservationId", "CreatedAtUtc")
+                        .HasDatabaseName("IX_TableShareRequests_LaterReservationId_CreatedAtUtc");
+
+                    b.ToTable("TableShareRequests", (string)null);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Staff.StaffMember", b =>
@@ -2359,6 +2427,21 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Reservation");
 
                     b.Navigation("SeatedByStaff");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Occupancy.TableShareRequest", b =>
+                {
+                    b.HasOne("Yalla.Domain.Occupancy.Reservation", null)
+                        .WithMany()
+                        .HasForeignKey("EarlierReservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Occupancy.Reservation", null)
+                        .WithMany()
+                        .HasForeignKey("LaterReservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Yalla.Domain.Staff.StaffMember", b =>

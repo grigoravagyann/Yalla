@@ -8,7 +8,7 @@ internal sealed class DinerNotificationConfiguration : EntityConfiguration<Diner
 {
     protected override void ConfigureEntity(EntityTypeBuilder<DinerNotification> builder)
     {
-        // The kind is a slug the app keys its text on, held to the six it knows by the database as well
+        // The kind is a slug the app keys its text on, held to the ones it knows by the database as well
         // as the domain, so a row written around the domain still means something to the app.
         builder.ToTable("DinerNotifications", table =>
             table.HasCheckConstraint(

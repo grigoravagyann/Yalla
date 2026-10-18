@@ -51,9 +51,29 @@ public sealed class Reservation : Entity
     public DateTime StartUtc { get; private set; }
 
     /// <summary>
-    /// End of the booked interval, UTC. Derived from the branch turn time at creation.
+    /// End of the booked interval, UTC. Derived from the branch turn time at creation - or the time the
+    /// guest promised to free the table by, when that is sooner (<see cref="PromisedFreeByUtc"/>).
     /// </summary>
     public DateTime EndUtc { get; private set; }
+
+    /// <summary>
+    /// The time the guest promised to have left the table by, or null for a booking that made no such
+    /// promise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two ways to make one (see <see cref="TableSequencing"/>): booking a table whose next booking a
+    /// full sitting would run into - the diner accepts "I'll free the table by 21:25" before sending -
+    /// and saying yes when a later guest asks for the table (<see cref="TableShareRequest"/>). Either
+    /// way <see cref="EndUtc"/> is cut to it when it is sooner, so every rule that reads the interval
+    /// reads the promise, and staff see it on the awaiting list and the floor.
+    /// </para>
+    /// <para>
+    /// Kept even when it is no sooner than the booked end: a guest who said they would be gone by 19:40
+    /// is somebody the floor can hold to it, and a later request is not asked of them again.
+    /// </para>
+    /// </remarks>
+    public DateTime? PromisedFreeByUtc { get; private set; }
 
     /// <summary>
     /// The local calendar date of the booking, as the diner reads it off their confirmation.
@@ -143,6 +163,12 @@ public sealed class Reservation : Entity
 
     /// <summary>When the confirmed slot was confirmed. See <see cref="PreviousDiningTableId"/>.</summary>
     public DateTime? PreviousConfirmedAtUtc { get; private set; }
+
+    /// <summary>
+    /// The confirmed slot's promise to free the table, when it had one. See <see cref="PreviousDiningTableId"/>
+    /// and <see cref="PromisedFreeByUtc"/>.
+    /// </summary>
+    public DateTime? PreviousPromisedFreeByUtc { get; private set; }
 
     /// <summary>Whether a change is waiting with a confirmed slot behind it to go back to.</summary>
     public bool HasConfirmedSlotToReturnTo =>
@@ -368,6 +394,11 @@ public sealed class Reservation : Entity
     /// no-show threshold. Deciding between the two is the caller's job, and so is the reason - stored
     /// as <paramref name="approvalTrigger"/> - and the answer window, if there is one; a reservation
     /// simply refuses to start life in any other state, or with a window and no wait.
+    /// <para>
+    /// <paramref name="promisedFreeByUtc"/> is the time the diner accepted to free the table by, when
+    /// the table's next booking would cut a full sitting short (<see cref="TableSequencing"/>): the
+    /// booking ends then rather than a turn time after its start.
+    /// </para>
     /// </remarks>
     public static Reservation Create(
         Guid branchId,
@@ -388,7 +419,8 @@ public sealed class Reservation : Entity
         ReservationChannel channel = ReservationChannel.Unknown,
         string? note = null,
         ApprovalTrigger? approvalTrigger = null,
-        DateTime? approvalExpiresAtUtc = null)
+        DateTime? approvalExpiresAtUtc = null,
+        DateTime? promisedFreeByUtc = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -407,12 +439,22 @@ public sealed class Reservation : Entity
         }
 
         var checkedNote = NormaliseNote(note);
+        var naturalEnd = startUtc.AddMinutes(policy.TurnTimeMinutes);
+
+        if (promisedFreeByUtc is { } freeBy
+            && (Guard.NotLocalTime(freeBy, nameof(promisedFreeByUtc)) <= startUtc || freeBy > naturalEnd))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(promisedFreeByUtc),
+                promisedFreeByUtc,
+                "A time to free the table by must come after the start and no later than a full sitting.");
+        }
 
         var reservation = new Reservation(
             branchId,
             diningTableId,
             startUtc,
-            startUtc.AddMinutes(policy.TurnTimeMinutes),
+            promisedFreeByUtc ?? naturalEnd,
             localDate,
             localStartTime,
             partySize,
@@ -430,9 +472,46 @@ public sealed class Reservation : Entity
             channel);
 
         reservation.Note = checkedNote;
+        reservation.PromisedFreeByUtc = promisedFreeByUtc;
         reservation.AwaitDecision(initialStatus, approvalTrigger, approvalExpiresAtUtc);
 
         return reservation;
+    }
+
+    /// <summary>
+    /// The guest says they will have left the table by <paramref name="freeByUtc"/> - yes to a later
+    /// guest's request for it (see <see cref="TableShareRequest"/>).
+    /// </summary>
+    /// <remarks>
+    /// The booking's end is cut to the promise when the promise is sooner, so every rule that reads the
+    /// interval reads it, and never lengthened: a booking ending 19:30 whose guest promises to be gone
+    /// by 19:40 still ends at 19:30, with the promise kept on the row for the floor - and so that the
+    /// guest is not asked again. Of two promises the sooner stands.
+    /// </remarks>
+    /// <exception cref="DomainStateException">The booking no longer holds the table.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The time is not after the booking's start.</exception>
+    public void PromiseToFreeBy(DateTime freeByUtc)
+    {
+        if (!ReservationOverlap.Blocks(Status))
+        {
+            throw new DomainStateException(
+                $"Booking {Code} is {Status}; it holds no table to promise to free.");
+        }
+
+        if (Guard.NotLocalTime(freeByUtc, nameof(freeByUtc)) <= StartUtc)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(freeByUtc), freeByUtc, "A time to free the table by must come after the booking starts.");
+        }
+
+        var promise = PromisedFreeByUtc is { } earlier && earlier < freeByUtc ? earlier : freeByUtc;
+
+        PromisedFreeByUtc = promise;
+
+        if (promise < EndUtc)
+        {
+            EndUtc = promise;
+        }
     }
 
     /// <summary>
@@ -709,7 +788,7 @@ public sealed class Reservation : Entity
     /// </exception>
     public void KeepConfirmedSlot(DateTime atUtc, DeclineReason because)
     {
-        if (because == Enums.DeclineReason.NoAnswer)
+        if (IsForNoAnswer(because))
         {
             if (!ApprovalHasLapsedAt(atUtc))
             {
@@ -735,6 +814,7 @@ public sealed class Reservation : Entity
         LocalStartTime = PreviousLocalStartTime ?? LocalStartTime;
         PartySize = PreviousPartySize ?? PartySize;
         ConfirmedAtUtc = PreviousConfirmedAtUtc;
+        PromisedFreeByUtc = PreviousPromisedFreeByUtc;
         Status = ReservationStatus.Confirmed;
         HoldExpiresAtUtc = null;
         ApprovalExpiresAtUtc = null;
@@ -742,6 +822,29 @@ public sealed class Reservation : Entity
 
         ForgetConfirmedSlot();
     }
+
+    /// <summary>
+    /// A booking still waiting is now waiting for another reason - the question it asked the guest before
+    /// it went away, and something else still needs a human - with that reason's deadline, or none.
+    /// </summary>
+    /// <exception cref="DomainStateException">The booking is not waiting.</exception>
+    public void WaitInsteadFor(ApprovalTrigger trigger, DateTime? approvalExpiresAtUtc)
+    {
+        if (Status != ReservationStatus.PendingApproval)
+        {
+            throw new DomainStateException($"Booking {Code} is {Status}; only a waiting booking waits for a reason.");
+        }
+
+        AwaitDecision(Status, trigger, approvalExpiresAtUtc);
+    }
+
+    /// <summary>
+    /// Whether a decline for this reason is the clock's - nobody answered in time - rather than
+    /// somebody's no. The clock's declines happen only once the answer window has run out; somebody's
+    /// only while it is open.
+    /// </summary>
+    public static bool IsForNoAnswer(DeclineReason because) =>
+        because is Enums.DeclineReason.NoAnswer or Enums.DeclineReason.EarlierGuestNoAnswer;
 
     /// <summary>
     /// Refuses with <see cref="ReservationApprovalExpiredException"/> once a waiting booking's answer
@@ -793,9 +896,19 @@ public sealed class Reservation : Entity
     /// says must never free a table.
     /// </para>
     /// </remarks>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="because">
+    /// Whose silence: the venue's (<see cref="Enums.DeclineReason.NoAnswer"/>), or the guest's before this
+    /// booking on the table (<see cref="Enums.DeclineReason.EarlierGuestNoAnswer"/>).
+    /// </param>
     /// <exception cref="DomainStateException">The window has not run out, or the booking is not waiting.</exception>
-    public void DeclineForNoAnswer(DateTime atUtc)
+    public void DeclineForNoAnswer(DateTime atUtc, DeclineReason because = Enums.DeclineReason.NoAnswer)
     {
+        if (!IsForNoAnswer(because))
+        {
+            throw new ArgumentOutOfRangeException(nameof(because), because, "Not a reason for nobody answering.");
+        }
+
         if (!ApprovalHasLapsedAt(atUtc))
         {
             throw new DomainStateException(
@@ -803,7 +916,7 @@ public sealed class Reservation : Entity
         }
 
         Cancel(ReservationStatus.CancelledByVenue, atUtc, reason: null, afterDeadline: false);
-        DeclineReason = Enums.DeclineReason.NoAnswer;
+        DeclineReason = because;
     }
 
     /// <summary>
@@ -814,7 +927,7 @@ public sealed class Reservation : Entity
     {
         // Declined by the sweep: the booking ended, or - for a change of a confirmed booking - it went
         // back to the slot it had. Either way the request is gone.
-        if (Status != ReservationStatus.PendingApproval && DeclineReason == Enums.DeclineReason.NoAnswer)
+        if (Status != ReservationStatus.PendingApproval && DeclineReason is { } declined && IsForNoAnswer(declined))
         {
             throw new ReservationApprovalExpiredException(
                 Id, Code, Status, StartUtc, ApprovalExpiresAtUtc,
@@ -937,6 +1050,10 @@ public sealed class Reservation : Entity
     /// <param name="nowUtc">The instant of the change, against which "not started" is judged.</param>
     /// <param name="approvalTrigger">Why it waits, when <paramref name="status"/> is PendingApproval.</param>
     /// <param name="approvalExpiresAtUtc">Until when the venue may answer, for a short-notice wait.</param>
+    /// <param name="promisedFreeByUtc">
+    /// The time the diner accepted to free the table by at the new slot, when its next booking cuts a full
+    /// sitting short - see <see cref="Create"/>. Replaces any promise the old slot had.
+    /// </param>
     /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
     public void Reschedule(
         Guid diningTableId,
@@ -948,7 +1065,8 @@ public sealed class Reservation : Entity
         ReservationStatus status,
         DateTime nowUtc,
         ApprovalTrigger? approvalTrigger = null,
-        DateTime? approvalExpiresAtUtc = null)
+        DateTime? approvalExpiresAtUtc = null,
+        DateTime? promisedFreeByUtc = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -959,6 +1077,17 @@ public sealed class Reservation : Entity
         {
             throw new ArgumentOutOfRangeException(
                 nameof(status), status, "A moved reservation must be Confirmed or PendingApproval.");
+        }
+
+        var naturalEnd = startUtc.AddMinutes(policy.TurnTimeMinutes);
+
+        if (promisedFreeByUtc is { } freeBy
+            && (Guard.NotLocalTime(freeBy, nameof(promisedFreeByUtc)) <= startUtc || freeBy > naturalEnd))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(promisedFreeByUtc),
+                promisedFreeByUtc,
+                "A time to free the table by must come after the start and no later than a full sitting.");
         }
 
         if (status == ReservationStatus.PendingApproval)
@@ -975,6 +1104,7 @@ public sealed class Reservation : Entity
                 PreviousLocalStartTime = LocalStartTime;
                 PreviousPartySize = PartySize;
                 PreviousConfirmedAtUtc = ConfirmedAtUtc;
+                PreviousPromisedFreeByUtc = PromisedFreeByUtc;
             }
         }
         else
@@ -985,7 +1115,8 @@ public sealed class Reservation : Entity
 
         DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
         StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
-        EndUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
+        EndUtc = promisedFreeByUtc ?? naturalEnd;
+        PromisedFreeByUtc = promisedFreeByUtc;
         LocalDate = localDate;
         LocalStartTime = localStartTime;
         PartySize = Guard.Positive(partySize, nameof(partySize));
@@ -1013,6 +1144,7 @@ public sealed class Reservation : Entity
         PreviousLocalStartTime = null;
         PreviousPartySize = null;
         PreviousConfirmedAtUtc = null;
+        PreviousPromisedFreeByUtc = null;
     }
 
     /// <summary>
@@ -1064,9 +1196,20 @@ public sealed class Reservation : Entity
     /// The answer window has closed, or the booking was already declined for nobody answering: the
     /// diner is being told nobody looked, and a late "no" must not tell them otherwise.
     /// </exception>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="reason">Optional free text, recorded as <see cref="CancellationReason"/>.</param>
+    /// <param name="because">
+    /// Whose no: a member of staff's (<see cref="Enums.DeclineReason.StaffDeclined"/>), or the guest's before
+    /// this booking on the table (<see cref="Enums.DeclineReason.EarlierGuestDeclined"/>).
+    /// </param>
     /// <exception cref="DomainStateException">The booking is not waiting for approval.</exception>
-    public void Reject(DateTime atUtc, string? reason)
+    public void Reject(DateTime atUtc, string? reason, DeclineReason because = Enums.DeclineReason.StaffDeclined)
     {
+        if (IsForNoAnswer(because))
+        {
+            throw new ArgumentOutOfRangeException(nameof(because), because, "A no is somebody's answer, not the clock's.");
+        }
+
         RequireStillAnswerable(atUtc, approving: false);
 
         if (Status != ReservationStatus.PendingApproval)
@@ -1076,7 +1219,7 @@ public sealed class Reservation : Entity
         }
 
         Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
-        DeclineReason = Enums.DeclineReason.StaffDeclined;
+        DeclineReason = Guard.Defined(because, nameof(because));
     }
 
     /// <summary>

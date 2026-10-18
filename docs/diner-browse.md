@@ -189,10 +189,11 @@ It replaces `GET …/table-markers`, which is gone.
   floor-plan geometry (`x`, `y`, `width`, `height`, `rotationDegrees`, `shape`) and the branch's
   `floorWidth`/`floorHeight` are gone (K13).
 - `GET /api/public/branches/{branchId}/availability/slots?partySize=&date=` - the time picker's day:
-  every half hour whose sitting fits the opening hours, each `isAvailable` with its `freeTableCount`,
-  judged exactly as the single-slot read above judges that time. Both take `excludeReservationId`, so
-  a diner changing a booking sees their own table free. See
-  [reservations.md](reservations.md#day-slots-one-day-every-half-hour).
+  every quarter of an hour whose sitting fits the opening hours, each `isAvailable` with its
+  `freeTableCount`, `requestableTableCount`/`isRequestable` and `mustFreeByUtc`, judged exactly as the
+  single-slot read above judges that time. Both take `excludeReservationId`, so a diner changing a
+  booking sees their own table free. See
+  [reservations.md](reservations.md#day-slots-one-day-every-quarter-of-an-hour).
 - `GET /api/public/branches/{branchId}/menu` - `BranchMenuView`, complete items only.
 - `GET /api/public/venues` and `GET /api/public/branches/{venueSlug}/{branchSlug}` - unchanged; see
   [public-surface.md](public-surface.md).
