@@ -86,16 +86,19 @@ public interface IReservationService
     /// </para>
     /// <para>
     /// One answer is narrower than the diner's: a clash with another of the diner's bookings is
-    /// <c>ManageLinkOverlapsOwnException</c>, which names nothing about that other booking - the link
-    /// shows one booking, and its refusals do not show a second.
+    /// <c>ManageLinkOverlapsOwnException</c>, which names nothing about that other booking - no time,
+    /// table or code. Its code still says one exists. A deactivated, deleted or unproved account is
+    /// <c>ManageLinkAccountUnavailableException</c>, never the session's 401. A change that is not a
+    /// retry tells the booking's account, in the same save.
     /// </para>
     /// </remarks>
     /// <exception cref="KeyNotFoundException">
     /// The token is unknown, expired, or its booking is gone - see <c>ManageBookingFailure</c>; or no
     /// such table.
     /// </exception>
-    /// <exception cref="Domain.Identity.PhoneNotVerifiedException">
-    /// The booking's account has no proved number any more, or the account is gone.
+    /// <exception cref="Domain.Occupancy.ManageLinkAccountUnavailableException">
+    /// The booking's account is deactivated, deleted or without a proved number - at the gate, or found
+    /// not live by the move's own lock.
     /// </exception>
     /// <exception cref="ClientCommandIdAlreadyUsedException">As <see cref="RescheduleAsync"/>.</exception>
     /// <exception cref="Domain.Occupancy.ReservationNotChangeableException">As <see cref="RescheduleAsync"/>.</exception>
@@ -145,7 +148,8 @@ public interface IReservationService
     /// </para>
     /// <para>
     /// A booking that is already cancelled or finished is returned as it stands rather than
-    /// refused.
+    /// refused. One that this cancels is told to its account - a push and a feed entry, in the same
+    /// save - because whoever holds the link may not be the diner.
     /// </para>
     /// </remarks>
     /// <exception cref="KeyNotFoundException">

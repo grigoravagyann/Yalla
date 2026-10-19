@@ -944,6 +944,8 @@ The user's decision: the feed is built now. As built:
   | `order-ready` | An order moves to Ready at a branch with `NotifyOnOrderReady` on, for the ordering participant's account | `tab.order-ready` |
   | `review-hidden` | The platform or the venue takes down a review that was shown (not again when a hidden review is re-hidden) | none exists - written with the takedown |
   | `review-replied` | The venue first replies to the diner's review (not on an edit). Deleted while unread if the venue removes the reply | none - written with the reply |
+  | `booking-changed-by-link` | Somebody holding the booking's manage link changes it - never the diner's own change in the app. `params` add `status` (the `ReservationStatus` number: 1 waiting for the venue, 2 confirmed); `date`/`time`/`partySize` are where it stands now | `reservation.changed-by-link` |
+  | `booking-cancelled-by-link` | Somebody holding the booking's manage link cancels it - never the app's cancel | `reservation.cancelled-by-link` |
 
   The late nudge and "participant approved" pushes write no entry. Cancelling a booking - by the diner,
   through the manage link, by rejection or by release - deletes its entries that have not appeared yet

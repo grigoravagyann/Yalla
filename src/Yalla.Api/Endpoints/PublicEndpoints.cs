@@ -133,6 +133,12 @@ public static class PublicEndpoints
                 + "`approvalExpiresAtUtc` to count down to and `awaitsEarlierGuestAnswer`: true while the "
                 + "guest with the table before it is asked in the app whether they will have left in time "
                 + "(only they answer), false when the venue decides it.\n\n"
+                + "For the page around it: `venueSlug` and `branchSlug`, the branch page's public address "
+                + "(`/{venueSlug}/{branchSlug}`) - the link a reminder carries is the web's token-only "
+                + "`/booking/{token}`, which names no branch - and, for changing the booking, "
+                + "`reservationId` (send it as `excludeReservationId` on the public availability and "
+                + "day-slot reads, so the table already held reads as free) and `tableId`, the booked "
+                + "table.\n\n"
                 + "**Nothing else.** No diner id, no phone number, no other bookings, no floor "
                 + "state. The token is the whole credential and it will be pasted into WhatsApp, "
                 + "left in browser history and read by whoever picks the phone up, so this response "
@@ -160,9 +166,12 @@ public static class PublicEndpoints
                 + "never blocked.** A late cancellation is far better than a no-show: the venue at "
                 + "least knows. `cancellationDeadlineUtc` on the read above is that deadline.\n\n"
                 + "The same cancellation the app performs, not a second one - the booking's "
-                + "reminder is cancelled in the same transaction either way.\n\n"
+                + "reminder is cancelled in the same transaction either way. One addition on the link: the "
+                + "booking's account is told it was cancelled from there - a push and a feed entry "
+                + "(`reservation.cancelled-by-link`, kind `booking-cancelled-by-link`) - because whoever "
+                + "holds the link may not be the diner.\n\n"
                 + "**Cancelling an already-cancelled or finished booking is not an error**: the "
-                + "booking comes back as it stands, untouched.")
+                + "booking comes back as it stands, untouched, and nobody is told again.")
             .Produces<PublicBookingView>()
             .ProducesProblemDetails(
                 StatusCodes.Status404NotFound,
@@ -197,12 +206,18 @@ public static class PublicEndpoints
                 + "in its own way; read the floor with `excludeReservationId` = `reservationId` on the "
                 + "public availability and day-slot reads to see it that way.\n\n"
                 + "**The phone gate is the booking's account's**: its reminders and no-show record land on "
-                + "that number, so it must still be a proved one - `403 phone-not-verified` otherwise, and "
-                + "for a booking whose account was deleted. Reading and cancelling stay open.\n\n"
+                + "that account, so it must still be live with a proved number - `403 phone-not-verified` "
+                + "otherwise (deactivated, deleted, or found not live by the move's own lock), with a message "
+                + "a link holder can act on: call the venue, or cancel and book again. Reading and cancelling "
+                + "stay open.\n\n"
                 + "**One diner, one table at a time** at the branch: a move onto a sitting that overlaps "
                 + "another of the booking's diner's live bookings there is `409 reservation-overlaps-own` - "
-                + "with **no `context`** and nothing about that booking in the message: the link shows one "
-                + "booking, and its refusals do not show a second.\n\n"
+                + "with **no `context`** and a message that names no time, table or code. It does not hide "
+                + "that such a booking exists: this check runs before the table's own clash check, so the "
+                + "code itself says the diner holds another table around then.\n\n"
+                + "**The booking's account is told** - a push and a feed entry, in the same save "
+                + "(`reservation.changed-by-link`, kind `booking-changed-by-link`): the link goes round group "
+                + "chats, and whoever moved it may not be the diner. A retry tells nobody twice.\n\n"
                 + "The reminder and late nudge are replaced with ones for the new time, carrying the same "
                 + "manage link. Idempotent on `clientCommandId`, shared with the app's change: a retry of "
                 + "the same change answers `200` with the booking **as it stands now**, moving nothing; the "
@@ -214,8 +229,11 @@ public static class PublicEndpoints
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`diningTableId` names a table at another branch.")
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
-                "`phone-not-verified`: the booking's account has no proved number any more, or the account "
-                + "was deleted. The booking can still be read and cancelled from the link.")
+                "`phone-not-verified`: the booking's account cannot take a move - deactivated, deleted, "
+                + "without a proved number, or found not live mid-move. The message is for the link holder "
+                + "(\"This booking can no longer be changed online. Call the venue, or cancel it and book "
+                + "again.\"); never a 401, since there is no session. The booking can still be read and "
+                + "cancelled from the link.")
             .ProducesProblemDetails(
                 StatusCodes.Status404NotFound,
                 "The link is not valid - deliberately indistinguishable from an expired one, as on the read. "

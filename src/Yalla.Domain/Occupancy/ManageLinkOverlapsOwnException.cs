@@ -13,6 +13,13 @@ namespace Yalla.Domain.Occupancy;
 /// besides, and when, is not something a refusal on it should hand to whoever opened it.
 /// </para>
 /// <para>
+/// <b>What it does not hide</b> is that such a booking exists. The writer checks the diner's own
+/// bookings before the table's own clash, so a link holder aiming at a taken table learns from the code
+/// alone whether the diner holds another table at this venue around then - and nothing moves either
+/// way. Accepted: the check order is shared with the app, and the person holding the link is already in
+/// the diner's circle, at the same venue.
+/// </para>
+/// <para>
 /// Raised only by the manage-link move, around the diner's move; the rule itself is unchanged.
 /// </para>
 /// </remarks>

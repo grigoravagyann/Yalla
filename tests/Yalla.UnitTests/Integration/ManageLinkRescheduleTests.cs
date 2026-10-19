@@ -92,6 +92,10 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
             new[] { "late-nudge:202609131600", "reminder:202609131600" },
             await ShapeOfOutboxAsync(link.Booked.Id, clock));
 
+        // And one thing more on the link only: the account holder is told it was changed from there.
+        Assert.Equal("reservation.changed-by-link", Assert.Single(await LinkNoticesAsync(link.Booked.Id, clock)).Type);
+        Assert.Empty(await LinkNoticesAsync(app.Booked.Id, clock));
+
         // Recorded as the booking's diner's change, as the app's is.
         await using var verify = fixture.CreateContext(clock);
         var recorded = await verify.ProcessedCommands.AsNoTracking()
@@ -456,18 +460,27 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(clock);
         var service = LinkService(db, clock);
 
-        // The account's number stopped being a proved one: the moved booking's reminder and no-show
-        // record would land on it, so the link is refused as the app would be.
+        // The account deactivated by the platform - the realistic case: the moved booking's reminder and
+        // no-show record would land on an account that is not live, so the link is refused as the app
+        // would be, in words a visitor with no account can act on.
+        var deactivated = await ArrangeAsync(db, clock);
+        await db.Database.ExecuteSqlAsync(
+            $"UPDATE dbo.DinerUsers SET IsActive = 0 WHERE Id = {deactivated.DinerUserId}");
+
+        AssertCannotChangeOnline(await Assert.ThrowsAnyAsync<Exception>(
+            () => service.RescheduleByManageTokenAsync(deactivated.Token, LinkMove(deactivated.Branch.FirstTableId, BookingDate, EightPm, 2))));
+
+        await Assert.ThrowsAsync<PhoneNotVerifiedException>(
+            () => deactivated.Diner.RescheduleAsync(Move(deactivated, deactivated.Branch.FirstTableId, BookingDate, EightPm, 2)));
+
+        // A number never proved - unreachable for a booking, which needed a proved one, but the gate's
+        // own rule - is refused the same way.
         var unproved = await ArrangeAsync(db, clock);
         await db.Database.ExecuteSqlAsync(
             $"UPDATE dbo.DinerUsers SET PhoneVerifiedAtUtc = NULL WHERE Id = {unproved.DinerUserId}");
 
-        var refused = await Assert.ThrowsAsync<PhoneNotVerifiedException>(
-            () => service.RescheduleByManageTokenAsync(unproved.Token, LinkMove(unproved.Branch.FirstTableId, BookingDate, EightPm, 2)));
-        Assert.Equal(StatusCodes.Status403Forbidden, ApiExceptionMapper.Map(refused).Status);
-
-        await Assert.ThrowsAsync<PhoneNotVerifiedException>(
-            () => unproved.Diner.RescheduleAsync(Move(unproved, unproved.Branch.FirstTableId, BookingDate, EightPm, 2)));
+        AssertCannotChangeOnline(await Assert.ThrowsAnyAsync<Exception>(
+            () => service.RescheduleByManageTokenAsync(unproved.Token, LinkMove(unproved.Branch.FirstTableId, BookingDate, EightPm, 2))));
 
         // The account deleted: the booking stays the venue's with the link to the person cut, so there
         // is no account for it to land on - refused the same way.
@@ -479,19 +492,183 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
         // A fresh context, as a fresh request is: the one above still tracks the row as it was.
         await using var request = fixture.CreateContext(clock);
 
-        var gone = await Assert.ThrowsAsync<PhoneNotVerifiedException>(
-            () => LinkService(request, clock).RescheduleByManageTokenAsync(orphaned.Token, LinkMove(orphaned.Branch.FirstTableId, BookingDate, EightPm, 2)));
-        Assert.Equal("phone-not-verified", ApiExceptionMapper.Map(gone).Code);
+        AssertCannotChangeOnline(await Assert.ThrowsAnyAsync<Exception>(
+            () => LinkService(request, clock).RescheduleByManageTokenAsync(orphaned.Token, LinkMove(orphaned.Branch.FirstTableId, BookingDate, EightPm, 2))));
 
-        // Neither moved; both can still be cancelled from the link, which is never gated.
+        // None moved; all can still be cancelled from the link, which is never gated.
+        Assert.Equal(deactivated.Booked.StartUtc, (await StoredAsync(deactivated.Booked.Id, clock)).StartUtc);
         Assert.Equal(unproved.Booked.StartUtc, (await StoredAsync(unproved.Booked.Id, clock)).StartUtc);
         Assert.Equal(orphaned.Booked.StartUtc, (await StoredAsync(orphaned.Booked.Id, clock)).StartUtc);
 
-        var cancelled = await LinkService(request, clock).CancelByManageTokenAsync(orphaned.Token);
-        Assert.Equal(ReservationStatus.CancelledByDiner, cancelled.Status);
+        Assert.Equal(ReservationStatus.CancelledByDiner, (await LinkService(request, clock).CancelByManageTokenAsync(orphaned.Token)).Status);
+        Assert.Equal(ReservationStatus.CancelledByDiner, (await LinkService(request, clock).CancelByManageTokenAsync(deactivated.Token)).Status);
+    }
+
+    /// <summary>
+    /// The account deactivated <b>between</b> the phone gate and the move's lock - the account's own lock
+    /// finds it not live. On the app that is the diner's session ending (401); on an anonymous link there
+    /// is no session, so it is the same 403 the gate gives, not a "sign in again".
+    /// </summary>
+    [SkippableFact]
+    public async Task An_account_that_stops_being_live_mid_move_is_the_links_403_not_a_session_401()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        Arranged link;
+        await using (var setup = fixture.CreateContext(clock))
+        {
+            link = await ArrangeAsync(setup, clock);
+        }
+
+        // Past the gate, at the moment the move takes the account's lock inside the table's.
+        var race = new BeforeFirstCommandMatching(
+            sql => sql.Contains("DinerUsers", StringComparison.Ordinal) && sql.Contains("UPDLOCK", StringComparison.Ordinal),
+            async () =>
+            {
+                await using var platform = fixture.CreateContext(clock);
+                await platform.Database.ExecuteSqlAsync(
+                    $"UPDATE dbo.DinerUsers SET IsActive = 0 WHERE Id = {link.DinerUserId}");
+            });
+
+        await using var request = fixture.CreateContext(clock, race);
+
+        var refused = await Assert.ThrowsAnyAsync<Exception>(
+            () => LinkService(request, clock).RescheduleByManageTokenAsync(link.Token, LinkMove(link.Branch.TableIds[1], BookingDate, EightPm, 2)));
+
+        Assert.True(race.Fired, "The deactivation never ran mid-move, so this proves nothing.");
+        AssertCannotChangeOnline(refused);
+
+        var stored = await StoredAsync(link.Booked.Id, clock);
+        Assert.Equal(link.Booked.StartUtc, stored.StartUtc);
+        Assert.Equal(link.Branch.FirstTableId, stored.DiningTableId);
+    }
+
+    // ---------------------------------------------------------------- telling the account holder
+
+    /// <summary>
+    /// Whoever holds the link - a friend in the group chat - may move the booking; the account holder is
+    /// told, in the same save: a feed entry and a push. The app's own move, made by the account holder,
+    /// tells nobody anything new.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_move_from_the_link_tells_the_account_holder_and_the_apps_own_move_does_not()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+
+        var app = await ArrangeAsync(db, clock);
+        var link = await ArrangeAsync(db, clock);
+
+        await app.Diner.RescheduleAsync(Move(app, app.Branch.TableIds[1], BookingDate, EightPm, 3));
+        await LinkService(db, clock).RescheduleByManageTokenAsync(link.Token, LinkMove(link.Branch.TableIds[1], BookingDate, EightPm, 3));
+
+        Assert.Empty(await LinkNoticesAsync(app.Booked.Id, clock));
+        Assert.Empty(await FeedAsync(app.Booked.Id, clock, LinkChanged));
+
+        var push = Assert.Single(await LinkNoticesAsync(link.Booked.Id, clock));
+        Assert.Equal("reservation.changed-by-link", push.Type);
+        Assert.Contains($"\"dinerUserId\":\"{link.DinerUserId}\"", push.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"localStartTime\":\"20:00:00\"", push.PayloadJson, StringComparison.Ordinal);
+        Assert.Equal(Now, push.ScheduledForUtc);
+
+        var entry = Assert.Single(await FeedAsync(link.Booked.Id, clock, LinkChanged));
+        Assert.Equal(Now, entry.CreatedAtUtc);
+        Assert.Contains("\"time\":\"20:00\"", entry.ParamsJson, StringComparison.Ordinal);
+        Assert.Contains("\"partySize\":\"3\"", entry.ParamsJson, StringComparison.Ordinal);
+        Assert.Contains($"\"status\":\"{(int)ReservationStatus.Confirmed}\"", entry.ParamsJson, StringComparison.Ordinal);
+
+        // Moved again before the first push went: one push, about where it is now; both moves in the feed.
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await LinkService(db, clock).RescheduleByManageTokenAsync(link.Token, LinkMove(link.Branch.TableIds[1], BookingDate, new TimeOnly(21, 0), 3));
+
+        var latest = Assert.Single(await LinkNoticesAsync(link.Booked.Id, clock));
+        Assert.Contains("\"localStartTime\":\"21:00:00\"", latest.PayloadJson, StringComparison.Ordinal);
+        Assert.Equal(2, (await FeedAsync(link.Booked.Id, clock, LinkChanged)).Count);
+
+        // A retry tells nobody twice.
+        var retry = LinkMove(link.Branch.TableIds[1], BookingDate, new TimeOnly(21, 30), 3);
+        await LinkService(db, clock).RescheduleByManageTokenAsync(link.Token, retry);
+        await LinkService(db, clock).RescheduleByManageTokenAsync(link.Token, retry);
+        Assert.Equal(3, (await FeedAsync(link.Booked.Id, clock, LinkChanged)).Count);
+    }
+
+    /// <summary>
+    /// The same for cancelling from the link, which was already possible and was silent too. Cancelling a
+    /// cancelled booking changes nothing and tells nobody again; the app's own cancel tells nobody.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_cancel_from_the_link_tells_the_account_holder_and_the_apps_own_cancel_does_not()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+
+        var app = await ArrangeAsync(db, clock);
+        var link = await ArrangeAsync(db, clock);
+
+        await app.Diner.CancelAsync(new CancelReservationCommand(app.Booked.Id));
+        await LinkService(db, clock).CancelByManageTokenAsync(link.Token);
+        await LinkService(db, clock).CancelByManageTokenAsync(link.Token);
+
+        Assert.Empty(await LinkNoticesAsync(app.Booked.Id, clock));
+        Assert.Empty(await FeedAsync(app.Booked.Id, clock, LinkCancelled));
+
+        // The reminder went with the booking; the one message left is the one telling the diner.
+        var push = Assert.Single(await LinkNoticesAsync(link.Booked.Id, clock));
+        Assert.Equal("reservation.cancelled-by-link", push.Type);
+        Assert.Contains($"\"dinerUserId\":\"{link.DinerUserId}\"", push.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"localStartTime\":\"18:00:00\"", push.PayloadJson, StringComparison.Ordinal);
+
+        var entry = Assert.Single(await FeedAsync(link.Booked.Id, clock, LinkCancelled));
+        Assert.Contains("\"time\":\"18:00\"", entry.ParamsJson, StringComparison.Ordinal);
+        Assert.Contains($"\"reservationCode\":\"{link.Booked.Code}\"", entry.ParamsJson, StringComparison.Ordinal);
     }
 
     // ---------------------------------------------------------------- helpers
+
+    private const string LinkChanged = "booking-changed-by-link";
+
+    private const string LinkCancelled = "booking-cancelled-by-link";
+
+    /// <summary>What a visitor holding only the link is told when the booking's account cannot take a move.</summary>
+    private static void AssertCannotChangeOnline(Exception refused)
+    {
+        var mapped = ApiExceptionMapper.Map(refused);
+
+        Assert.Equal(StatusCodes.Status403Forbidden, mapped.Status);
+        Assert.Equal("phone-not-verified", mapped.Code);
+        Assert.Equal(
+            "This booking can no longer be changed online. Call the venue, or cancel it and book again.",
+            mapped.Message);
+        Assert.Null(mapped.Context);
+    }
+
+    /// <summary>The booking's unsent pushes about what was done from its link.</summary>
+    private async Task<List<Yalla.Domain.Messaging.OutboxMessage>> LinkNoticesAsync(Guid reservationId, TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+        var prefix = OutboxMessageTypes.PrefixFor("reservation", reservationId);
+
+        return await db.OutboxMessages.AsNoTracking()
+            .Where(m => m.IdempotencyKey.StartsWith(prefix)
+                        && m.SentAtUtc == null
+                        && m.Type.EndsWith("-by-link"))
+            .ToListAsync();
+    }
+
+    /// <summary>The booking's feed entries of one kind.</summary>
+    private async Task<List<Yalla.Domain.Identity.DinerNotification>> FeedAsync(Guid reservationId, TestClock clock, string kind)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        return await db.DinerNotifications.AsNoTracking()
+            .Where(n => n.ReservationId == reservationId && n.Kind == kind)
+            .ToListAsync();
+    }
 
     /// <summary>A branch, a diner of its own, and one booking of theirs with its manage token.</summary>
     private sealed record Arranged(
@@ -566,7 +743,8 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
 
     /// <summary>
     /// The booking's outbox messages - unsent and sent - by what follows its id in the key, so two
-    /// bookings' can be compared.
+    /// bookings' can be compared. Without the link's own notice to the account holder, which only the
+    /// link writes and which has tests of its own.
     /// </summary>
     private async Task<List<string>> ShapeOfOutboxAsync(Guid reservationId, TestClock clock)
     {
@@ -578,10 +756,15 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
             .Select(m => m.IdempotencyKey)
             .ToListAsync();
 
-        return [.. keys.Select(k => k[prefix.Length..].TrimStart(':')).OrderBy(k => k, StringComparer.Ordinal)];
+        return
+        [
+            .. keys.Select(k => k[prefix.Length..].TrimStart(':'))
+                .Where(k => !k.Contains("-by-link", StringComparison.Ordinal))
+                .OrderBy(k => k, StringComparer.Ordinal),
+        ];
     }
 
-    /// <summary>The booking's feed entries: their kinds and when they appear.</summary>
+    /// <summary>The booking's feed entries: their kinds and when they appear. Without the link's own notice, as above.</summary>
     private async Task<List<string>> ShapeOfFeedAsync(Guid reservationId, TestClock clock)
     {
         await using var db = fixture.CreateContext(clock);
@@ -591,7 +774,12 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
             .Select(n => new { n.Kind, n.CreatedAtUtc })
             .ToListAsync();
 
-        return [.. entries.Select(n => $"{n.Kind}@{n.CreatedAtUtc:O}").OrderBy(n => n, StringComparer.Ordinal)];
+        return
+        [
+            .. entries.Where(n => !n.Kind.EndsWith("-by-link", StringComparison.Ordinal))
+                .Select(n => $"{n.Kind}@{n.CreatedAtUtc:O}")
+                .OrderBy(n => n, StringComparer.Ordinal),
+        ];
     }
 
     private async Task<Reservation> StoredAsync(Guid reservationId, TestClock clock)

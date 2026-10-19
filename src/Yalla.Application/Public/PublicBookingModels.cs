@@ -30,6 +30,12 @@ namespace Yalla.Application.Public;
 /// </remarks>
 /// <param name="VenueName">The venue, as the confirmation names it.</param>
 /// <param name="BranchName">Which location.</param>
+/// <param name="VenueSlug">
+/// The venue's half of the branch's public address, <c>/{venueSlug}/{branchSlug}</c>. The link a reminder
+/// carries is <c>/booking/{token}</c>, with no branch in it, so the page needs these to link back to
+/// the branch's page and open the booking card there. Public already: the address is the page's.
+/// </param>
+/// <param name="BranchSlug">The branch's half of that address.</param>
 /// <param name="BranchAddress">Where to go.</param>
 /// <param name="TimeZoneId">
 /// The branch's IANA zone. Every time here is wall-clock in it, and a diner reading this on a
@@ -49,9 +55,11 @@ namespace Yalla.Application.Public;
 /// take it say no more about it than that its table is free.
 /// </param>
 /// <param name="TableId">
-/// The booked table's id, as the branch's public availability and room photos already publish it for
-/// every table - so the change screen can start from the table the booking holds, and send it back
-/// as <c>diningTableId</c> when only the time or the party changes.
+/// The booked table's id - so the change screen can start from the table the booking holds, and send it
+/// back as <c>diningTableId</c> when only the time or the party changes. Table ids are no secret: the
+/// branch's public availability and room photos publish them for every pinned table. The booked one is
+/// named even if it has since been unpinned or taken out, which those reads do not list; a move to it is
+/// then refused as for any table that cannot be booked.
 /// </param>
 /// <param name="CancellationDeadlineUtc">
 /// The instant past which cancelling is recorded as late. Absolute rather than a number of minutes
@@ -91,6 +99,8 @@ namespace Yalla.Application.Public;
 public sealed record PublicBookingView(
     string VenueName,
     string BranchName,
+    string VenueSlug,
+    string BranchSlug,
     string BranchAddress,
     string TimeZoneId,
     string TableLabel,

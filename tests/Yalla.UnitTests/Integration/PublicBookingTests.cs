@@ -429,6 +429,12 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Assert.Equal(booking.Id, view.GetProperty("reservationId").GetGuid());
         Assert.Equal(world.Branch.FirstTableId, view.GetProperty("tableId").GetGuid());
 
+        // And the branch's public address, the slug pair its page is at: a link opened as
+        // /booking/{token} - which is what the reminder carries - knows no other way back to it.
+        Assert.Equal(
+            world.PageUrl,
+            $"/api/public/branches/{view.GetProperty("venueSlug").GetString()}/{view.GetProperty("branchSlug").GetString()}");
+
         // And nothing else. Every one of these is a real field on the authenticated shape.
         foreach (var withheld in new[]
                  {
@@ -499,9 +505,14 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
             // The reminder went with it, in the same transaction - cancelling an unsent message
             // removes its row. A push about a table somebody already gave back is the one they
-            // remember, and it teaches them the notifications are wrong.
-            Assert.False(await db.OutboxMessages.AnyAsync(m =>
-                m.IdempotencyKey.Contains(late.Id.ToString()) && m.SentAtUtc == null));
+            // remember, and it teaches them the notifications are wrong. The one message left is the
+            // account holder being told it was cancelled from its link.
+            var unsent = await db.OutboxMessages
+                .Where(m => m.IdempotencyKey.Contains(late.Id.ToString()) && m.SentAtUtc == null)
+                .Select(m => m.Type)
+                .ToListAsync();
+
+            Assert.Equal(["reservation.cancelled-by-link"], unsent);
         }
     }
 

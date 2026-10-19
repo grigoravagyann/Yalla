@@ -44,10 +44,19 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
         var booking = await BookAsync(diner, branch, date, "18:00", branch.FirstTableId, ReservationChannel.Web);
         using var anonymous = factory.CreateClient();
 
-        // The read names the booking and its table now - what the change screen starts from.
+        // The read names the booking and its table now - what the change screen starts from - and the
+        // branch's address on the public page, which a link opened as /booking/{token} has nowhere else.
         var read = await ReadAsync(anonymous, $"/api/public/bookings/{booking.Token}");
         Assert.Equal(booking.Id, read.GetProperty("reservationId").GetGuid());
         Assert.Equal(branch.FirstTableId, read.GetProperty("tableId").GetGuid());
+
+        var (venueSlug, branchSlug) = await SlugsAsync(factory, branch);
+        Assert.Equal(venueSlug, read.GetProperty("venueSlug").GetString());
+        Assert.Equal(branchSlug, read.GetProperty("branchSlug").GetString());
+
+        // The link the reminder was written with is the web's token-only path, exactly.
+        var expectedUrl = $"https://yalla.test/booking/{Uri.EscapeDataString(booking.Token)}";
+        Assert.Equal([expectedUrl], await ReminderManageUrlsAsync(factory, booking.Id));
 
         var change = new
         {
@@ -75,6 +84,8 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
         Assert.Equal(3, body.GetProperty("partySize").GetInt32());
         Assert.Equal((int)ReservationStatus.Confirmed, body.GetProperty("status").GetInt32());
         Assert.True(body.GetProperty("canCancel").GetBoolean());
+        Assert.Equal(venueSlug, body.GetProperty("venueSlug").GetString());
+        Assert.Equal(branchSlug, body.GetProperty("branchSlug").GetString());
 
         // The link's shape and nothing else: what the read withholds, the write does too.
         foreach (var withheld in new[]
@@ -102,8 +113,10 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
 
             var reminder = Assert.Single(reminders);
             Assert.Contains("\"localStartTime\":\"20:00:00\"", reminder, StringComparison.Ordinal);
-            Assert.Contains($"https://yalla.test/booking/{booking.Token}", reminder, StringComparison.Ordinal);
         }
+
+        // Read back off the old reminder and written into the new one unchanged: still the token-only path.
+        Assert.Equal([expectedUrl], await ReminderManageUrlsAsync(factory, booking.Id));
 
         // The page retries: the same answer, nothing moved twice.
         var retry = await anonymous.PostAsJsonAsync($"/api/public/bookings/{booking.Token}/reschedule", change);
@@ -263,10 +276,14 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
             .Single(t => t.GetProperty("tableId").GetGuid() == branch.FirstTableId);
         Assert.True(ownTable.GetProperty("isAvailable").GetBoolean());
 
-        // Cancelled from the link: it no longer moves.
-        Assert.Equal(
-            HttpStatusCode.OK,
-            (await anonymous.PostAsJsonAsync($"/api/public/bookings/{booking.Token}/cancel", new { })).StatusCode);
+        // Cancelled from the link - the answer still says where the branch's page is - and it no longer moves.
+        var cancel = await anonymous.PostAsJsonAsync($"/api/public/bookings/{booking.Token}/cancel", new { });
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+
+        var (venueSlug, branchSlug) = await SlugsAsync(factory, branch);
+        var cancelBody = await cancel.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(venueSlug, cancelBody.GetProperty("venueSlug").GetString());
+        Assert.Equal(branchSlug, cancelBody.GetProperty("branchSlug").GetString());
 
         var cancelled = await anonymous.PostAsJsonAsync(link, Change("19:00", branch.FirstTableId));
         Assert.Equal(HttpStatusCode.Conflict, cancelled.StatusCode);
@@ -363,8 +380,10 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
                 })).StatusCode);
         }
 
-        Assert.Equal(limit, statuses.Count(s => s != HttpStatusCode.TooManyRequests));
-        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+        // Exactly the budget succeeds - each a real 200, not merely "not a 429" - and the rest are refused.
+        Assert.Equal(
+            [.. Enumerable.Repeat(HttpStatusCode.OK, limit), .. Enumerable.Repeat(HttpStatusCode.TooManyRequests, 2)],
+            statuses);
 
         // The read shares the budget; another booking's link has its own.
         Assert.Equal(HttpStatusCode.TooManyRequests, (await anonymous.GetAsync($"/api/public/bookings/{booking.Token}")).StatusCode);
@@ -437,6 +456,36 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
             body.GetProperty("manageToken").GetString()!,
             body.GetProperty("code").GetString()!,
             body.GetProperty("startUtc").GetDateTime());
+    }
+
+    /// <summary>The branch's slug pair, as its public page is addressed.</summary>
+    private async Task<(string VenueSlug, string BranchSlug)> SlugsAsync(YallaApiFactory factory, AuthBranch branch)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var slugs = await db.Branches.AsNoTracking()
+            .Where(b => b.Id == branch.BranchId)
+            .Select(b => new { VenueSlug = b.Venue.Slug, b.Slug })
+            .SingleAsync();
+
+        return (slugs.VenueSlug, slugs.Slug);
+    }
+
+    /// <summary>The <c>manageUrl</c> of every unsent reminder and late nudge of the booking.</summary>
+    private async Task<List<string>> ReminderManageUrlsAsync(YallaApiFactory factory, Guid reservationId)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var payloads = await db.OutboxMessages.AsNoTracking()
+            .Where(m => (m.Type == "reservation.reminder" || m.Type == "reservation.late-nudge")
+                        && m.SentAtUtc == null
+                        && m.IdempotencyKey.Contains(reservationId.ToString()))
+            .Select(m => m.PayloadJson)
+            .ToListAsync();
+
+        Assert.NotEmpty(payloads);
+
+        return [.. payloads.Select(p => JsonDocument.Parse(p).RootElement.GetProperty("manageUrl").GetString()!).Distinct()];
     }
 
     private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);

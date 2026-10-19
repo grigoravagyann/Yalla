@@ -56,6 +56,8 @@ internal sealed class PublicBookingService(
             .Select(r => new Row(
                 r.Branch.Venue.Name,
                 r.Branch.Name,
+                r.Branch.Venue.Slug,
+                r.Branch.Slug,
                 r.Branch.Address,
                 r.Branch.TimeZoneId,
                 r.DiningTable.Label,
@@ -123,6 +125,10 @@ internal sealed class PublicBookingService(
     private static PublicBookingView Project(Row row) => new(
         row.VenueName,
         row.BranchName,
+
+        // The branch page's address: the reminder's link is /booking/{token}, which names no branch.
+        row.VenueSlug,
+        row.BranchSlug,
         row.BranchAddress,
         row.TimeZoneId,
         row.TableLabel,
@@ -133,7 +139,7 @@ internal sealed class PublicBookingService(
         row.Code,
 
         // The two ids changing the booking from the link needs: its own, to leave it out of the
-        // availability reads, and its table's, which those reads publish for every table anyway.
+        // availability reads, and its table's - no secret, those reads publish every pinned table's.
         ReservationId: row.ReservationId,
         TableId: row.TableId,
 
@@ -167,6 +173,8 @@ internal sealed class PublicBookingService(
     private sealed record Row(
         string VenueName,
         string BranchName,
+        string VenueSlug,
+        string BranchSlug,
         string BranchAddress,
         string TimeZoneId,
         string TableLabel,
