@@ -600,7 +600,17 @@ internal sealed class TabOrderService(
         logger.LogInformation(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);
 
-        return ToKitchenView(order, order.Tab.DiningTable.Label, clock.UtcNow);
+        // The name alone, projected, rather than the staff row included: one order, one small read,
+        // and nothing of the row but the name ever loaded.
+        var placedByName = order.PlacedByStaffId is { } placedByStaffId
+            ? await db.StaffMembers
+                .AsNoTracking()
+                .Where(s => s.Id == placedByStaffId)
+                .Select(s => s.FullName)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+        return ToKitchenView(order, order.Tab.DiningTable.Label, placedByName, clock.UtcNow);
     }
 
     /// <summary>
@@ -681,10 +691,14 @@ internal sealed class TabOrderService(
             {
                 Order = o,
                 TableLabel = o.Tab.DiningTable.Label,
+
+                // Who sent it, joined in this one query - never looked up per ticket. The name and
+                // nothing else of the staff row; null for a diner's own order.
+                PlacedByName = o.PlacedByStaff != null ? o.PlacedByStaff.FullName : null,
             })
             .ToListAsync(cancellationToken);
 
-        return [.. orders.Select(row => ToKitchenView(row.Order, row.TableLabel, nowUtc))];
+        return [.. orders.Select(row => ToKitchenView(row.Order, row.TableLabel, row.PlacedByName, nowUtc))];
     }
 
     // ---------------------------------------------------------------- helpers
@@ -841,7 +855,8 @@ internal sealed class TabOrderService(
     private static Guid? OnBehalfOf(TabOrder order, TabOrderLine line) =>
         line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId;
 
-    private static KitchenOrderView ToKitchenView(TabOrder order, string tableLabel, DateTime nowUtc) =>
+    private static KitchenOrderView ToKitchenView(
+        TabOrder order, string tableLabel, string? placedByName, DateTime nowUtc) =>
         new(
             order.Id,
             order.TabId,
@@ -850,7 +865,8 @@ internal sealed class TabOrderService(
             order.PlacedAtUtc,
             order.EstimatedReadyAtUtc,
             (int)Math.Max(0d, (nowUtc - order.PlacedAtUtc).TotalMinutes),
-            [.. order.Lines.Select(l => ToLineView(order, l))]);
+            [.. order.Lines.Select(l => ToLineView(order, l))],
+            placedByName);
 
     private static AdjustmentView ToView(TabAdjustment adjustment, long reductionAmd) =>
         new(

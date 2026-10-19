@@ -276,7 +276,11 @@ public static class OrderingEndpoints
             .WithDescription(
                 "Open orders for the branch, oldest first, with the table label, the lines and their "
                 + "kitchen notes. Omit `status` for everything still outstanding - New, InKitchen and "
-                + "Ready - which is what a kitchen screen shows.")
+                + "Ready - which is what a kitchen screen shows.\n\n"
+                + "`placedByName` is who sent each ticket: the waiter's name as the PIN roster shows it, "
+                + "read as they are now (renamed or no longer active, it is still theirs). **Absent** when "
+                + "a diner ordered from their own phone - say it came from the app. Nothing else of the "
+                + "staff member is on a ticket.")
             .Produces<IReadOnlyList<KitchenOrderView>>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not kitchen or floor staff at this branch.");
 
@@ -292,7 +296,8 @@ public static class OrderingEndpoints
                 + "the same shape as the table state machine: going backwards is refused, because a "
                 + "Ready order tapped back to InKitchen loses the fact that it was ever cooked.\n\n"
                 + "**The Kitchen role may make exactly one move: `InKitchen -> Ready`.** Serving is a "
-                + "floor action and belongs to whoever carried the plate.")
+                + "floor action and belongs to whoever carried the plate.\n\n"
+                + "Answers with the ticket as the queue shows it, `placedByName` included.")
             .Produces<KitchenOrderView>()
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,

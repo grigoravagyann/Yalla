@@ -246,6 +246,11 @@ public sealed record TabSharesView(
 /// <param name="EstimatedReadyAtUtc">When it is due.</param>
 /// <param name="WaitingMinutes">How long it has been waiting, at the moment of reading.</param>
 /// <param name="Lines">What to cook, with the kitchen notes.</param>
+/// <param name="PlacedByName">
+/// Who sent it: the waiter's name as the staff sign-in roster shows it, when a waiter keyed it in.
+/// <b>Absent</b> when a diner ordered from their own phone - the ticket then says it came from the
+/// app. Read as the staff member is now: a rename shows, and a waiter no longer active still sent it.
+/// </param>
 public sealed record KitchenOrderView(
     Guid OrderId,
     Guid TabId,
@@ -254,7 +259,8 @@ public sealed record KitchenOrderView(
     DateTime PlacedAtUtc,
     DateTime? EstimatedReadyAtUtc,
     int WaitingMinutes,
-    IReadOnlyList<OrderLineView> Lines);
+    IReadOnlyList<OrderLineView> Lines,
+    string? PlacedByName);
 
 /// <summary>A table asking for something.</summary>
 /// <param name="ServiceRequestId">The request.</param>
