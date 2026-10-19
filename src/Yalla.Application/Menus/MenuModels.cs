@@ -134,6 +134,14 @@ public interface IMenuService
     Task<MenuCategoryView> UpdateCategoryAsync(Guid branchId, Guid categoryId, UpdateMenuCategoryCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Takes the photo off a dish - the one field a patch cannot clear, since null there means "not supplied". The
+    /// dish is then incomplete and leaves the diner's menu until it has one again; the picture, used by nothing
+    /// now, is left to the orphan sweep. Saying it of a dish with no photo changes nothing.
+    /// </summary>
+    /// <exception cref="KeyNotFoundException">No such dish at this branch.</exception>
+    Task<MenuItemView> RemoveItemPhotoAsync(Guid branchId, Guid itemId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Puts every category of the branch in the given order - display orders 0, 1, 2 - in one transaction under
     /// the branch lock, and returns the menu as the manage read does.
     /// </summary>

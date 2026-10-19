@@ -55,6 +55,7 @@ this one would drift is a dish with no allergen list reaching somebody it is dan
 | Where | What it does |
 | --- | --- |
 | `MenuItemView.isComplete` | Every read of an item says whether it is fit to show a diner. Computed server-side. |
+| `DELETE /api/branches/{id}/menu/items/{itemId}/photo` | Takes a dish's photo off - the one field `PATCH` cannot clear, since null there means "not supplied". The dish is then incomplete (`missingFields` names `photo`) and leaves the diner's menu; the picture, used by nothing, goes with the orphan sweep. |
 | `MenuItemView.missingFields` | Which of the six it still lacks - `photo`, `description`, `ingredients`, `allergens`, `portionSize`, `prepMinutes` - from the same per-field tests the rule is built from (`MenuItemCompleteness.Fields`). Empty exactly when `isComplete`. The console's chips and "2 fields missing" read this, not a copy. |
 | `GET /api/branches/{id}/readiness` | The onboarding checklist, with `incompleteMenuItemCount` and the ids. |
 | `PATCH /api/platform/branches/{id}` → `Paid` | **Refused** while any item is incomplete, with the count in `context.incompleteMenuItemCount`. |

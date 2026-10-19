@@ -48,6 +48,10 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        // Under the branch lock, like a reorder: two categories added at once must not both read the same last
+        // position and land on one number.
+        await using var writeLock = await BranchWriteLock.AcquireAsync(db, branchId, cancellationToken);
+
         if (!await db.Branches.AnyAsync(b => b.Id == branchId, cancellationToken))
         {
             throw new KeyNotFoundException($"Branch {branchId} was not found.");
@@ -61,7 +65,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         var category = new MenuCategory(branchId, command.Name, displayOrder);
         db.MenuCategories.Add(category);
-        await db.SaveChangesAsync(cancellationToken);
+        await writeLock.SaveAsync(branchId, cancellationToken);
 
         return new MenuCategoryView(category.Id, category.Name, category.DisplayOrder, []);
     }
@@ -200,6 +204,10 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        // Under the branch lock, as for a category: the last position is read and taken in one transaction.
+        await using var writeLock = await BranchWriteLock.AcquireAsync(db, branchId, cancellationToken);
+
         var category = await LoadCategoryAsync(branchId, categoryId, cancellationToken);
         await RequirePhotoAtBranchAsync(branchId, command.PhotoId, cancellationToken);
 
@@ -223,7 +231,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             command.DisplayOrder ?? (category.Items.Select(i => (int?)i.DisplayOrder).Max() ?? -1) + 1);
 
         db.MenuItems.Add(item);
-        await db.SaveChangesAsync(cancellationToken);
+        await writeLock.SaveAsync(branchId, cancellationToken);
 
         return ToView(await WithPhotoAsync(item, cancellationToken));
     }
@@ -278,6 +286,21 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         await db.SaveChangesAsync(cancellationToken);
 
         return ToView(await WithPhotoAsync(item, cancellationToken));
+    }
+
+    public async Task<MenuItemView> RemoveItemPhotoAsync(
+        Guid branchId,
+        Guid itemId,
+        CancellationToken cancellationToken = default)
+    {
+        var item = await LoadItemAsync(branchId, itemId, cancellationToken);
+
+        // The row only. The picture may still be another dish's, a room's or the cover; and when it is nobody's,
+        // the sweep takes it with its files a day after it was uploaded, as it does every detached photo.
+        item.RemovePhoto();
+        await db.SaveChangesAsync(cancellationToken);
+
+        return ToView(item);
     }
 
     public async Task<MenuItemView> SetItemAvailabilityAsync(

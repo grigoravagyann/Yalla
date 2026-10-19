@@ -77,7 +77,14 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         var row = await SlotQuery(request, nowUtc).FirstOrDefaultAsync(cancellationToken);
 
-        return row is null ? null : Project(row, request, nowUtc);
+        if (row is null)
+        {
+            return null;
+        }
+
+        await WithSpecialDaysAsync(row, RelevantDates(request.LocalDate, AnchorUtc(request, nowUtc)), cancellationToken);
+
+        return Project(row, request, nowUtc);
     }
 
     public string GetAvailabilityQuerySql(AvailabilityRequest request)
@@ -97,7 +104,14 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         var row = await DayQuery(request).FirstOrDefaultAsync(cancellationToken);
 
-        return row is null ? null : ProjectDay(row, request, nowUtc);
+        if (row is null)
+        {
+            return null;
+        }
+
+        await WithSpecialDaysAsync(row, RelevantDates(request.LocalDate, request.LocalDate.ToDateTime(TimeOnly.MinValue)), cancellationToken);
+
+        return ProjectDay(row, request, nowUtc);
     }
 
     public string GetDaySlotsQuerySql(DaySlotsRequest request)
@@ -105,6 +119,22 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         ArgumentNullException.ThrowIfNull(request);
 
         return DayQuery(request).ToQueryString();
+    }
+
+    /// <summary>
+    /// The special days on the dates the rules consult, which replace those dates' weekly blocks - read beside the
+    /// main statement rather than in it.
+    /// </summary>
+    /// <remarks>
+    /// A second, small statement on purpose: inside the main projection they were a sibling collection of the
+    /// tables, and a special day with two blocks sent every table row, with its bookings, twice.
+    /// </remarks>
+    private async Task WithSpecialDaysAsync(AvailabilityRow row, DateOnly[] dates, CancellationToken cancellationToken)
+    {
+        row.SpecialFrom = dates.Min();
+        row.SpecialTo = dates.Max();
+        row.SpecialDays = await OpeningCalendars.SpecialDaysAsync(
+            db, row.BranchId, row.SpecialFrom, row.SpecialTo, cancellationToken);
     }
 
     /// <summary>The one query, anchored on the slot asked about.</summary>
@@ -156,8 +186,6 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         Guid? excludeReservationId)
     {
         var relevantDays = relevantDates.Select(d => d.DayOfWeek).Distinct().ToArray();
-        var specialFrom = relevantDates.Min();
-        var specialTo = relevantDates.Max();
         var guardFromUtc = anchorUtc - GuardWindow;
         var guardToUtc = anchorUtc + GuardWindow;
         var excludedId = excludeReservationId ?? Guid.Empty;
@@ -191,26 +219,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 // asks about one of them and the evening before it.
                 OpeningHours = b.OpeningHours.Where(h => relevantDays.Contains(h.Day)).ToList(),
 
-                // And the special days on those same dates, which replace their weekday's blocks. Usually
-                // none, which a left join answers with one row of nulls - no copies of the tables.
-                SpecialFrom = specialFrom,
-                SpecialTo = specialTo,
-                SpecialDays = db.SpecialOpeningDays
-                    .Where(d => d.BranchId == b.Id && d.Date >= specialFrom && d.Date <= specialTo)
-                    .Select(d => new AvailabilitySpecialDayRow
-                    {
-                        Date = d.Date,
-                        Note = d.Note,
-                        Blocks = d.Blocks
-                            .Select(x => new AvailabilityBlockRow
-                            {
-                                OpensAt = x.OpensAt,
-                                ClosesAt = x.ClosesAt,
-                                ClosesNextDay = x.ClosesNextDay,
-                            })
-                            .ToList(),
-                    })
-                    .ToList(),
+                // The special days on those dates are read beside this statement: see WithSpecialDaysAsync.
                 // Pinned tables only. A diner books by tapping a table's pin on a room photo, so a
                 // table with no pin has nowhere to be tapped and is not offered - however bookable
                 // it is. Staff still seat it; that is the floor read, not this one. And the pin must
@@ -782,41 +791,21 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public List<OpeningHours> OpeningHours { get; init; } = [];
 
-        public DateOnly SpecialFrom { get; init; }
+        public DateOnly SpecialFrom { get; set; }
 
-        public DateOnly SpecialTo { get; init; }
+        public DateOnly SpecialTo { get; set; }
 
-        public List<AvailabilitySpecialDayRow> SpecialDays { get; init; } = [];
+        /// <summary>Set after the statement, from the second one.</summary>
+        public IReadOnlyList<SpecialDay> SpecialDays { get; set; } = [];
 
         public List<AvailabilityTableRow> Tables { get; init; } = [];
 
         /// <summary>The week and the special days read beside it, as the one calendar every rule asks.</summary>
         public OpeningCalendar Hours => new(
             OpeningHours.Select(h => (h.Day, new OpeningBlock(h.OpensAt, h.ClosesAt, h.ClosesNextDay))),
-            SpecialDays.Select(d => new SpecialDay(
-                d.Date,
-                d.Note,
-                [.. d.Blocks.Select(b => new OpeningBlock(b.OpensAt, b.ClosesAt, b.ClosesNextDay)).OrderBy(b => b.OpensAt)])),
+            SpecialDays,
             SpecialFrom,
             SpecialTo);
-    }
-
-    private sealed class AvailabilitySpecialDayRow
-    {
-        public DateOnly Date { get; init; }
-
-        public string? Note { get; init; }
-
-        public List<AvailabilityBlockRow> Blocks { get; init; } = [];
-    }
-
-    private sealed class AvailabilityBlockRow
-    {
-        public TimeOnly OpensAt { get; init; }
-
-        public TimeOnly ClosesAt { get; init; }
-
-        public bool ClosesNextDay { get; init; }
     }
 
     private sealed class AvailabilityTableRow

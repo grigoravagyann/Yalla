@@ -52,18 +52,6 @@ public sealed class OpeningCalendar
         _to = to;
     }
 
-    /// <summary>The weekly hours alone, for every date - a branch with no special days at all.</summary>
-    public static OpeningCalendar Weekly(IEnumerable<OpeningHours> hours)
-    {
-        ArgumentNullException.ThrowIfNull(hours);
-
-        return new OpeningCalendar(
-            hours.Select(h => (h.Day, new OpeningBlock(h.OpensAt, h.ClosesAt, h.ClosesNextDay))),
-            [],
-            DateOnly.MinValue,
-            DateOnly.MaxValue);
-    }
-
     /// <summary>The special days in the window, earliest first.</summary>
     public IReadOnlyList<SpecialDay> SpecialDays => [.. _special.Values.OrderBy(d => d.Date)];
 

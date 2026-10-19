@@ -29,8 +29,9 @@ venue id on the public surface; the slug is the public identity. Each branch car
 | `freeTableCount` | Tables with nobody at them, **walk-in-only stools included** - the same tables the page's `tableCount` counts and its plan draws. Zero means every seat is taken |
 
 **Caching.** The estate - venues, branches, names, zones - is held for five minutes. Everything
-live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, the branch page's `specialDays` (today
-through 60 days ahead, each replacing its date's weekly hours), and *which branches are
+live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, the branch page's `specialDays` (from
+the service date - yesterday while last night's special block still runs past midnight - through 60 days after
+today, each replacing its date's weekly hours), and *which branches are
 still published*. Between refreshes a read sends nothing to the database, which matters because
 every Explore open and pull-to-refresh in the city lands here. So a suspended venue leaves the list
 within fifteen seconds. The branch routes still check their one branch live, per request, because a

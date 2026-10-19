@@ -66,10 +66,11 @@ public sealed record PublicBranchCard(
 /// </param>
 /// <param name="OpeningHours">The weekly hours.</param>
 /// <param name="SpecialDays">
-/// The special opening days from today at the branch through 60 days ahead, earliest first: holidays, closures
-/// and different hours on one date, each replacing that date's weekly hours. Always present, often empty. Today's
-/// hours are today's special day when there is one, else the weekday's; <paramref name="IsOpenNow"/> already
-/// reads them.
+/// The special opening days from the branch's service date through 60 days after today, earliest first: holidays,
+/// closures and different hours on one date, each replacing that date's weekly hours. Always present, often empty.
+/// The service date is today - or yesterday while last night's block still runs past midnight, so at 01:00 on New
+/// Year's Day the list starts with the Eve the branch is still open in. Today's hours are today's special day when
+/// there is one, else the weekday's; <paramref name="IsOpenNow"/> already reads them.
 /// </param>
 /// <param name="IsOpenNow">
 /// Whether it is open at this moment, decided in the branch's own zone.

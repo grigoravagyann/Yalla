@@ -30,10 +30,39 @@ internal static class OpeningCalendars
         return rows is null ? new OpeningCalendar([], [], from, to) : rows.ToCalendar(from, to);
     }
 
+    /// <summary>One branch's special days from <paramref name="from"/> to <paramref name="to"/>, alone, in one statement.</summary>
+    public static async Task<IReadOnlyList<SpecialDay>> SpecialDaysAsync(
+        YallaDbContext db,
+        Guid branchId,
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken)
+    {
+        var rows = await db.SpecialOpeningDays
+            .AsNoTracking()
+            .Where(d => d.BranchId == branchId && d.Date >= from && d.Date <= to)
+            .Select(d => new SpecialRow
+            {
+                Date = d.Date,
+                Note = d.Note,
+                Blocks = d.Blocks
+                    .Select(x => new WeeklyRow(DayOfWeek.Sunday, x.OpensAt, x.ClosesAt, x.ClosesNextDay))
+                    .ToList(),
+            })
+            .ToListAsync(cancellationToken);
+
+        return [.. rows.Select(r => r.ToSpecialDay())];
+    }
+
     /// <summary>
-    /// The special days a diner is shown: from today at the branch through
-    /// <see cref="SpecialOpeningDayRules.PublicLookaheadDays"/> ahead, earliest first.
+    /// The special days a diner is shown: from the branch's service date - today, or yesterday while last night's
+    /// block is still running past midnight - through <see cref="SpecialOpeningDayRules.PublicLookaheadDays"/> after
+    /// today, earliest first.
     /// </summary>
+    /// <remarks>
+    /// From the service date and not the calendar date, so at 01:00 on New Year's Day the page still names the Eve
+    /// whose 18:00-03:00 it is open in, rather than showing "closed today" beside "open now".
+    /// </remarks>
     public static async Task<IReadOnlyList<SpecialOpeningDayView>> UpcomingAsync(
         YallaDbContext db,
         Guid branchId,
@@ -41,11 +70,13 @@ internal static class OpeningCalendars
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var today = DateOnly.FromDateTime(BranchTime.ToLocal(nowUtc, timeZoneId));
+        var localNow = BranchTime.ToLocal(nowUtc, timeZoneId);
+        var today = DateOnly.FromDateTime(localNow);
         var calendar = await ForBranchAsync(
-            db, branchId, today, today.AddDays(SpecialOpeningDayRules.PublicLookaheadDays), cancellationToken);
+            db, branchId, today.AddDays(-1), today.AddDays(SpecialOpeningDayRules.PublicLookaheadDays), cancellationToken);
+        var from = calendar.ServiceDateOf(localNow);
 
-        return [.. calendar.SpecialDays.Select(SpecialOpeningDayView.From)];
+        return [.. calendar.SpecialDays.Where(d => d.Date >= from).Select(SpecialOpeningDayView.From)];
     }
 
     /// <summary>
@@ -106,8 +137,7 @@ internal static class OpeningCalendars
         public OpeningCalendar ToCalendar(DateOnly from, DateOnly to) =>
             new(
                 Weekly.Select(w => (w.Day, w.ToBlock())),
-                Special.Select(s => new SpecialDay(
-                    s.Date, s.Note, [.. s.Blocks.Select(b => b.ToBlock()).OrderBy(b => b.OpensAt)])),
+                Special.Select(s => s.ToSpecialDay()),
                 from,
                 to);
     }
@@ -119,6 +149,8 @@ internal static class OpeningCalendars
         public string? Note { get; init; }
 
         public List<WeeklyRow> Blocks { get; init; } = [];
+
+        public SpecialDay ToSpecialDay() => new(Date, Note, [.. Blocks.Select(b => b.ToBlock()).OrderBy(b => b.OpensAt)]);
     }
 
     private sealed record WeeklyRow(DayOfWeek Day, TimeOnly OpensAt, TimeOnly ClosesAt, bool ClosesNextDay)

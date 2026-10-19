@@ -958,16 +958,28 @@ rather than quietly falling back to the weekday. The readers: single-slot availa
 (same statement as before, the special days of the two dates beside the weekly rows), booking and changing a
 booking (`reservation-outside-opening-hours`), the console's Overview (service day, "open until", the load
 chart's hours, where the takings start, and `hours.specialDay`), `BranchOpenNow` behind every `isOpenNow`, and
-the public page and listing detail (`specialDays`, today through 60 days ahead). Readiness is not one: `no-hours`
+the public page and listing detail (`specialDays`, from the service date - yesterday while last night's special
+block is still running, so 01:00 on New Year's Day still names the Eve - through 60 days after today). Readiness
+is not one: `no-hours`
 is about the week being set, and a special day is not a setup step. The floor reads no hours.
 
-The list from today at the branch on is replaced whole, under the branch row lock; days before today are kept,
-because last night's special block may still be running and the Overview still reads it. Refusals are 422 with
-indexed fields - `[n].date` (`min` before today, `max` past 366 days, `conflict` twice), `[n].note` (`max` 60),
-`[n].blocks` (`required`, `max` 4), `[n].blocks[m].opensAt` (`conflict`, overlap), `[n].blocks[m].closesAt`
-(`conflict`, no length), `[100]` (`max` 100 days). **A save never touches a booking**: the live ones on a changed
-date that no longer fit come back in `affectedReservationIds`, as a policy save reports its own. Pinned by
-`SpecialOpeningDayTests` and `OpeningCalendarTests`.
+The list from today at the branch on is replaced whole, under the branch row lock, against the revision the
+editor loaded: `GET` returns `{ version, days }` - from the service date, so while last night's special block
+still runs its day is listed first, read-only, as on the public page - `PUT` takes `{ expectedVersion, days }`, and a list saved since
+is refused with 409 `concurrent-update` and `context.currentVersion` (`Branches.SpecialDaysVersion`), so the
+second of two editors cannot undo the first one's holiday. Days before today are kept, because last night's
+special block may still be running and the Overview still reads it; an entry dated before today is **ignored**,
+so a console left open past midnight still saves. Refusals are 422 with fields under `days` - `days[n].date`
+(`required`, `max` past 366 days, `conflict` twice), `days[n].note` (`max` 60), `days[n].blocks` (`required`,
+`max` 4), `days[n].blocks[m].opensAt` (`conflict`, overlap), `days[n].blocks[m].closesAt` (`conflict`, no length),
+`days[100]` (`max` 100 days) - and `expectedVersion` (`required`). A lock wait that runs out, on the save or on
+the delete before it, is 409 `concurrent-update`, never a 500.
+
+**A save never touches a booking.** `affectedReservationIds` are the live future ones this save *newly* put
+outside the hours: starting on a date whose special day was added, removed or given other blocks (a new note is
+no change), or just after midnight following one, that fitted the calendar before the save and do not now. So
+adding 6 January reports 6 January's guests, not again the 1 January ones an earlier save already reported.
+Pinned by `SpecialOpeningDayTests` and `OpeningCalendarTests`.
 
 **There is no slot list.** The time a diner picks is the client's control; every availability read
 answers the one time it was asked about, and outside the hours it says `unavailableReason`

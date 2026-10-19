@@ -110,8 +110,8 @@ public class OpeningCalendarTests
         Assert.Throws<InvalidOperationException>(() => hours.BlocksOn(Eve.AddDays(-8)));
         Assert.Throws<InvalidOperationException>(() => hours.IsOpenAt(At(NewYear.AddDays(8), 12)));
 
-        // The weekly-only calendar has no special days to miss, so it answers for any date.
-        Assert.Single(OpeningCalendar.Weekly([new OpeningHours(Guid.CreateVersion7(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), false)])
+        // A calendar read for every date has no special days to miss, so it answers for any date.
+        Assert.Single(TestCalendars.Weekly([new OpeningHours(Guid.CreateVersion7(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), false)])
             .BlocksOn(new DateOnly(2030, 1, 7)));
     }
 
@@ -159,17 +159,18 @@ public class OpeningCalendarTests
 
         var byField = refused.Violations.ToDictionary(v => v.Field, v => v.Bound);
 
-        Assert.Equal(FieldBounds.Min, byField["[0].date"]);
-        Assert.Equal(FieldBounds.Max, byField["[1].date"]);
-        Assert.False(byField.ContainsKey("[2].date"));
-        Assert.Equal(FieldBounds.Conflict, byField["[3].date"]);
-        Assert.Equal(FieldBounds.Max, byField["[4].note"]);
-        Assert.Equal(FieldBounds.Conflict, byField["[5].blocks[1].opensAt"]);
-        Assert.Equal(FieldBounds.Conflict, byField["[6].blocks[0].closesAt"]);
-        Assert.Equal(FieldBounds.Required, byField["[7].blocks"]);
-        Assert.Equal(FieldBounds.Max, byField["[8].blocks"]);
-        Assert.Equal(FieldBounds.Required, byField["[9].date"]);
-        Assert.Equal(9, refused.Violations.Count);
+        // Yesterday is history: ignored, not refused.
+        Assert.False(byField.Keys.Any(k => k.StartsWith("days[0]", StringComparison.Ordinal)));
+        Assert.Equal(FieldBounds.Max, byField["days[1].date"]);
+        Assert.False(byField.ContainsKey("days[2].date"));
+        Assert.Equal(FieldBounds.Conflict, byField["days[3].date"]);
+        Assert.Equal(FieldBounds.Max, byField["days[4].note"]);
+        Assert.Equal(FieldBounds.Conflict, byField["days[5].blocks[1].opensAt"]);
+        Assert.Equal(FieldBounds.Conflict, byField["days[6].blocks[0].closesAt"]);
+        Assert.Equal(FieldBounds.Required, byField["days[7].blocks"]);
+        Assert.Equal(FieldBounds.Max, byField["days[8].blocks"]);
+        Assert.Equal(FieldBounds.Required, byField["days[9].date"]);
+        Assert.Equal(8, refused.Violations.Count);
     }
 
     [Fact]
@@ -182,7 +183,7 @@ public class OpeningCalendarTests
         var refused = Assert.Throws<FieldValidationException>(() => SpecialOpeningDayRules.Normalise(
             [Input(Eve, null, ("22:00", "02:00"), ("10:00", "23:00"))], Today));
 
-        Assert.Equal("[0].blocks[0].opensAt", refused.Violations.Single().Field);
+        Assert.Equal("days[0].blocks[0].opensAt", refused.Violations.Single().Field);
     }
 
     [Fact]
@@ -192,7 +193,7 @@ public class OpeningCalendarTests
 
         var refused = Assert.Throws<FieldValidationException>(() => SpecialOpeningDayRules.Normalise(many, Today));
 
-        Assert.Equal($"[{SpecialOpeningDayRules.MaxDays}]", refused.Violations.Single().Field);
+        Assert.Equal($"days[{SpecialOpeningDayRules.MaxDays}]", refused.Violations.Single().Field);
         Assert.Equal(FieldBounds.Max, refused.Violations.Single().Bound);
     }
 }

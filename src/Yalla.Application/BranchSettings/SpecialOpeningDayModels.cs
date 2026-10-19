@@ -6,7 +6,7 @@ namespace Yalla.Application.BranchSettings;
 // ------------------------------------------------------------------ special opening days
 
 /// <summary>One special day as the console sends it.</summary>
-/// <param name="Date">The branch's local date, <c>YYYY-MM-DD</c>. From today at the branch, at most a year and a day out.</param>
+/// <param name="Date">The branch's local date, <c>YYYY-MM-DD</c>. At most a year and a day out; an entry before today at the branch is history and is ignored.</param>
 /// <param name="Note">What a diner is told - "New Year". Optional; trimmed, blank is none, at most 60 characters.</param>
 /// <param name="Blocks">
 /// The opening blocks that open on the date. <b>Empty is closed all day.</b> At most four; they may touch but
@@ -46,18 +46,59 @@ public sealed record SpecialOpeningDayView(
 /// <param name="ClosesNextDay">Closes after midnight - "(next day)".</param>
 public sealed record OpeningBlockView(TimeOnly OpensAt, TimeOnly ClosesAt, bool ClosesNextDay);
 
+/// <summary>The branch's special days as the console edits them, with the revision it is editing.</summary>
+/// <param name="Version">
+/// The list's revision. Opaque: send it back as <c>expectedVersion</c> with the next save, which is refused with
+/// <c>409 concurrent-update</c> if somebody saved in between.
+/// </param>
+/// <param name="Days">
+/// The special days from the branch's service date on, earliest first: today's on - and, while last night's special block
+/// is still running past midnight, yesterday's first. That one is read-only: a save replaces today on, so it is kept.
+/// </param>
+public sealed record SpecialOpeningDaysView(string Version, IReadOnlyList<SpecialOpeningDayView> Days);
+
+/// <summary>The console's save of the special days: the whole list from today on, against the revision it loaded.</summary>
+/// <param name="Days">
+/// Every special day from today at the branch on - <c>[]</c> clears them. An entry dated before today is history
+/// and is <b>ignored</b>, not refused: a console left open past midnight still saves the rest.
+/// </param>
+/// <param name="ExpectedVersion">
+/// <b>Required.</b> The <c>version</c> the editor loaded. A list saved since then is refused with
+/// <c>409 concurrent-update</c> and <c>context.currentVersion</c>, and nothing is written.
+/// </param>
+public sealed record ReplaceSpecialOpeningDaysCommand(
+    IReadOnlyList<SpecialOpeningDayInput> Days,
+    string? ExpectedVersion = null);
+
 /// <summary>What saving the special days did.</summary>
-/// <param name="Days">The special days from today at the branch on, as saved, earliest first.</param>
+/// <param name="Version">The list's revision now; the next save sends it as <c>expectedVersion</c>.</param>
+/// <param name="Days">The special days as saved, from the service date on as <see cref="SpecialOpeningDaysView.Days"/>.</param>
 /// <param name="AffectedExistingReservations">
-/// How many live bookings - confirmed, or waiting for approval - fall on a saved special day and no longer fit its
-/// hours. They were <b>not</b> changed or cancelled: a settings edit never touches a booking. Somebody has to call
-/// those guests.
+/// How many live future bookings - confirmed, or waiting for approval - this save put outside the hours: on a date
+/// whose special day was added, removed or given other blocks, or just after midnight following one, that fitted
+/// the hours before the save and do not now. They were <b>not</b> changed or cancelled: a settings edit never
+/// touches a booking. Somebody has to call those guests.
 /// </param>
 /// <param name="AffectedReservationIds">Which ones, earliest first.</param>
 public sealed record SpecialOpeningDaysChangeResult(
+    string Version,
     IReadOnlyList<SpecialOpeningDayView> Days,
     int AffectedExistingReservations,
     IReadOnlyList<Guid> AffectedReservationIds);
+
+/// <summary>
+/// The special days were saved by somebody else since this editor loaded them. Answers 409
+/// <c>concurrent-update</c> with <c>context.currentVersion</c>; nothing is written.
+/// </summary>
+/// <remarks>
+/// The list is replaced whole, so without this the second of two editors silently undoes the first one's holiday.
+/// </remarks>
+public sealed class SpecialOpeningDaysChangedException(string currentVersion)
+    : Exception("The special days were changed since you loaded them. Reload them, then make your change again.")
+{
+    /// <summary>The revision now stored, for the editor to reload against.</summary>
+    public string CurrentVersion { get; } = currentVersion;
+}
 
 /// <summary>
 /// The rules for a branch's list of special days, as a pure function.
@@ -66,12 +107,13 @@ public sealed record SpecialOpeningDaysChangeResult(
 /// <para>
 /// <b>The list is everything from today on.</b> Days before today at the branch are history: last night's
 /// special block may still be running past midnight, and the Overview's yesterday still reads it, so a save
-/// never touches them and the list never names them. A date before today is refused rather than ignored, so a
-/// console left open overnight does not quietly drop a day.
+/// never touches them and the list never names them. An entry dated before today is <b>ignored</b> - a console
+/// left open past midnight still holds yesterday's holiday, and refusing the whole list for it would stop the
+/// owner saving tomorrow's.
 /// </para>
 /// <para>
-/// Every problem is reported, indexed into the bare array as the weekly hours are - <c>[1].date</c>,
-/// <c>[0].blocks[1].opensAt</c> - with the bound it broke.
+/// Every problem is reported, indexed into <c>days</c> - <c>days[1].date</c>, <c>days[0].blocks[1].opensAt</c> -
+/// with the bound it broke.
 /// </para>
 /// </remarks>
 public static class SpecialOpeningDayRules
@@ -85,6 +127,9 @@ public static class SpecialOpeningDayRules
     /// <summary>How far ahead the public pages name special days, in days from today at the branch.</summary>
     public const int PublicLookaheadDays = 60;
 
+    /// <summary>The body's list, which every refused field is named under.</summary>
+    private const string Prefix = "days";
+
     /// <exception cref="FieldValidationException">Anything in the list breaks a rule; every problem is named.</exception>
     public static IReadOnlyList<SpecialDay> Normalise(IReadOnlyList<SpecialOpeningDayInput> days, DateOnly localToday)
     {
@@ -95,14 +140,17 @@ public static class SpecialOpeningDayRules
         var seen = new HashSet<DateOnly>();
         var result = new List<SpecialDay>();
 
-        if (days.Count > MaxDays)
+        // History, ignored whole: nothing about a past entry can refuse the list.
+        var current = days.Count(d => d is null || d.Date == default || d.Date >= localToday);
+
+        if (current > MaxDays)
         {
             violations.Add(new FieldViolation(
-                $"[{MaxDays}]",
-                $"At most {MaxDays} special days; this list has {days.Count}.",
+                $"{Prefix}[{MaxDays}]",
+                $"At most {MaxDays} special days; this list has {current}.",
                 FieldBounds.Max,
                 Max: MaxDays,
-                Value: days.Count));
+                Value: current));
         }
 
         for (var i = 0; i < days.Count; i++)
@@ -111,7 +159,12 @@ public static class SpecialOpeningDayRules
 
             if (day is null)
             {
-                violations.Add(new FieldViolation($"[{i}]", "A special day is missing.", FieldBounds.Required));
+                violations.Add(new FieldViolation($"{Prefix}[{i}]", "A special day is missing.", FieldBounds.Required));
+                continue;
+            }
+
+            if (day.Date != default && day.Date < localToday)
+            {
                 continue;
             }
 
@@ -119,21 +172,12 @@ public static class SpecialOpeningDayRules
 
             if (day.Date == default)
             {
-                violations.Add(new FieldViolation($"[{i}].date", "A special day needs a date.", FieldBounds.Required));
-            }
-            else if (day.Date < localToday)
-            {
-                violations.Add(new FieldViolation(
-                    $"[{i}].date",
-                    $"{day.Date:yyyy-MM-dd} is before today at the branch ({localToday:yyyy-MM-dd}).",
-                    FieldBounds.Min,
-                    Min: localToday,
-                    Value: day.Date));
+                violations.Add(new FieldViolation($"{Prefix}[{i}].date", "A special day needs a date.", FieldBounds.Required));
             }
             else if (day.Date > horizon)
             {
                 violations.Add(new FieldViolation(
-                    $"[{i}].date",
+                    $"{Prefix}[{i}].date",
                     $"{day.Date:yyyy-MM-dd} is more than {HorizonDays} days ahead.",
                     FieldBounds.Max,
                     Max: horizon,
@@ -142,7 +186,7 @@ public static class SpecialOpeningDayRules
             else if (!seen.Add(day.Date))
             {
                 violations.Add(new FieldViolation(
-                    $"[{i}].date",
+                    $"{Prefix}[{i}].date",
                     $"{day.Date:yyyy-MM-dd} is in the list twice.",
                     FieldBounds.Conflict,
                     Value: day.Date));
@@ -157,7 +201,7 @@ public static class SpecialOpeningDayRules
             if (note is { Length: > SpecialOpeningDay.MaxNoteLength })
             {
                 violations.Add(new FieldViolation(
-                    $"[{i}].note",
+                    $"{Prefix}[{i}].note",
                     $"A note is at most {SpecialOpeningDay.MaxNoteLength} characters.",
                     FieldBounds.Max,
                     Max: SpecialOpeningDay.MaxNoteLength,
@@ -186,7 +230,7 @@ public static class SpecialOpeningDayRules
         int dayIndex,
         List<FieldViolation> violations)
     {
-        var field = $"[{dayIndex}].blocks";
+        var field = $"{Prefix}[{dayIndex}].blocks";
 
         if (blocks is null)
         {

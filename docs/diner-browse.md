@@ -427,8 +427,9 @@ participant, the tablet, the staff member - and per remote address otherwise.
   also compute it from `latitude`/`longitude`.
 - **isOpenNow** = inside an opening block now in the branch's zone, including yesterday's
   past-midnight block, with special opening days replacing their date's weekly hours (the same rule as
-  the web branch page). The detail's `specialDays` lists them from today through 60 days ahead - show
-  today's from there when today is one - and the day's slots carry `specialDay` for the date asked.
+  the web branch page). The detail's `specialDays` lists them from the service date (yesterday while
+  last night's special block still runs past midnight) through 60 days after today - show today's from
+  there when today is one - and the day's slots carry `specialDay` for the date asked.
 - **marker state** = `TableStateProjection.Derive(physical status, next Confirmed/PendingApproval
   booking, now, branch buffer)` - the staff floor's rule.
 - **opening a tab by booking code** (`POST /api/tabs/open-by-booking`) joins only the booking's own

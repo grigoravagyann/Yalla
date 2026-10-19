@@ -57,7 +57,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
 
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
-        var saved = await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, Holidays());
+        var saved = await SaveAsync(service, branch.BranchId, Holidays());
 
         Assert.Equal([Eve, NewYear], saved.Days.Select(d => d.Date));
         Assert.Equal("New Year's Eve", saved.Days[0].Note);
@@ -70,10 +70,13 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         static IEnumerable<string> Flat(IEnumerable<SpecialOpeningDayView> days) =>
             days.Select(d => $"{d.Date:O} {d.Note} {d.Closed} {string.Join(',', d.Blocks)}");
 
-        Assert.Equal(Flat(saved.Days), Flat(await service.GetSpecialOpeningDaysAsync(branch.BranchId)));
+        var read = await service.GetSpecialOpeningDaysAsync(branch.BranchId);
+
+        Assert.Equal(Flat(saved.Days), Flat(read.Days));
+        Assert.Equal(saved.Version, read.Version);
 
         // Saving again replaces the list whole; the past day is still there.
-        var cleared = await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, []);
+        var cleared = await SaveAsync(service, branch.BranchId, []);
 
         Assert.Empty(cleared.Days);
 
@@ -84,7 +87,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_bad_list_is_refused_field_by_field_and_nothing_is_saved()
+    public async Task A_bad_list_is_refused_field_by_field_and_nothing_is_saved_but_a_past_entry_is_ignored()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -93,9 +96,10 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db);
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
-        await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, Holidays());
+        await SaveAsync(service, branch.BranchId, Holidays());
 
-        var refused = await Assert.ThrowsAsync<FieldValidationException>(() => service.ReplaceSpecialOpeningDaysAsync(
+        var refused = await Assert.ThrowsAsync<FieldValidationException>(() => SaveAsync(
+            service,
             branch.BranchId,
             [
                 Day(Today.AddDays(-1), null),
@@ -103,14 +107,188 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
                 Day(NewYear, null, ("12:00", "16:00"), ("15:00", "20:00")),
             ]));
 
+        // Yesterday's entry is not among them: it is history, and a console left open past midnight still saves.
         Assert.Equal(
-            ["[0].date", "[2].blocks[1].opensAt", "[2].date"],
+            ["days[2].blocks[1].opensAt", "days[2].date"],
             refused.Violations.Select(v => v.Field).Order(StringComparer.Ordinal));
 
-        await using var verify = fixture.CreateContext(clock);
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.Equal(2, await verify.SpecialOpeningDays.CountAsync(d => d.BranchId == branch.BranchId));
+        }
+
+        // The same console, past midnight: the Eve it still holds is yesterday now, and is left as it was.
+        clock.UtcNow = Local(NewYear, 0, 30);
+
+        var saved = await SaveAsync(service, branch.BranchId, [.. Holidays(), Day(NewYear.AddDays(5), "Christmas")]);
+
+        // The Eve is still listed - its block runs to 03:00 - and still as it was.
+        Assert.Equal([Eve, NewYear, NewYear.AddDays(5)], saved.Days.Select(d => d.Date));
+
+        await using var after = fixture.CreateContext(clock);
         Assert.Equal(
-            2,
-            await verify.SpecialOpeningDays.CountAsync(d => d.BranchId == branch.BranchId));
+            "New Year's Eve",
+            await after.SpecialOpeningDays
+                .Where(d => d.BranchId == branch.BranchId && d.Date == Eve)
+                .Select(d => d.Note)
+                .SingleAsync());
+    }
+
+    [SkippableFact]
+    public async Task The_console_sees_last_nights_special_day_while_it_runs_and_a_save_cannot_change_it()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await HolidayBranchAsync(db, clock);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        // 01:00 on New Year's Day, inside the Eve's 18:00-03:00: the console's list starts at the service date, as
+        // the public page's does, so its "what a guest sees now" reads the same block the diners do.
+        clock.UtcNow = Local(NewYear, 1, 0);
+
+        var night = await service.GetSpecialOpeningDaysAsync(branch.BranchId);
+        Assert.Equal([Eve, NewYear], night.Days.Select(d => d.Date));
+
+        // Saving the list back with the Eve edited - cut to 00:30, or left out altogether - leaves the Eve as it was:
+        // it is history, and its block is running.
+        var edited = await service.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId,
+            new ReplaceSpecialOpeningDaysCommand(
+                [Day(Eve, "Cut short", ("18:00", "00:30")), Day(NewYear, "New Year")], night.Version));
+
+        Assert.Equal([Eve, NewYear], edited.Days.Select(d => d.Date));
+        Assert.Equal("New Year's Eve", edited.Days[0].Note);
+        Assert.Equal(new TimeOnly(3, 0), edited.Days[0].Blocks.Single().ClosesAt);
+
+        var dropped = await service.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand([Day(NewYear, "New Year")], edited.Version));
+        Assert.Equal([Eve, NewYear], dropped.Days.Select(d => d.Date));
+
+        // Once it has closed it is off the list, and still in the database.
+        clock.UtcNow = Local(NewYear, 3, 0);
+
+        var morning = await service.GetSpecialOpeningDaysAsync(branch.BranchId);
+        Assert.Equal([NewYear], morning.Days.Select(d => d.Date));
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.True(await verify.SpecialOpeningDays.AnyAsync(d => d.BranchId == branch.BranchId && d.Date == Eve));
+    }
+
+    [SkippableFact]
+    public async Task A_second_editor_saving_over_a_list_the_first_changed_is_refused_and_told_the_version()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+
+        // Two consoles open on the same list.
+        await using var firstDb = fixture.CreateContext(clock);
+        await using var secondDb = fixture.CreateContext(clock);
+        var first = fixture.CreateBranchSettingsService(firstDb, clock, TestActor.Manager(branch.ManagerId));
+        var second = fixture.CreateBranchSettingsService(secondDb, clock, TestActor.Manager(branch.ManagerId));
+
+        var loadedByFirst = await first.GetSpecialOpeningDaysAsync(branch.BranchId);
+        var loadedBySecond = await second.GetSpecialOpeningDaysAsync(branch.BranchId);
+        Assert.Equal(loadedByFirst.Version, loadedBySecond.Version);
+
+        var saved = await first.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand(Holidays(), loadedByFirst.Version));
+        Assert.NotEqual(loadedByFirst.Version, saved.Version);
+
+        // The second would replace the whole list with one that has never heard of the holidays.
+        var refused = await Assert.ThrowsAsync<SpecialOpeningDaysChangedException>(() => second.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand([Day(NewYear.AddDays(5), "Christmas")], loadedBySecond.Version)));
+
+        Assert.Equal(saved.Version, refused.CurrentVersion);
+
+        var mapped = Yalla.Api.Errors.ApiExceptionMapper.Map(refused);
+        Assert.Equal(409, mapped.Status);
+        Assert.Equal("concurrent-update", mapped.Code);
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            Assert.Equal(
+                [Eve, NewYear],
+                await verify.SpecialOpeningDays.Where(d => d.BranchId == branch.BranchId).OrderBy(d => d.Date).Select(d => d.Date).ToListAsync());
+        }
+
+        // Reloaded, it saves.
+        var reloaded = await second.GetSpecialOpeningDaysAsync(branch.BranchId);
+        var again = await second.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand([.. Holidays(), Day(NewYear.AddDays(5), "Christmas")], reloaded.Version));
+        Assert.Equal(3, again.Days.Count);
+
+        // And a save with no version at all is refused by its field.
+        var unversioned = await Assert.ThrowsAsync<FieldValidationException>(() => second.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand([])));
+        Assert.Equal("expectedVersion", unversioned.Field);
+    }
+
+    [SkippableFact]
+    public async Task Only_bookings_a_save_newly_puts_outside_the_hours_are_reported()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
+
+        var newYearLunch = await diner.CreateAsync(Booking(branch, branch.TableIds[0], NewYear, Noon));
+        var dayAfter = await diner.CreateAsync(Booking(branch, branch.TableIds[1], NewYear.AddDays(1), Noon));
+        var christmasLunch = await diner.CreateAsync(Booking(branch, branch.TableIds[2], NewYear.AddDays(5), Noon));
+
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+
+        // 1 January closed: its lunch, and not the next day's, which still fits.
+        var first = await SaveAsync(service, branch.BranchId, [Day(NewYear, "New Year")]);
+        Assert.Equal([newYearLunch.Id], first.AffectedReservationIds);
+
+        // 6 January added: only Christmas lunch. 1 January did not change, so its lunch is not reported again.
+        var second = await SaveAsync(service, branch.BranchId, [Day(NewYear, "New Year"), Day(NewYear.AddDays(5), "Christmas")]);
+        Assert.Equal([christmasLunch.Id], second.AffectedReservationIds);
+        Assert.Equal(1, second.AffectedExistingReservations);
+
+        // A new note changes no hours.
+        var renamed = await SaveAsync(service, branch.BranchId, [Day(NewYear, "Ամանոր"), Day(NewYear.AddDays(5), "Սուրբ Ծնունդ")]);
+        Assert.Empty(renamed.AffectedReservationIds);
+
+        // New Year's Day open late after all, into the 2nd: nothing newly outside, and the day after is untouched.
+        var reopened = await SaveAsync(
+            service, branch.BranchId, [Day(NewYear, "Ամանոր", ("18:00", "03:00")), Day(NewYear.AddDays(5), "Սուրբ Ծնունդ")]);
+        Assert.Empty(reopened.AffectedReservationIds);
+        Assert.DoesNotContain(dayAfter.Id, first.AffectedReservationIds.Concat(second.AffectedReservationIds));
+    }
+
+    [SkippableFact]
+    public async Task A_save_that_waits_too_long_for_the_old_days_rows_is_a_concurrent_update_not_a_server_error()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+        var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
+        await SaveAsync(service, branch.BranchId, Holidays());
+
+        // Something else holding the special days' rows - past the five seconds a save waits.
+        await using var holder = fixture.CreateContext(clock);
+        await using var held = await holder.Database.BeginTransactionAsync();
+        await holder.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT Id FROM SpecialOpeningDays WITH (UPDLOCK, HOLDLOCK) WHERE BranchId = {branch.BranchId}");
+
+        await using var editorDb = fixture.CreateContext(clock);
+        var editor = fixture.CreateBranchSettingsService(editorDb, clock, TestActor.Manager(branch.ManagerId));
+        var loaded = await editor.GetSpecialOpeningDaysAsync(branch.BranchId);
+
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => editor.ReplaceSpecialOpeningDaysAsync(
+            branch.BranchId, new ReplaceSpecialOpeningDaysCommand([], loaded.Version)));
+
+        await held.RollbackAsync();
     }
 
     [SkippableFact]
@@ -129,7 +307,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         var evening = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Eve, new TimeOnly(19, 0)));
 
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
-        var saved = await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, Holidays());
+        var saved = await SaveAsync(service, branch.BranchId, Holidays());
 
         Assert.Equal(1, saved.AffectedExistingReservations);
         Assert.Equal([lunch.Id], saved.AffectedReservationIds);
@@ -143,7 +321,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
             await verify.Reservations.Where(r => r.Id == evening.Id).Select(r => r.Status).SingleAsync());
 
         // Taking the holiday off again affects nothing: lunch fits the Friday's hours.
-        var undone = await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, []);
+        var undone = await SaveAsync(service, branch.BranchId, []);
         Assert.Equal(0, undone.AffectedExistingReservations);
     }
 
@@ -161,7 +339,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
 
         await Assert.ThrowsAsync<StaffPermissionException>(() => service.GetSpecialOpeningDaysAsync(theirs.BranchId));
         await Assert.ThrowsAsync<StaffPermissionException>(
-            () => service.ReplaceSpecialOpeningDaysAsync(theirs.BranchId, Holidays()));
+            () => service.ReplaceSpecialOpeningDaysAsync(theirs.BranchId, new ReplaceSpecialOpeningDaysCommand(Holidays(), "0")));
 
         Assert.False(await db.SpecialOpeningDays.AnyAsync(d => d.BranchId == theirs.BranchId));
     }
@@ -225,7 +403,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
 
         // A day shut outright, with no evening before running into it, has no slots at all and says so once.
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
-        await service.ReplaceSpecialOpeningDaysAsync(branch.BranchId, [.. Holidays(), Day(NewYear.AddDays(3), "Stocktake")]);
+        await SaveAsync(service, branch.BranchId, [.. Holidays(), Day(NewYear.AddDays(3), "Stocktake")]);
 
         var shut = await query.GetDaySlotsAsync(new DaySlotsRequest(branch.BranchId, NewYear.AddDays(3), 2));
 
@@ -361,8 +539,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
 
         // Beyond the sixty days the pages look ahead.
-        await service.ReplaceSpecialOpeningDaysAsync(
-            branch.BranchId, [.. Holidays(), Day(Today.AddDays(61), "Far off")]);
+        await SaveAsync(service, branch.BranchId, [.. Holidays(), Day(Today.AddDays(61), "Far off")]);
 
         var slugs = await db.Branches
             .Where(b => b.Id == branch.BranchId)
@@ -379,6 +556,21 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
             Assert.Equal("New Year's Eve", days[0].Note);
             Assert.True(days[1].Closed);
         }
+
+        // 01:00 on New Year's Day: still in the Eve's 18:00-03:00, so the list starts at the Eve - the page says
+        // "open until 03:00", not "closed today" beside "open now".
+        clock.UtcNow = Local(NewYear, 1, 0);
+
+        var night = await SqlServerFixture.CreatePublicQuery(db, clock).GetBranchAsync(slugs.Venue, slugs.Slug);
+        Assert.True(night.IsOpenNow);
+        Assert.Equal([Eve, NewYear], night.SpecialDays.Select(d => d.Date).Take(2));
+
+        // Once it has closed, the Eve is over.
+        clock.UtcNow = Local(NewYear, 4, 0);
+
+        var morning = await new PublicListingQuery(db, new MemoryCache(new MemoryCacheOptions()), clock)
+            .GetDetailAsync(branch.BranchId, null, null);
+        Assert.Equal(NewYear, morning.SpecialDays[0].Date);
 
         // The weekly hours stay the week.
         Assert.Equal(7, page.OpeningHours.Count);
@@ -410,12 +602,23 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         using var client = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, owner));
         var route = $"/api/branches/{branch.BranchId}/opening-hours/exceptions";
 
+        var loaded = await client.GetFromJsonAsync<JsonElement>(route);
+        var version = loaded.GetProperty("version").GetString();
+        Assert.Empty(loaded.GetProperty("days").EnumerateArray());
+
         var put = await client.PutAsJsonAsync(
             route,
-            new object[]
+            new
             {
-                new { date = Iso(closed), note = "New Year", blocks = Array.Empty<object>() },
-                new { date = Iso(late), blocks = new[] { new { opensAt = "18:00", closesAt = "03:00" } } },
+                expectedVersion = version,
+                days = new object[]
+                {
+                    new { date = Iso(closed), note = "New Year", blocks = Array.Empty<object>() },
+                    new { date = Iso(late), blocks = new[] { new { opensAt = "18:00", closesAt = "03:00" } } },
+
+                    // Yesterday: history, ignored.
+                    new { date = Iso(today.AddDays(-1)), blocks = Array.Empty<object>() },
+                },
             });
 
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
@@ -439,17 +642,34 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         Assert.True(days[1].GetProperty("closed").GetBoolean());
 
         var read = await client.GetFromJsonAsync<JsonElement>(route);
-        Assert.Equal(2, read.GetArrayLength());
+        Assert.Equal(2, read.GetProperty("days").GetArrayLength());
+        Assert.Equal(saved.GetProperty("version").GetString(), read.GetProperty("version").GetString());
+
+        // The version the first save was made against is spent.
+        var stale = await client.PutAsJsonAsync(route, new { expectedVersion = version, days = Array.Empty<object>() });
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+
+        var conflict = await stale.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("concurrent-update", conflict.GetProperty("code").GetString());
+        Assert.Equal(
+            saved.GetProperty("version").GetString(),
+            conflict.GetProperty("context").GetProperty("currentVersion").GetString());
 
         var refused = await client.PutAsJsonAsync(
-            route, new object[] { new { date = Iso(today.AddDays(-1)), blocks = Array.Empty<object>() } });
+            route,
+            new
+            {
+                expectedVersion = saved.GetProperty("version").GetString(),
+                days = new object[] { new { date = Iso(today.AddDays(400)), blocks = Array.Empty<object>() } },
+            });
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
 
         var field = (await refused.Content.ReadFromJsonAsync<JsonElement>())
             .GetProperty("context").GetProperty("fields").EnumerateArray().Single();
-        Assert.Equal("[0].date", field.GetProperty("field").GetString());
-        Assert.Equal("min", field.GetProperty("bound").GetString());
+        Assert.Equal("days[0].date", field.GetProperty("field").GetString());
+        Assert.Equal("max", field.GetProperty("bound").GetString());
     }
 
     /// <summary>
@@ -473,6 +693,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         Assert.Equal("reorderMenuCategories", OperationId("/api/branches/{branchId}/menu/categories/order", "put"));
         Assert.Equal(
             "reorderMenuItems", OperationId("/api/branches/{branchId}/menu/categories/{categoryId}/items/order", "put"));
+        Assert.Equal("removeMenuItemPhoto", OperationId("/api/branches/{branchId}/menu/items/{itemId}/photo", "delete"));
 
         var schemas = document.RootElement.GetProperty("components").GetProperty("schemas");
 
@@ -493,8 +714,11 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         Assert.Superset(new HashSet<string> { "date", "blocks" }, Required(nameof(SpecialOpeningDayInput)));
         Assert.DoesNotContain("note", Required(nameof(SpecialOpeningDayInput)));
         Assert.Superset(
-            new HashSet<string> { "days", "affectedExistingReservations", "affectedReservationIds" },
+            new HashSet<string> { "version", "days", "affectedExistingReservations", "affectedReservationIds" },
             Required(nameof(SpecialOpeningDaysChangeResult)));
+        Assert.Superset(new HashSet<string> { "version", "days" }, Required(nameof(SpecialOpeningDaysView)));
+        Assert.Contains("days", Required(nameof(ReplaceSpecialOpeningDaysCommand)));
+        Assert.DoesNotContain("expectedVersion", Required(nameof(ReplaceSpecialOpeningDaysCommand)));
 
         Assert.Contains("specialDays", Required("PublicBranchPage"));
         Assert.Contains("specialDays", Required("PublicBranchDetail"));
@@ -518,6 +742,17 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         Day(Eve, "New Year's Eve", ("18:00", "03:00")),
     ];
 
+    /// <summary>Saves the list the way the console does: against the version it just read.</summary>
+    private static async Task<SpecialOpeningDaysChangeResult> SaveAsync(
+        BranchSettingsService service,
+        Guid branchId,
+        List<SpecialOpeningDayInput> days)
+    {
+        var loaded = await service.GetSpecialOpeningDaysAsync(branchId);
+
+        return await service.ReplaceSpecialOpeningDaysAsync(branchId, new ReplaceSpecialOpeningDaysCommand(days, loaded.Version));
+    }
+
     private static SpecialOpeningDayInput Day(DateOnly date, string? note, params (string Opens, string Closes)[] blocks) =>
         new(date, note, [.. blocks.Select(b => new OpeningBlockInput(TimeOnly.Parse(b.Opens), TimeOnly.Parse(b.Closes)))]);
 
@@ -526,8 +761,7 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
     {
         var branch = await TestBranchBuilder.CreateAsync(db);
 
-        await fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId))
-            .ReplaceSpecialOpeningDaysAsync(branch.BranchId, Holidays());
+        await SaveAsync(fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId)), branch.BranchId, Holidays());
 
         return branch;
     }

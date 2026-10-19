@@ -19,7 +19,7 @@ namespace Yalla.Infrastructure.Services;
 /// </para>
 /// <para>
 /// Taken by the floor plan's writers (the plan replace, the room add, rename and delete, the table delete),
-/// the special opening days' replace and the menu's reorders.
+/// the special opening days' replace, and the menu's reorders and its category and dish adds.
 /// </para>
 /// </remarks>
 internal sealed class BranchWriteLock : IAsyncDisposable
@@ -90,6 +90,24 @@ internal sealed class BranchWriteLock : IAsyncDisposable
             // A table row held by a booking or a seating for longer than the wait. Nothing was
             // decided, so the honest answer is the retryable one.
             db.ChangeTracker.Clear();
+            throw Busy(branchId);
+        }
+    }
+
+    /// <summary>
+    /// Runs a statement inside the lock - an <c>ExecuteDeleteAsync</c>, which bypasses <see cref="SaveAsync"/> -
+    /// answering a lock wait as a concurrent update, as a save does, rather than as a server error.
+    /// </summary>
+    public async Task RunAsync(Guid branchId, Func<Task> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+
+        try
+        {
+            await work();
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
             throw Busy(branchId);
         }
     }

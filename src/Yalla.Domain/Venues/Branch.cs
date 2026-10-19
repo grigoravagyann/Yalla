@@ -283,6 +283,16 @@ public sealed class Branch : Entity
     /// <summary>Marks a new revision of the floor plan. Called by the floor-plan replace, and only there.</summary>
     public void BumpFloorPlanVersion() => FloorPlanVersion++;
 
+    /// <summary>
+    /// Which saved revision of the special opening days this is. The console sends the one it loaded; a save
+    /// against an older one is refused as <c>concurrent-update</c>, because the list is replaced whole and the
+    /// second of two editors would otherwise undo the first one's holiday without anybody being told.
+    /// </summary>
+    public int SpecialDaysVersion { get; private set; }
+
+    /// <summary>Marks a new revision of the special days. Called by their replace, and only there.</summary>
+    public void BumpSpecialDaysVersion() => SpecialDaysVersion++;
+
     private static string NormaliseTimeZoneId(string? timeZoneId)
     {
         var value = Guard.NotBlank(timeZoneId, nameof(timeZoneId), FieldLengths.TimeZoneId);

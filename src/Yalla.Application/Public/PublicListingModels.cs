@@ -68,8 +68,9 @@ public sealed record PublicBranchListing(
 /// <param name="Amenities">Keys: <c>outdoorSeating</c>, <c>wifi</c>, <c>parking</c>, <c>cardPayment</c>, <c>vegan</c>.</param>
 /// <param name="OpeningHours">Weekly wall-clock hours; <c>day</c> 0 = Sunday.</param>
 /// <param name="SpecialDays">
-/// Special opening days from today at the branch through 60 days ahead, earliest first - each replaces that
-/// date's weekly hours. Always present, often empty. The card's <c>isOpenNow</c> already reads them.
+/// Special opening days from the branch's service date (yesterday while last night's block still runs past
+/// midnight) through 60 days after today, earliest first - each replaces that date's weekly hours. Always present,
+/// often empty. The card's <c>isOpenNow</c> already reads them.
 /// </param>
 /// <param name="Gallery">Pictures beyond the cover, in the venue's order.</param>
 /// <param name="TableCount">Active tables on the plan.</param>

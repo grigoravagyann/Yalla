@@ -563,17 +563,18 @@ public interface IBranchSettingsService
         IReadOnlyList<OpeningHoursBlock> blocks,
         CancellationToken cancellationToken = default);
 
-    /// <summary>The special opening days from today at the branch on, earliest first.</summary>
-    Task<IReadOnlyList<SpecialOpeningDayView>> GetSpecialOpeningDaysAsync(Guid branchId, CancellationToken cancellationToken = default);
+    /// <summary>The special opening days from the branch's service date on (yesterday's while its block still runs past midnight), earliest first, with the list's revision.</summary>
+    Task<SpecialOpeningDaysView> GetSpecialOpeningDaysAsync(Guid branchId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Replaces every special day from today at the branch on, atomically and under the branch lock. Earlier
     /// days are kept. <b>Never touches a booking</b>: live ones that no longer fit are counted and reported.
     /// </summary>
-    /// <exception cref="FieldValidationException">A date is past, too far out or twice; a note too long; a block overlaps.</exception>
+    /// <exception cref="FieldValidationException">No expected version; a date too far out or twice; a note too long; a block overlaps.</exception>
+    /// <exception cref="SpecialOpeningDaysChangedException">Saved by somebody else since <c>ExpectedVersion</c>.</exception>
     Task<SpecialOpeningDaysChangeResult> ReplaceSpecialOpeningDaysAsync(
         Guid branchId,
-        IReadOnlyList<SpecialOpeningDayInput> days,
+        ReplaceSpecialOpeningDaysCommand command,
         CancellationToken cancellationToken = default);
 
     Task<FloorPlanView> GetFloorPlanAsync(Guid branchId, CancellationToken cancellationToken = default);

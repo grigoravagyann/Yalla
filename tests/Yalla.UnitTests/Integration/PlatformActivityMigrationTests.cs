@@ -53,7 +53,8 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
                 // are put in place for them to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
-                    + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;");
+                    + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
+                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;");
 
                 branch = await TestBranchBuilder.CreateAsync(db);
                 admin = await AuthTestData.CreatePlatformAdminAsync(db);

@@ -229,60 +229,97 @@ internal sealed class BranchSettingsService(
 
     // ------------------------------------------------------------ special opening days
 
-    public async Task<IReadOnlyList<SpecialOpeningDayView>> GetSpecialOpeningDaysAsync(
+    public async Task<SpecialOpeningDaysView> GetSpecialOpeningDaysAsync(
         Guid branchId,
         CancellationToken cancellationToken = default)
     {
         await branchGuard.RequireAtBranchAsync(branchId, "Read the special opening days", cancellationToken);
 
-        var branch = await LoadBranchAsync(branchId, cancellationToken);
-        var today = BranchZone.For(branch.TimeZoneId).LocalDateAt(clock.UtcNow);
+        // Read, not tracked: a tracked branch would answer a later save in the same context with this revision.
+        var branch = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId)
+            .Select(b => new { b.TimeZoneId, b.SpecialDaysVersion })
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
-        return await SpecialDaysFromAsync(branchId, today, cancellationToken);
+        var localNow = BranchZone.For(branch.TimeZoneId).ToLocal(clock.UtcNow);
+        var today = DateOnly.FromDateTime(localNow);
+        var calendar = await OpeningCalendars.ForBranchAsync(
+            db, branchId, today.AddDays(-1), today.AddDays(SpecialOpeningDayRules.HorizonDays), cancellationToken);
+
+        return new SpecialOpeningDaysView(VersionOf(branch.SpecialDaysVersion), FromServiceDate(calendar, localNow));
     }
 
     public async Task<SpecialOpeningDaysChangeResult> ReplaceSpecialOpeningDaysAsync(
         Guid branchId,
-        IReadOnlyList<SpecialOpeningDayInput> days,
+        ReplaceSpecialOpeningDaysCommand command,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(days);
+        ArgumentNullException.ThrowIfNull(command);
 
         await branchGuard.RequireAtBranchAsync(branchId, "Save the special opening days", cancellationToken);
 
-        // Two editors saving at once would each delete the other's insert; the branch lock serialises them,
-        // so the last save wins whole rather than both landing half.
+        // Without the revision a save cannot tell it is about to undo somebody else's holiday.
+        if (string.IsNullOrWhiteSpace(command.ExpectedVersion))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "expectedVersion",
+                "Send the version you loaded the special days at, so a save cannot undo somebody else's.",
+                FieldBounds.Required));
+        }
+
+        if (command.Days is null)
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "days", "Send every special day from today on; an empty list clears them.", FieldBounds.Required));
+        }
+
+        // Two editors saving at once are serialised by the branch lock, and the one that loaded an older list is
+        // refused rather than allowed to replace the other's whole.
         await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
 
         var branch = await LoadBranchAsync(branchId, cancellationToken);
+
+        // The row as it is now, inside the lock - not a copy this context tracked before another save committed.
+        await db.Entry(branch).ReloadAsync(cancellationToken);
+
+        if (!IsVersion(command.ExpectedVersion, branch.SpecialDaysVersion))
+        {
+            throw new SpecialOpeningDaysChangedException(VersionOf(branch.SpecialDaysVersion));
+        }
+
         var zone = BranchZone.For(branch.TimeZoneId);
         var nowUtc = clock.UtcNow;
         var today = zone.LocalDateAt(nowUtc);
 
-        // Dates and blocks checked before anything is touched; every problem named.
-        var normalised = SpecialOpeningDayRules.Normalise(days, today);
+        // Dates and blocks checked before anything is touched; every problem named, history ignored.
+        var normalised = SpecialOpeningDayRules.Normalise(command.Days, today);
+
+        // The hours as they were, from the evening before today to the day after the horizon: every date a
+        // changed day or a booking just after one can fall on.
+        var windowFrom = today.AddDays(-1);
+        var windowTo = today.AddDays(SpecialOpeningDayRules.HorizonDays + 1);
+        var before = await OpeningCalendars.ForBranchAsync(db, branchId, windowFrom, windowTo, cancellationToken);
 
         // From today on, replaced whole. Earlier days are history the Overview's yesterday still reads.
-        var replacedDates = await db.SpecialOpeningDays
-            .Where(d => d.BranchId == branchId && d.Date >= today)
-            .Select(d => d.Date)
-            .ToListAsync(cancellationToken);
-
-        await db.SpecialOpeningDays
-            .Where(d => d.BranchId == branchId && d.Date >= today)
-            .ExecuteDeleteAsync(cancellationToken);
+        await writeLock.RunAsync(
+            branchId,
+            () => db.SpecialOpeningDays
+                .Where(d => d.BranchId == branchId && d.Date >= today)
+                .ExecuteDeleteAsync(cancellationToken));
 
         foreach (var day in normalised)
         {
             db.SpecialOpeningDays.Add(new SpecialOpeningDay(branchId, day.Date, day.Note, day.Blocks));
         }
 
+        branch.BumpSpecialDaysVersion();
         await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
-        // Which live bookings the changed dates no longer have room for - a day closed, its hours cut, or a
-        // special day removed and the weekday's shorter hours back. Counted and reported, never touched.
-        var changed = replacedDates.Concat(normalised.Select(d => d.Date)).Distinct().ToList();
-        var affected = await AffectedBySpecialDaysAsync(branchId, zone, changed, nowUtc, cancellationToken);
+        var after = await OpeningCalendars.ForBranchAsync(db, branchId, windowFrom, windowTo, cancellationToken);
+        var changed = ChangedDates(before.SpecialDays.Where(d => d.Date >= today), normalised);
+        var affected = await AffectedBySpecialDaysAsync(branchId, zone, changed, before, after, nowUtc, cancellationToken);
 
         if (affected.Count > 0)
         {
@@ -292,37 +329,67 @@ internal sealed class BranchSettingsService(
         }
 
         return new SpecialOpeningDaysChangeResult(
-            await SpecialDaysFromAsync(branchId, today, cancellationToken), affected.Count, affected);
-    }
-
-    private async Task<IReadOnlyList<SpecialOpeningDayView>> SpecialDaysFromAsync(
-        Guid branchId,
-        DateOnly today,
-        CancellationToken cancellationToken)
-    {
-        var calendar = await OpeningCalendars.ForBranchAsync(
-            db, branchId, today, today.AddDays(SpecialOpeningDayRules.HorizonDays), cancellationToken);
-
-        return [.. calendar.SpecialDays.Select(SpecialOpeningDayView.From)];
+            VersionOf(branch.SpecialDaysVersion),
+            FromServiceDate(after, zone.ToLocal(nowUtc)),
+            affected.Count,
+            affected);
     }
 
     /// <summary>
-    /// Live future bookings starting on one of <paramref name="dates"/> - or just after midnight following one,
-    /// inside its block - whose sitting no longer fits the calendar.
+    /// The console's list: from the service date, as the public page's - so at 01:00 on New Year's Day the Eve whose
+    /// 18:00-03:00 is still running is first, and the console's "what a guest sees now" reads the block diners do.
     /// </summary>
+    /// <remarks>
+    /// That entry is shown, never saved: a save replaces only today on, so sending it back - edited, or left out -
+    /// changes nothing. It drops off the list when its block closes.
+    /// </remarks>
+    private static IReadOnlyList<SpecialOpeningDayView> FromServiceDate(OpeningCalendar calendar, DateTime localNow)
+    {
+        var from = calendar.ServiceDateOf(localNow);
+
+        return [.. calendar.SpecialDays.Where(d => d.Date >= from).Select(SpecialOpeningDayView.From)];
+    }
+
+    /// <summary>
+    /// The dates whose hours this save changed: a special day added, removed, or given other blocks. A new note
+    /// alone changes no hours.
+    /// </summary>
+    private static List<DateOnly> ChangedDates(IEnumerable<SpecialDay> before, IEnumerable<SpecialDay> after)
+    {
+        var old = before.ToDictionary(d => d.Date);
+        var now = after.ToDictionary(d => d.Date);
+
+        return [.. old.Keys.Union(now.Keys)
+            .Where(date => !old.TryGetValue(date, out var was)
+                           || !now.TryGetValue(date, out var @is)
+                           || !was.Blocks.SequenceEqual(@is.Blocks))
+            .Order()];
+    }
+
+    /// <summary>
+    /// Live future bookings this save put outside the hours: starting on a changed date, or on the day after one -
+    /// inside its block past midnight - that fitted the calendar before the save and do not fit it now.
+    /// </summary>
+    /// <remarks>
+    /// "Newly" is the point. A booking that already did not fit was not put there by this save, and the day after
+    /// an unchanged date is not looked at, so adding 6 January does not report the 1 January booking an earlier
+    /// save already reported.
+    /// </remarks>
     private async Task<IReadOnlyList<Guid>> AffectedBySpecialDaysAsync(
         Guid branchId,
         BranchZone zone,
-        IReadOnlyList<DateOnly> dates,
+        IReadOnlyList<DateOnly> changed,
+        OpeningCalendar before,
+        OpeningCalendar after,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        if (dates.Count == 0)
+        if (changed.Count == 0)
         {
             return [];
         }
 
-        var asked = dates.Concat(dates.Select(d => d.AddDays(1))).Distinct().ToList();
+        var asked = changed.Concat(changed.Select(d => d.AddDays(1))).Distinct().ToList();
 
         var bookings = await db.Reservations
             .AsNoTracking()
@@ -334,16 +401,14 @@ internal sealed class BranchSettingsService(
             .Select(r => new { r.Id, r.LocalDate, r.LocalStartTime, r.EndUtc })
             .ToListAsync(cancellationToken);
 
-        if (bookings.Count == 0)
-        {
-            return [];
-        }
-
-        var calendar = await OpeningCalendars.ForBranchAsync(
-            db, branchId, asked.Min().AddDays(-1), asked.Max(), cancellationToken);
-
         return [.. bookings
-            .Where(r => !calendar.Fits(r.LocalDate.ToDateTime(r.LocalStartTime), zone.ToLocal(r.EndUtc)))
+            .Where(r =>
+            {
+                var start = r.LocalDate.ToDateTime(r.LocalStartTime);
+                var end = zone.ToLocal(r.EndUtc);
+
+                return before.Fits(start, end) && !after.Fits(start, end);
+            })
             .Select(r => r.Id)];
     }
 

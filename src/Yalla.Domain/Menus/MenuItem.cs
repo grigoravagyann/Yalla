@@ -164,6 +164,17 @@ public sealed class MenuItem : Entity
 
     public void SetAvailable(bool isAvailable) => IsAvailable = isAvailable;
 
+    /// <summary>
+    /// Takes the photo off the dish. The one descriptive field cleared on its own, because an edit passes null
+    /// for "leave it as it was". The dish is then incomplete - <see cref="MenuItemCompleteness"/> - and the picture,
+    /// used by nothing, is the orphan sweep's.
+    /// </summary>
+    public void RemovePhoto()
+    {
+        PhotoId = null;
+        Photo = null;
+    }
+
     public void SetDisplayOrder(int displayOrder) =>
         DisplayOrder = Guard.NotNegative(displayOrder, nameof(displayOrder));
 

@@ -1870,6 +1870,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
+                    b.Property<int>("SpecialDaysVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
                     b.Property<int>("SubscriptionTier")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")

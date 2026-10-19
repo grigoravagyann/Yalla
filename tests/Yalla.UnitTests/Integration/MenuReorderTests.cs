@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Menus;
 using Yalla.Domain;
 using Yalla.Domain.Menus;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -133,15 +134,35 @@ public sealed class MenuReorderTests(SqlServerFixture fixture)
             }
         }
 
-        // Two consoles, two connections, opposite orders at the same moment.
-        await using var one = fixture.CreateContext(clock);
-        await using var two = fixture.CreateContext(clock);
-
+        var shuffled = new List<Guid> { ids[2], ids[0], ids[4], ids[1], ids[3] };
         var reversed = Enumerable.Reverse(ids).ToList();
 
-        await Task.WhenAll(
-            fixture.CreateMenuService(one).ReorderCategoriesAsync(branch.BranchId, new ReorderMenuCategoriesCommand(ids)),
-            fixture.CreateMenuService(two).ReorderCategoriesAsync(branch.BranchId, new ReorderMenuCategoriesCommand(reversed)));
+        // The second console, on its own connection - its session id is what the server reports it waiting under.
+        await using var two = fixture.CreateContext(clock);
+        var twoSession = await SessionIdAsync(two);
+        Task<IReadOnlyList<MenuCategoryView>>? second = null;
+        var secondWaited = false;
+
+        // The first console has read the categories inside its lock and is about to write them: right then, the
+        // second one starts - every run, not when the timing happens to line up - and must be made to wait.
+        var hook = new BeforeFirstCommandMatching(
+            sql => sql.Contains("UPDATE [MenuCategories]", StringComparison.Ordinal),
+            async () =>
+            {
+                second = fixture.CreateMenuService(two)
+                    .ReorderCategoriesAsync(branch.BranchId, new ReorderMenuCategoriesCommand(reversed));
+                secondWaited = await WaitsOnALockAsync(clock, twoSession);
+            });
+
+        await using var one = fixture.CreateContext(clock, hook);
+        await fixture.CreateMenuService(one).ReorderCategoriesAsync(branch.BranchId, new ReorderMenuCategoriesCommand(shuffled));
+
+        Assert.True(hook.Fired);
+        Assert.NotNull(second);
+        await second;
+
+        // It waited for the first to commit, then read the first's order and replaced it whole with its own.
+        Assert.True(secondWaited, "The second reorder ran while the first held the categories it had read.");
 
         await using var verify = fixture.CreateContext(clock);
         var stored = await verify.MenuCategories
@@ -150,11 +171,46 @@ public sealed class MenuReorderTests(SqlServerFixture fixture)
             .Select(c => new { c.Id, c.DisplayOrder })
             .ToListAsync();
 
-        // One of the two whole - never a mixture with two categories on one number.
         Assert.Equal([0, 1, 2, 3, 4], stored.Select(c => c.DisplayOrder));
-        Assert.True(
-            stored.Select(c => c.Id).SequenceEqual(ids) || stored.Select(c => c.Id).SequenceEqual(reversed),
-            "The two reorders interleaved.");
+        Assert.Equal(reversed, stored.Select(c => c.Id));
+    }
+
+    [SkippableFact]
+    public async Task Two_categories_added_at_once_land_on_two_positions()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        TestBranch branch;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            branch = await TestBranchBuilder.CreateAsync(db);
+        }
+
+        await using var two = fixture.CreateContext(clock);
+        var twoSession = await SessionIdAsync(two);
+        Task<MenuCategoryView>? second = null;
+        var secondWaited = false;
+
+        // The first has read the last position and is about to take it; the second asks for the last position now.
+        var hook = new BeforeFirstCommandMatching(
+            sql => sql.Contains("INSERT INTO [MenuCategories]", StringComparison.Ordinal),
+            async () =>
+            {
+                second = fixture.CreateMenuService(two).CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Tea"));
+                secondWaited = await WaitsOnALockAsync(clock, twoSession);
+            });
+
+        await using var one = fixture.CreateContext(clock, hook);
+        var first = await fixture.CreateMenuService(one).CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Coffee"));
+
+        Assert.True(hook.Fired);
+        Assert.NotNull(second);
+        var tea = await second;
+
+        Assert.True(secondWaited, "The second add read the last position while the first was taking it.");
+        Assert.Equal([0, 1], new[] { first.DisplayOrder, tea.DisplayOrder });
     }
 
     [SkippableFact]
@@ -184,6 +240,99 @@ public sealed class MenuReorderTests(SqlServerFixture fixture)
 
         var listed = (await menu.GetMenuAsync(branch.BranchId)).Single().Items.Single();
         Assert.Equal(half.MissingFields, listed.MissingFields);
+    }
+
+    [SkippableFact]
+    public async Task Removing_a_dishs_photo_makes_it_incomplete_hides_it_from_diners_and_leaves_the_picture_to_the_sweep()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db);
+
+        // Uploaded long ago, so once nothing uses it the sweep's grace is already over.
+        var photo = TestBranchBuilder.RoomPhoto(branch.BranchId);
+        db.Photos.Add(photo);
+        await db.SaveChangesAsync();
+
+        var menu = fixture.CreateMenuService(db);
+        var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Mains"));
+        var dish = await menu.CreateItemAsync(
+            branch.BranchId,
+            category.Id,
+            new CreateMenuItemCommand(
+                "Khachapuri", 3_200L, "Adjarian, with an egg", photo.Id, "flour, sulguni, egg", "gluten, dairy, egg",
+                "450 g", 20));
+
+        Assert.True(dish.IsComplete);
+
+        var removed = await menu.RemoveItemPhotoAsync(branch.BranchId, dish.Id);
+
+        Assert.Null(removed.Photo);
+        Assert.False(removed.IsComplete);
+        Assert.Equal(["photo"], removed.MissingFields);
+
+        // Saying it twice is the same answer, not a 404.
+        Assert.Equal(["photo"], (await menu.RemoveItemPhotoAsync(branch.BranchId, dish.Id)).MissingFields);
+
+        // Gone from the diner's menu until it has a photo again.
+        await using var read = fixture.CreateContext(clock);
+        var dinerMenu = await SqlServerFixture.CreateMenuQuery(read).GetBranchMenuAsync(branch.BranchId);
+        Assert.DoesNotContain(dish.Id, dinerMenu.Categories.SelectMany(c => c.Items).Select(i => i.Id));
+
+        // Nothing uses the picture now, so the sweep takes it like any other detached photo.
+        var photos = new PhotoService(
+            read,
+            new Yalla.Infrastructure.Media.LocalDiskPhotoStorage(
+                new Yalla.Infrastructure.Media.PhotoStorageOptions { RootPath = Path.Combine(Path.GetTempPath(), "yalla-sweep-" + Guid.NewGuid().ToString("N")) },
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<Yalla.Infrastructure.Media.LocalDiskPhotoStorage>.Instance),
+            clock,
+            fixture.CreateBranchGuard(read, TestActor.Manager(branch.ManagerId)),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<PhotoService>.Instance);
+
+        await photos.SweepOrphansAsync();
+
+        await using var verify = fixture.CreateContext(clock);
+        Assert.False(await verify.Photos.AnyAsync(p => p.Id == photo.Id));
+
+        // Another branch's dish is not this branch's to change.
+        var other = await TestBranchBuilder.CreateAsync(db);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => menu.RemoveItemPhotoAsync(other.BranchId, dish.Id));
+    }
+
+    /// <summary>The server's id for the session on this context's connection, which it keeps open.</summary>
+    private static async Task<short> SessionIdAsync(Yalla.Infrastructure.Persistence.YallaDbContext db)
+    {
+        await db.Database.OpenConnectionAsync();
+
+        return await db.Database.SqlQueryRaw<short>("SELECT @@SPID AS Value").SingleAsync();
+    }
+
+    /// <summary>
+    /// Whether the session is seen waiting on a lock within four seconds - less than the five a branch save waits
+    /// before giving up. Asked of the server, so it is a fact about the lock and not about how fast this machine is.
+    /// </summary>
+    private async Task<bool> WaitsOnALockAsync(TestClock clock, short session)
+    {
+        await using var watcher = fixture.CreateContext(clock);
+        var until = DateTime.UtcNow.AddSeconds(4);
+
+        while (DateTime.UtcNow < until)
+        {
+            var waiting = await watcher.Database
+                .SqlQuery<int>($"SELECT COUNT(*) AS Value FROM sys.dm_os_waiting_tasks WHERE session_id = {session} AND wait_type LIKE 'LCK%'")
+                .SingleAsync();
+
+            if (waiting > 0)
+            {
+                return true;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return false;
     }
 
     [Fact]

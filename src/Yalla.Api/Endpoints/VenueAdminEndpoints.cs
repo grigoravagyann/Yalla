@@ -213,34 +213,44 @@ public static class VenueAdminEndpoints
 
         group.MapGet("/opening-hours/exceptions", GetSpecialDaysAsync)
             .WithName("getOpeningHoursExceptions")
-            .WithSummary("The special opening days from today on")
+            .WithSummary("The special opening days from the service date on")
             .WithDescription(
-                "Holidays, closures and different hours on one date, earliest first, from today in the branch's "
-                + "own zone. A special day **replaces** that date's weekly blocks; `closed` (no `blocks`) is shut all "
+                "Holidays, closures and different hours on one date, earliest first, from the branch's service date "
+                + "in its own zone - today, or yesterday while last night's special block still runs past midnight, "
+                + "which is then listed first and is read-only (a save never changes a day before today) - with the "
+                + "list's `version`: send it back as `expectedVersion` when saving. A special day **replaces** that "
+                + "date's weekly blocks; `closed` (no `blocks`) is shut all "
                 + "day. A date's blocks are the ones that open on it, so 31 December 18:00-03:00 runs into "
                 + "1 January whatever 1 January says. Availability, the day's slots, booking, the Overview and "
                 + "every \"open now\" read them.")
-            .Produces<IReadOnlyList<SpecialOpeningDayView>>()
+            .Produces<SpecialOpeningDaysView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
         group.MapPut("/opening-hours/exceptions", PutSpecialDaysAsync)
             .WithName("putOpeningHoursExceptions")
             .WithSummary("Replace the special opening days from today on")
             .WithDescription(
-                "Send the whole list from today at the branch on (`[]` clears it); days before today are kept as "
-                + "they were and never sent. Each day is a `date`, an optional `note` a diner is shown (at most 60 "
-                + "characters) and its `blocks` - `[]` for closed all day, at most 4. `closesNextDay` is derived as "
-                + "in the weekly hours. Saved atomically under the branch lock, so two saves never interleave.\n\n"
-                + "**Every refusal names its field**, indexed into the array: `[1].date` is `min` (before today), "
-                + "`max` (more than 366 days ahead) or `conflict` (the same date twice); `[0].note` `max`; "
-                + "`[0].blocks` `required` or `max`; `[0].blocks[1].opensAt` `conflict` (overlaps an earlier "
-                + "block); `[0].blocks[0].closesAt` `conflict` (no length); `[100]` `max` (more than 100 days).\n\n"
-                + "**Existing bookings are never touched.** `affectedReservationIds` are the live ones on a changed "
-                + "date that no longer fit its hours.")
+                "`days` is the whole list from today at the branch on (`[]` clears it), and `expectedVersion` the "
+                + "`version` the editor loaded (required). Days before today are kept as they were; an entry dated "
+                + "before today is **ignored**, so a console left open past midnight still saves. Each day is a "
+                + "`date`, an optional `note` a diner is shown (at most 60 characters) and its `blocks` - `[]` for "
+                + "closed all day, at most 4. `closesNextDay` is derived as in the weekly hours. Saved atomically "
+                + "under the branch lock.\n\n"
+                + "**A list saved since `expectedVersion` is refused** with 409 `concurrent-update` and "
+                + "`context.currentVersion`: reload, then make the change again. Nothing is written.\n\n"
+                + "**Every refusal names its field**: `expectedVersion` `required`; `days[1].date` `max` (more than "
+                + "366 days ahead) or `conflict` (the same date twice); `days[0].note` `max`; `days[0].blocks` "
+                + "`required` or `max`; `days[0].blocks[1].opensAt` `conflict` (overlaps an earlier block); "
+                + "`days[0].blocks[0].closesAt` `conflict` (no length); `days[100]` `max` (more than 100 days).\n\n"
+                + "**Existing bookings are never touched.** `affectedReservationIds` are the live ones this save put "
+                + "outside the hours: on a date whose special day was added, removed or given other blocks, or just "
+                + "after midnight following one, that fitted before and do not now.")
             .Produces<SpecialOpeningDaysChangeResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblemDetails(
-                StatusCodes.Status409Conflict, "`concurrent-update`: another save held the branch; try again.")
+                StatusCodes.Status409Conflict,
+                "`concurrent-update`: saved by somebody else since `expectedVersion` (`context.currentVersion`), or "
+                + "another save held the branch; reload and try again.")
             .ProducesProblem<ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity, "A day or a block breaks a rule; `context.fields` names each.");
 
@@ -446,8 +456,8 @@ public static class VenueAdminEndpoints
         Results.Ok(await service.GetSpecialOpeningDaysAsync(branchId, ct));
 
     private static async Task<IResult> PutSpecialDaysAsync(
-        Guid branchId, IReadOnlyList<SpecialOpeningDayInput> days, IBranchSettingsService service, CancellationToken ct) =>
-        Results.Ok(await service.ReplaceSpecialOpeningDaysAsync(branchId, days, ct));
+        Guid branchId, ReplaceSpecialOpeningDaysCommand command, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.ReplaceSpecialOpeningDaysAsync(branchId, command, ct));
 
     private static async Task<IResult> GetReadinessAsync(
         Guid branchId, IBranchReadinessQuery readiness, CancellationToken ct) =>
@@ -628,6 +638,18 @@ public static class VenueAdminEndpoints
                 StatusCodes.Status422UnprocessableEntity,
                 "`categoryId` names a category that is not on this branch.");
 
+        group.MapDelete("/items/{itemId:guid}/photo", RemoveItemPhotoAsync)
+            .WithName("removeMenuItemPhoto")
+            .WithSummary("Take the photo off a dish")
+            .WithDescription(
+                "The one field `PATCH .../items/{itemId}` cannot clear - null there means \"not supplied\". The dish "
+                + "comes back with `isComplete: false` and `missingFields` naming `photo`, and the diner's menu leaves "
+                + "it out until it has a photo again. The picture itself is not deleted here: it may be used "
+                + "elsewhere, and once nothing uses it the orphan sweep removes it with its files. A dish with no "
+                + "photo answers the same, unchanged.")
+            .Produces<MenuItemView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such item at this branch.");
+
         group.MapPost("/items/{itemId:guid}/availability", SetAvailabilityAsync)
             .WithName("setMenuItemAvailability")
             .WithSummary("\"We're out of khachapuri tonight\"")
@@ -646,6 +668,10 @@ public static class VenueAdminEndpoints
 
     private static async Task<IResult> GetMenuAsync(Guid branchId, IMenuService service, CancellationToken ct) =>
         Results.Ok(await service.GetMenuAsync(branchId, ct));
+
+    private static async Task<IResult> RemoveItemPhotoAsync(
+        Guid branchId, Guid itemId, IMenuService service, CancellationToken ct) =>
+        Results.Ok(await service.RemoveItemPhotoAsync(branchId, itemId, ct));
 
     private static async Task<IResult> ReorderCategoriesAsync(
         Guid branchId, ReorderMenuCategoriesCommand command, IMenuService service, CancellationToken ct) =>
