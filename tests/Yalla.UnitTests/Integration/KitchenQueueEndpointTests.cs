@@ -191,9 +191,11 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
         var fromPhone = queue.Single(o => o.GetProperty("orderId").GetGuid() == kitchen.OrderId);
 
         Assert.Equal(waiterName, spoken.GetProperty("placedByName").GetString());
+
+        // Absent, not null: the wire omits a null member, and the generated client reads it as optional.
         Assert.False(
-            fromPhone.TryGetProperty("placedByName", out var nobody) && nobody.ValueKind != JsonValueKind.Null,
-            "A phone's order came back with a waiter's name on it.");
+            fromPhone.TryGetProperty("placedByName", out _),
+            "A phone's order came back with a placedByName member.");
 
         Assert.Equal(
             new[]

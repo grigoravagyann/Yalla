@@ -512,14 +512,24 @@ internal sealed class TabOrderService(
     {
         var staffId = RequireStaff("Move an order");
 
-        var order = await db.TabOrders
+        // Who sent it, read with the order: the name alone, projected beside the tracked order, so the
+        // answer below costs no second round trip and nothing of the staff row but the name is loaded.
+        var loaded = await db.TabOrders
             .Include(o => o.Lines)
             .ThenInclude(l => l.Shares)
             .Include(o => o.Tab).ThenInclude(t => t.DiningTable)
             .Include(o => o.Tab).ThenInclude(t => t.Branch).ThenInclude(b => b.Venue)
             .Include(o => o.Tab).ThenInclude(t => t.Participants)
-            .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
+            .Where(o => o.Id == orderId)
+            .Select(o => new
+            {
+                Order = o,
+                PlacedByName = o.PlacedByStaff != null ? o.PlacedByStaff.FullName : null,
+            })
+            .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
+
+        var order = loaded.Order;
 
         await branchGuard.RequireAsync(
             staffId, order.Tab.BranchId, "Acting on this tab", "tab", cancellationToken);
@@ -600,17 +610,7 @@ internal sealed class TabOrderService(
         logger.LogInformation(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);
 
-        // The name alone, projected, rather than the staff row included: one order, one small read,
-        // and nothing of the row but the name ever loaded.
-        var placedByName = order.PlacedByStaffId is { } placedByStaffId
-            ? await db.StaffMembers
-                .AsNoTracking()
-                .Where(s => s.Id == placedByStaffId)
-                .Select(s => s.FullName)
-                .FirstOrDefaultAsync(cancellationToken)
-            : null;
-
-        return ToKitchenView(order, order.Tab.DiningTable.Label, placedByName, clock.UtcNow);
+        return ToKitchenView(order, order.Tab.DiningTable.Label, loaded.PlacedByName, clock.UtcNow);
     }
 
     /// <summary>

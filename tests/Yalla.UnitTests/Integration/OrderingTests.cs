@@ -1629,6 +1629,46 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         Assert.Null(movedFromPhone.PlacedByName);
     }
 
+    /// <summary>
+    /// Moving a waiter's ticket reads the sender's name in the same round trip as the order: the
+    /// move costs the database what moving a phone's ticket does.
+    /// </summary>
+    [SkippableFact]
+    public async Task Moving_a_waiters_ticket_reads_the_senders_name_without_another_round_trip()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var fromPhone = await fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+
+        await using var waiterDb = fixture.CreateContext(world.Clock);
+        var spoken = await fixture.CreateOrderService(waiterDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7()));
+
+        async Task<(KitchenOrderView Ticket, int Commands)> MoveAsync(Guid orderId)
+        {
+            var counter = new CommandCountingInterceptor();
+            await using var moveDb = fixture.CreateContext(world.Clock, counter);
+
+            var ticket = await fixture.CreateOrderService(moveDb, world.Clock, TestActor.Manager(world.Branch.ManagerId))
+                .MoveOrderStatusAsync(orderId, TabOrderStatus.InKitchen);
+
+            return (ticket, counter.Count);
+        }
+
+        var phoneMove = await MoveAsync(fromPhone.OrderId);
+        var spokenMove = await MoveAsync(spoken.OrderId);
+
+        Assert.Null(phoneMove.Ticket.PlacedByName);
+        Assert.False(string.IsNullOrEmpty(spokenMove.Ticket.PlacedByName));
+        Assert.Equal(phoneMove.Commands, spokenMove.Commands);
+    }
+
     // ------------------------------------------------------------ helpers
 
     // ------------------------------------------------------------ the clock does not gate a tab
