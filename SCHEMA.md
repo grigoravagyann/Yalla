@@ -328,6 +328,26 @@ admin-panel access token carries the value it was minted under as `sgen`, and a 
 is refused. A reset or changed password moves it, which ends every admin-panel token the person holds
 at once. See `docs/auth.md` §4.
 
+### StaffShift
+
+One person's shift at one branch on one `Date` (the branch's local date it starts on, SQL `date`), with
+wall-clock `StartsAt` and `EndsAt` (`time`), or a **day off** on that date with neither. `EndsNextDay` is
+derived: the end is at or before the start, so the shift ends after midnight (00:00 included).
+`CK_StaffShifts_Times` keeps both times or neither, and `EndsNextDay` false on a day off. At most 16
+hours.
+
+The minimal model the venue console's Staff screen asked for - the shift line and "on shift today" - and
+nothing more: no templates, no pay, no clocking in. Indexed on `(BranchId, Date)` for the screen's window
+and `(StaffMemberId, Date)` for the overlap check, which looks at one person's shifts around one date at
+**every** branch they still work at, as instants in each branch's zone (one person, one place at a time; a day
+off has nothing else on its date). Times are whole minutes. Writes for one
+person take the update lock on their `StaffMembers` row - the account lock - so the check holds under
+concurrency. `BranchId` cascades with its branch; `StaffMemberId` is restrict, since staff are deactivated,
+never deleted (a deactivated person's shifts are kept and hidden). A shift counts only while its person still
+works at its branch (their `BranchId`, or null for the whole venue): moving somebody to one branch removes their
+shifts at the others from each branch's service day on, in the same save, and one left behind any other way is
+ignored. A shift before the service day is history - not changed or removed - unless it is still running.
+
 ### Identity tables
 
 Four identity types, described in full in [docs/auth.md](docs/auth.md).

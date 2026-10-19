@@ -30,6 +30,24 @@ internal static class OpeningCalendars
         return rows is null ? new OpeningCalendar([], [], from, to) : rows.ToCalendar(from, to);
     }
 
+    /// <summary>
+    /// The branch's service day at <paramref name="nowUtc"/> - its own date, or yesterday while last night's block still
+    /// runs past midnight - with the local wall clock it was read at.
+    /// </summary>
+    public static async Task<(DateOnly ServiceDate, DateTime LocalNow)> ServiceDayAsync(
+        YallaDbContext db,
+        Guid branchId,
+        string timeZoneId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var localNow = BranchTime.ToLocal(nowUtc, timeZoneId);
+        var today = DateOnly.FromDateTime(localNow);
+        var calendar = await ForBranchAsync(db, branchId, today.AddDays(-1), today, cancellationToken);
+
+        return (calendar.ServiceDateOf(localNow), localNow);
+    }
+
     /// <summary>One branch's special days from <paramref name="from"/> to <paramref name="to"/>, alone, in one statement.</summary>
     public static async Task<IReadOnlyList<SpecialDay>> SpecialDaysAsync(
         YallaDbContext db,

@@ -1264,6 +1264,44 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Staff.StaffShift", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<TimeOnly?>("EndsAt")
+                        .HasColumnType("time");
+
+                    b.Property<bool>("EndsNextDay")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("StaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<TimeOnly?>("StartsAt")
+                        .HasColumnType("time");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId", "Date");
+
+                    b.HasIndex("StaffMemberId", "Date");
+
+                    b.ToTable("StaffShifts", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_StaffShifts_Times", "([StartsAt] IS NULL AND [EndsAt] IS NULL AND [EndsNextDay] = 0) OR ([StartsAt] IS NOT NULL AND [EndsAt] IS NOT NULL)");
+                        });
+                });
+
             modelBuilder.Entity("Yalla.Domain.Tabs.Payment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2539,6 +2577,25 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Branch");
 
                     b.Navigation("Venue");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Staff.StaffShift", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", "StaffMember")
+                        .WithMany()
+                        .HasForeignKey("StaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+
+                    b.Navigation("StaffMember");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Tabs.Payment", b =>

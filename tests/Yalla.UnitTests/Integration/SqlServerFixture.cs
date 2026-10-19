@@ -384,6 +384,10 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     internal MenuService CreateMenuService(YallaDbContext db) => new(db);
 
+    /// <summary>The Staff screen's shifts, guarded as the console's other branch writes are.</summary>
+    internal StaffShiftService CreateStaffShiftService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, CreateBranchGuard(db, actor), NullLogger<StaffShiftService>.Instance);
+
     internal StaffManagementService CreateStaffManagementService(
         YallaDbContext db,
         IClock clock,

@@ -215,6 +215,10 @@ internal sealed class StaffManagementService(
 
         // The role and the branch as one pair: promoting a branch manager to general manager clears
         // their branch in the same request, and checking either half alone would refuse it.
+        // Confined to one branch they did not work at only before: the shifts they had planned anywhere else stop
+        // being theirs to work. Moving to venue-wide covers every branch, so nothing goes.
+        var leavesBranches = newBranchId is not null && newBranchId != staff.BranchId;
+
         if (newRole != staff.Role || newBranchId != staff.BranchId)
         {
             staff.Reassign(newRole, newBranchId);
@@ -230,9 +234,79 @@ internal sealed class StaffManagementService(
             staff.SetActive(active);
         }
 
+        // The move and its shifts in one save, under the person's lock - the one shift planning takes - so a shift
+        // planned at the old branch while this runs is either seen and removed here or refused there.
+        await using var transaction = leavesBranches ? await db.Database.BeginTransactionAsync(cancellationToken) : null;
+
+        var droppedShifts = leavesBranches
+            ? await DropFutureShiftsElsewhereAsync(staff.Id, newBranchId!.Value, cancellationToken)
+            : 0;
+
         await SaveAsync(cancellationToken);
 
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        if (droppedShifts > 0)
+        {
+            logger.LogInformation(
+                "Staff member {StaffMemberId} moved to branch {BranchId} by {ActorId}; {Count} future shift(s) elsewhere removed.",
+                staff.Id, newBranchId, acting.Id, droppedShifts);
+        }
+
         return ToView(staff, clock.UtcNow);
+    }
+
+    /// <summary>
+    /// Takes <paramref name="staffMemberId"/>'s shifts at every branch but <paramref name="stayingAt"/> off, from each
+    /// branch's own service day on. History stays, and so does a shift from before the service day still running.
+    /// </summary>
+    /// <returns>How many were removed - tracked deletes, committed by the caller's save.</returns>
+    private async Task<int> DropFutureShiftsElsewhereAsync(
+        Guid staffMemberId,
+        Guid stayingAt,
+        CancellationToken cancellationToken)
+    {
+        await accountLock.LockSubjectAsync(RefreshTokenSubject.VenueUser, staffMemberId, cancellationToken);
+
+        var nowUtc = clock.UtcNow;
+
+        // No branch's service day is earlier than two UTC days back, whatever its zone.
+        var earliest = DateOnly.FromDateTime(nowUtc).AddDays(-2);
+
+        var shifts = await db.StaffShifts
+            .Where(s => s.StaffMemberId == staffMemberId && s.BranchId != stayingAt && s.Date >= earliest)
+            .ToListAsync(cancellationToken);
+
+        if (shifts.Count == 0)
+        {
+            return 0;
+        }
+
+        var branchIds = shifts.Select(s => s.BranchId).Distinct().ToList();
+        var branches = await db.Branches
+            .AsNoTracking()
+            .Where(b => branchIds.Contains(b.Id))
+            .Select(b => new { b.Id, b.TimeZoneId })
+            .ToListAsync(cancellationToken);
+
+        var removed = 0;
+
+        foreach (var branch in branches)
+        {
+            var (serviceDate, _) = await OpeningCalendars.ServiceDayAsync(
+                db, branch.Id, branch.TimeZoneId, nowUtc, cancellationToken);
+
+            foreach (var shift in shifts.Where(s => s.BranchId == branch.Id && s.Date >= serviceDate))
+            {
+                db.StaffShifts.Remove(shift);
+                removed++;
+            }
+        }
+
+        return removed;
     }
 
     public async Task<StaffMemberView> SetPinAsync(

@@ -109,6 +109,12 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/overview"),
             caller => Venue(caller, HttpStatusCode.OK)),
 
+        // The Staff screen's shifts: the console's ranks at their own reach, never a tablet session. The writes sit
+        // in the same group under the same two policies; who may plan whom is StaffShiftTests'.
+        ["GET /api/branches/{branchId}/shifts"] = new(
+            (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/shifts"),
+            caller => Venue(caller, HttpStatusCode.OK)),
+
         ["POST /api/branches/{branchId}/photos"] = new(
             (w, c) => UploadBranchPhotoAsync(c, w.Branch.BranchId),
             caller => Venue(caller, HttpStatusCode.Created)),

@@ -52,7 +52,11 @@ public static class ReportEndpoints
                 + "`overPolicyFraction` together.\n\n"
                 + "A sitting is counted in **every hour it spans**, not only the one it started in: "
                 + "\"how busy is the room at eight\" is a question about occupancy, and counting "
-                + "arrivals makes a restaurant look empty at its busiest hour.")
+                + "arrivals makes a restaurant look empty at its busiest hour.\n\n"
+                + "`turnTime.buckets` are half-hour bars, `upToMinutes` 60 to 240 (each up to and including) "
+                + "and an open-ended last one. `walkInGuests` and `reservationGuests` split the people, not the "
+                + "sittings; `turnsPerTable` is sittings per active table per day (`activeTables`), two decimals, "
+                + "both periods over today's tables.")
             .Produces<OccupancyReport>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, RangeTooLong);
 
@@ -64,7 +68,9 @@ public static class ReportEndpoints
                 + "the branch's own deadline, and how far ahead people book.\n\n"
                 + "`leadTime` is what `bookingWindowDays` should be set from - a venue taking "
                 + "bookings 30 days out when nobody books more than 5 days ahead is holding tables "
-                + "against demand that does not exist.\n\n"
+                + "against demand that does not exist. Its buckets are `upToHours` 2, 6, 24, 72, 168 and an "
+                + "open-ended last one, each **strictly less than** - a booking made exactly two hours ahead "
+                + "is in the 6.\n\n"
                 + "**`webBookingsWithoutAnApp` is the number that decides a commercial question.** "
                 + "Somebody who booked from the public page and has no registered device cannot be "
                 + "reached by the reminder, the late nudge or one-tap cancel - the entire no-show "
@@ -85,7 +91,10 @@ public static class ReportEndpoints
                 + "give away last month, and who decided\" is asking both halves.\n\n"
                 + "Revenue is counted on the tab **closing**, so a sitting that starts at 23:30 and "
                 + "settles at 00:40 belongs to the night it was taken - which is the day the venue "
-                + "counted its drawer.")
+                + "counted its drawer.\n\n"
+                + "`byDay` has one entry for every local date of the range, zero days included, and "
+                + "`previousByDay` the same for the previous equivalent period, so the two pair by index. "
+                + "`tabs` is the closed tabs with their comparison.")
             .Produces<RevenueReport>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, RangeTooLong);
 
