@@ -1,12 +1,11 @@
-using System.Data;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Media;
+using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -226,6 +225,126 @@ internal sealed class BranchSettingsService(
         await db.SaveChangesAsync(cancellationToken);
 
         return normalised;
+    }
+
+    // ------------------------------------------------------------ special opening days
+
+    public async Task<IReadOnlyList<SpecialOpeningDayView>> GetSpecialOpeningDaysAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the special opening days", cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+        var today = BranchZone.For(branch.TimeZoneId).LocalDateAt(clock.UtcNow);
+
+        return await SpecialDaysFromAsync(branchId, today, cancellationToken);
+    }
+
+    public async Task<SpecialOpeningDaysChangeResult> ReplaceSpecialOpeningDaysAsync(
+        Guid branchId,
+        IReadOnlyList<SpecialOpeningDayInput> days,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(days);
+
+        await branchGuard.RequireAtBranchAsync(branchId, "Save the special opening days", cancellationToken);
+
+        // Two editors saving at once would each delete the other's insert; the branch lock serialises them,
+        // so the last save wins whole rather than both landing half.
+        await using var writeLock = await LockBranchAsync(branchId, cancellationToken);
+
+        var branch = await LoadBranchAsync(branchId, cancellationToken);
+        var zone = BranchZone.For(branch.TimeZoneId);
+        var nowUtc = clock.UtcNow;
+        var today = zone.LocalDateAt(nowUtc);
+
+        // Dates and blocks checked before anything is touched; every problem named.
+        var normalised = SpecialOpeningDayRules.Normalise(days, today);
+
+        // From today on, replaced whole. Earlier days are history the Overview's yesterday still reads.
+        var replacedDates = await db.SpecialOpeningDays
+            .Where(d => d.BranchId == branchId && d.Date >= today)
+            .Select(d => d.Date)
+            .ToListAsync(cancellationToken);
+
+        await db.SpecialOpeningDays
+            .Where(d => d.BranchId == branchId && d.Date >= today)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        foreach (var day in normalised)
+        {
+            db.SpecialOpeningDays.Add(new SpecialOpeningDay(branchId, day.Date, day.Note, day.Blocks));
+        }
+
+        await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
+
+        // Which live bookings the changed dates no longer have room for - a day closed, its hours cut, or a
+        // special day removed and the weekday's shorter hours back. Counted and reported, never touched.
+        var changed = replacedDates.Concat(normalised.Select(d => d.Date)).Distinct().ToList();
+        var affected = await AffectedBySpecialDaysAsync(branchId, zone, changed, nowUtc, cancellationToken);
+
+        if (affected.Count > 0)
+        {
+            logger.LogInformation(
+                "Special opening days on branch {BranchId} saved; {Count} live booking(s) no longer fit the hours and were left unchanged.",
+                branchId, affected.Count);
+        }
+
+        return new SpecialOpeningDaysChangeResult(
+            await SpecialDaysFromAsync(branchId, today, cancellationToken), affected.Count, affected);
+    }
+
+    private async Task<IReadOnlyList<SpecialOpeningDayView>> SpecialDaysFromAsync(
+        Guid branchId,
+        DateOnly today,
+        CancellationToken cancellationToken)
+    {
+        var calendar = await OpeningCalendars.ForBranchAsync(
+            db, branchId, today, today.AddDays(SpecialOpeningDayRules.HorizonDays), cancellationToken);
+
+        return [.. calendar.SpecialDays.Select(SpecialOpeningDayView.From)];
+    }
+
+    /// <summary>
+    /// Live future bookings starting on one of <paramref name="dates"/> - or just after midnight following one,
+    /// inside its block - whose sitting no longer fits the calendar.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> AffectedBySpecialDaysAsync(
+        Guid branchId,
+        BranchZone zone,
+        IReadOnlyList<DateOnly> dates,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        if (dates.Count == 0)
+        {
+            return [];
+        }
+
+        var asked = dates.Concat(dates.Select(d => d.AddDays(1))).Distinct().ToList();
+
+        var bookings = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId
+                        && asked.Contains(r.LocalDate)
+                        && r.StartUtc > nowUtc
+                        && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.PendingApproval))
+            .OrderBy(r => r.StartUtc)
+            .Select(r => new { r.Id, r.LocalDate, r.LocalStartTime, r.EndUtc })
+            .ToListAsync(cancellationToken);
+
+        if (bookings.Count == 0)
+        {
+            return [];
+        }
+
+        var calendar = await OpeningCalendars.ForBranchAsync(
+            db, branchId, asked.Min().AddDays(-1), asked.Max(), cancellationToken);
+
+        return [.. bookings
+            .Where(r => !calendar.Fits(r.LocalDate.ToDateTime(r.LocalStartTime), zone.ToLocal(r.EndUtc)))
+            .Select(r => r.Id)];
     }
 
     // ------------------------------------------------------------ floor plan: rooms, photos, pins
@@ -1290,116 +1409,17 @@ internal sealed class BranchSettingsService(
 
     // ------------------------------------------------------------ the branch write lock
 
-    /// <summary>How long a layout save waits for another one on the same branch.</summary>
-    /// <remarks>
-    /// A plan replace is a handful of statements; five seconds is many of them. Longer than that and
-    /// somebody's save is stuck, which the editor should hear about as "try again" rather than hang.
-    /// </remarks>
-    private const string SetLockTimeout = "SET LOCK_TIMEOUT 5000;";
-
     /// <summary>
     /// Opens a transaction and takes an update lock on the branch row, for the writers that change
     /// the plan and move its version: the plan replace, the room add, rename and delete, and the
-    /// table delete.
+    /// table delete - and the special days' replace. See <see cref="BranchWriteLock"/>.
     /// </summary>
-    /// <remarks>
-    /// <c>UPDLOCK</c> serialises those writers against each other without blocking readers, and
-    /// <c>HOLDLOCK</c> keeps it to the end of the transaction, so what each reads inside the lock is
-    /// still true when it commits. The same protocol as <see cref="TableLock"/>, one level up.
-    /// </remarks>
-    /// <exception cref="DbUpdateConcurrencyException">
-    /// Another save held the lock for longer than the wait allows. Answers 409
-    /// <c>concurrent-update</c>: reload and try again. Nothing was changed.
-    /// </exception>
-    private async Task<BranchWriteLock> LockBranchAsync(Guid branchId, CancellationToken cancellationToken)
-    {
-        var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        var scope = new BranchWriteLock(db, transaction);
-
-        try
-        {
-            await db.Database.ExecuteSqlRawAsync(SetLockTimeout, cancellationToken);
-
-            await db.Database.ExecuteSqlRawAsync(
-                "SELECT Id FROM Branches WITH (UPDLOCK, HOLDLOCK) WHERE Id = @branchId",
-                [new SqlParameter("@branchId", branchId)],
-                cancellationToken);
-
-            return scope;
-        }
-        catch (Exception ex) when (TableLock.IsTimeout(ex))
-        {
-            await scope.DisposeAsync();
-            throw Busy(branchId);
-        }
-        catch
-        {
-            await scope.DisposeAsync();
-            throw;
-        }
-    }
+    private Task<BranchWriteLock> LockBranchAsync(Guid branchId, CancellationToken cancellationToken) =>
+        BranchWriteLock.AcquireAsync(db, branchId, cancellationToken);
 
     /// <summary>Saves and commits inside the branch lock, answering a lock wait as a concurrent update.</summary>
-    private async Task SaveUnderLockAsync(BranchWriteLock writeLock, Guid branchId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-            await writeLock.CommitAsync(cancellationToken);
-        }
-        catch (Exception ex) when (TableLock.IsTimeout(ex))
-        {
-            // A table row held by a booking or a seating for longer than the wait. Nothing was
-            // decided, so the honest answer is the retryable one.
-            db.ChangeTracker.Clear();
-            throw Busy(branchId);
-        }
-    }
-
-    private static DbUpdateConcurrencyException Busy(Guid branchId) =>
-        new($"Branch {branchId} is being saved by somebody else right now. Reload and try again.");
-
-    /// <summary>A held branch lock. Commit to keep the work; disposing without committing rolls it back.</summary>
-    private sealed class BranchWriteLock(YallaDbContext db, IDbContextTransaction transaction) : IAsyncDisposable
-    {
-        private bool committed;
-
-        public async Task CommitAsync(CancellationToken cancellationToken)
-        {
-            await transaction.CommitAsync(cancellationToken);
-            committed = true;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            try
-            {
-                if (!committed)
-                {
-                    await transaction.RollbackAsync();
-                }
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or SqlException)
-            {
-                // Already rolled back by the provider, or the connection went. Nothing left to undo.
-                _ = ex;
-            }
-            finally
-            {
-                await transaction.DisposeAsync();
-
-                // LOCK_TIMEOUT belongs to the pooled connection; put it back for the rest of the request.
-                try
-                {
-                    await db.Database.ExecuteSqlRawAsync("SET LOCK_TIMEOUT -1;");
-                }
-                catch (Exception ex) when (ex is SqlException or InvalidOperationException or ObjectDisposedException)
-                {
-                    _ = ex;
-                }
-            }
-        }
-    }
+    private static Task SaveUnderLockAsync(BranchWriteLock writeLock, Guid branchId, CancellationToken cancellationToken) =>
+        writeLock.SaveAsync(branchId, cancellationToken);
 
     // ------------------------------------------------------------ helpers
 

@@ -113,7 +113,7 @@ public class ReservationRuleTests
         var hours = new[] { Open(DayOfWeek.Thursday, "10:00", "23:00") };
 
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 10, 19, 0, 0),
             new DateTime(2026, 9, 10, 20, 30, 0));
 
@@ -130,7 +130,7 @@ public class ReservationRuleTests
         var hours = new[] { Open(DayOfWeek.Thursday, "10:00", "01:00", closesNextDay: true) };
 
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 10, 22, 30, 0),
             new DateTime(2026, 9, 11, 0, 0, 0));
 
@@ -145,7 +145,7 @@ public class ReservationRuleTests
         var hours = new[] { Open(DayOfWeek.Thursday, "10:00", "01:00", closesNextDay: true) };
 
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 11, 0, 15, 0),
             new DateTime(2026, 9, 11, 0, 45, 0));
 
@@ -158,7 +158,7 @@ public class ReservationRuleTests
         var hours = new[] { Open(DayOfWeek.Thursday, "10:00", "23:00") };
 
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 10, 7, 0, 0),
             new DateTime(2026, 9, 10, 8, 30, 0));
 
@@ -173,7 +173,7 @@ public class ReservationRuleTests
         var hours = new[] { Open(DayOfWeek.Thursday, "10:00", "23:00") };
 
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 10, 22, 30, 0),
             new DateTime(2026, 9, 11, 0, 0, 0));
 
@@ -193,11 +193,11 @@ public class ReservationRuleTests
         Assert.Equal(
             ReservationRejectionReason.OutsideOpeningHours,
             ReservationRules.CheckOpeningHours(
-                hours, new DateTime(2026, 9, 10, 14, 30, 0), new DateTime(2026, 9, 10, 16, 0, 0)));
+                OpeningCalendar.Weekly(hours), new DateTime(2026, 9, 10, 14, 30, 0), new DateTime(2026, 9, 10, 16, 0, 0)));
 
         Assert.Null(
             ReservationRules.CheckOpeningHours(
-                hours, new DateTime(2026, 9, 10, 13, 0, 0), new DateTime(2026, 9, 10, 14, 30, 0)));
+                OpeningCalendar.Weekly(hours), new DateTime(2026, 9, 10, 13, 0, 0), new DateTime(2026, 9, 10, 14, 30, 0)));
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public class ReservationRuleTests
 
         // Friday 11 September.
         var reason = ReservationRules.CheckOpeningHours(
-            hours,
+            OpeningCalendar.Weekly(hours),
             new DateTime(2026, 9, 11, 19, 0, 0),
             new DateTime(2026, 9, 11, 20, 30, 0));
 
@@ -360,7 +360,7 @@ public class ReservationRuleTests
             ReservationRules.CheckTiming(
                 Now.AddDays(30), Now, Today.AddDays(30), Today, Policy()),
             ReservationRules.CheckOpeningHours(
-                [Open(DayOfWeek.Thursday, "10:00", "23:00")],
+                OpeningCalendar.Weekly([Open(DayOfWeek.Thursday, "10:00", "23:00")]),
                 new DateTime(2026, 9, 10, 3, 0, 0),
                 new DateTime(2026, 9, 10, 4, 30, 0)),
             ReservationRules.CheckTable(TableStatus.Free, true, seats: 2, partySize: 6, Policy()),

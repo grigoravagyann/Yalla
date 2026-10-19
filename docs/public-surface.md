@@ -25,11 +25,12 @@ venue id on the public surface; the slug is the public identity. Each branch car
 | `branchId`, `branchSlug` | The id the menu and availability routes take, and the other half of a printed link |
 | `name`, `address` | As a person would read them |
 | `timeZoneId` | The branch's IANA zone. A slot a diner picks after browsing is a wall-clock time at the branch, and a phone set to another zone renders it in this one rather than guessing - the app guessed `Asia/Yerevan` |
-| `isOpenNow` | Inside an opening block at this moment, in the branch's own zone |
+| `isOpenNow` | Inside an opening block at this moment, in the branch's own zone - special opening days included: shut on a closed holiday, open late on a late one |
 | `freeTableCount` | Tables with nobody at them, **walk-in-only stools included** - the same tables the page's `tableCount` counts and its plan draws. Zero means every seat is taken |
 
 **Caching.** The estate - venues, branches, names, zones - is held for five minutes. Everything
-live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, and *which branches are
+live is held for fifteen seconds (`LiveFor`): the free counts, `isOpenNow`, the branch page's `specialDays` (today
+through 60 days ahead, each replacing its date's weekly hours), and *which branches are
 still published*. Between refreshes a read sends nothing to the database, which matters because
 every Explore open and pull-to-refresh in the city lands here. So a suspended venue leaves the list
 within fifteen seconds. The branch routes still check their one branch live, per request, because a

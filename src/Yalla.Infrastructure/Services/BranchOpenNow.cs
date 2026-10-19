@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
@@ -11,7 +10,9 @@ namespace Yalla.Infrastructure.Services;
 /// One implementation for the browse list, the branch page and the diner app's listing routes, so
 /// the web page and the app cannot disagree about whether a place is open. The hours are wall-clock
 /// values, so this converts <i>now</i> into the branch's local time rather than the hours into UTC -
-/// which would shift a venue's opening by an hour across a daylight-saving change.
+/// which would shift a venue's opening by an hour across a daylight-saving change. And it asks each
+/// branch's <see cref="OpeningCalendar"/>, so a special day - shut for New Year, open late on the Eve - is
+/// on every card at once.
 /// </remarks>
 internal static class BranchOpenNow
 {
@@ -25,46 +26,17 @@ internal static class BranchOpenNow
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var hours = db.OpeningHours.AsNoTracking();
+        // Every zone is within a day of UTC, so the local date is the UTC one or a neighbour, and the question
+        // needs that date and the one before: two days either side covers every branch in one read.
+        var utcDate = DateOnly.FromDateTime(nowUtc);
 
-        if (branchIds is not null)
-        {
-            hours = hours.Where(h => branchIds.Contains(h.BranchId));
-        }
+        var calendars = await OpeningCalendars.ForBranchesAsync(
+            db, branchIds, utcDate.AddDays(-2), utcDate.AddDays(1), cancellationToken);
 
-        var rows = await hours
-            .Select(h => new
-            {
-                h.BranchId,
-                h.Branch.TimeZoneId,
-                h.Day,
-                h.OpensAt,
-                h.ClosesAt,
-                h.ClosesNextDay,
-            })
-            .ToListAsync(cancellationToken);
-
-        var open = new HashSet<Guid>();
-
-        foreach (var group in rows.GroupBy(r => (r.BranchId, r.TimeZoneId)))
-        {
-            var local = BranchTime.ToLocal(nowUtc, group.Key.TimeZoneId);
-            var today = TimeOnly.FromDateTime(local);
-            var yesterdayDay = local.DayOfWeek == DayOfWeek.Sunday ? DayOfWeek.Saturday : local.DayOfWeek - 1;
-
-            var isOpen = group.Any(h =>
-                (h.Day == local.DayOfWeek && !h.ClosesNextDay && today >= h.OpensAt && today < h.ClosesAt)
-                || (h.Day == local.DayOfWeek && h.ClosesNextDay && today >= h.OpensAt)
-
-                // A block that ran past midnight is still the previous day's block until it closes.
-                || (h.Day == yesterdayDay && h.ClosesNextDay && today < h.ClosesAt));
-
-            if (isOpen)
-            {
-                open.Add(group.Key.BranchId);
-            }
-        }
-
-        return open;
+        // A block that ran past midnight is still the previous day's block until it closes, and a special day
+        // replaces its weekday's blocks: both are the calendar's to decide.
+        return [.. calendars
+            .Where(c => c.Calendar.IsOpenAt(BranchTime.ToLocal(nowUtc, c.TimeZoneId)))
+            .Select(c => c.BranchId)];
     }
 }

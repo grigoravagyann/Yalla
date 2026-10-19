@@ -166,6 +166,7 @@ internal sealed class PublicListingQuery(
             extra.PhoneE164,
             string.IsNullOrEmpty(extra.AmenityKeys) ? [] : extra.AmenityKeys.Split(',', StringSplitOptions.RemoveEmptyEntries),
             hours,
+            await OpeningCalendars.UpcomingAsync(db, branchId, row.TimeZoneId, clock.UtcNow, cancellationToken),
             gallery,
             tableCount,
             extra.AcceptsWebBookings,

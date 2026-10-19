@@ -46,6 +46,13 @@ public sealed record BranchDaySlots
     public ReservationRejectionReason? UnavailableReason { get; init; }
 
     /// <summary>
+    /// The date's special opening day - a holiday, a closure, different hours - when it is one; absent on an
+    /// ordinary day. The slots already follow it: a closed one lists no times of its own.
+    /// </summary>
+    /// <remarks>So the picker can say "Closed for New Year" rather than only "closed".</remarks>
+    public BranchSettings.SpecialOpeningDayView? SpecialDay { get; init; }
+
+    /// <summary>
     /// Every start time on the day whose whole sitting fits one opening block, earliest first. A time
     /// the branch is shut for is left out rather than struck - it was never on offer.
     /// </summary>

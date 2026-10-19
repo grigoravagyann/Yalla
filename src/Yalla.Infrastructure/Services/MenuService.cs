@@ -38,14 +38,7 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             .ThenBy(c => c.Name)
             .ToListAsync(cancellationToken);
 
-        return
-        [
-            .. categories.Select(c => new MenuCategoryView(
-                c.Id,
-                c.Name,
-                c.DisplayOrder,
-                [.. c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name).Select(ToView)])),
-        ];
+        return [.. categories.Select(ToView)];
     }
 
     public async Task<MenuCategoryView> CreateCategoryAsync(
@@ -60,7 +53,13 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             throw new KeyNotFoundException($"Branch {branchId} was not found.");
         }
 
-        var category = new MenuCategory(branchId, command.Name, command.DisplayOrder);
+        // Absent: last, after every category there is - where "add a category" shows it.
+        var displayOrder = command.DisplayOrder
+                           ?? (await db.MenuCategories
+                               .Where(c => c.BranchId == branchId)
+                               .MaxAsync(c => (int?)c.DisplayOrder, cancellationToken) ?? -1) + 1;
+
+        var category = new MenuCategory(branchId, command.Name, displayOrder);
         db.MenuCategories.Add(category);
         await db.SaveChangesAsync(cancellationToken);
 
@@ -88,10 +87,93 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return new MenuCategoryView(
-            category.Id, category.Name, category.DisplayOrder,
-            [.. category.Items.OrderBy(i => i.DisplayOrder).Select(ToView)]);
+        return ToView(category);
     }
+
+    public async Task<IReadOnlyList<MenuCategoryView>> ReorderCategoriesAsync(
+        Guid branchId,
+        ReorderMenuCategoriesCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        // Under the branch's write lock, read and written in one transaction: two reorders - or a reorder and
+        // a stale console's - never interleave into two categories on one position, and a reorder never lands
+        // half.
+        await using (var writeLock = await BranchWriteLock.AcquireAsync(db, branchId, cancellationToken))
+        {
+            if (!await db.Branches.AnyAsync(b => b.Id == branchId, cancellationToken))
+            {
+                throw new KeyNotFoundException($"Branch {branchId} was not found.");
+            }
+
+            var categories = await db.MenuCategories.Where(c => c.BranchId == branchId).ToListAsync(cancellationToken);
+
+            Renumber(categories, command.CategoryIds, c => c.Id, (c, order) => c.SetDisplayOrder(order), "categoryIds", "category");
+
+            await writeLock.SaveAsync(branchId, cancellationToken);
+        }
+
+        return await GetMenuAsync(branchId, cancellationToken);
+    }
+
+    public async Task<MenuCategoryView> ReorderItemsAsync(
+        Guid branchId,
+        Guid categoryId,
+        ReorderMenuItemsCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        await using var writeLock = await BranchWriteLock.AcquireAsync(db, branchId, cancellationToken);
+
+        var category = await LoadCategoryAsync(branchId, categoryId, cancellationToken);
+
+        Renumber([.. category.Items], command.ItemIds, i => i.Id, (i, order) => i.SetDisplayOrder(order), "itemIds", "item");
+
+        await writeLock.SaveAsync(branchId, cancellationToken);
+
+        return ToView(category);
+    }
+
+    /// <summary>
+    /// Gives each row its position in <paramref name="order"/> - 0, 1, 2 - when the list names every row exactly
+    /// once; refuses it whole otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Contiguous from zero, which also repairs the ties a menu entered before this existed has (every row
+    /// created at 0), so moving one row up is never a swap of two equal numbers that changes nothing.
+    /// </remarks>
+    private static void Renumber<T>(
+        IReadOnlyList<T> rows,
+        IReadOnlyList<Guid>? order,
+        Func<T, Guid> idOf,
+        Action<T, int> place,
+        string field,
+        string noun)
+    {
+        var ids = rows.Select(idOf).ToHashSet();
+
+        if (order is null || order.Count != ids.Count || order.Distinct().Count() != order.Count || !order.All(ids.Contains))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                field,
+                $"Send every {noun} here exactly once, in the new order ({ids.Count} of them). The menu has changed "
+                + "since it was read, or the list repeats or misses one; reload it and try again.",
+                FieldBounds.Conflict,
+                Value: order?.Count));
+        }
+
+        var byId = rows.ToDictionary(idOf);
+
+        for (var position = 0; position < order.Count; position++)
+        {
+            place(byId[order[position]], position);
+        }
+    }
+
+    private static MenuCategoryView ToView(MenuCategory c) =>
+        new(c.Id, c.Name, c.DisplayOrder, [.. c.Items.OrderBy(i => i.DisplayOrder).ThenBy(i => i.Name).Select(ToView)]);
 
     public async Task DeleteCategoryAsync(Guid branchId, Guid categoryId, CancellationToken cancellationToken = default)
     {
@@ -136,7 +218,9 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
             command.PortionSize,
             command.PrepMinutes,
             command.SpiceLevel,
-            command.DisplayOrder);
+
+            // Absent: last in its category, where "add a dish" shows it.
+            command.DisplayOrder ?? (category.Items.Select(i => (int?)i.DisplayOrder).Max() ?? -1) + 1);
 
         db.MenuItems.Add(item);
         await db.SaveChangesAsync(cancellationToken);
@@ -356,5 +440,6 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         i.PrepMinutes,
         i.IsAvailable,
         i.DisplayOrder,
-        i.IsComplete);
+        i.IsComplete,
+        MenuItemCompleteness.MissingFields(i));
 }

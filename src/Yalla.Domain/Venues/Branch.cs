@@ -16,6 +16,7 @@ namespace Yalla.Domain.Venues;
 public sealed class Branch : Entity
 {
     private readonly List<OpeningHours> _openingHours = [];
+    private readonly List<SpecialOpeningDay> _specialOpeningDays = [];
     private readonly List<FloorArea> _floorAreas = [];
     private readonly List<DiningTable> _diningTables = [];
     private readonly List<MenuCategory> _menuCategories = [];
@@ -192,6 +193,9 @@ public sealed class Branch : Entity
     public DateTime? ReservationPolicyReviewedAtUtc { get; private set; }
 
     public IReadOnlyCollection<OpeningHours> OpeningHours => _openingHours;
+
+    /// <summary>Dates with their own hours, overriding the week. Read through <see cref="OpeningCalendar"/>.</summary>
+    public IReadOnlyCollection<SpecialOpeningDay> SpecialOpeningDays => _specialOpeningDays;
 
     public IReadOnlyCollection<FloorArea> FloorAreas => _floorAreas;
 

@@ -98,5 +98,6 @@ internal sealed class MenuQuery(YallaDbContext db) : IMenuQuery
             // of it tonight" is an answer and a missing row is not.
             item.IsAvailable,
             item.DisplayOrder,
-            IsComplete: true);
+            IsComplete: true,
+            MissingFields: []);
 }

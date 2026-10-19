@@ -151,8 +151,9 @@ internal sealed class ReservationService(
         var proposed = new BookedInterval(startUtc, endUtc);
 
         var pinned = await IsPinnedOnItsRoomAsync(table, cancellationToken);
+        var hours = await HoursAroundAsync(branch.Id, command.LocalDate, cancellationToken);
 
-        Validate(command.LocalDate, command.LocalTime, command.PartySize, table, pinned, branch, policy, zone, proposed, nowUtc);
+        Validate(command.LocalDate, command.LocalTime, command.PartySize, table, pinned, hours, policy, zone, proposed, nowUtc);
 
         // Every booking here is a diner's - the app's or the public page's, whatever channel the
         // client reports, because the channel is self-reported and a rule it could switch off would be
@@ -436,9 +437,10 @@ internal sealed class ReservationService(
         var startUtc = zone.ToUtc(command.LocalDate, command.LocalTime);
         var proposed = new BookedInterval(startUtc, startUtc.AddMinutes(policy.TurnTimeMinutes));
         var pinned = await IsPinnedOnItsRoomAsync(table, cancellationToken);
+        var hours = await HoursAroundAsync(branch.Id, command.LocalDate, cancellationToken);
 
         Validate(
-            command.LocalDate, command.LocalTime, command.PartySize, table, pinned, branch, policy, zone, proposed, nowUtc);
+            command.LocalDate, command.LocalTime, command.PartySize, table, pinned, hours, policy, zone, proposed, nowUtc);
 
         // Decided again, by creation's rules - with one thing creation never has: a party somebody
         // already confirmed. Twelve people the venue confirmed are still twelve people it has said
@@ -1622,7 +1624,7 @@ internal sealed class ReservationService(
         int partySize,
         DiningTable table,
         bool pinned,
-        Branch branch,
+        OpeningCalendar hours,
         ReservationPolicy policy,
         BranchZone zone,
         BookedInterval proposed,
@@ -1647,7 +1649,7 @@ internal sealed class ReservationService(
         var localStart = localDate.ToDateTime(localTime);
         var localEnd = zone.ToLocal(proposed.EndUtc);
 
-        if (ReservationRules.CheckOpeningHours(branch.OpeningHours, localStart, localEnd) is not null)
+        if (ReservationRules.CheckOpeningHours(hours, localStart, localEnd) is not null)
         {
             throw new OutsideOpeningHoursException(localDate, localTime, TimeOnly.FromDateTime(localEnd));
         }
@@ -2440,10 +2442,16 @@ internal sealed class ReservationService(
 
     // ---------------------------------------------------------------- loading
 
+    /// <summary>
+    /// The branch's hours for a sitting on <paramref name="localDate"/>: that date and the evening before it,
+    /// whose block may run past midnight - special days included.
+    /// </summary>
+    private Task<OpeningCalendar> HoursAroundAsync(Guid branchId, DateOnly localDate, CancellationToken cancellationToken) =>
+        OpeningCalendars.ForBranchAsync(db, branchId, localDate.AddDays(-1), localDate, cancellationToken);
+
     private async Task<Branch> LoadBranchAsync(Guid branchId, CancellationToken cancellationToken)
     {
         var branch = await db.Branches
-            .Include(b => b.OpeningHours)
             .Include(b => b.Venue)
             .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken);
 

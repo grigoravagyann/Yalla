@@ -945,6 +945,30 @@ says 00:00-23:59. Pinned through the pipeline by
 `VenueAdminEndpointTests.Opening_hours_that_open_and_close_at_the_same_minute_are_refused_naming_the_row`
 (QA 2026-10-16, parity P1 - the console's mock saved 09:00-09:00 as "next day").
 
+### Special opening days
+
+A holiday, a closure or different hours on one date (`GET`/`PUT /api/branches/{id}/opening-hours/exceptions`)
+**replaces that date's weekly blocks**; no blocks is shut all day. A date's blocks are the ones that *open* on
+it, exactly as in the week: 31 December 18:00-03:00 runs into 1 January even when 1 January is itself shut, and
+a Friday's weekly 10:00-01:00 still runs into a Saturday that is a special day.
+
+Every reader asks one type, `OpeningCalendar` (the week with the special days laid over it), loaded through
+`OpeningCalendars` for the dates the question needs - and a date outside the window it was loaded for throws
+rather than quietly falling back to the weekday. The readers: single-slot availability and the day's slots
+(same statement as before, the special days of the two dates beside the weekly rows), booking and changing a
+booking (`reservation-outside-opening-hours`), the console's Overview (service day, "open until", the load
+chart's hours, where the takings start, and `hours.specialDay`), `BranchOpenNow` behind every `isOpenNow`, and
+the public page and listing detail (`specialDays`, today through 60 days ahead). Readiness is not one: `no-hours`
+is about the week being set, and a special day is not a setup step. The floor reads no hours.
+
+The list from today at the branch on is replaced whole, under the branch row lock; days before today are kept,
+because last night's special block may still be running and the Overview still reads it. Refusals are 422 with
+indexed fields - `[n].date` (`min` before today, `max` past 366 days, `conflict` twice), `[n].note` (`max` 60),
+`[n].blocks` (`required`, `max` 4), `[n].blocks[m].opensAt` (`conflict`, overlap), `[n].blocks[m].closesAt`
+(`conflict`, no length), `[100]` (`max` 100 days). **A save never touches a booking**: the live ones on a changed
+date that no longer fit come back in `affectedReservationIds`, as a policy save reports its own. Pinned by
+`SpecialOpeningDayTests` and `OpeningCalendarTests`.
+
 **There is no slot list.** The time a diner picks is the client's control; every availability read
 answers the one time it was asked about, and outside the hours it says `unavailableReason`
 `OutsideOpeningHours` on the branch and on every table, and a booking for that time is

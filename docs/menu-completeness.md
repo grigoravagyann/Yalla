@@ -55,6 +55,7 @@ this one would drift is a dish with no allergen list reaching somebody it is dan
 | Where | What it does |
 | --- | --- |
 | `MenuItemView.isComplete` | Every read of an item says whether it is fit to show a diner. Computed server-side. |
+| `MenuItemView.missingFields` | Which of the six it still lacks - `photo`, `description`, `ingredients`, `allergens`, `portionSize`, `prepMinutes` - from the same per-field tests the rule is built from (`MenuItemCompleteness.Fields`). Empty exactly when `isComplete`. The console's chips and "2 fields missing" read this, not a copy. |
 | `GET /api/branches/{id}/readiness` | The onboarding checklist, with `incompleteMenuItemCount` and the ids. |
 | `PATCH /api/platform/branches/{id}` → `Paid` | **Refused** while any item is incomplete, with the count in `context.incompleteMenuItemCount`. |
 | `GET /api/branches/{id}/menu` (diner) | Incomplete items are **absent**. Not greyed out — absent. |

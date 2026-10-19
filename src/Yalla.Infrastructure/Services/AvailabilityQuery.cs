@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
+using Yalla.Application.BranchSettings;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
@@ -112,7 +113,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var anchorUtc = AnchorUtc(request, nowUtc);
 
         return BuildQuery(
-            request.BranchId, anchorUtc, RelevantDays(request.LocalDate, anchorUtc), request.ExcludeReservationId);
+            request.BranchId, anchorUtc, RelevantDates(request.LocalDate, anchorUtc), request.ExcludeReservationId);
     }
 
     /// <summary>
@@ -129,7 +130,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var anchorUtc = DateTime.SpecifyKind(request.LocalDate.ToDateTime(new TimeOnly(12, 0)), DateTimeKind.Utc);
 
         return BuildQuery(
-            request.BranchId, anchorUtc, RelevantDays(request.LocalDate, anchorUtc), request.ExcludeReservationId);
+            request.BranchId, anchorUtc, RelevantDates(request.LocalDate, anchorUtc), request.ExcludeReservationId);
     }
 
     /// <summary>
@@ -151,9 +152,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     private IQueryable<AvailabilityRow> BuildQuery(
         Guid branchId,
         DateTime anchorUtc,
-        DayOfWeek[] relevantDays,
+        DateOnly[] relevantDates,
         Guid? excludeReservationId)
     {
+        var relevantDays = relevantDates.Select(d => d.DayOfWeek).Distinct().ToArray();
+        var specialFrom = relevantDates.Min();
+        var specialTo = relevantDates.Max();
         var guardFromUtc = anchorUtc - GuardWindow;
         var guardToUtc = anchorUtc + GuardWindow;
         var excludedId = excludeReservationId ?? Guid.Empty;
@@ -186,6 +190,27 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 // of every table row on the wire - and a branch is open seven days but a request
                 // asks about one of them and the evening before it.
                 OpeningHours = b.OpeningHours.Where(h => relevantDays.Contains(h.Day)).ToList(),
+
+                // And the special days on those same dates, which replace their weekday's blocks. Usually
+                // none, which a left join answers with one row of nulls - no copies of the tables.
+                SpecialFrom = specialFrom,
+                SpecialTo = specialTo,
+                SpecialDays = db.SpecialOpeningDays
+                    .Where(d => d.BranchId == b.Id && d.Date >= specialFrom && d.Date <= specialTo)
+                    .Select(d => new AvailabilitySpecialDayRow
+                    {
+                        Date = d.Date,
+                        Note = d.Note,
+                        Blocks = d.Blocks
+                            .Select(x => new AvailabilityBlockRow
+                            {
+                                OpensAt = x.OpensAt,
+                                ClosesAt = x.ClosesAt,
+                                ClosesNextDay = x.ClosesNextDay,
+                            })
+                            .ToList(),
+                    })
+                    .ToList(),
                 // Pinned tables only. A diner books by tapping a table's pin on a room photo, so a
                 // table with no pin has nowhere to be tapped and is not offered - however bookable
                 // it is. Staff still seat it; that is the floor read, not this one. And the pin must
@@ -282,7 +307,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// guard window absorbs many times over.
     /// </remarks>
     /// <summary>
-    /// The weekdays whose opening blocks could possibly apply.
+    /// The dates whose opening blocks could possibly apply - their weekdays' blocks and their special days.
     /// </summary>
     /// <remarks>
     /// The rule examines the local day the sitting starts on and the one before it, because a
@@ -291,7 +316,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// branch's local date can be a day either side of the UTC one, so the window widens by one in
     /// each direction - still fewer than a full week.
     /// </remarks>
-    private static DayOfWeek[] RelevantDays(DateOnly? localDate, DateTime anchorUtc)
+    private static DateOnly[] RelevantDates(DateOnly? localDate, DateTime anchorUtc)
     {
         var anchorDate = DateOnly.FromDateTime(anchorUtc);
 
@@ -300,10 +325,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         // by one in each direction - still four days rather than a whole week.
         int[] offsets = localDate is null ? [-2, -1, 0, 1] : [-1, 0];
 
-        return offsets
-            .Select(offset => anchorDate.AddDays(offset).DayOfWeek)
-            .Distinct()
-            .ToArray();
+        return [.. offsets.Select(offset => anchorDate.AddDays(offset))];
     }
 
     private static DateTime AnchorUtc(AvailabilityRequest request, DateTime nowUtc)
@@ -343,7 +365,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var requestReason =
             ReservationRules.CheckTiming(startUtc, nowUtc, localDate, zone.LocalDateAt(nowUtc), policy)
             ?? ReservationRules.CheckOpeningHours(
-                row.OpeningHours, localDate.ToDateTime(localTime), zone.ToLocal(endUtc));
+                row.Hours, localDate.ToDateTime(localTime), zone.ToLocal(endUtc));
 
         var proposed = new BookedInterval(startUtc, endUtc);
         // Every reason knowable before booking: the slot is at short notice, the branch approves
@@ -549,6 +571,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         var zone = BranchZone.For(row.TimeZoneId);
         var policy = row.Policy;
         var localToday = zone.LocalDateAt(nowUtc);
+        var hours = row.Hours;
 
         var slots = new List<DaySlot>();
 
@@ -564,7 +587,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             var endUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
 
             if (ReservationRules.CheckOpeningHours(
-                    row.OpeningHours, request.LocalDate.ToDateTime(localTime), zone.ToLocal(endUtc)) is not null)
+                    hours, request.LocalDate.ToDateTime(localTime), zone.ToLocal(endUtc)) is not null)
             {
                 continue;
             }
@@ -627,6 +650,7 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             PartySize = request.PartySize,
             StepMinutes = DaySlotStep.Minutes,
             UnavailableReason = DayReason(slots),
+            SpecialDay = hours.SpecialDayOn(request.LocalDate) is { } special ? SpecialOpeningDayView.From(special) : null,
             Slots = slots,
         };
     }
@@ -758,7 +782,41 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public List<OpeningHours> OpeningHours { get; init; } = [];
 
+        public DateOnly SpecialFrom { get; init; }
+
+        public DateOnly SpecialTo { get; init; }
+
+        public List<AvailabilitySpecialDayRow> SpecialDays { get; init; } = [];
+
         public List<AvailabilityTableRow> Tables { get; init; } = [];
+
+        /// <summary>The week and the special days read beside it, as the one calendar every rule asks.</summary>
+        public OpeningCalendar Hours => new(
+            OpeningHours.Select(h => (h.Day, new OpeningBlock(h.OpensAt, h.ClosesAt, h.ClosesNextDay))),
+            SpecialDays.Select(d => new SpecialDay(
+                d.Date,
+                d.Note,
+                [.. d.Blocks.Select(b => new OpeningBlock(b.OpensAt, b.ClosesAt, b.ClosesNextDay)).OrderBy(b => b.OpensAt)])),
+            SpecialFrom,
+            SpecialTo);
+    }
+
+    private sealed class AvailabilitySpecialDayRow
+    {
+        public DateOnly Date { get; init; }
+
+        public string? Note { get; init; }
+
+        public List<AvailabilityBlockRow> Blocks { get; init; } = [];
+    }
+
+    private sealed class AvailabilityBlockRow
+    {
+        public TimeOnly OpensAt { get; init; }
+
+        public TimeOnly ClosesAt { get; init; }
+
+        public bool ClosesNextDay { get; init; }
     }
 
     private sealed class AvailabilityTableRow

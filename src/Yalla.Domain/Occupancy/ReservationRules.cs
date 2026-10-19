@@ -58,7 +58,8 @@ public static class ReservationRules
     }
 
     /// <summary>
-    /// Whether the whole interval falls inside one opening block for the branch's local day.
+    /// Whether the whole interval falls inside one opening block on the branch's calendar - its weekly
+    /// hours with its special days laid over them.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -73,40 +74,22 @@ public static class ReservationRules
     /// the interval has to fit inside a single one of them. Straddling the afternoon closure is
     /// not "open for both halves".
     /// </para>
+    /// <para>
+    /// The dates come from <see cref="OpeningCalendar"/>, so a special day - New Year's Day shut, New Year's
+    /// Eve open late - decides its own date and the weekday's blocks do not.
+    /// </para>
     /// </remarks>
-    /// <param name="openingHours">Every opening block the branch has, for all days.</param>
+    /// <param name="hours">The branch's calendar, read for the sitting's date and the one before.</param>
     /// <param name="localStart">Wall-clock start at the branch.</param>
     /// <param name="localEnd">Wall-clock end at the branch.</param>
     public static ReservationRejectionReason? CheckOpeningHours(
-        IEnumerable<OpeningHours> openingHours,
+        OpeningCalendar hours,
         DateTime localStart,
         DateTime localEnd)
     {
-        ArgumentNullException.ThrowIfNull(openingHours);
+        ArgumentNullException.ThrowIfNull(hours);
 
-        var blocks = openingHours as IReadOnlyCollection<OpeningHours> ?? openingHours.ToList();
-        var startDate = DateOnly.FromDateTime(localStart);
-
-        foreach (var day in new[] { startDate.AddDays(-1), startDate })
-        {
-            foreach (var block in blocks)
-            {
-                if (block.Day != day.DayOfWeek)
-                {
-                    continue;
-                }
-
-                var opensAt = day.ToDateTime(block.OpensAt);
-                var closesAt = (block.ClosesNextDay ? day.AddDays(1) : day).ToDateTime(block.ClosesAt);
-
-                if (localStart >= opensAt && localEnd <= closesAt)
-                {
-                    return null;
-                }
-            }
-        }
-
-        return ReservationRejectionReason.OutsideOpeningHours;
+        return hours.Fits(localStart, localEnd) ? null : ReservationRejectionReason.OutsideOpeningHours;
     }
 
     /// <summary>

@@ -169,6 +169,9 @@ turn time. A settings change never rewrites or cancels a booking as a side effec
 **Opening hours** (`GET`/`PUT /api/branches/{id}/opening-hours`) — the whole week, replaced
 atomically. `closesNextDay` is derived — a closing time at or before the opening time means after
 midnight — and is not accepted from the client. Blocks on one day may touch but not overlap.
+**Special days** (`GET`/`PUT .../opening-hours/exceptions`) override single dates - closed, or their own blocks,
+with an optional note diners see - and every reader of the hours honours them; see
+[reservations.md](reservations.md#special-opening-days).
 
 **Menu** (`/api/branches/{id}/menu/...`) — categories and items with ordering, and an
 availability toggle that is not a delete: "we're out of khachapuri tonight" is not the same as

@@ -86,6 +86,8 @@ reported more than one problem out of six.
 | --- | --- |
 | `PUT /api/branches/{branchId}/reservation-policy` | `turnTimeMinutes`, `bufferMinutes`, `graceMinutes`, `lateNudgeAfterMinutes`, `graceExtensionMinutes`, `minLeadMinutes`, `bookingWindowDays`, `cancellationDeadlineMinutes`, `walkInHoldbackMinutes`, `serviceChargePercent`, `maxSeatOverhang`, `approvalRequiredAbovePartySize` |
 | `PUT /api/branches/{branchId}/opening-hours` | `[n].opensAt`, `[n].closesAt` |
+| `PUT /api/branches/{branchId}/opening-hours/exceptions` | `[n].date` (`required`, `min`, `max`, `conflict`), `[n].note` (`max`), `[n].blocks` (`required`, `max`), `[n].blocks[m].opensAt`, `[n].blocks[m].closesAt` (`conflict`), `[100]` (`max`) |
+| `PUT /api/branches/{branchId}/menu/categories/order` and `PUT .../categories/{categoryId}/items/order` | `categoryIds` / `itemIds`, bound `conflict` — not every category (item) exactly once: the console's menu is stale |
 | `PATCH /api/branches/{branchId}/menu/items/{itemId}` | `categoryId`, when it names a category on another branch |
 | `POST /api/venues/{venueId}/staff` and `PATCH .../staff/{staffMemberId}` | `branchId` — a branch manager (`role` 2) with no branch: *"A branch manager works at one branch. Choose it."*; a general manager (`role` 6) with one: *"A general manager runs every branch, so leave the branch empty."* Checked on the resulting role and branch together |
 | `POST /api/branches/{branchId}/floor-areas` and `PATCH .../floor-areas/{areaId}` | `name`, bound `conflict` — another room at the branch already has the name (trimmed, any case): *"Area names must be unique within a branch. Terrace is already used."* The rule the floor-plan PUT applies |

@@ -86,6 +86,9 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 "openingHours",
                 "phoneE164",
                 "policy",
+
+                // The special opening days ahead, each replacing its date's weekly hours; always present.
+                "specialDays",
                 "tableCount",
                 "timeZoneId",
                 "venueName",

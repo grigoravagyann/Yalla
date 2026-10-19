@@ -65,6 +65,12 @@ public sealed record PublicBranchCard(
 /// wrong zone, and a tourist is a named primary user of this surface.
 /// </param>
 /// <param name="OpeningHours">The weekly hours.</param>
+/// <param name="SpecialDays">
+/// The special opening days from today at the branch through 60 days ahead, earliest first: holidays, closures
+/// and different hours on one date, each replacing that date's weekly hours. Always present, often empty. Today's
+/// hours are today's special day when there is one, else the weekday's; <paramref name="IsOpenNow"/> already
+/// reads them.
+/// </param>
 /// <param name="IsOpenNow">
 /// Whether it is open at this moment, decided in the branch's own zone.
 /// <para>
@@ -132,6 +138,7 @@ public sealed record PublicBranchPage(
     double Longitude,
     string TimeZoneId,
     IReadOnlyList<OpeningHoursView> OpeningHours,
+    IReadOnlyList<SpecialOpeningDayView> SpecialDays,
     bool IsOpenNow,
     int FreeTableCount,
     int TableCount,

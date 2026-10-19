@@ -211,6 +211,39 @@ public static class VenueAdminEndpoints
                 StatusCodes.Status422UnprocessableEntity,
                 "Blocks overlap, or one opens and closes at the same minute; `context.fields` names each.");
 
+        group.MapGet("/opening-hours/exceptions", GetSpecialDaysAsync)
+            .WithName("getOpeningHoursExceptions")
+            .WithSummary("The special opening days from today on")
+            .WithDescription(
+                "Holidays, closures and different hours on one date, earliest first, from today in the branch's "
+                + "own zone. A special day **replaces** that date's weekly blocks; `closed` (no `blocks`) is shut all "
+                + "day. A date's blocks are the ones that open on it, so 31 December 18:00-03:00 runs into "
+                + "1 January whatever 1 January says. Availability, the day's slots, booking, the Overview and "
+                + "every \"open now\" read them.")
+            .Produces<IReadOnlyList<SpecialOpeningDayView>>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
+        group.MapPut("/opening-hours/exceptions", PutSpecialDaysAsync)
+            .WithName("putOpeningHoursExceptions")
+            .WithSummary("Replace the special opening days from today on")
+            .WithDescription(
+                "Send the whole list from today at the branch on (`[]` clears it); days before today are kept as "
+                + "they were and never sent. Each day is a `date`, an optional `note` a diner is shown (at most 60 "
+                + "characters) and its `blocks` - `[]` for closed all day, at most 4. `closesNextDay` is derived as "
+                + "in the weekly hours. Saved atomically under the branch lock, so two saves never interleave.\n\n"
+                + "**Every refusal names its field**, indexed into the array: `[1].date` is `min` (before today), "
+                + "`max` (more than 366 days ahead) or `conflict` (the same date twice); `[0].note` `max`; "
+                + "`[0].blocks` `required` or `max`; `[0].blocks[1].opensAt` `conflict` (overlaps an earlier "
+                + "block); `[0].blocks[0].closesAt` `conflict` (no length); `[100]` `max` (more than 100 days).\n\n"
+                + "**Existing bookings are never touched.** `affectedReservationIds` are the live ones on a changed "
+                + "date that no longer fit its hours.")
+            .Produces<SpecialOpeningDaysChangeResult>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict, "`concurrent-update`: another save held the branch; try again.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "A day or a block breaks a rule; `context.fields` names each.");
+
         group.MapGet("/readiness", GetReadinessAsync)
             .WithName("getBranchReadiness")
             .WithSummary("What this branch still needs before it can take diners")
@@ -408,6 +441,14 @@ public static class VenueAdminEndpoints
     private static async Task<IResult> GetHoursAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.GetOpeningHoursAsync(branchId, ct));
 
+    private static async Task<IResult> GetSpecialDaysAsync(
+        Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.GetSpecialOpeningDaysAsync(branchId, ct));
+
+    private static async Task<IResult> PutSpecialDaysAsync(
+        Guid branchId, IReadOnlyList<SpecialOpeningDayInput> days, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.ReplaceSpecialOpeningDaysAsync(branchId, days, ct));
+
     private static async Task<IResult> GetReadinessAsync(
         Guid branchId, IBranchReadinessQuery readiness, CancellationToken ct) =>
         Results.Ok(await readiness.GetAsync(branchId, ct));
@@ -512,6 +553,37 @@ public static class VenueAdminEndpoints
             .Produces<MenuCategoryView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such category at this branch.");
 
+        group.MapPut("/categories/order", ReorderCategoriesAsync)
+            .WithName("reorderMenuCategories")
+            .WithSummary("Put every category in a new order, atomically")
+            .WithDescription(
+                "`categoryIds` is **every category of the branch, each exactly once**, first to last; they get "
+                + "display orders 0, 1, 2... in one transaction under the branch lock, so a move up or down is "
+                + "one request and two saves at once never leave two categories on one position. Returns the "
+                + "menu as `GET .../menu/manage` does.\n\n"
+                + "A list that misses one, repeats one or names another branch's is refused whole with "
+                + "`context.field` `categoryIds` (`conflict`): the console is showing a stale menu - reload it.")
+            .Produces<IReadOnlyList<MenuCategoryView>>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict, "`concurrent-update`: another save held the branch; try again.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "`categoryIds` is not every category exactly once.");
+
+        group.MapPut("/categories/{categoryId:guid}/items/order", ReorderItemsAsync)
+            .WithName("reorderMenuItems")
+            .WithSummary("Put every item of a category in a new order, atomically")
+            .WithDescription(
+                "`itemIds` is **every item of the category, each exactly once**, first to last - display orders "
+                + "0, 1, 2... in one transaction under the branch lock. Returns the category. A list that is not "
+                + "every item exactly once is refused whole with `context.field` `itemIds` (`conflict`).")
+            .Produces<MenuCategoryView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such category at this branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict, "`concurrent-update`: another save held the branch; try again.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "`itemIds` is not every item of the category exactly once.");
+
         group.MapDelete("/categories/{categoryId:guid}", DeleteCategoryAsync)
             .WithName("deleteMenuCategory")
             .WithSummary("Remove a category and its items")
@@ -574,6 +646,14 @@ public static class VenueAdminEndpoints
 
     private static async Task<IResult> GetMenuAsync(Guid branchId, IMenuService service, CancellationToken ct) =>
         Results.Ok(await service.GetMenuAsync(branchId, ct));
+
+    private static async Task<IResult> ReorderCategoriesAsync(
+        Guid branchId, ReorderMenuCategoriesCommand command, IMenuService service, CancellationToken ct) =>
+        Results.Ok(await service.ReorderCategoriesAsync(branchId, command, ct));
+
+    private static async Task<IResult> ReorderItemsAsync(
+        Guid branchId, Guid categoryId, ReorderMenuItemsCommand command, IMenuService service, CancellationToken ct) =>
+        Results.Ok(await service.ReorderItemsAsync(branchId, categoryId, command, ct));
 
     private static async Task<IResult> CreateCategoryAsync(
         Guid branchId, CreateMenuCategoryCommand command, IMenuService service, CancellationToken ct)

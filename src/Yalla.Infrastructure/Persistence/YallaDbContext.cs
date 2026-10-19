@@ -34,6 +34,8 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<OpeningHours> OpeningHours => Set<OpeningHours>();
 
+    public DbSet<SpecialOpeningDay> SpecialOpeningDays => Set<SpecialOpeningDay>();
+
     public DbSet<FloorArea> FloorAreas => Set<FloorArea>();
 
     public DbSet<FloorAreaPhoto> FloorAreaPhotos => Set<FloorAreaPhoto>();

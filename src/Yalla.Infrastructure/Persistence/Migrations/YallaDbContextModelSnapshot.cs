@@ -2179,6 +2179,59 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("OpeningHours", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Venues.SpecialOpeningBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<TimeOnly>("ClosesAt")
+                        .HasColumnType("time");
+
+                    b.Property<bool>("ClosesNextDay")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<TimeOnly>("OpensAt")
+                        .HasColumnType("time");
+
+                    b.Property<Guid>("SpecialOpeningDayId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SpecialOpeningDayId");
+
+                    b.ToTable("SpecialOpeningBlocks", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.SpecialOpeningDay", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId", "Date")
+                        .IsUnique();
+
+                    b.ToTable("SpecialOpeningDays", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Venues.Venue", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2886,6 +2939,26 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Branch");
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Venues.SpecialOpeningBlock", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.SpecialOpeningDay", null)
+                        .WithMany("Blocks")
+                        .HasForeignKey("SpecialOpeningDayId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.SpecialOpeningDay", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
+                        .WithMany("SpecialOpeningDays")
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Branch");
+                });
+
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.Navigation("Items");
@@ -2921,6 +2994,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("MenuCategories");
 
                     b.Navigation("OpeningHours");
+
+                    b.Navigation("SpecialOpeningDays");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.FloorArea", b =>
@@ -2928,6 +3003,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("DiningTables");
 
                     b.Navigation("Photos");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Venues.SpecialOpeningDay", b =>
+                {
+                    b.Navigation("Blocks");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.Venue", b =>
