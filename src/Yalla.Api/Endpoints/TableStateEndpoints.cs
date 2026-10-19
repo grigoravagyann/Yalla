@@ -100,7 +100,14 @@ public static class TableStateEndpoints
             .WithDescription(
                 "Closes the occupancy. Closes the tab when nothing is owed; when a balance is "
                 + "outstanding the table is still freed - the diners have left - and the response "
-                + "carries the amount as a warning.");
+                + "carries the amount as a warning.\n\n"
+                + "**`reservationId`, optional: finish that booking's sitting and nobody else's.** The "
+                + "console's Overview sends the booking of the row it shows. The table is then freed only "
+                + "while the sitting open at it is that booking's and the booking is seated (it completes); "
+                + "otherwise `409 table-sitting-changed` - `context`: `tableId`, `tableLabel`, `reservationId`, "
+                + "`tableStatus` and `currentSessionId` when somebody else is sitting there - and nothing "
+                + "changes, however often it is sent. Left out, the table is freed whoever is at it, as the "
+                + "tablet always has.");
 
         Transition(group, "/{tableId:guid}/out-of-service", MarkOutOfServiceAsync, "markTableOutOfService")
             .WithSummary("Withdraw a table from service (Free or Held to OutOfService)")
@@ -239,14 +246,15 @@ public static class TableStateEndpoints
     private static async Task<IResult> FreeAsync(
         Guid branchId,
         Guid tableId,
-        TableStateRequest request,
+        FreeTableRequest request,
         ITableStateService service,
         CancellationToken cancellationToken)
     {
         var result = await service.FreeTableAsync(
             new TableStateCommand(
                 branchId, tableId, request.ClientCommandId, request.Reason,
-                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion),
+                request.Queued, request.ExpectedFromStatus, request.ExpectedRowVersion,
+                ExpectedReservationId: request.ReservationId),
             cancellationToken);
 
         return Results.Ok(result);

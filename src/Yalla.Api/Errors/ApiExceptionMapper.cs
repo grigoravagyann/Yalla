@@ -488,6 +488,22 @@ internal static class ApiExceptionMapper
             LogAsError: false),
 
         // "This session is already closed", "the settlement mode is locked". Note this must stay
+        // A free that named a booking whose sitting is no longer the one at the table - the console's
+        // stale row. Must stay ABOVE DomainStateException, which it derives from.
+        TableSittingChangedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TableSittingChanged,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tableId"] = e.TableId,
+                ["tableLabel"] = e.TableLabel,
+                ["reservationId"] = e.ReservationId,
+                ["tableStatus"] = (int)e.TableStatus,
+                ["currentSessionId"] = e.CurrentSessionId,
+            }),
+
         // A queued command that has gone stale. Must stay ABOVE DomainStateException, which it
         // derives from, and distinct from TableStateConflictException: the client shows one
         // immediately and files the other for later.

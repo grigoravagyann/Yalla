@@ -316,6 +316,10 @@ public sealed class SqlServerFixture : IAsyncLifetime
     internal PlatformOverviewQuery CreatePlatformOverviewQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateReadinessQuery(db), CreateOutbox(db, clock));
 
+    /// <summary>The venue console's Overview over one context, with the real branch guard.</summary>
+    internal BranchOverviewQuery CreateBranchOverviewQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, clock, CreateBranchGuard(db, actor));
+
     /// <summary>Review moderation over one context, with the real branch guard.</summary>
     internal ReviewModerationService CreateReviewModerationService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), NullLogger<ReviewModerationService>.Instance);

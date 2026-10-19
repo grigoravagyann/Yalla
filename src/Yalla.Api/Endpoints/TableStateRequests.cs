@@ -41,6 +41,26 @@ public sealed record TableStateRequest(
     TableStatus? ExpectedFromStatus = null,
     string? ExpectedRowVersion = null) : IClientCommandRequest;
 
+/// <summary>Body of <c>POST /api/branches/{branchId}/tables/{tableId}/free</c>.</summary>
+/// <param name="ClientCommandId">As <see cref="TableStateRequest"/>. <b>Required.</b></param>
+/// <param name="ReservationId">
+/// The booking whose sitting is being finished, when the caller means one - the console's Overview row.
+/// Optional. When given, the table is freed only if the sitting open at it is that booking's and the
+/// booking is seated; otherwise <c>409 table-sitting-changed</c>, so a stale row cannot end a walk-in's
+/// sitting that started since. Left out, the table is freed whoever is at it, as the tablet always has.
+/// </param>
+/// <param name="Reason">Optional free text for the audit log.</param>
+/// <param name="Queued">As <see cref="TableStateRequest"/>.</param>
+/// <param name="ExpectedFromStatus">As <see cref="TableStateRequest"/>.</param>
+/// <param name="ExpectedRowVersion">As <see cref="TableStateRequest"/>.</param>
+public sealed record FreeTableRequest(
+    [Required] Guid ClientCommandId,
+    Guid? ReservationId = null,
+    string? Reason = null,
+    bool Queued = false,
+    TableStatus? ExpectedFromStatus = null,
+    string? ExpectedRowVersion = null) : IClientCommandRequest;
+
 /// <summary>Body for seating a party with no booking.</summary>
 /// <param name="PartySize">How many people sat down.</param>
 /// <param name="ClientCommandId">See <see cref="TableStateRequest.ClientCommandId"/>.</param>

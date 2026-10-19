@@ -103,6 +103,12 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
                 new { phoneE164 = (string?)null, acceptsWebBookings = false, coverPhotoId = w.CoverPhotoId }),
             caller => Venue(caller, HttpStatusCode.OK)),
 
+        // The venue console's Overview: the branch's own manager and the venue's ranks, never a tablet
+        // session - the floor has its own reads - nor the sibling branch's manager.
+        ["GET /api/branches/{branchId}/overview"] = new(
+            (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/overview"),
+            caller => Venue(caller, HttpStatusCode.OK)),
+
         ["POST /api/branches/{branchId}/photos"] = new(
             (w, c) => UploadBranchPhotoAsync(c, w.Branch.BranchId),
             caller => Venue(caller, HttpStatusCode.Created)),

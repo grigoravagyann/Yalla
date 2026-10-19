@@ -9,6 +9,7 @@ using Yalla.Application.BranchSettings;
 using Yalla.Application.Diners;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
+using Yalla.Application.Overview;
 using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Notifications;
 using Yalla.Application.Media;
@@ -80,6 +81,9 @@ public static class DependencyInjection
         // The onboarding checklist, answered by the server. Registered before the platform service
         // because that service consults it: a branch cannot go Paid while its menu has holes in it.
         services.AddScoped<IBranchReadinessQuery, BranchReadinessQuery>();
+
+        // The venue console's Overview: one branch, today. Read-only, behind the branch guard.
+        services.AddScoped<IBranchOverviewQuery, BranchOverviewQuery>();
 
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.
