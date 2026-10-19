@@ -870,6 +870,17 @@ Two of these are the real security of this system, and both have tests:
   venue, a platform admin anything. Sorted by local date and start time, capped at 200 rows with no paging.
   `BranchReservationListTests` proves a manager of a sibling branch, another venue's manager, a
   waiter and an anonymous caller are refused.
+
+  The console acts on bookings through the **floor's own routes** - `seat-reservation` and `free`
+  on the table, `no-show`, `release`, `approve` and `reject` on the booking - with no route of its
+  own and no policy change: `WaiterOrAbove` admits an admin-panel (`VenueUser`) token of an owner,
+  general manager or branch manager as it admits a PIN session, and the branch is drawn as before
+  (`BranchScoped` on the table routes, the stored row on the booking ones). So an owner or general
+  manager acts at any branch of their venue, a branch manager at their own, and a waiter keeps
+  exactly their tablet's branch. `ConsoleBookingActionsTests` sends every action as every kind of
+  caller and checks the refused ones leave the booking as it was; the Overview that drives that
+  menu, `GET /api/branches/{branchId}/overview`, is `ManagerOrAbove` + `BranchScoped` and a row of
+  `AuthorizationMatrixTests`.
 - **A tab participant token must not touch any other tab.** Two adjacent tables must not be able to
   order on each other's bill.
 

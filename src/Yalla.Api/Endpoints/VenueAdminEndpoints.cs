@@ -5,6 +5,7 @@ using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
+using Yalla.Application.Overview;
 using Yalla.Application.Staff;
 using Yalla.Application.Venues;
 using Yalla.Domain.Common;
@@ -228,6 +229,48 @@ public static class VenueAdminEndpoints
             .Produces<BranchReadinessView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
+        group.MapGet("/overview", GetOverviewAsync)
+            .WithName("getBranchOverview")
+            .WithSummary("The console's Overview: today at this branch")
+            .WithDescription(
+                "One read for the Overview screen's numbers, **today on the branch's own calendar** "
+                + "(its time zone, at `asOfUtc`; `localDate` and `localTime` say which day and what time). "
+                + "No parameters. Poll it with the approvals list and read it again after any booking action.\n\n"
+                + "- `hours`: `isOpen`; while open `closesAt` and `closesNextDay` (the close is after "
+                + "midnight - \"(next day)\"); while shut `opensAt`, the next opening later today, absent when "
+                + "there is none.\n"
+                + "- `bookings`: today's bookings by status - `total` (pending, confirmed, seated, completed and "
+                + "no-shows), `pendingApproval`, `confirmed` (the late ones included), `late` (confirmed, start "
+                + "passed), `seated`, `completed`, `noShow`, `cancelled` (by the diner or the venue, declined "
+                + "requests included) and `people` (the party sizes of the pending, confirmed, seated and completed).\n"
+                + "- `inRoom`: `people` at the sittings still open, `occupiedTables`, `tables` (active, any state) and "
+                + "`outOfServiceTables`.\n"
+                + "- `openTabs`: `count` open or settling and `unpaidAmd`, what they still owe.\n"
+                + "- `revenue`: `todayAmd` closed since local midnight, against `lastWeekAmd` closed on `lastWeekDate` "
+                + "(seven days ago) up to the **same time of day**; `changePercent` to one decimal, absent when last "
+                + "week took nothing. Counted as the revenue report counts: a closed tab's total, on the day it closed.\n"
+                + "- `load`: `capacity` (seats at the active tables - the chart's full-room line) and `hours`, one "
+                + "entry per local hour from the first opening today (or first booking) to the last open hour (or "
+                + "last booked one): `people` - confirmed, seated and completed parties whose sitting touches the "
+                + "hour - and `pendingPeople`, the unanswered requests. Empty when shut all day with nothing booked.\n"
+                + "- `todayBookings`: every booking of today in any status, by local start time, **at most 200** - "
+                + "`id`, `code`, `status`, `startUtc`, `endUtc`, `localStartTime`, `partySize`, `guestName`, "
+                + "`tableId`, `tableLabel`, `tableStatus` (the table now), `roomName`, `channel`, `declinedBecause` "
+                + "(only on a declined request), `holdExpiresAtUtc` (a late party's held table) and `lateNudgeAtUtc` "
+                + "(when the app asks a confirmed guest with an account whether they are coming - there is no manual "
+                + "nudge). No guest phone numbers.\n\n"
+                + "The row menu's actions are the floor's own routes, which the console's sign-in may call: "
+                + "`seat-reservation` and `free` under `/api/branches/{branchId}/tables/{tableId}`, and `no-show`, "
+                + "`release` (`outcome` 2 to cancel as the venue), `approve` and `reject` under "
+                + "`/api/reservations/{id}`.\n\n"
+                + "A fixed handful of statements however many bookings. An owner or general manager at any branch "
+                + "of their venue, a branch manager at their own branch only, a platform admin anywhere.")
+            .Produces<BranchOverview>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "A waiter's or cook's tablet session, a diner, another venue's staff, or a manager of another branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
         group.MapGet("/floor-plan", GetFloorPlanAsync)
             .WithName("getFloorPlan")
             .WithSummary("The rooms, their photos, and every table with its pin")
@@ -352,6 +395,10 @@ public static class VenueAdminEndpoints
     private static async Task<IResult> GetReadinessAsync(
         Guid branchId, IBranchReadinessQuery readiness, CancellationToken ct) =>
         Results.Ok(await readiness.GetAsync(branchId, ct));
+
+    private static async Task<IResult> GetOverviewAsync(
+        Guid branchId, IBranchOverviewQuery overview, CancellationToken ct) =>
+        Results.Ok(await overview.GetAsync(branchId, ct));
 
     private static async Task<IResult> PutHoursAsync(
         Guid branchId, IReadOnlyList<OpeningHoursBlock> blocks, IBranchSettingsService service, CancellationToken ct) =>
