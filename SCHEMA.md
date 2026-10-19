@@ -84,6 +84,12 @@ reviews page and the moderation list read, newest written first.
 tier took it down, because a venue may not put back what the platform hid. A hidden review is left
 out of every public read and every derived number below.
 
+**The venue's reply** is on the same row, all nullable: `ReplyText` (500), the signature as it was
+written - `ReplyAuthorName` (200) and `ReplyAuthorRole` (the writer's `StaffRole`) - `ReplyByStaffMemberId`
+(no foreign key, as above), `RepliedAtUtc` (first published) and `ReplyUpdatedAtUtc` (last change). One
+reply per review is the shape rather than a rule to hold. A hidden review's reply leaves the public reads
+with it.
+
 Rating, review count and the `popular`/`new` badges on the browse routes are **derived at read
 time, never stored**, from published reviews only: average of `Rating`; `new` when the branch row is
 under 30 days old; `popular` when the branch seated 20+ parties (`TableSessions.SeatedAtUtc`) in the
@@ -378,7 +384,7 @@ the account; **no foreign key to the branch** - a heart is checked against a pub
 is added and read back through the same rule, so a place that closes drops out of the list and one that
 reopens comes back with its hearts. Deleting an account deletes them.
 
-`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of eight slugs, held by
+`DinerNotification` — one entry in a diner's notifications feed (K12): `Kind` (one of nine slugs, held by
 `CK_DinerNotifications_Kind`), `ParamsJson` (2000, the string values the app builds its own text from -
 the server writes no prose), optional `BranchId`, `ReservationId`, `TabId`, `OrderId` (pointers the app
 follows, deliberately without foreign keys), `ReadAtUtc`, and `Sequence`, an identity column that breaks

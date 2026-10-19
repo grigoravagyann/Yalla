@@ -20,6 +20,48 @@ public sealed class ListingRelocationTests(SqlServerFixture fixture)
 {
     private const string NewAddress = "5 Test Street, Yerevan";
 
+    /// <summary>
+    /// The general manager runs every branch and edits the rest of the listing, but the pin and the
+    /// address stay the owner's (the console locks them for both managers).
+    /// </summary>
+    [SkippableFact]
+    public async Task A_general_manager_saves_the_listing_but_cannot_move_the_branch()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var seeded = await SeedAsync(factory);
+
+        PanelAccount generalManager;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, seeded.Branch.VenueId);
+        }
+
+        using var gm = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, generalManager));
+        var url = $"/api/branches/{seeded.Branch.BranchId}/listing";
+        var stored = await gm.GetFromJsonAsync<JsonElement>(url);
+        var address = stored.GetProperty("address").GetString();
+        var latitude = stored.GetProperty("latitude").GetDouble();
+        var longitude = stored.GetProperty("longitude").GetDouble();
+
+        var moved = await gm.PutAsJsonAsync(url, new { cuisine = "Should not land", address, latitude = latitude + 0.01, longitude });
+
+        Assert.Equal(HttpStatusCode.Forbidden, moved.StatusCode);
+        Assert.Equal("relocation-not-allowed", await CodeAsync(moved));
+
+        // The stored location sent back is not a move: the rest of the form saves.
+        var saved = await gm.PutAsJsonAsync(url, new { cuisine = "General manager's kitchen", address, latitude, longitude });
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        var after = await gm.GetFromJsonAsync<JsonElement>(url);
+        Assert.Equal("General manager's kitchen", after.GetProperty("cuisine").GetString());
+        Assert.Equal(latitude, after.GetProperty("latitude").GetDouble());
+
+        await using var check = fixture.CreateContext(factory.Clock);
+        Assert.Empty(await AuditRowsAsync(check, seeded.Branch.BranchId).ToListAsync());
+    }
+
     [SkippableFact]
     public async Task A_manager_cannot_move_the_branch_and_nothing_on_the_form_is_saved()
     {

@@ -106,7 +106,13 @@ name:
 manager who covers the branch (`PUT /api/branches/{branchId}/reviews/{reviewId}/visibility`) hides a
 review with a reason. A hidden review stays on its row and leaves every public read at once - the
 list, `recentReviews`, `rating`, `reviewCount`, and so the badges. A venue cannot put back what the
-platform hid. Every change is audited as `review.hide` or `review.unhide`. Diners flag reviews with
+platform hid. Every change is audited as `review.hide` or `review.unhide`.
+
+**The venue's reply.** The owner, a general manager or the branch's manager may publish one reply under a
+shown review (`PUT /api/branches/{branchId}/reviews/{reviewId}/reply`, at most 500 characters, signed
+with the writer's name and role), edit it and take it down (`DELETE` on the same route). It appears as
+`reply` on each item of the public list and `recentReviews`, and leaves with the review when the review
+is hidden. Diners flag reviews with
 `POST /api/diner/reviews/{reviewId}/report`; a report takes nothing down on its own.
 
 The full contract for these routes - every shape, the app's field maps, the rate limits, the Orders

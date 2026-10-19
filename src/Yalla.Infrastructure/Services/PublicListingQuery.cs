@@ -4,6 +4,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Media;
 using Yalla.Application.Public;
+using Yalla.Application.Reviews;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -412,7 +413,20 @@ internal sealed class PublicListingQuery(
             .ThenByDescending(r => r.Id)
             .Skip(skip)
             .Take(take)
-            .Select(r => new { r.Id, r.DinerUser.DisplayName, r.Rating, r.Text, r.CreatedAtUtc, r.UpdatedAtUtc })
+            .Select(r => new
+            {
+                r.Id,
+                r.DinerUser.DisplayName,
+                r.Rating,
+                r.Text,
+                r.CreatedAtUtc,
+                r.UpdatedAtUtc,
+                r.ReplyText,
+                r.ReplyAuthorName,
+                r.ReplyAuthorRole,
+                r.RepliedAtUtc,
+                r.ReplyUpdatedAtUtc,
+            })
             .ToListAsync(cancellationToken);
 
         return
@@ -424,7 +438,11 @@ internal sealed class PublicListingQuery(
                 r.Text,
                 r.CreatedAtUtc,
                 r.UpdatedAtUtc,
-                Edited: r.UpdatedAtUtc != r.CreatedAtUtc)),
+                Edited: r.UpdatedAtUtc != r.CreatedAtUtc,
+
+                // The venue's answer under it. Only shown reviews reach this list, so a hidden one's
+                // reply never does either.
+                ReviewReplyView.From(r.ReplyText, r.ReplyAuthorName, r.ReplyAuthorRole, r.RepliedAtUtc, r.ReplyUpdatedAtUtc))),
         ];
     }
 

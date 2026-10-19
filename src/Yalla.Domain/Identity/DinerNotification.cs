@@ -120,6 +120,12 @@ public static class DinerNotificationKinds
     public const string ReviewHidden = "review-hidden";
 
     /// <summary>
+    /// The venue answered the diner's review. Written when a reply is first published, not on an edit;
+    /// taken back while unread if the venue removes the reply.
+    /// </summary>
+    public const string ReviewReplied = "review-replied";
+
+    /// <summary>
     /// Somebody would like the diner's table after their booking, and asks whether they will have left
     /// in time. Answered from the booking's <c>incomingTableRequest</c>; the entry is the record.
     /// </summary>
@@ -134,6 +140,6 @@ public static class DinerNotificationKinds
     public static readonly IReadOnlyList<string> All =
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
-        TableRequest, TableRequestDecided,
+        TableRequest, TableRequestDecided, ReviewReplied,
     ];
 }

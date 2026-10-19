@@ -26,9 +26,17 @@ internal sealed class BranchReviewConfiguration : EntityConfiguration<BranchRevi
         builder.Property(r => r.HiddenReason).HasMaxLength(FieldLengths.Reason);
         builder.Property(r => r.HiddenByPlatform).IsRequired();
 
+        // The venue's one reply, on the row it answers: one per review is the shape, not a rule to hold.
+        // The signature is a copy, so it reads as written after the writer is renamed or leaves; no
+        // foreign key on the staff member, for the reason the moderation columns have none.
+        builder.Property(r => r.ReplyText).HasMaxLength(FieldLengths.ReviewReply);
+        builder.Property(r => r.ReplyAuthorName).HasMaxLength(FieldLengths.PersonName);
+
         // Derived from the columns above; nothing to store and nothing to keep in sync.
         builder.Ignore(r => r.IsHidden);
         builder.Ignore(r => r.IsEdited);
+        builder.Ignore(r => r.HasReply);
+        builder.Ignore(r => r.IsReplyEdited);
 
         // Restrict both ways: a review is a public statement somebody made, and neither the branch
         // nor the account row is ever hard-deleted from under it.

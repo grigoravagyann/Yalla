@@ -1,5 +1,6 @@
 using System.Text;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 
 namespace Yalla.Domain.Venues;
@@ -25,6 +26,13 @@ namespace Yalla.Domain.Venues;
 /// a review down with a reason. A hidden review stays on the row - the diner still sees their own,
 /// marked hidden - and is left out of every public list and every derived number. Which tier hid it
 /// is kept, because a venue may not put back what the platform took down.
+/// </para>
+/// <para>
+/// <b>One public reply from the venue</b>, written by its owner, general manager or the branch's
+/// manager and edited by whoever is on duty - the last writer signs it. The signature is kept as it was
+/// written (<see cref="ReplyAuthorName"/>, <see cref="ReplyAuthorRole"/>), so a reply reads the same
+/// after its writer is renamed or leaves. A review that is taken down is not answered; a reply already
+/// on it goes out of sight with it, and can still be removed.
 /// </para>
 /// </remarks>
 public sealed class BranchReview : Entity
@@ -77,8 +85,35 @@ public sealed class BranchReview : Entity
     /// </summary>
     public bool HiddenByPlatform { get; private set; }
 
+    /// <summary>The venue's reply, or null when it has not answered. At most <see cref="MaxReplyLength"/> characters.</summary>
+    public string? ReplyText { get; private set; }
+
+    /// <summary>The full name of the staff member who last wrote the reply, as it was then.</summary>
+    public string? ReplyAuthorName { get; private set; }
+
+    /// <summary>Their role when they wrote it: owner, general manager or branch manager.</summary>
+    public StaffRole? ReplyAuthorRole { get; private set; }
+
+    /// <summary>Who last wrote the reply. The audit log is the record; this says whose words they are now.</summary>
+    public Guid? ReplyByStaffMemberId { get; private set; }
+
+    /// <summary>When the reply was first published. A reply removed and written again starts over.</summary>
+    public DateTime? RepliedAtUtc { get; private set; }
+
+    /// <summary>When the reply's text last changed; equal to <see cref="RepliedAtUtc"/> until an edit.</summary>
+    public DateTime? ReplyUpdatedAtUtc { get; private set; }
+
     /// <summary>Whether it is taken down.</summary>
     public bool IsHidden => HiddenAtUtc is not null;
+
+    /// <summary>Whether the venue has answered it.</summary>
+    public bool HasReply => ReplyText is not null;
+
+    /// <summary>Whether the reply was changed after it was first published.</summary>
+    public bool IsReplyEdited => HasReply && ReplyUpdatedAtUtc != RepliedAtUtc;
+
+    /// <summary>The longest reply, in characters after trimming.</summary>
+    public const int MaxReplyLength = FieldLengths.ReviewReply;
 
     /// <summary>Whether a revision has changed it since it was first written.</summary>
     public bool IsEdited => UpdatedAtUtc != CreatedAtUtc;
@@ -137,6 +172,88 @@ public sealed class BranchReview : Entity
         HiddenReason = null;
         HiddenByStaffMemberId = null;
         HiddenByPlatform = false;
+    }
+
+    /// <summary>
+    /// Writes the venue's reply, or replaces its text. The writer signs it, so an edit by somebody else
+    /// moves the signature to them.
+    /// </summary>
+    /// <returns>
+    /// False, and nothing touched, when the trimmed text is what is already published - so a form that
+    /// re-sends an unchanged reply neither marks it edited nor moves the signature.
+    /// </returns>
+    /// <exception cref="FieldValidationException">The text is blank or too long, naming <c>text</c>.</exception>
+    /// <exception cref="DomainStateException">The review is taken down.</exception>
+    public bool Reply(Guid staffMemberId, string authorName, StaffRole authorRole, string? text, DateTime atUtc)
+    {
+        var checkedText = CheckReply(text);
+
+        if (IsHidden)
+        {
+            throw new DomainStateException(
+                "A hidden review cannot be answered. Put it back first, if it was the venue that hid it.");
+        }
+
+        if (string.Equals(checkedText, ReplyText, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        atUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        if (!HasReply)
+        {
+            RepliedAtUtc = atUtc;
+        }
+
+        ReplyText = checkedText;
+        ReplyAuthorName = Guard.NotBlank(authorName, nameof(authorName), FieldLengths.PersonName);
+        ReplyAuthorRole = authorRole;
+        ReplyByStaffMemberId = Guard.NotEmpty(staffMemberId, nameof(staffMemberId));
+        ReplyUpdatedAtUtc = atUtc;
+
+        return true;
+    }
+
+    /// <summary>Takes the reply down, whether or not the review is shown.</summary>
+    /// <returns>False when there was none.</returns>
+    public bool RemoveReply()
+    {
+        if (!HasReply)
+        {
+            return false;
+        }
+
+        ReplyText = null;
+        ReplyAuthorName = null;
+        ReplyAuthorRole = null;
+        ReplyByStaffMemberId = null;
+        RepliedAtUtc = null;
+        ReplyUpdatedAtUtc = null;
+
+        return true;
+    }
+
+    /// <summary>A reply: required, trimmed, at most <see cref="MaxReplyLength"/> characters.</summary>
+    /// <exception cref="FieldValidationException">Naming <c>text</c>.</exception>
+    public static string CheckReply(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new FieldValidationException(new FieldViolation(
+                "text", "Write the reply.", FieldBounds.Required));
+        }
+
+        var trimmed = text.Trim();
+
+        return trimmed.Length > MaxReplyLength
+            ? throw new FieldValidationException(new FieldViolation(
+                "text",
+                $"A reply is at most {MaxReplyLength} characters.",
+                FieldBounds.Max,
+                Max: MaxReplyLength,
+                Value: trimmed.Length))
+            : trimmed;
     }
 
     /// <summary>A takedown reason: required, trimmed, at most <see cref="FieldLengths.Reason"/> characters.</summary>

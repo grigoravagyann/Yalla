@@ -1,4 +1,5 @@
 using Yalla.Application.Media;
+using Yalla.Application.Reviews;
 using Yalla.Domain.Enums;
 
 namespace Yalla.Application.Diners;
@@ -19,6 +20,7 @@ public sealed record SubmitBranchReviewCommand(int Rating, string? Text = null);
 /// <param name="UpdatedAtUtc">When the rating or text last changed. Re-sending the same review does not move it.</param>
 /// <param name="PublicAuthorName">The name the public list shows it under - see <c>BranchReview.PublicAuthorName</c>.</param>
 /// <param name="Hidden">Taken down by moderation: the diner still sees it here, nobody else sees it anywhere.</param>
+/// <param name="Reply">The venue's public reply, or null. The author sees it here even while the review is hidden.</param>
 public sealed record DinerReviewView(
     Guid ReviewId,
     Guid BranchId,
@@ -27,7 +29,8 @@ public sealed record DinerReviewView(
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc,
     string PublicAuthorName,
-    bool Hidden);
+    bool Hidden,
+    ReviewReplyView? Reply = null);
 
 /// <summary>Body of <c>POST /api/diner/reviews/{reviewId}/report</c>.</summary>
 /// <param name="Reason"><c>spam</c>, <c>offensive</c>, <c>not-a-visit</c>, <c>personal-info</c> or <c>other</c>.</param>

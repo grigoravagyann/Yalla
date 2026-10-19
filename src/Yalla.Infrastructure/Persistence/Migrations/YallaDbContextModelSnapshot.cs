@@ -311,7 +311,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied')");
                         });
                 });
 
@@ -1960,6 +1960,26 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("Rating")
                         .HasColumnType("int");
+
+                    b.Property<DateTime?>("RepliedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReplyAuthorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ReplyAuthorRole")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ReplyByStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReplyText")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("ReplyUpdatedAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("Text")
                         .HasMaxLength(1000)

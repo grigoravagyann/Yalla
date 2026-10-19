@@ -123,6 +123,22 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
                 new { hidden = true, reason = "Names a member of staff." }),
             caller => Venue(caller, HttpStatusCode.OK)),
 
+        // The venue's public reply is the venue's voice: its own ranks only. A platform admin, whom the
+        // venue rows otherwise admit, does not reply on a venue's behalf.
+        ["PUT /api/branches/{branchId}/reviews/{reviewId}/reply"] = new(
+            (w, c) => c.PutAsJsonAsync(
+                $"/api/branches/{w.Branch.BranchId}/reviews/{w.ReviewId}/reply",
+                new { text = "Thank you for coming." }),
+            caller => VenueRanks(caller, HttpStatusCode.OK)),
+
+        ["DELETE /api/branches/{branchId}/reviews/{reviewId}/reply"] = new(
+            (w, c) => c.DeleteAsync($"/api/branches/{w.Branch.BranchId}/reviews/{w.ReviewId}/reply"),
+            caller => VenueRanks(caller, HttpStatusCode.OK)),
+
+        ["GET /api/branches/{branchId}/reservation-policy/defaults"] = new(
+            (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/reservation-policy/defaults"),
+            caller => Venue(caller, HttpStatusCode.OK)),
+
         ["GET /api/platform/branches/{branchId}/reviews"] = new(
             (w, c) => c.GetAsync($"/api/platform/branches/{w.Branch.BranchId}/reviews"),
             Platform),
@@ -270,6 +286,13 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
     {
         Caller.Anonymous => HttpStatusCode.Unauthorized,
         Caller.BranchManager or Caller.GeneralManager or Caller.Owner or Caller.PlatformAdmin => admitted,
+        _ => HttpStatusCode.Forbidden,
+    };
+
+    private static HttpStatusCode VenueRanks(Caller caller, HttpStatusCode admitted) => caller switch
+    {
+        Caller.Anonymous => HttpStatusCode.Unauthorized,
+        Caller.BranchManager or Caller.GeneralManager or Caller.Owner => admitted,
         _ => HttpStatusCode.Forbidden,
     };
 

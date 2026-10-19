@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Diners;
+using Yalla.Application.Reviews;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
@@ -298,5 +299,6 @@ internal sealed class BranchReviewService(
             review.CreatedAtUtc,
             review.UpdatedAtUtc,
             BranchReview.PublicAuthorName(displayName),
-            review.IsHidden);
+            review.IsHidden,
+            ReviewReplyView.From(review));
 }

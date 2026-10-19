@@ -165,6 +165,10 @@ booked. A booking cut short by its guest's promise to free the table (`promisedF
 [reservations.md](reservations.md#3e-a-tables-evening-when-one-booking-may-follow-another)) ends when they
 promised rather than a turn time after its start, so it counts only when it runs longer than the new
 turn time. A settings change never rewrites or cancels a booking as a side effect.
+`GET /api/branches/{id}/reservation-policy/defaults` answers what the branch ships with for its
+venue's type (`defaults`, the same shape) and every field's editing `bounds` (`field`, `min`, and `max`,
+absent where there is no ceiling), so the console's "default" line and its reset read the server's
+numbers instead of a copy of them.
 
 **Opening hours** (`GET`/`PUT /api/branches/{id}/opening-hours`) — the whole week, replaced
 atomically. `closesNextDay` is derived — a closing time at or before the opening time means after

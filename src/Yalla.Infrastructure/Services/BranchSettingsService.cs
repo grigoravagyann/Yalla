@@ -132,6 +132,25 @@ internal sealed class BranchSettingsService(
         return ReservationPolicyView.From(branch.ReservationPolicy);
     }
 
+    public async Task<ReservationPolicyDefaultsView> GetReservationPolicyDefaultsAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the reservation policy", cancellationToken);
+
+        // The venue's type as it is now: the defaults follow it, as a new branch's policy would.
+        var venueType = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId)
+            .Select(b => (VenueType?)b.Venue.Type)
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        return new ReservationPolicyDefaultsView(
+            ReservationPolicyView.From(ReservationPolicy.DefaultFor(venueType)),
+            ReservationPolicyDefaultsView.AllBounds);
+    }
+
     public async Task<ReservationPolicyChangeResult> UpdateReservationPolicyAsync(
         Guid branchId,
         ReservationPolicyCommand command,
