@@ -1613,7 +1613,8 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         var ticket = Assert.Single(await kitchen.GetBranchOrdersAsync(world.Branch.BranchId, null));
         Assert.Equal("Narek Hakobyan", ticket.PlacedByName);
 
-        var moved = await kitchen.MoveOrderStatusAsync(spoken.OrderId, TabOrderStatus.InKitchen);
+        // A waiter's order is in the kitchen from the moment it was sent; the move left is the cook's.
+        var moved = await kitchen.MoveOrderStatusAsync(spoken.OrderId, TabOrderStatus.Ready);
         Assert.Equal("Narek Hakobyan", moved.PlacedByName);
 
         // And a phone's order, moved, still names nobody.
@@ -1650,19 +1651,22 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             .PlaceOrderAsync(new PlaceOrderCommand(
                 world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7()));
 
-        async Task<(KitchenOrderView Ticket, int Commands)> MoveAsync(Guid orderId)
+        async Task<(KitchenOrderView Ticket, int Commands)> MoveAsync(Guid orderId, TabOrderStatus next)
         {
             var counter = new CommandCountingInterceptor();
             await using var moveDb = fixture.CreateContext(world.Clock, counter);
 
             var ticket = await fixture.CreateOrderService(moveDb, world.Clock, TestActor.Manager(world.Branch.ManagerId))
-                .MoveOrderStatusAsync(orderId, TabOrderStatus.InKitchen);
+                .MoveOrderStatusAsync(orderId, next);
 
             return (ticket, counter.Count);
         }
 
-        var phoneMove = await MoveAsync(fromPhone.OrderId);
-        var spokenMove = await MoveAsync(spoken.OrderId);
+        // Both measured on the same move, InKitchen -> Ready: the waiter's order starts in the kitchen,
+        // so the phone's is sent there first, outside the count.
+        await MoveAsync(fromPhone.OrderId, TabOrderStatus.InKitchen);
+        var phoneMove = await MoveAsync(fromPhone.OrderId, TabOrderStatus.Ready);
+        var spokenMove = await MoveAsync(spoken.OrderId, TabOrderStatus.Ready);
 
         Assert.Null(phoneMove.Ticket.PlacedByName);
         Assert.False(string.IsNullOrEmpty(spokenMove.Ticket.PlacedByName));

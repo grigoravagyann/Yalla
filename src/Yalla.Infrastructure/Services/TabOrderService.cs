@@ -106,6 +106,23 @@ internal sealed class TabOrderService(
             }),
         });
 
+        // A waiter's order is in the kitchen the moment it is sent (decided by the user, 2026-10-20).
+        // The waiter who took it at the table is already the check a phone's order waits at New for,
+        // so a second "send" tap could only be forgotten. Told as the rail's own event, right after
+        // the placing, so every phone and tablet reading the stream sees the move it already knows.
+        if (order.PlacedByStaffId is { } placedBy)
+        {
+            order.MoveTo(TabOrderStatus.InKitchen);
+
+            ledger.Append(tab.Id, TabEventType.OrderStatusChanged, new
+            {
+                orderId = order.Id,
+                fromStatus = (int)TabOrderStatus.New,
+                toStatus = (int)TabOrderStatus.InKitchen,
+                byStaffId = placedBy,
+            });
+        }
+
         // The order, its lines and the event, in one transaction - and deliberately nothing else.
         // The tab's totals are a cache, and the authoritative total is the sum of the lines, so the
         // insert does not need to touch the tab row to be correct. Not touching it is what makes
