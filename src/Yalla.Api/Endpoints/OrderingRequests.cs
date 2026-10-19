@@ -10,9 +10,23 @@ namespace Yalla.Api.Endpoints;
 /// <param name="Quantity">How many. At least one.</param>
 /// <param name="IsShared">True for something the table shares.</param>
 /// <param name="Note">What the guest asked for. Goes to the kitchen, not the bill.</param>
-public sealed record OrderItemRequest(Guid MenuItemId, int Quantity, bool IsShared = false, string? Note = null)
+/// <param name="ParticipantId">
+/// <b>Staff only.</b> Who this one line is for - a named guest's dish in a round that is otherwise
+/// the table's, or another guest's. Overrides the order's <c>onBehalfOfParticipantId</c> for this
+/// line alone, so one send stays one order and one kitchen ticket. Checked exactly as that field is:
+/// not on this tab is 404 <c>not-found</c>, not approved yet is 409 <c>conflicting-state</c>, and from
+/// a diner's phone it is 403 <c>forbidden</c>. <b>Never with <c>isShared</c></b>: a shared line belongs
+/// to the table, so naming a guest on it is 400 <c>invalid-request</c> with
+/// <c>context.field</c> <c>items[i].participantId</c>. Leave it out to take the order's answer.
+/// </param>
+public sealed record OrderItemRequest(
+    Guid MenuItemId,
+    int Quantity,
+    bool IsShared = false,
+    string? Note = null,
+    Guid? ParticipantId = null)
 {
-    public OrderItemInput ToInput() => new(MenuItemId, Quantity, IsShared, Note);
+    public OrderItemInput ToInput() => new(MenuItemId, Quantity, IsShared, Note, ParticipantId);
 }
 
 /// <summary>An order, from a diner's phone or a waiter's tablet.</summary>
@@ -25,7 +39,8 @@ public sealed record OrderItemRequest(Guid MenuItemId, int Quantity, bool IsShar
 /// </param>
 /// <param name="OnBehalfOfParticipantId">
 /// <b>Staff only.</b> Who the spoken order was for. Leave it out when the waiter did not know, and
-/// the lines are attributed to the table and split across everyone present.
+/// the lines are attributed to the table and split across everyone present. A line's own
+/// <c>participantId</c> overrides it for that line; a shared line splits whatever it says.
 /// </param>
 public sealed record PlaceOrderRequest(
     IReadOnlyList<OrderItemRequest> Items,

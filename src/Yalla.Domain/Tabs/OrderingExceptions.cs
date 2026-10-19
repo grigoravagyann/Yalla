@@ -46,6 +46,51 @@ public sealed class TabNotAcceptingOrdersException(Guid tabId, TabStatus status)
 }
 
 /// <summary>
+/// A waiter named a guest for an order, or for one line of it, who is not on this tab at all.
+/// </summary>
+/// <remarks>
+/// A <see cref="KeyNotFoundException"/>, so it answers 404 <c>not-found</c> as it always did. Its own
+/// type so the answer can say <i>which</i> field named <i>whom</i>: a tablet sending a round it
+/// queued offline has to tell "that guest is gone" from a dish deleted from the menu it cached, which
+/// answers the same status and code.
+/// </remarks>
+/// <param name="tabId">The tab the order was for.</param>
+/// <param name="participantId">The guest named.</param>
+/// <param name="field">Where: <c>onBehalfOfParticipantId</c>, or <c>items[i].participantId</c>.</param>
+public sealed class NamedGuestNotOnTabException(Guid tabId, Guid participantId, string field)
+    : KeyNotFoundException($"Participant {participantId} is not on tab {tabId}.")
+{
+    public Guid ParticipantId { get; } = participantId;
+
+    public string Field { get; } = field;
+}
+
+/// <summary>
+/// A waiter named a guest for an order, or for one line of it, who is on this tab but may not have
+/// an order put in their name: still waiting for the host, or taken off by them.
+/// </summary>
+/// <remarks>
+/// A <see cref="DomainStateException"/>, so it answers 409 <c>conflicting-state</c> as it always did,
+/// with the field, the guest and their status beside it for the same reason as
+/// <see cref="NamedGuestNotOnTabException"/>.
+/// </remarks>
+/// <param name="participantId">The guest named.</param>
+/// <param name="participantStatus">Where they are: pending approval, or removed.</param>
+/// <param name="field">Where: <c>onBehalfOfParticipantId</c>, or <c>items[i].participantId</c>.</param>
+public sealed class NamedGuestNotOrderableException(Guid participantId, ParticipantStatus participantStatus, string field)
+    : DomainStateException(
+        participantStatus == ParticipantStatus.Removed
+            ? "That guest was taken off the tab, so an order cannot be put in their name."
+            : "That guest is not on the tab yet, so an order cannot be put in their name.")
+{
+    public Guid ParticipantId { get; } = participantId;
+
+    public ParticipantStatus ParticipantStatus { get; } = participantStatus;
+
+    public string Field { get; } = field;
+}
+
+/// <summary>
 /// The line has been paid for, so removing it is a refund.
 /// </summary>
 /// <remarks>

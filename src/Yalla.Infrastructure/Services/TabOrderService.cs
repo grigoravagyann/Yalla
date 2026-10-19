@@ -98,6 +98,11 @@ internal sealed class TabOrderService(
                 quantity = l.Quantity,
                 isShared = l.IsShared,
                 isTableAttributed = l.IsTableAttributed,
+
+                // Each line's guest, as the tab reads it: its own when the waiter named one for it,
+                // otherwise the order's, and nobody's on a shared line. A phone catching up
+                // attributes the line from this.
+                onBehalfOfParticipantId = OnBehalfOf(order, l),
             }),
         });
 
@@ -210,14 +215,16 @@ internal sealed class TabOrderService(
 
             // A line nobody owns splits like a shared one. The flag keeps the two distinguishable:
             // "the table shared a bottle" and "we do not know who ordered this" are the same
-            // arithmetic and completely different facts.
-            var tableAttributed = ordererId is null && !input.IsShared;
+            // arithmetic and completely different facts. A line the waiter named a guest for is
+            // that guest's, whoever the rest of the order is for.
+            var tableAttributed = (input.ParticipantId ?? ordererId) is null && !input.IsShared;
 
             var line = order.AddLine(
                 item.Id, item.Name, item.PriceAmd, input.Quantity,
                 isShared: input.IsShared,
                 isTableAttributed: tableAttributed,
-                note: input.Note);
+                note: input.Note,
+                onBehalfOfParticipantId: input.ParticipantId);
 
             if (line.IsSplitAcrossParticipants)
             {
@@ -257,16 +264,23 @@ internal sealed class TabOrderService(
             await branchGuard.RequireAsync(
                 staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
+            // Here, after the replay lookup and the caller's kind, not before: a retry answers with
+            // the order it already placed whatever its body says now, and a phone naming anybody is
+            // refused as a phone (403) before the shape of what it named is looked at.
+            RequireNoGuestOnASharedLine(command.Items);
+
+            // The order's guest and each line's own, by one rule: somebody approved on this tab.
+            // The order's first, then the lines in order, so a refusal names the first field at fault.
             if (command.OnBehalfOfParticipantId is { } onBehalfOf)
             {
-                var named = tab.Participants.FirstOrDefault(p => p.Id == onBehalfOf)
-                            ?? throw new KeyNotFoundException(
-                                $"Participant {onBehalfOf} is not on tab {tab.Id}.");
+                RequireNameable(tab, onBehalfOf, "onBehalfOfParticipantId");
+            }
 
-                if (named.Status != ParticipantStatus.Approved)
+            for (var i = 0; i < command.Items.Count; i++)
+            {
+                if (command.Items[i].ParticipantId is { } named)
                 {
-                    throw new DomainStateException(
-                        "That guest is not on the tab yet, so an order cannot be put in their name.");
+                    RequireNameable(tab, named, $"items[{i}].participantId");
                 }
             }
 
@@ -291,7 +305,9 @@ internal sealed class TabOrderService(
         var participant = tab.Participants.FirstOrDefault(p => p.Id == participantId)
                           ?? throw new TabPermissionException("Ordering", "somebody on this tab");
 
-        if (command.OnBehalfOfParticipantId is not null)
+        // A line in somebody's name is the order-level field one line at a time, and refused the
+        // same way - their own id included, since that is what ordering from this phone already is.
+        if (command.OnBehalfOfParticipantId is not null || command.Items.Any(i => i.ParticipantId is not null))
         {
             throw new TabPermissionException("Ordering on somebody else's behalf", "staff");
         }
@@ -306,6 +322,51 @@ internal sealed class TabOrderService(
         }
 
         return (TabOrder.PlacedByDiner(tab.Id, participantId, nowUtc, command.ClientCommandId), participantId);
+    }
+
+    /// <summary>
+    /// Refuses a guest a waiter may not put an order, or one line of one, in the name of.
+    /// </summary>
+    /// <remarks>
+    /// One check for <c>onBehalfOfParticipantId</c> and every line's <c>participantId</c>, so the two
+    /// cannot drift: somebody who is not on this tab - made up, or at another table - is not found;
+    /// somebody still waiting on the host is not on the tab yet, and somebody the host took off it is
+    /// not on it any more. Each refusal names the field and the guest, so a tablet can tell it from
+    /// the other refusals that share its status and code.
+    /// </remarks>
+    private static void RequireNameable(Tab tab, Guid participantId, string field)
+    {
+        var named = tab.Participants.FirstOrDefault(p => p.Id == participantId)
+                    ?? throw new NamedGuestNotOnTabException(tab.Id, participantId, field);
+
+        if (named.Status != ParticipantStatus.Approved)
+        {
+            throw new NamedGuestNotOrderableException(participantId, named.Status, field);
+        }
+    }
+
+    /// <summary>
+    /// Refuses a line that is both the table's and one guest's.
+    /// </summary>
+    /// <remarks>
+    /// The rule the order-level field already follows, made explicit for a line. The order's guest
+    /// owns the lines that have an owner, and a shared line has none: an order for Narine with the
+    /// table's bottle on it splits the bottle. A line that names a guest <b>and</b> says it is
+    /// shared contradicts itself, and keeping either half quietly bills somebody for what the waiter
+    /// did not mean - so it is refused, naming the line, before any guest it names is looked up.
+    /// </remarks>
+    private static void RequireNoGuestOnASharedLine(IReadOnlyList<OrderItemInput> items)
+    {
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (items[i] is { IsShared: true, ParticipantId: not null })
+            {
+                throw new ArgumentException(
+                    "A shared line belongs to the table, so it cannot also be put in one guest's name. "
+                    + "Send it shared, or for that guest.",
+                    $"items[{i}].participantId");
+            }
+        }
     }
 
     // ---------------------------------------------------------------- voiding
@@ -470,23 +531,25 @@ internal sealed class TabOrderService(
         // Food is up. Per-branch and off by default: noisy in a cafe where a waiter carries the
         // plate ten feet, useful in a canteen where the diner collects it. Defaulting it on would
         // train a city to switch our notifications off, taking the reminder and the nudge with them.
-        var recipient = next == TabOrderStatus.Ready
-                        && order.Tab.Branch.NotifyOnOrderReady
-                        && order.OwningParticipantId is { } owningParticipantId
-            ? order.Tab.Participants.FirstOrDefault(p => p.Id == owningParticipantId)
-            : null;
+        var recipients = next == TabOrderStatus.Ready && order.Tab.Branch.NotifyOnOrderReady
+            ? ReadyRecipients(order)
+            : [];
 
         // The place was read above, and the diner can have deleted the account since - which cut the
         // place loose and emptied their feed. The entry and its push are the person's, so they are
         // written under the account's lock (DinerAccountLock), held to the save below, and only for a
         // live account: a deletion that comes after waits for this commit and removes the entry.
-        await using var feedTransaction = recipient?.UserId is null
+        await using var feedTransaction = recipients.Count == 0
             ? null
             : await db.Database.BeginTransactionAsync(cancellationToken);
 
-        if (recipient?.UserId is { } dinerUserId
-            && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
+        foreach (var (recipient, dinerUserId) in recipients)
         {
+            if (!await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
+            {
+                continue;
+            }
+
             outbox.Enqueue(
                 OutboxMessageTypes.OrderReady,
                 new
@@ -497,7 +560,11 @@ internal sealed class TabOrderService(
                     tableLabel = order.Tab.DiningTable.Label,
                 },
                 clock.UtcNow,
-                OutboxMessageTypes.KeyFor("order", order.Id, "ready"));
+
+                // The order's own guest keeps the key a single-owner order always had; a guest with
+                // a line of their own on it gets one of their own beside it.
+                OutboxMessageTypes.KeyFor(
+                    "order", order.Id, recipient.Id == order.OwningParticipantId ? "ready" : $"ready:{recipient.Id}"));
 
             // Into the diner's feed beside the push, saved with it by the ledger below (K12).
             DinerNotices.OrderReady(
@@ -534,6 +601,38 @@ internal sealed class TabOrderService(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);
 
         return ToKitchenView(order, order.Tab.DiningTable.Label, clock.UtcNow);
+    }
+
+    /// <summary>
+    /// Who to tell that an order is ready: everybody with an account it is for.
+    /// </summary>
+    /// <remarks>
+    /// The diner who ordered it from their phone, as it always was, and each guest who owns a line of
+    /// it that is still on the bill - named on the line, or by the order for a line that names nobody
+    /// (<see cref="TabOrder.OwnerOf"/>). One round for the table can be three people's dinners, and
+    /// each of them is waiting for theirs. The order-level guest is <b>not</b> told as such: an order
+    /// "for Ani" whose every line the waiter put on Bob, or whose lines for Ani were all voided, has
+    /// nothing of hers left to be ready. One entry per account, in account order, which is the order
+    /// the account locks are then taken in.
+    /// </remarks>
+    private static List<(TabParticipant Participant, Guid DinerUserId)> ReadyRecipients(TabOrder order)
+    {
+        var owners = order.Lines
+            .Where(l => !l.IsVoided)
+            .Select(order.OwnerOf)
+            .Prepend(order.PlacedByParticipantId)
+            .OfType<Guid>()
+            .ToHashSet();
+
+        return
+        [
+            .. order.Tab.Participants
+                .Where(p => owners.Contains(p.Id) && p.UserId is not null)
+                .Select(p => (Participant: p, DinerUserId: p.UserId!.Value))
+                .GroupBy(r => r.DinerUserId)
+                .Select(g => g.OrderBy(r => r.Participant.Id != order.OwningParticipantId).First())
+                .OrderBy(r => r.DinerUserId),
+        ];
     }
 
     /// <summary>
@@ -680,7 +779,7 @@ internal sealed class TabOrderService(
             order.OnBehalfOfParticipantId,
             order.PlacedAtUtc,
             order.EstimatedReadyAtUtc,
-            [.. order.Lines.Select(ToLineView)],
+            [.. order.Lines.Select(l => ToLineView(order, l))],
             totalsVisible,
             totalsVisible
                 ? new TabTotalsSnapshot(
@@ -721,7 +820,7 @@ internal sealed class TabOrderService(
         return me is not null && TabPermissions.MaySeeTableTotal(me.Status, me.CanSeeTableTotal);
     }
 
-    private static OrderLineView ToLineView(TabOrderLine line) =>
+    private static OrderLineView ToLineView(TabOrder order, TabOrderLine line) =>
         new(
             line.Id,
             line.MenuItemId,
@@ -732,7 +831,15 @@ internal sealed class TabOrderService(
             line.IsShared,
             line.IsTableAttributed,
             line.Note,
-            [.. line.Shares.Select(s => s.TabParticipantId)]);
+            [.. line.Shares.Select(s => s.TabParticipantId)],
+            OnBehalfOf(order, line));
+
+    /// <summary>
+    /// The guest a waiter keyed this line in for, as every read reports it: the line's own, else the
+    /// order's - and nobody on a split line, which belongs to the table whatever the order says.
+    /// </summary>
+    private static Guid? OnBehalfOf(TabOrder order, TabOrderLine line) =>
+        line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId;
 
     private static KitchenOrderView ToKitchenView(TabOrder order, string tableLabel, DateTime nowUtc) =>
         new(
@@ -743,7 +850,7 @@ internal sealed class TabOrderService(
             order.PlacedAtUtc,
             order.EstimatedReadyAtUtc,
             (int)Math.Max(0d, (nowUtc - order.PlacedAtUtc).TotalMinutes),
-            [.. order.Lines.Select(ToLineView)]);
+            [.. order.Lines.Select(l => ToLineView(order, l))]);
 
     private static AdjustmentView ToView(TabAdjustment adjustment, long reductionAmd) =>
         new(

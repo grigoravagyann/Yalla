@@ -5,6 +5,7 @@ using Yalla.Application.Menus;
 using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
+using Yalla.Domain;
 using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
@@ -149,6 +150,551 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         Assert.Equal(4_750L, Share(shares, world.HostId).SharedItemsAmd);
         Assert.Equal(4_750L, Share(shares, world.GuestId).SharedItemsAmd);
         Assert.Equal(0L, Share(shares, world.HostId).OwnItemsAmd);
+    }
+
+    // ------------------------------------------------------------ 1b. who, per line
+
+    /// <summary>
+    /// The tablet assigns each line of a spoken round on its own, and the round is still one order.
+    /// </summary>
+    /// <remarks>
+    /// The floor tablet's draft says per line "the table, shared" or a named guest, then sends once.
+    /// With only the order-level <c>onBehalfOfParticipantId</c> that was one order per person - three
+    /// kitchen tickets for one table's round - or every line on one guest. Each line's own
+    /// <c>participantId</c> is what lets one send stay one ticket and every dish land on the person
+    /// who ate it: on <c>/shares</c>, on their own lines, on the stream and in their "my share" ask.
+    /// </remarks>
+    [SkippableFact]
+    public async Task One_send_with_a_line_per_guest_is_one_order_and_one_ticket_and_each_line_is_charged_to_its_guest()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var waiter = fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+
+        var placed = await waiter.PlaceOrderAsync(new PlaceOrderCommand(
+            world.TabId,
+            [
+                new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.HostId),
+                new OrderItemInput(world.Menu.Khachapuri, 1, ParticipantId: world.GuestId),
+                new OrderItemInput(world.Menu.Wine, 1, IsShared: true),
+            ],
+            Guid.CreateVersion7()));
+
+        Assert.Null(placed.OnBehalfOfParticipantId);
+
+        var coffee = placed.Lines.Single(l => l.MenuItemId == world.Menu.Coffee);
+        var khachapuri = placed.Lines.Single(l => l.MenuItemId == world.Menu.Khachapuri);
+        var wine = placed.Lines.Single(l => l.MenuItemId == world.Menu.Wine);
+
+        Assert.Equal(world.HostId, coffee.OnBehalfOfParticipantId);
+        Assert.Equal(world.GuestId, khachapuri.OnBehalfOfParticipantId);
+        Assert.Null(wine.OnBehalfOfParticipantId);
+
+        // A named line is somebody's, so it is neither split nor "we do not know whose".
+        Assert.All([coffee, khachapuri], l =>
+        {
+            Assert.False(l.IsTableAttributed);
+            Assert.False(l.IsShared);
+            Assert.Empty(l.SharedWithParticipantIds);
+        });
+        Assert.True(wine.IsShared);
+        Assert.False(wine.IsTableAttributed);
+        Assert.Equal(2, wine.SharedWithParticipantIds.Count);
+
+        // One send, one order, one ticket on the kitchen screen.
+        await using var verify = fixture.CreateContext(world.Clock);
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+
+        var queue = await fixture.CreateOrderService(verify, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .GetBranchOrdersAsync(world.Branch.BranchId, null);
+        var ticket = Assert.Single(queue);
+        Assert.Equal(3, ticket.Lines.Count);
+        Assert.Equal(world.GuestId, ticket.Lines.Single(l => l.MenuItemId == world.Menu.Khachapuri).OnBehalfOfParticipantId);
+
+        // Each dish on the person who ate it; the bottle two ways.
+        var shares = await SharesAsync(world);
+
+        Assert.Equal(TestMenu.CoffeeAmd, Share(shares, world.HostId).OwnItemsAmd);
+        Assert.Equal(TestMenu.KhachapuriAmd, Share(shares, world.GuestId).OwnItemsAmd);
+        Assert.Equal(4_750L, Share(shares, world.HostId).SharedItemsAmd);
+        Assert.Equal(4_750L, Share(shares, world.GuestId).SharedItemsAmd);
+
+        // The guest's "my share" ask is priced off the same lines.
+        await using (var askDb = fixture.CreateContext(world.Clock))
+        {
+            var ask = await fixture.CreateServiceRequests(askDb, world.Clock, TestActor.Participant(world.GuestId))
+                .RaiseAsync(world.TabId, world.GuestId, ServiceRequestPreset.TheBill, null, BillScope.MyShare, 0);
+
+            Assert.Equal(Share(shares, world.GuestId).ShareAmd, ask.BillAmountAmd);
+            Assert.Equal(TestMenu.KhachapuriAmd + 4_750L, Share(shares, world.GuestId).PersonalAmd);
+        }
+
+        // The tab says the same, line by line: the staff view names each line's guest, and each
+        // guest's own lines are their dish and the bottle - not the other one's dish.
+        await using var readDb = fixture.CreateContext(world.Clock);
+        var tabs = fixture.CreateTabQuery(readDb);
+
+        var staffView = await tabs.GetForStaffAsync(world.TabId);
+        Assert.NotNull(staffView);
+        Assert.Equal(world.HostId, staffView.Lines.Single(l => l.LineId == coffee.LineId).OnBehalfOfParticipantId);
+        Assert.Equal(world.GuestId, staffView.Lines.Single(l => l.LineId == khachapuri.LineId).OnBehalfOfParticipantId);
+
+        var hostsView = await tabs.GetForParticipantAsync(world.TabId, world.HostId);
+        var guestsView = await tabs.GetForParticipantAsync(world.TabId, world.GuestId);
+
+        Assert.Equal(
+            new[] { coffee.LineId, wine.LineId }.Order(),
+            hostsView!.MyLines.Select(l => l.LineId).Order());
+        Assert.Equal(
+            new[] { khachapuri.LineId, wine.LineId }.Order(),
+            guestsView!.MyLines.Select(l => l.LineId).Order());
+
+        // And the stream carries each line's guest, so a phone catching up can attribute it.
+        var payload = await verify.TabEvents
+            .AsNoTracking()
+            .Where(e => e.TabId == world.TabId && e.Type == TabEventType.OrderPlaced)
+            .Select(e => e.PayloadJson)
+            .SingleAsync();
+
+        using var document = System.Text.Json.JsonDocument.Parse(payload);
+        var lines = document.RootElement.GetProperty("lines").EnumerateArray().ToList();
+
+        Assert.Equal(
+            world.GuestId,
+            lines.Single(l => l.GetProperty("lineId").GetGuid() == khachapuri.LineId)
+                .GetProperty("onBehalfOfParticipantId").GetGuid());
+        Assert.False(
+            lines.Single(l => l.GetProperty("lineId").GetGuid() == wine.LineId)
+                .TryGetProperty("onBehalfOfParticipantId", out var wineOwner)
+            && wineOwner.ValueKind != System.Text.Json.JsonValueKind.Null,
+            "The table's bottle went on the stream in somebody's name.");
+    }
+
+    /// <summary>
+    /// A line's own guest wins over the order's; the lines that name nobody keep the order's.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_lines_own_guest_overrides_the_orders_and_the_other_lines_keep_the_orders()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var waiter = fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+
+        var placed = await waiter.PlaceOrderAsync(new PlaceOrderCommand(
+            world.TabId,
+            [
+                new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.HostId),
+                new OrderItemInput(world.Menu.Khachapuri, 1),
+            ],
+            Guid.CreateVersion7(),
+            OnBehalfOfParticipantId: world.GuestId));
+
+        Assert.Equal(world.GuestId, placed.OnBehalfOfParticipantId);
+        Assert.Equal(world.HostId, placed.Lines.Single(l => l.MenuItemId == world.Menu.Coffee).OnBehalfOfParticipantId);
+        Assert.Equal(world.GuestId, placed.Lines.Single(l => l.MenuItemId == world.Menu.Khachapuri).OnBehalfOfParticipantId);
+        Assert.DoesNotContain(placed.Lines, l => l.IsTableAttributed);
+
+        var shares = await SharesAsync(world);
+
+        Assert.Equal(TestMenu.CoffeeAmd, Share(shares, world.HostId).OwnItemsAmd);
+        Assert.Equal(TestMenu.KhachapuriAmd, Share(shares, world.GuestId).OwnItemsAmd);
+        Assert.Equal(0L, Share(shares, world.HostId).SharedItemsAmd);
+    }
+
+    /// <summary>
+    /// A line naming somebody the order-level field would refuse is refused the same way, whole.
+    /// </summary>
+    /// <remarks>
+    /// One check for both fields, so the tablet reads one set of answers: a participant who is not
+    /// on this tab - made up, or sitting at another table - is not found, and one still waiting on
+    /// the host cannot have an order put in their name yet. The send is refused whole, for the
+    /// sold-out dish's reason: a partial round is a decision made on the table's behalf.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_line_for_somebody_the_order_level_field_refuses_is_refused_the_same_way_and_nothing_is_placed()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var pending = await JoinWithoutApprovalAsync(world, "phone-pending", "Vahe");
+        var elsewhere = await ParticipantAtAnotherTableAsync(world);
+
+        foreach (var (who, participantId) in new[]
+                 {
+                     ("nobody", Guid.CreateVersion7()),
+                     ("a guest at another table", elsewhere),
+                     ("a guest the host has not let on", pending),
+                 })
+        {
+            await using var orderLevelDb = fixture.CreateContext(world.Clock);
+            var orderLevel = await Record.ExceptionAsync(
+                () => fixture.CreateOrderService(orderLevelDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                    .PlaceOrderAsync(new PlaceOrderCommand(
+                        world.TabId,
+                        [new OrderItemInput(world.Menu.Coffee, 1)],
+                        Guid.CreateVersion7(),
+                        OnBehalfOfParticipantId: participantId)));
+
+            await using var lineLevelDb = fixture.CreateContext(world.Clock);
+            var lineLevel = await Record.ExceptionAsync(
+                () => fixture.CreateOrderService(lineLevelDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                    .PlaceOrderAsync(new PlaceOrderCommand(
+                        world.TabId,
+                        [
+                            new OrderItemInput(world.Menu.Khachapuri, 1, ParticipantId: world.GuestId),
+                            new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: participantId),
+                        ],
+                        Guid.CreateVersion7())));
+
+            Assert.NotNull(orderLevel);
+            Assert.NotNull(lineLevel);
+            Assert.True(
+                orderLevel.GetType() == lineLevel.GetType() && orderLevel.Message == lineLevel.Message,
+                $"Naming {who} on a line was answered with {lineLevel.GetType().Name} ({lineLevel.Message}), "
+                + $"and on the order with {orderLevel.GetType().Name} ({orderLevel.Message}).");
+            if (participantId == pending)
+            {
+                var refusal = Assert.IsType<NamedGuestNotOrderableException>(lineLevel);
+                Assert.Equal(ParticipantStatus.PendingApproval, refusal.ParticipantStatus);
+                Assert.Equal("items[1].participantId", refusal.Field);
+                Assert.Equal("onBehalfOfParticipantId", ((NamedGuestNotOrderableException)orderLevel).Field);
+            }
+            else
+            {
+                var refusal = Assert.IsType<NamedGuestNotOnTabException>(lineLevel);
+                Assert.Equal("items[1].participantId", refusal.Field);
+                Assert.Equal(participantId, refusal.ParticipantId);
+                Assert.Equal("onBehalfOfParticipantId", ((NamedGuestNotOnTabException)orderLevel).Field);
+            }
+        }
+
+        await using var verify = fixture.CreateContext(world.Clock);
+        Assert.False(await verify.TabOrders.AnyAsync(o => o.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// A shared line has no owner, so a guest named on one is refused rather than either dropped.
+    /// </summary>
+    /// <remarks>
+    /// The rule the order-level field already follows: <c>onBehalfOfParticipantId</c> is the owner of
+    /// the lines that have one, and a shared line is not one of them - an order for Narine with the
+    /// table's bottle on it splits the bottle. A line that says both "the table's" and "Narine's" is
+    /// a contradiction in one line, and quietly keeping either half bills somebody for what the
+    /// waiter did not mean, so it is a 400 that names the line.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_shared_line_naming_a_guest_is_refused_by_line_and_the_orders_guest_still_skips_a_shared_line()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var waiter = fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId));
+
+        var refused = await Assert.ThrowsAsync<ArgumentException>(
+            () => waiter.PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [
+                    new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.HostId),
+                    new OrderItemInput(world.Menu.Wine, 1, IsShared: true, ParticipantId: world.GuestId),
+                ],
+                Guid.CreateVersion7())));
+
+        Assert.Equal("items[1].participantId", refused.ParamName);
+
+        await using (var verify = fixture.CreateContext(world.Clock))
+        {
+            Assert.False(await verify.TabOrders.AnyAsync(o => o.TabId == world.TabId));
+        }
+
+        // The order-level guest and a shared line, as before: the bottle splits, the coffee is theirs.
+        await using var orderDb = fixture.CreateContext(world.Clock);
+        await fixture.CreateOrderService(orderDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [new OrderItemInput(world.Menu.Coffee, 1), new OrderItemInput(world.Menu.Wine, 1, IsShared: true)],
+                Guid.CreateVersion7(),
+                OnBehalfOfParticipantId: world.GuestId));
+
+        var shares = await SharesAsync(world);
+
+        Assert.Equal(TestMenu.CoffeeAmd, Share(shares, world.GuestId).OwnItemsAmd);
+        Assert.Equal(4_750L, Share(shares, world.GuestId).SharedItemsAmd);
+        Assert.Equal(4_750L, Share(shares, world.HostId).SharedItemsAmd);
+    }
+
+    /// <summary>
+    /// A phone cannot put a line in anybody's name, its own included, exactly as it cannot an order.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_diner_cannot_put_a_line_in_anybodys_name()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        foreach (var named in new[] { world.HostId, world.GuestId })
+        {
+            await using var orderDb = fixture.CreateContext(world.Clock);
+            var diner = fixture.CreateOrderService(orderDb, world.Clock, TestActor.Participant(world.GuestId));
+
+            var refused = await Assert.ThrowsAsync<TabPermissionException>(
+                () => diner.PlaceOrderAsync(new PlaceOrderCommand(
+                    world.TabId,
+                    [new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: named)],
+                    Guid.CreateVersion7())));
+
+            Assert.Contains("staff", refused.Message, StringComparison.Ordinal);
+        }
+
+        await using var verify = fixture.CreateContext(world.Clock);
+        Assert.False(await verify.TabOrders.AnyAsync(o => o.TabId == world.TabId));
+    }
+
+    /// <summary>
+    /// A send retried after a lost answer comes back as the original, each line still on its guest.
+    /// </summary>
+    /// <remarks>
+    /// The tablet queues per device and resends under whoever is signed in, so the retry can carry a
+    /// different body - a draft edited in the meantime. The command id is the order; the retry is
+    /// answered with what was placed, and nothing is placed twice or moved between guests.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_replayed_send_with_a_line_per_guest_answers_with_the_original_lines_and_owners()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var commandId = Guid.CreateVersion7();
+
+        var first = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [
+                    new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.HostId),
+                    new OrderItemInput(world.Menu.Khachapuri, 1, ParticipantId: world.GuestId),
+                ],
+                commandId));
+
+        // The retry, from another waiter, with the guests swapped.
+        await using var retryDb = fixture.CreateContext(world.Clock);
+        var colleague = await AnotherWaiterAsync(retryDb, world);
+
+        var again = await fixture.CreateOrderService(retryDb, world.Clock, TestActor.Waiter(colleague))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [
+                    new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.GuestId),
+                    new OrderItemInput(world.Menu.Khachapuri, 1, ParticipantId: world.HostId),
+                ],
+                commandId));
+
+        Assert.True(again.WasReplay);
+        Assert.Equal(first.OrderId, again.OrderId);
+        Assert.Equal(
+            first.Lines.Select(l => (l.LineId, l.OnBehalfOfParticipantId)).Order(),
+            again.Lines.Select(l => (l.LineId, l.OnBehalfOfParticipantId)).Order());
+        Assert.Equal(world.HostId, again.Lines.Single(l => l.MenuItemId == world.Menu.Coffee).OnBehalfOfParticipantId);
+
+        await using var verify = fixture.CreateContext(world.Clock);
+        Assert.Equal(1, await verify.TabOrders.CountAsync(o => o.TabId == world.TabId));
+
+        var shares = await SharesAsync(world);
+        Assert.Equal(TestMenu.CoffeeAmd, Share(shares, world.HostId).OwnItemsAmd);
+        Assert.Equal(TestMenu.KhachapuriAmd, Share(shares, world.GuestId).OwnItemsAmd);
+    }
+
+    /// <summary>
+    /// A phone naming a guest on a shared line is refused as a phone, and a waiter's retry whose
+    /// body has become contradictory is answered with the order it already placed.
+    /// </summary>
+    /// <remarks>
+    /// The shared-line check is about what a waiter may send, so it runs after the two questions
+    /// that come first: is this a retry (then the original is the answer, whatever the body says now),
+    /// and is this a phone (then naming anybody at all is the refusal - 403, as the wire says).
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_phone_naming_a_guest_on_a_shared_line_is_refused_as_a_phone_and_a_retry_gets_its_order()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        await using (var phoneDb = fixture.CreateContext(world.Clock))
+        {
+            await Assert.ThrowsAsync<TabPermissionException>(
+                () => fixture.CreateOrderService(phoneDb, world.Clock, TestActor.Participant(world.GuestId))
+                    .PlaceOrderAsync(new PlaceOrderCommand(
+                        world.TabId,
+                        [new OrderItemInput(world.Menu.Wine, 1, IsShared: true, ParticipantId: world.GuestId)],
+                        Guid.CreateVersion7())));
+        }
+
+        var commandId = Guid.CreateVersion7();
+
+        var first = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Wine, 1, IsShared: true)], commandId));
+
+        await using var retryDb = fixture.CreateContext(world.Clock);
+        var again = await fixture.CreateOrderService(retryDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [new OrderItemInput(world.Menu.Wine, 1, IsShared: true, ParticipantId: world.HostId)],
+                commandId));
+
+        Assert.True(again.WasReplay);
+        Assert.Equal(first.OrderId, again.OrderId);
+    }
+
+    /// <summary>
+    /// A shared line is nobody's on every read, whoever the order was for.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TabOrder.OwnerOf"/> already said so for the money; the per-line
+    /// <c>onBehalfOfParticipantId</c> used to repeat the order's guest on a shared line, and the
+    /// diner app reads that field as "mine" - so the order's guest saw the table's bottle flagged as
+    /// theirs. Every read now says what the bill does: the coffee is the guest's, the bottle nobody's.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_shared_line_is_nobodys_on_every_read_whoever_the_order_was_for()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var placed = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [new OrderItemInput(world.Menu.Coffee, 1), new OrderItemInput(world.Menu.Wine, 1, IsShared: true)],
+                Guid.CreateVersion7(),
+                OnBehalfOfParticipantId: world.GuestId));
+
+        var coffee = placed.Lines.Single(l => l.MenuItemId == world.Menu.Coffee);
+        var wine = placed.Lines.Single(l => l.MenuItemId == world.Menu.Wine);
+
+        Assert.Equal(world.GuestId, coffee.OnBehalfOfParticipantId);
+        Assert.Null(wine.OnBehalfOfParticipantId);
+
+        await using var readDb = fixture.CreateContext(world.Clock);
+        var ticket = Assert.Single(
+            await fixture.CreateOrderService(readDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                .GetBranchOrdersAsync(world.Branch.BranchId, null));
+        Assert.Null(ticket.Lines.Single(l => l.LineId == wine.LineId).OnBehalfOfParticipantId);
+
+        var staffView = await fixture.CreateTabQuery(readDb).GetForStaffAsync(world.TabId);
+        Assert.Null(staffView!.Lines.Single(l => l.LineId == wine.LineId).OnBehalfOfParticipantId);
+        Assert.Equal(world.GuestId, staffView.Lines.Single(l => l.LineId == coffee.LineId).OnBehalfOfParticipantId);
+
+        var payload = await readDb.TabEvents
+            .AsNoTracking()
+            .Where(e => e.TabId == world.TabId && e.Type == TabEventType.OrderPlaced)
+            .Select(e => e.PayloadJson)
+            .SingleAsync();
+
+        using var document = System.Text.Json.JsonDocument.Parse(payload);
+        var wineOnTheStream = document.RootElement.GetProperty("lines").EnumerateArray()
+            .Single(l => l.GetProperty("lineId").GetGuid() == wine.LineId);
+        Assert.False(
+            wineOnTheStream.TryGetProperty("onBehalfOfParticipantId", out var owner)
+            && owner.ValueKind != System.Text.Json.JsonValueKind.Null,
+            "The table's bottle went on the stream in the order's guest's name.");
+
+        // The money never changed: the bottle splits, the coffee is the guest's.
+        var shares = await SharesAsync(world);
+        Assert.Equal(TestMenu.CoffeeAmd, Share(shares, world.GuestId).OwnItemsAmd);
+        Assert.Equal(4_750L, Share(shares, world.GuestId).SharedItemsAmd);
+    }
+
+    /// <summary>
+    /// A guest the host took off the tab is refused by name as taken off, not as "not on yet".
+    /// </summary>
+    [SkippableFact]
+    public async Task A_line_for_a_guest_taken_off_the_tab_is_refused_as_taken_off()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        await using (var hostDb = fixture.CreateContext(world.Clock))
+        {
+            await fixture.CreateTabService(hostDb, world.Clock, TestActor.Participant(world.HostId))
+                .RemoveParticipantAsync(world.TabId, world.HostId, world.GuestId);
+        }
+
+        var refused = await Assert.ThrowsAsync<NamedGuestNotOrderableException>(
+            () => fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                .PlaceOrderAsync(new PlaceOrderCommand(
+                    world.TabId,
+                    [new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.GuestId)],
+                    Guid.CreateVersion7())));
+
+        Assert.Contains("taken off the tab", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(ParticipantStatus.Removed, refused.ParticipantStatus);
+        Assert.Equal(world.GuestId, refused.ParticipantId);
+        Assert.Equal("items[0].participantId", refused.Field);
+        Assert.DoesNotContain("not on the tab yet", refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A comp or a void on a line named for a guest moves that guest's share and nobody else's.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_comp_or_void_on_a_named_line_moves_that_guests_share_only()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var placed = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId,
+                [
+                    new OrderItemInput(world.Menu.Coffee, 1, ParticipantId: world.HostId),
+                    new OrderItemInput(world.Menu.Khachapuri, 1, ParticipantId: world.GuestId),
+                ],
+                Guid.CreateVersion7()));
+
+        var coffee = placed.Lines.Single(l => l.MenuItemId == world.Menu.Coffee);
+        var khachapuri = placed.Lines.Single(l => l.MenuItemId == world.Menu.Khachapuri);
+
+        await using (var managerDb = fixture.CreateContext(world.Clock))
+        {
+            await fixture.CreateOrderService(managerDb, world.Clock, TestActor.Manager(world.Branch.ManagerId))
+                .AddAdjustmentAsync(new AddAdjustmentCommand(
+                    world.TabId, khachapuri.LineId, AdjustmentKind.Comp, null, 1_000L, "it arrived cold",
+                    Guid.CreateVersion7()));
+        }
+
+        var afterComp = await SharesAsync(world);
+        Assert.Equal(TestMenu.KhachapuriAmd - 1_000L, Share(afterComp, world.GuestId).OwnItemsAmd);
+        Assert.Equal(TestMenu.CoffeeAmd, Share(afterComp, world.HostId).OwnItemsAmd);
+
+        await using (var waiterDb = fixture.CreateContext(world.Clock))
+        {
+            await fixture.CreateOrderService(waiterDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                .VoidLineAsync(new VoidLineCommand(world.TabId, coffee.LineId, "changed their mind", Guid.CreateVersion7()));
+        }
+
+        var afterVoid = await SharesAsync(world);
+        Assert.Equal(0L, Share(afterVoid, world.HostId).OwnItemsAmd);
+        Assert.Equal(TestMenu.KhachapuriAmd - 1_000L, Share(afterVoid, world.GuestId).OwnItemsAmd);
     }
 
     // ------------------------------------------------------------ 2. a sold-out dish
@@ -1001,6 +1547,42 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
 
         Assert.Equal(TabOrderStatus.New, placed.Status);
+    }
+
+    /// <summary>Somebody approved on a tab at the branch's second table - a real participant, not this tab's.</summary>
+    private async Task<Guid> ParticipantAtAnotherTableAsync(World world)
+    {
+        await using var db = fixture.CreateContext(world.Clock);
+        var tabs = fixture.CreateTabService(db, world.Clock, new TestActor(ActorType.Diner, null, null, null));
+
+        var qr = await db.DiningTables
+            .Where(t => t.Id == world.Branch.TableIds[1])
+            .Select(t => t.QrToken)
+            .FirstAsync();
+
+        var opened = await tabs.OpenAsync(new OpenTabCommand(qr, "phone-next-table", Guid.CreateVersion7(), "Gor"));
+
+        Assert.NotEqual(world.TabId, opened.Tab.TabId);
+        Assert.Equal(ParticipantStatus.Approved, opened.Tab.Me.Status);
+
+        return opened.Tab.Me.ParticipantId;
+    }
+
+    /// <summary>A second waiter on the same branch.</summary>
+    private static async Task<Guid> AnotherWaiterAsync(YallaDbContext db, World world)
+    {
+        var colleague = new StaffMember(
+            world.Branch.VenueId,
+            "Second Waiter",
+            $"+3743{Random.Shared.Next(1_000_000, 9_999_999)}",
+            StaffRole.Waiter,
+            "hash",
+            world.Branch.BranchId);
+
+        db.StaffMembers.Add(colleague);
+        await db.SaveChangesAsync();
+
+        return colleague.Id;
     }
 
     private sealed record World(

@@ -1709,6 +1709,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");
 
+                    b.Property<Guid?>("OnBehalfOfParticipantId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<int>("Quantity")
                         .HasColumnType("int");
 
@@ -1729,6 +1732,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OnBehalfOfParticipantId");
 
                     b.HasIndex("TabOrderId");
 
@@ -2772,6 +2777,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Yalla.Domain.Tabs.TabParticipant", "OnBehalfOfParticipant")
+                        .WithMany()
+                        .HasForeignKey("OnBehalfOfParticipantId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Yalla.Domain.Tabs.TabOrder", "TabOrder")
                         .WithMany("Lines")
                         .HasForeignKey("TabOrderId")
@@ -2784,6 +2794,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("MenuItem");
+
+                    b.Navigation("OnBehalfOfParticipant");
 
                     b.Navigation("TabOrder");
 

@@ -122,7 +122,7 @@ internal sealed class TabLedger(
         var lines = orders
             .SelectMany(order => order.Lines.Select(line => new BillingLine(
                 line.Id,
-                line.IsSplitAcrossParticipants ? null : order.OwningParticipantId,
+                order.OwnerOf(line),
                 line.UnitPriceAmdSnapshot,
                 line.Quantity,
                 line.IsVoided,

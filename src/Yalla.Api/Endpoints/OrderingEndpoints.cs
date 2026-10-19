@@ -102,9 +102,14 @@ public static class OrderingEndpoints
                 + "a kitchen cooks an order together.\n\n"
                 + "`totals` is the tab's, so it follows `tableTotalVisible` on your tab: **absent**, "
                 + "with `tableTotalVisible: false` beside it, when the host hid the total from you. "
-                + "Read it as optional.")
+                + "Read it as optional.\n\n"
+                + "`onBehalfOfParticipantId` and a line's `participantId` are the waiter's: a phone "
+                + "sending either is refused with 403 `forbidden`, its own id included.")
             .Produces<OrderView>(StatusCodes.Status201Created)
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, NotOnTabDescription)
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                NotOnTabDescription
+                + " Or the body named a guest: `onBehalfOfParticipantId` and `items[i].participantId` are staff only.")
             .ProducesProblem<MenuItemUnavailableProblem>(
                 StatusCodes.Status409Conflict,
                 "`menu-item-unavailable`: a dish has sold out. `context.itemName` is which one - say "
@@ -179,13 +184,44 @@ public static class OrderingEndpoints
                 + "`onBehalfOfParticipantId` is what keeps \"everyone pays their own\" working. "
                 + "Without it the line is **attributed to the table** and splits across everyone "
                 + "present - a real answer rather than a wrong one, and one whose cost the venue can "
-                + "see in its own numbers.")
+                + "see in its own numbers.\n\n"
+                + "**Who, per line.** `items[i].participantId` names the guest one line is for and "
+                + "overrides `onBehalfOfParticipantId` for that line alone, so a round with the "
+                + "table's latte, Narine's steak and Aram's coffee is **one order and one kitchen "
+                + "ticket**, each dish on the person who ate it. Every line in the response carries "
+                + "`onBehalfOfParticipantId`: its own guest, else the order's, and absent on a shared "
+                + "line. `onBehalfOfParticipantId` on the order is a default for the lines that name "
+                + "nobody, not a claim on the order. Both fields are checked "
+                + "by one rule - an approved participant on this tab.\n\n"
+                + "**A shared line has no owner.** `isShared` splits the line across everyone present "
+                + "whatever `onBehalfOfParticipantId` says, as it always did; a line that is `isShared` "
+                + "**and** names a `participantId` contradicts itself and is refused. Every refusal "
+                + "refuses the whole send.")
             .Produces<OrderView>(StatusCodes.Status201Created)
+            .ProducesProblemDetails(
+                StatusCodes.Status400BadRequest,
+                "`invalid-request`: a shared line named a guest. `context.field` is `items[i].participantId`.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff, or another branch's tab.")
+            .ProducesProblem<NamedGuestRefusedProblem>(
+                StatusCodes.Status404NotFound,
+                "`not-found`. When `onBehalfOfParticipantId` or a line's `participantId` is not on this tab - "
+                + "made up, or a guest at another table - `context` names it: `field` "
+                + "(`onBehalfOfParticipantId` or `items[i].participantId`) and `participantId`. Any other "
+                + "404 here (a dish on no menu, an unknown tab) has no `context`.")
+            .ProducesProblem<NamedGuestRefusedProblem>(
+                StatusCodes.Status409Conflict,
+                "`conflicting-state` about a named guest: `context` carries `field`, `participantId` and "
+                + "`participantStatus` (1 not let on yet, 3 taken off). A `conflicting-state` without a "
+                + "`participantId` is something else, e.g. another branch's dish.")
             .ProducesProblem<MenuItemUnavailableProblem>(
                 StatusCodes.Status409Conflict, "`menu-item-unavailable`, with the dish named.")
             .ProducesProblem<TabNotAcceptingOrdersProblem>(
-                StatusCodes.Status409Conflict, "`tab-not-accepting-orders`: the bill has been asked for.");
+                StatusCodes.Status409Conflict,
+                "`tab-not-accepting-orders`: the tab takes no more orders. `context.status` says why - 2 "
+                + "Closing (the bill has been asked for), 3 Closed (paid and settled), 4 Abandoned "
+                + "(written off). Also `menu-item-unavailable`, with the dish named, and "
+                + "`conflicting-state`: with `context.participantId` when a guest the order named is not "
+                + "orderable for (not let on yet, or taken off), without it for anything else.");
 
         staff.MapPost("/lines/{lineId:guid}/void", VoidLineAsync)
             .WithName("voidTabLine")

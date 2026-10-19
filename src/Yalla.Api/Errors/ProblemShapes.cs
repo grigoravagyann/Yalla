@@ -84,6 +84,32 @@ public sealed record TabNotAcceptingOrdersProblem : ProblemShape
     public required TabNotAcceptingOrdersContext Context { get; init; }
 }
 
+/// <summary>The guest a staff order named, when the refusal is about them.</summary>
+/// <param name="Field">
+/// Which field named them: <c>onBehalfOfParticipantId</c>, or <c>items[i].participantId</c> with the
+/// line's index in <c>items</c>.
+/// </param>
+/// <param name="ParticipantId">The guest named.</param>
+/// <param name="ParticipantStatus">
+/// On the 409 only: 1 PendingApproval (not let on yet) or 3 Removed (taken off by the host). Absent on
+/// the 404, where the guest is not on this tab at all.
+/// </param>
+public sealed record NamedGuestContext(string Field, Guid ParticipantId, ParticipantStatus? ParticipantStatus);
+
+/// <summary>
+/// <c>not-found</c> (404) or <c>conflicting-state</c> (409) on a staff order, told apart by its
+/// context: present only when a guest the order named is the cause.
+/// </summary>
+public sealed record NamedGuestRefusedProblem : ProblemShape
+{
+    /// <summary>
+    /// The guest and the field that named them. <b>Absent</b> for every other cause of the same status
+    /// and code - a dish not on any menu, another branch's dish, an unknown tab - which is how a
+    /// client tells "that guest is no longer orderable for" from those.
+    /// </summary>
+    public NamedGuestContext? Context { get; init; }
+}
+
 /// <summary>Nobody is seated at the table a tab was asked for.</summary>
 /// <param name="TableId">The table.</param>
 /// <param name="TableLabel">What staff call it.</param>

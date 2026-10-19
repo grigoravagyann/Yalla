@@ -400,14 +400,15 @@ Two questions, and they are deliberately not the same one.
 - **Charged for** - `TabLineSnapshot.IsChargedTo`, the rule `TabBilling` and `/shares` use. A split
   line (shared or table-attributed) is charged to everyone on its snapshot - the participants approved
   at the moment it was ordered, not anyone who arrived later; any other line to its owner, who ordered
-  it or had a waiter key it in for them (`PlacedBy ?? OnBehalfOf`).
+  it or had a waiter key it in for them (`PlacedBy ?? OnBehalfOf`, where a line's own
+  `OnBehalfOfParticipantId` wins over its order's - `TabOrder.OwnerOf`).
 - **On my lines** - `TabProjection.IsOwnLine`, what the bill itemises as yours, price and all. The
   same, with **one exception**: a table-attributed line only for a reader allowed the table total.
 
 | Line | On `myLines` of | `/shares` charges |
 | --- | --- | --- |
 | Ordered from their phone | the person who ordered it | them |
-| Keyed in by a waiter with `onBehalfOfParticipantId` | that person, though `placedByParticipantId` is null | them (it used to be nobody's on the bill) |
+| Keyed in by a waiter with `onBehalfOfParticipantId`, or with that line's own `items[i].participantId` | that person, though `placedByParticipantId` is null | them (it used to be nobody's on the bill) |
 | Shared (`isShared`) - a bottle split with the people at the table | everyone on its snapshot, as it always was | everyone on its snapshot |
 | Table-attributed - a waiter's line for nobody in particular | everyone on its snapshot **who may see the table total** | everyone on its snapshot, total or not |
 | A removed participant's | nobody's own | the host - who is always shown every line |
@@ -427,6 +428,35 @@ total sees those lines on `myLines` (the ones they were there for, flagged `isTa
 `TabProjectionTests.Own_items_are_what_the_split_charges_each_person_for` (with the total and without),
 and over HTTP by `ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines` and
 `sharedItemsAmd = half the bottle + half the table's khachapuri after its comp`.
+
+**Who, per line (2026-10-19).** The floor tablet assigns each line of a spoken round to the table
+(shared) or a named guest and sends the round once. `OrderItemRequest.participantId` is that line's
+guest, stored on `TabOrderLines.OnBehalfOfParticipantId`, and it overrides the order's
+`onBehalfOfParticipantId` for that line alone - so one send is one order and one kitchen ticket. The
+order-level field is a **default for the lines that name nobody**, not a claim on the order.
+
+- A line's owner is `TabOrder.OwnerOf`: its own guest, else the order's, and **nobody on a shared or
+  table-attributed line** whatever the order says. Every read reports exactly that as the line's
+  `onBehalfOfParticipantId` - the tab, the order answer, the kitchen queue, the stream - absent on a
+  split line.
+- Both fields are checked by one rule: an approved participant on this tab (404 `not-found`; 409
+  `conflicting-state` for a guest not let on yet, or one taken off). Those refusals carry
+  `context.field` (`onBehalfOfParticipantId` or `items[i].participantId`) and `context.participantId`
+  (plus `participantStatus` on the 409), from `NamedGuestNotOnTabException` and
+  `NamedGuestNotOrderableException`, and nothing else with the same status and code does: a dish on no menu, another branch's dish and
+  an unknown tab have no `participantId`, and a closed tab is `tab-not-accepting-orders` with
+  `context.status`. A phone naming anybody is 403,
+  before anything else about the body. A waiter's `isShared` line that names a `participantId` is
+  400 `invalid-request` with `context.field` `items[i].participantId` - checked after the replay
+  lookup, so a retry gets its original order whatever its body says now.
+- "Order ready" goes to the diner who ordered from their phone and to each owner of a line still on
+  the bill. An order-level guest with no line of theirs left (all put on others, or voided) is not
+  told. Keys: `order:{id}:ready` for the order's own owner, `order:{id}:ready:{participantId}` for
+  everybody else.
+- The diner's Orders tab lists the order for each guest who owns an unsplit line of it (see
+  `diner-browse.md`).
+
+Pinned by `OrderingTests` ("who, per line") and `LineAttributionEndpointTests`.
 
 **The Orders tab agrees.** `GET /api/diner/orders` (`DinerOrderQuery`) lists an order the diner
 placed, one keyed in on their behalf, and a waiter's order for the whole table only when they may see
@@ -513,7 +543,7 @@ them.
 | 7 | `ParticipantRenamed` | `participantId` | | | `displayName` |
 | 8 | `HostReassigned` | `fromParticipantId`, `toParticipantId` | | | |
 | 9 | `SettlementModeChanged` | `settlementMode`, `lockedAtUtc` | | | |
-| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each line on their `myLines` (7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`) | every other line, **whole** - the menu is public, so a name and a quantity are a price - and so every table-attributed line | |
+| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each line on their `myLines` (7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`, `onBehalfOfParticipantId` - the line's guest, else the order's) | every other line, **whole** - the menu is public, so a name and a quantity are a price - and so every table-attributed line | |
 | 11 | `OrderStatusChanged` | `orderId`, `fromStatus`, `toStatus`, `byStaffId` | | | |
 | 12 | `LineVoided` | `lineId`, `orderId`, `voidedByStaffId` | `name`, `reason` | | |
 | 13 | `AdjustmentAdded` | `adjustmentId`, `tabOrderLineId` | `kind`, `percent`, `amountAmd`, `reason` (an adjustment on their own line) | all four, off the whole tab or another person's line | |
