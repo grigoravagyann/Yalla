@@ -64,7 +64,7 @@ public interface IStaffAuthService
 
     /// <summary>
     /// Everybody who may tap a PIN on this device, sorted by name, for the PIN screen - each with
-    /// their shift at this branch running now or starting later today.
+    /// their shift at this branch running now or starting within twelve hours.
     /// </summary>
     /// <remarks>
     /// Exactly the people <see cref="SignInWithPinAsync"/> would accept a PIN from here - the same

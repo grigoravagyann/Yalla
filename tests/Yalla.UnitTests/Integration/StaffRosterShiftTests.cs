@@ -2,8 +2,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
+using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -27,6 +30,8 @@ public sealed class StaffRosterShiftTests(SqlServerFixture fixture)
     private static TimeOnly T(int hour, int minute = 0) => new(hour, minute);
 
     private static DateTime Utc(int day, int hour, int minute = 0) => new(2026, 10, day, hour, minute, 0, DateTimeKind.Utc);
+
+    private static DateTime At(int month, int day, int hour, int minute) => new(2026, month, day, hour, minute, 0, DateTimeKind.Utc);
 
     [SkippableFact]
     public async Task Somebody_on_shift_now_is_marked_with_the_shift_in_wall_clock_and_as_instants()
@@ -147,7 +152,7 @@ public sealed class StaffRosterShiftTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task Shifts_on_other_days_and_a_day_off_today_are_not_today()
+    public async Task Shifts_beyond_the_twelve_hour_look_ahead_over_ones_and_a_day_off_are_not_reported()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -238,6 +243,189 @@ public sealed class StaffRosterShiftTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// The next shift is looked for twelve hours ahead, not to midnight: at 23:50, tomorrow's 00:10 is the next one.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_next_shift_is_reported_up_to_twelve_hours_ahead_across_midnight()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await BranchAsync(factory);
+        var anna = await PersonAsync(factory, branch.VenueId, "Anna Venue-Wide", branchId: null);
+        var tomorrow = Today.AddDays(1);
+
+        await ShiftsAsync(
+            factory,
+            new StaffShift(branch.WaiterId, branch.BranchId, tomorrow, T(0, 10), T(8)),
+            new StaffShift(anna, branch.BranchId, tomorrow, T(11, 50), T(18)),
+            new StaffShift(branch.ManagerId, branch.BranchId, tomorrow, T(12), T(20)));
+
+        // 23:50 on Monday in Yerevan.
+        var roster = await RosterAsync(factory, branch, Utc(19, 19, 50));
+
+        var waiter = roster[branch.WaiterId];
+        Assert.False(waiter.GetProperty("onShiftNow").GetBoolean());
+        Assert.Equal("00:10:00", waiter.GetProperty("startsAt").GetString());
+        Assert.Equal(Utc(19, 20, 10), waiter.GetProperty("startsAtUtc").GetDateTime());
+
+        // Exactly twelve hours ahead is in; ten minutes more is not.
+        Assert.Equal("11:50:00", roster[anna].GetProperty("startsAt").GetString());
+        AssertNoShift(roster[branch.ManagerId]);
+    }
+
+    // ---------------------------------------------------------------- clock changes
+
+    // Berlin's clocks go back from 03:00 summer time to 02:00 winter time at 01:00Z on Sunday 25 October 2026, so
+    // 02:00-03:00 happens twice - 00:00Z-01:00Z, then 01:00Z-02:00Z - and forward from 02:00 to 03:00 at 01:00Z on
+    // Sunday 29 March 2026, so 02:00-03:00 never happens that night.
+    private const string Berlin = "Europe/Berlin";
+
+    private static readonly DateOnly FallBack = new(2026, 10, 25);
+
+    private static readonly DateOnly SpringForward = new(2026, 3, 29);
+
+    /// <summary>The review's probe: the wall clock put a shift back on in the repeated hour after it had ended.</summary>
+    [SkippableFact]
+    public async Task A_shift_ending_in_the_repeated_hour_is_over_on_its_second_pass()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await BranchAsync(factory, Berlin);
+
+        await ShiftsAsync(factory, new StaffShift(branch.WaiterId, branch.BranchId, FallBack, T(1), T(2, 30)));
+
+        var tablet = await TabletAsync(factory, branch);
+
+        // 02:15 summer time: running, and over at the first 02:30.
+        var first = (await RosterAtAsync(factory, tablet, At(10, 25, 0, 15)))[branch.WaiterId];
+        Assert.True(first.GetProperty("onShiftNow").GetBoolean());
+        Assert.Equal(At(10, 24, 23, 0), first.GetProperty("startsAtUtc").GetDateTime());
+        Assert.Equal(At(10, 25, 0, 30), first.GetProperty("endsAtUtc").GetDateTime());
+
+        // 02:45 summer time, then 02:15 winter time: over both times.
+        AssertNoShift((await RosterAtAsync(factory, tablet, At(10, 25, 0, 45)))[branch.WaiterId]);
+        AssertNoShift((await RosterAtAsync(factory, tablet, At(10, 25, 1, 15)))[branch.WaiterId]);
+    }
+
+    [SkippableFact]
+    public async Task A_shift_starting_in_the_repeated_hour_starts_at_its_first_pass_and_stays_on()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await BranchAsync(factory, Berlin);
+
+        await ShiftsAsync(factory, new StaffShift(branch.WaiterId, branch.BranchId, FallBack, T(2, 30), T(8)));
+
+        var tablet = await TabletAsync(factory, branch);
+
+        // 02:15 summer time: not yet, and it says when - the first 02:30.
+        var before = (await RosterAtAsync(factory, tablet, At(10, 25, 0, 15)))[branch.WaiterId];
+        Assert.False(before.GetProperty("onShiftNow").GetBoolean());
+        Assert.Equal(At(10, 25, 0, 30), before.GetProperty("startsAtUtc").GetDateTime());
+
+        // 02:45 summer time, then 02:15 winter time - before 02:30 on the clock, but long since started.
+        foreach (var now in new[] { At(10, 25, 0, 45), At(10, 25, 1, 15) })
+        {
+            var during = (await RosterAtAsync(factory, tablet, now))[branch.WaiterId];
+
+            Assert.True(during.GetProperty("onShiftNow").GetBoolean(), $"Not on shift at {now:HH:mm}Z.");
+            Assert.Equal(At(10, 25, 0, 30), during.GetProperty("startsAtUtc").GetDateTime());
+            Assert.Equal(At(10, 25, 7, 0), during.GetProperty("endsAtUtc").GetDateTime());
+        }
+    }
+
+    /// <summary>
+    /// 02:30 does not exist that night. The shift starts when a watch not yet put forward reads 02:30 - 03:30 summer
+    /// time, 01:30Z - and the roster says so, so a screen re-checking the instants agrees with it.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_shift_starting_in_the_skipped_hour_starts_on_the_clock_from_before_the_change_and_has_its_instants()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await BranchAsync(factory, Berlin);
+
+        await ShiftsAsync(factory, new StaffShift(branch.WaiterId, branch.BranchId, SpringForward, T(2, 30), T(10)));
+
+        var tablet = await TabletAsync(factory, branch);
+
+        // 03:15 summer time: after 02:30 on the clock, but not yet.
+        var before = (await RosterAtAsync(factory, tablet, At(3, 29, 1, 15)))[branch.WaiterId];
+        Assert.False(before.GetProperty("onShiftNow").GetBoolean());
+        Assert.Equal("02:30:00", before.GetProperty("startsAt").GetString());
+        Assert.Equal(At(3, 29, 1, 30), before.GetProperty("startsAtUtc").GetDateTime());
+        Assert.Equal(At(3, 29, 8, 0), before.GetProperty("endsAtUtc").GetDateTime());
+
+        // 03:45 summer time: on.
+        var during = (await RosterAtAsync(factory, tablet, At(3, 29, 1, 45)))[branch.WaiterId];
+        Assert.True(during.GetProperty("onShiftNow").GetBoolean());
+        Assert.Equal(At(3, 29, 1, 30), during.GetProperty("startsAtUtc").GetDateTime());
+    }
+
+    // ---------------------------------------------------------------- cost
+
+    /// <summary>
+    /// The roster is three statements - the device, the people, the branch's shifts - however many people and shifts
+    /// there are: no read per person.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_roster_reads_in_three_statements_however_many_people_and_shifts()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var counter = new CommandCountingInterceptor();
+        await using var factory = NewFactory()
+            .WithServices(services => services.ConfigureDbContext<YallaDbContext>(o => o.AddInterceptors(counter)));
+
+        var small = await BranchAsync(factory);
+        var large = await BranchAsync(factory);
+        var people = new List<Guid> { large.WaiterId, large.ManagerId };
+
+        for (var i = 0; i < 4; i++)
+        {
+            people.Add(await PersonAsync(factory, large.VenueId, $"Extra Person {i}", large.BranchId));
+        }
+
+        await ShiftsAsync(
+            factory,
+            [
+                .. people.Select(id => new StaffShift(id, large.BranchId, Today, T(10), T(14))),
+                .. people.Select(id => new StaffShift(id, large.BranchId, Today, T(18), T(23))),
+            ]);
+
+        await StaffAuthTests.EnrolDeviceAsync(factory, small);
+        await StaffAuthTests.EnrolDeviceAsync(factory, large);
+        factory.Clock.UtcNow = Noon;
+
+        var statements = new Dictionary<string, (int Count, int People)>();
+
+        foreach (var (name, branch) in new[] { ("small", small), ("large", large) })
+        {
+            Guid deviceId;
+
+            await using (var db = fixture.CreateContext(factory.Clock))
+            {
+                deviceId = await db.StaffDevices.Where(d => d.BranchId == branch.BranchId).Select(d => d.Id).SingleAsync();
+            }
+
+            using var scope = factory.Services.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IStaffAuthService>();
+
+            var before = counter.Count;
+            var roster = await service.GetRosterAsync(deviceId);
+
+            statements[name] = (counter.Count - before, roster.Count);
+        }
+
+        Assert.Equal((3, 2), statements["small"]);
+        Assert.Equal((3, 6), statements["large"]);
+    }
+
+    /// <summary>
     /// Shifts add to the roster and take nothing away: the deactivated stay off it whatever their shifts say, and
     /// somebody with no shift is still listed and still signs in.
     /// </summary>
@@ -292,6 +480,21 @@ public sealed class StaffRosterShiftTests(SqlServerFixture fixture)
         YallaApiFactory factory, AuthBranch branch, DateTime nowUtc)
     {
         var deviceToken = await StaffAuthTests.EnrolDeviceAsync(factory, branch);
+        factory.Clock.UtcNow = nowUtc;
+
+        using var tablet = factory.CreateClientWithToken(deviceToken);
+
+        return await ReadRosterAsync(tablet);
+    }
+
+    /// <summary>Enrols a tablet on the real clock, so its token is good.</summary>
+    private static async Task<string> TabletAsync(YallaApiFactory factory, AuthBranch branch) =>
+        await StaffAuthTests.EnrolDeviceAsync(factory, branch);
+
+    /// <summary>The roster on an enrolled tablet at <paramref name="nowUtc"/>.</summary>
+    private static async Task<Dictionary<Guid, JsonElement>> RosterAtAsync(
+        YallaApiFactory factory, string deviceToken, DateTime nowUtc)
+    {
         factory.Clock.UtcNow = nowUtc;
 
         using var tablet = factory.CreateClientWithToken(deviceToken);
