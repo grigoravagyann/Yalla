@@ -165,6 +165,10 @@ booked. A booking cut short by its guest's promise to free the table (`promisedF
 [reservations.md](reservations.md#3e-a-tables-evening-when-one-booking-may-follow-another)) ends when they
 promised rather than a turn time after its start, so it counts only when it runs longer than the new
 turn time. A settings change never rewrites or cancels a booking as a side effect.
+`GET /api/branches/{id}/reservation-policy/defaults` answers what the branch ships with for its
+venue's type (`defaults`, the same shape) and every field's editing `bounds` (`field`, `min`, and `max`,
+absent where there is no ceiling), so the console's "default" line and its reset read the server's
+numbers instead of a copy of them.
 
 **Opening hours** (`GET`/`PUT /api/branches/{id}/opening-hours`) — the whole week, replaced
 atomically. `closesNextDay` is derived — a closing time at or before the opening time means after
@@ -519,6 +523,8 @@ ones they had then. `detail` is the row's JSON as written:
 | `review.hide`, `review.unhide` | venue or platform | `actorType`, `branchId`, `reason`, `before` |
 | `review.dismiss-reports` | platform | `actorType`, `branchId`, `dismissed`, `reasons` (count per report reason) |
 | `review.restore-reports` | platform | `actorType`, `branchId`, `restored`, `dismissedAtUtc` (the dismissal it undid) |
+| `review.remove-reply` | platform (`DELETE /api/platform/reviews/{id}/reply`) or venue | `actorType`, `branchId`, `before` (`text`, `authorName`); **only the platform's rows are in the feed** |
+| `review.reply` | owner, general or branch manager | `actorType`, `branchId`, `edited`, `before`; a venue answering its guests, **left out of the feed** |
 | `table.regenerate-qr` | manager or platform | `branchId`, `label`, `previousQrToken` (dead the moment it was replaced) |
 | `admin.rename` | platform | `before`, `after` |
 | `admin.password-change` | platform | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |

@@ -117,8 +117,10 @@ public static class PlatformEndpoints
                 + "the branch it is about, never the reviewer), the `venue` it concerns by its current "
                 + "name, and `detail`, the row's JSON as written (shapes in `docs/platform-admin.md`). Rows "
                 + "the log keeps that are not a change are left out: a diner deleting their own account (no "
-                + "staff member behind it), and `admin.password-change-failed` and "
-                + "`account.password-change-failed`, the password lockouts' counters.\n\n"
+                + "staff member behind it), `admin.password-change-failed` and "
+                + "`account.password-change-failed`, the password lockouts' counters, and a venue answering "
+                + "its own reviews - `review.reply`, and `review.remove-reply` unless the platform admin "
+                + "removed the reply.\n\n"
                 + "`limit` 1-100 (default 20). `venueId` narrows it to one venue.")
             .Produces<ActivityFeed>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`limit` out of range; `context.field` names it.")
@@ -287,6 +289,21 @@ public static class PlatformEndpoints
             .Produces<ModeratedReviewView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such review.");
 
+        group.MapDelete("/reviews/{reviewId:guid}/reply", RemoveReviewReplyAsync)
+            .WithName("deletePlatformReviewReply")
+            .WithSummary("Take a venue's reply under a review down")
+            .WithDescription(
+                "The platform's moderation of what a venue wrote back: the reply goes from every read - the "
+                + "consoles, the public reviews, the place's details, the author's own review - whether the "
+                + "review is shown or hidden. The platform never writes a reply; this only removes one. The "
+                + "author's notice of it goes too, unless they have already read it. A review with no reply is "
+                + "answered as it is and nothing is written.\n\n"
+                + "**Audited** as `review.remove-reply` with `actorType: platform` - the one reply row the "
+                + "activity feed shows; a venue's own replies and removals stay out of it. Answers the review "
+                + "as the moderation list shows it.")
+            .Produces<ModeratedReviewView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such review.");
+
         group.MapGet("/me", GetMeAsync)
             .WithName("getPlatformAdminProfile")
             .WithSummary("The signed-in platform admin's own account")
@@ -386,6 +403,12 @@ public static class PlatformEndpoints
         IReviewModerationService moderation,
         CancellationToken cancellationToken) =>
         Results.Ok(await moderation.RestoreReportsForPlatformAsync(reviewId, cancellationToken));
+
+    private static async Task<IResult> RemoveReviewReplyAsync(
+        Guid reviewId,
+        IReviewModerationService moderation,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await moderation.RemoveReplyForPlatformAsync(reviewId, cancellationToken));
 
     private static async Task<IResult> ListBranchReviewsAsync(
         Guid branchId,

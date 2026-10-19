@@ -230,11 +230,18 @@ internal sealed class PlatformOverviewQuery(
         // wrong current passwords on a console user's own account - the admin's and a venue user's: they
         // are the lockout's counter (the log is where it counts them), a security record, not a change
         // anybody made.
+        //
+        // A venue answering its own reviews is the venue talking to its guests, not a change the platform
+        // follows: review.reply, and a venue's review.remove-reply, stay in the log and out of the feed.
+        // The platform taking a reply down is the platform's own act, and is shown.
         var logs = db.PlatformAuditLogs
             .AsNoTracking()
             .Where(l => l.ActorRole != null
                         && l.Action != PlatformAdminAccountService.PasswordChangeFailedAuditAction
-                        && l.Action != VenueUserAccountService.PasswordChangeFailedAuditAction);
+                        && l.Action != VenueUserAccountService.PasswordChangeFailedAuditAction
+                        && l.Action != ReviewModerationService.ReplyAuditAction
+                        && !(l.Action == ReviewModerationService.RemoveReplyAuditAction
+                             && l.ActorRole != StaffRole.PlatformAdmin));
 
         if (query.VenueId is { } venueId)
         {

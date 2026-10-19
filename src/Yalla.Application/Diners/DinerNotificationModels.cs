@@ -4,7 +4,8 @@ namespace Yalla.Application.Diners;
 /// <param name="NotificationId">The entry; what <c>upTo</c> and <c>ids</c> name when marking read.</param>
 /// <param name="Kind">
 /// <c>booking-reminder</c>, <c>booking-confirmed</c>, <c>booking-declined</c>,
-/// <c>booking-cancelled-by-venue</c>, <c>order-ready</c> or <c>review-hidden</c>. The app writes the text.
+/// <c>booking-cancelled-by-venue</c>, <c>order-ready</c>, <c>review-hidden</c>, <c>review-replied</c>,
+/// <c>table-request</c> or <c>table-request-decided</c>. The app writes the text.
 /// </param>
 /// <param name="Params">
 /// String values the app's text is built from, as they were when the entry was written: for bookings

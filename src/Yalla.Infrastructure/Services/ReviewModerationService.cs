@@ -30,6 +30,21 @@ namespace Yalla.Infrastructure.Services;
 /// with the tier, the branch, the reason and the state before. A request that changes nothing - hiding
 /// what is already hidden for the same reason, putting back what is published - writes nothing.
 /// </para>
+/// <para>
+/// <b>The venue's reply</b> lives here too, because it is the same console list and the same review under
+/// the same lock: one public reply per review, written by the venue's own ranks - owner, general manager,
+/// the branch's manager - and never by a platform admin, who reaches these routes as the platform and
+/// does not speak for a venue. A taken-down review is not answered (409); the lock is what makes "is it
+/// hidden" true when the reply is written, not a moment before. Audited as <c>review.reply</c> and
+/// <c>review.remove-reply</c>. The platform may take a venue's reply down - never write one - and that
+/// removal is audited as <c>review.remove-reply</c> with <c>actorType: "platform"</c>.
+/// </para>
+/// <para>
+/// <b>Lock order.</b> A change that writes into the author's feed takes the author's account lock
+/// (<see cref="DinerAccountLock"/>) before the review's row lock - the order account deletion takes them
+/// in, account first and then the reviews it deletes - so the two cannot deadlock, and a notice is never
+/// written into an account that is not live.
+/// </para>
 /// </remarks>
 internal sealed class ReviewModerationService(
     YallaDbContext db,
@@ -50,8 +65,17 @@ internal sealed class ReviewModerationService(
     /// <summary>The audit action for undoing the last dismissal.</summary>
     public const string RestoreReportsAuditAction = "review.restore-reports";
 
+    /// <summary>The audit action for writing or editing the venue's reply.</summary>
+    public const string ReplyAuditAction = "review.reply";
+
+    /// <summary>The audit action for removing it.</summary>
+    public const string RemoveReplyAuditAction = "review.remove-reply";
+
     /// <summary>The largest page the list serves.</summary>
     public const int MaxPageSize = 100;
+
+    /// <summary>How far back the summary's rating change looks.</summary>
+    public const int RatingChangeDays = 30;
 
     public async Task<ModeratedReviewPage> ListForVenueAsync(
         Guid branchId,
@@ -87,13 +111,16 @@ internal sealed class ReviewModerationService(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
+        // A takedown tells the author, so their account is locked first; putting back tells nobody.
+        var authorLive = command.Hidden && await LockAuthorAsync(reviewId, branchId, cancellationToken);
+
         var review = await LockedReview(reviewId)
             .FirstOrDefaultAsync(r => r.BranchId == branchId, cancellationToken)
             ?? throw ReviewNotFound(reviewId);
 
         var asPlatform = await IsActivePlatformAdminAsync(staffId, cancellationToken);
 
-        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform, cancellationToken);
+        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform, authorLive, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return view;
@@ -111,13 +138,176 @@ internal sealed class ReviewModerationService(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
+        var authorLive = command.Hidden && await LockAuthorAsync(reviewId, branchId: null, cancellationToken);
+
         var review = await LockedReview(reviewId).FirstOrDefaultAsync(cancellationToken)
                      ?? throw ReviewNotFound(reviewId);
 
-        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform: true, cancellationToken);
+        var view = await ApplyAsync(review, command.Hidden, reason, staffId, asPlatform: true, authorLive, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return view;
+    }
+
+    public async Task<ModeratedReviewView> ReplyForVenueAsync(
+        Guid branchId,
+        Guid reviewId,
+        ReplyToReviewCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        // Who first, then the body: a platform admin is told they may not, not that their text is short.
+        var author = await RequireVenueRankAsync(branchId, "Replying to a review", cancellationToken);
+        var text = BranchReview.CheckReply(command.Text);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The author's account first (the first reply tells them), then the review.
+        var authorLive = await LockAuthorAsync(reviewId, branchId, cancellationToken);
+
+        // The moderation lock: a reply and a takedown of the same review serialise, so a reply is never
+        // written to a review that was hidden a moment before.
+        var review = await LockedReview(reviewId)
+            .FirstOrDefaultAsync(r => r.BranchId == branchId, cancellationToken)
+            ?? throw ReviewNotFound(reviewId);
+
+        var before = review.ReplyText;
+        var first = !review.HasReply;
+
+        if (review.Reply(author.StaffMemberId, author.FullName, author.Role, text, clock.UtcNow))
+        {
+            var target = await ReviewTargetAsync(review, cancellationToken);
+
+            // The author hears once, when the review is first answered - not on every edit, and not at all
+            // into an account that is deleted or deactivated.
+            if (first && authorLive)
+            {
+                var names = await db.Branches
+                    .AsNoTracking()
+                    .Where(b => b.Id == review.BranchId)
+                    .Select(b => new { b.Name, VenueName = b.Venue.Name })
+                    .FirstAsync(cancellationToken);
+
+                DinerNotices.ReviewReplied(
+                    db, review.DinerUserId, review.BranchId, review.Id, names.VenueName, names.Name, clock.UtcNow);
+            }
+
+            await PlatformAudit.RecordAsync(
+                db,
+                actor,
+                clock,
+                ReplyAuditAction,
+                target,
+                new
+                {
+                    actorType = "venue",
+                    branchId = review.BranchId,
+                    edited = !first,
+                    before,
+                },
+                cancellationToken);
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Review {ReviewId} at branch {BranchId} was {Action} by staff member {StaffMemberId}.",
+                review.Id, review.BranchId, first ? "answered" : "re-answered", author.StaffMemberId);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return await ViewAsync(review.Id, cancellationToken);
+    }
+
+    public async Task<ModeratedReviewView> RemoveReplyForVenueAsync(
+        Guid branchId,
+        Guid reviewId,
+        CancellationToken cancellationToken = default)
+    {
+        var author = await RequireVenueRankAsync(branchId, "Removing a reply to a review", cancellationToken);
+
+        return await RemoveReplyAsync(reviewId, branchId, author.StaffMemberId, asPlatform: false, cancellationToken);
+    }
+
+    public async Task<ModeratedReviewView> RemoveReplyForPlatformAsync(
+        Guid reviewId,
+        CancellationToken cancellationToken = default)
+    {
+        var staffId = await RequirePlatformAdminAsync("Removing a venue's reply to a review", cancellationToken);
+
+        return await RemoveReplyAsync(reviewId, branchId: null, staffId, asPlatform: true, cancellationToken);
+    }
+
+    /// <summary>
+    /// Takes the reply down under the author's account lock and then the review's, takes back the
+    /// author's unread notice of it, and audits it with the tier. Nothing is written when there is none.
+    /// </summary>
+    private async Task<ModeratedReviewView> RemoveReplyAsync(
+        Guid reviewId,
+        Guid? branchId,
+        Guid staffId,
+        bool asPlatform,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // The notice is the author's row, so their account is locked before the review is.
+        await LockAuthorAsync(reviewId, branchId, cancellationToken);
+
+        var review = await LockedReview(reviewId)
+            .FirstOrDefaultAsync(r => branchId == null || r.BranchId == branchId, cancellationToken)
+            ?? throw ReviewNotFound(reviewId);
+
+        var before = new { text = review.ReplyText, authorName = review.ReplyAuthorName };
+
+        if (review.RemoveReply())
+        {
+            // Most often the console's undo, seconds after the reply went out: the notice of a reply
+            // that is no longer there goes too, unless the author has already read it.
+            await DinerNotices.TakeBackUnreadReplyAsync(db, review.DinerUserId, review.BranchId, cancellationToken);
+
+            await PlatformAudit.RecordAsync(
+                db,
+                actor,
+                clock,
+                RemoveReplyAuditAction,
+                await ReviewTargetAsync(review, cancellationToken),
+                new
+                {
+                    actorType = asPlatform ? "platform" : "venue",
+                    branchId = review.BranchId,
+                    before,
+                },
+                cancellationToken);
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "The reply to review {ReviewId} at branch {BranchId} was removed by {Tier} staff member {StaffMemberId}.",
+                review.Id, review.BranchId, asPlatform ? "platform" : "venue", staffId);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return await ViewAsync(review.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Takes the review author's account lock, inside the open transaction and before the review's own
+    /// lock, and answers whether the account is live. The author is read without a lock - a review never
+    /// changes hands - and a review that is not there (at this branch) is false, left for the locked read
+    /// to answer 404.
+    /// </summary>
+    private async Task<bool> LockAuthorAsync(Guid reviewId, Guid? branchId, CancellationToken cancellationToken)
+    {
+        var dinerUserId = await db.BranchReviews
+            .AsNoTracking()
+            .Where(r => r.Id == reviewId && (branchId == null || r.BranchId == branchId))
+            .Select(r => (Guid?)r.DinerUserId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return dinerUserId is { } id && await DinerAccountLock.IsLiveAsync(db, id, cancellationToken);
     }
 
     public async Task<ModeratedReviewView> DismissReportsForPlatformAsync(
@@ -277,6 +467,7 @@ internal sealed class ReviewModerationService(
         string? reason,
         Guid staffId,
         bool asPlatform,
+        bool authorLive,
         CancellationToken cancellationToken)
     {
         var before = new
@@ -302,7 +493,7 @@ internal sealed class ReviewModerationService(
                 // The author's feed hears about a takedown once, when the review goes from shown to
                 // hidden (K12) - not again when the platform takes over one a venue already hid. No
                 // push has ever been sent for this; the entry is written with the change instead.
-                if (!before.hidden)
+                if (!before.hidden && authorLive)
                 {
                     var names = await db.Branches
                         .AsNoTracking()
@@ -370,6 +561,35 @@ internal sealed class ReviewModerationService(
     private static KeyNotFoundException ReviewNotFound(Guid reviewId) => new($"Review {reviewId} was not found.");
 
     // ------------------------------------------------------------ who
+
+    /// <summary>
+    /// The venue's own ranks at this branch - owner, general manager, the branch's manager - with the
+    /// name and role a reply is signed with, from the stored row. A platform admin, whom the branch guard
+    /// admits, is refused: the platform does not reply on a venue's behalf.
+    /// </summary>
+    private async Task<ReplyAuthor> RequireVenueRankAsync(Guid branchId, string operation, CancellationToken cancellationToken)
+    {
+        var staffId = await branchGuard.RequireAtBranchAsync(branchId, operation, cancellationToken);
+
+        var staff = await db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.Id == staffId)
+            .Select(s => new { s.FullName, s.Role })
+            .FirstAsync(cancellationToken);
+
+        if (!StaffRoleRules.ManagesAtVenue(staff.Role))
+        {
+            logger.LogWarning(
+                "Staff member {StaffMemberId} ({Role}) was refused writing a venue's reply at branch {BranchId}.",
+                staffId, staff.Role, branchId);
+
+            throw new StaffPermissionException(operation, staff.Role, StaffRole.Manager);
+        }
+
+        return new ReplyAuthor(staffId, staff.FullName, staff.Role);
+    }
+
+    private sealed record ReplyAuthor(Guid StaffMemberId, string FullName, StaffRole Role);
 
     /// <summary>An active platform admin: the token's role, and the stored row behind it.</summary>
     private async Task<Guid> RequirePlatformAdminAsync(string operation, CancellationToken cancellationToken)
@@ -460,7 +680,58 @@ internal sealed class ReviewModerationService(
         var rows = await Project(ordered.Skip((query.Page - 1) * query.PageSize).Take(query.PageSize))
             .ToListAsync(cancellationToken);
 
-        return new ModeratedReviewPage([.. rows.Select(ToView)], query.Page, query.PageSize, total);
+        return new ModeratedReviewPage(
+            [.. rows.Select(ToView)],
+            query.Page,
+            query.PageSize,
+            total,
+            await SummaryAsync(branchId, cancellationToken));
+    }
+
+    /// <summary>
+    /// The branch's numbers for the chips and the rating card: three counts, and the shown reviews by star
+    /// split at <see cref="RatingChangeDays"/> days ago. Two small grouped reads, whatever the page.
+    /// </summary>
+    private async Task<ModeratedReviewSummary> SummaryAsync(Guid branchId, CancellationToken cancellationToken)
+    {
+        var reviews = db.BranchReviews.AsNoTracking().Where(r => r.BranchId == branchId);
+        var openReports = OpenReports();
+
+        var counts = await reviews
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                All = g.Count(),
+                Hidden = g.Count(r => r.HiddenAtUtc != null),
+                Reported = g.Count(r => r.HiddenAtUtc == null && openReports.Any(p => p.ReviewId == r.Id)),
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var sinceUtc = clock.UtcNow.AddDays(-RatingChangeDays);
+
+        var stars = await reviews
+            .Where(r => r.HiddenAtUtc == null)
+            .GroupBy(r => new { r.Rating, Older = r.CreatedAtUtc < sinceUtc })
+            .Select(g => new { g.Key.Rating, g.Key.Older, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        var visible = stars.Sum(s => s.Count);
+        var visibleSum = stars.Sum(s => (long)s.Rating * s.Count);
+        var older = stars.Where(s => s.Older).ToList();
+
+        return new ModeratedReviewSummary(
+            counts?.All ?? 0,
+            counts?.Reported ?? 0,
+            counts?.Hidden ?? 0,
+            visible,
+            BranchBadgeRules.AverageRating(visible, visibleSum),
+            BranchBadgeRules.RatingChange(
+                visible, visibleSum, older.Sum(s => s.Count), older.Sum(s => (long)s.Rating * s.Count)),
+            [
+                .. Enumerable.Range(BranchReview.MinRating, BranchReview.MaxRating - BranchReview.MinRating + 1)
+                    .Reverse()
+                    .Select(n => new ReviewStarCount(n, stars.Where(s => s.Rating == n).Sum(s => s.Count))),
+            ]);
     }
 
     private async Task<ModeratedReviewView> ViewAsync(Guid reviewId, CancellationToken cancellationToken)
@@ -493,6 +764,19 @@ internal sealed class ReviewModerationService(
             LastReportedAtUtc = openReports
                 .Where(p => p.ReviewId == r.Id)
                 .Max(p => (DateTime?)p.CreatedAtUtc),
+            ReplyText = r.ReplyText,
+            ReplyAuthorName = r.ReplyAuthorName,
+            ReplyAuthorRole = r.ReplyAuthorRole,
+            RepliedAtUtc = r.RepliedAtUtc,
+            ReplyUpdatedAtUtc = r.ReplyUpdatedAtUtc,
+
+            // The venue's own moderator by name, read live; the platform's never.
+            HiddenByName = r.HiddenAtUtc != null && !r.HiddenByPlatform
+                ? db.StaffMembers
+                    .Where(s => s.Id == r.HiddenByStaffMemberId)
+                    .Select(s => s.FullName)
+                    .FirstOrDefault()
+                : null,
         });
     }
 
@@ -524,7 +808,10 @@ internal sealed class ReviewModerationService(
 
             // An aggregate, which the column's UTC conversion does not reach - stamped here instead so
             // it goes out with its Z like every other instant.
-            row.LastReportedAtUtc is { } at ? DateTime.SpecifyKind(at, DateTimeKind.Utc) : null);
+            row.LastReportedAtUtc is { } at ? DateTime.SpecifyKind(at, DateTimeKind.Utc) : null,
+            ReviewReplyView.From(
+                row.ReplyText, row.ReplyAuthorName, row.ReplyAuthorRole, row.RepliedAtUtc, row.ReplyUpdatedAtUtc),
+            row.HiddenByName);
 
     private sealed class Row
     {
@@ -553,5 +840,17 @@ internal sealed class ReviewModerationService(
         public int ReportCount { get; init; }
 
         public DateTime? LastReportedAtUtc { get; init; }
+
+        public string? ReplyText { get; init; }
+
+        public string? ReplyAuthorName { get; init; }
+
+        public StaffRole? ReplyAuthorRole { get; init; }
+
+        public DateTime? RepliedAtUtc { get; init; }
+
+        public DateTime? ReplyUpdatedAtUtc { get; init; }
+
+        public string? HiddenByName { get; init; }
     }
 }

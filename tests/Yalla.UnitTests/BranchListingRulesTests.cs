@@ -258,6 +258,18 @@ public class BranchListingRulesTests
     }
 
     [Fact]
+    public void The_rating_change_is_rounded_once_from_the_unrounded_averages()
+    {
+        // 13/3 = 4.333 (shown 4.3) against 5/3 = 1.667 (shown 1.7): the change is 2.667, so 2.7 - not
+        // the 2.6 the two rounded figures would give.
+        Assert.Equal(2.7, BranchBadgeRules.RatingChange(3, 13, 3, 5));
+        Assert.Equal(-0.5, BranchBadgeRules.RatingChange(2, 7, 1, 4));
+        Assert.Equal(0.0, BranchBadgeRules.RatingChange(1, 4, 2, 8));
+        Assert.Null(BranchBadgeRules.RatingChange(0, 0, 2, 8));
+        Assert.Null(BranchBadgeRules.RatingChange(2, 8, 0, 0));
+    }
+
+    [Fact]
     public void Distance_is_great_circle_kilometres_to_one_decimal()
     {
         // Republic Square to the Cascade, central Yerevan: about 1.3 km.

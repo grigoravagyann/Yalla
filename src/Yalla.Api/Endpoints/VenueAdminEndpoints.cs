@@ -169,6 +169,21 @@ public static class VenueAdminEndpoints
             .Produces<ReservationPolicyView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
+        group.MapGet("/reservation-policy/defaults", GetPolicyDefaultsAsync)
+            .WithName("getReservationPolicyDefaults")
+            .WithSummary("What this branch's reservation policy ships with, and the bounds a save is held to")
+            .WithDescription(
+                "`defaults` is the policy a branch of this venue's type starts with - every field, in the shape "
+                + "`GET /reservation-policy` reads - for the console's \"default: …\" line and its reset. Only "
+                + "the turn time differs by venue type (a restaurant 90 minutes, a cafe or a bar 120), and an "
+                + "owner who changes the venue's type changes the defaults with it.\n\n"
+                + "`bounds` is every field `PUT /reservation-policy` checks, by its wire name, with the `min` and "
+                + "`max` a save is held to; `max` is null where there is no ceiling (`maxSeatOverhang`, "
+                + "`approvalRequiredAbovePartySize`). The server refuses outside them and never clamps, so a form "
+                + "need not be stricter.")
+            .Produces<ReservationPolicyDefaultsView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
+
         group.MapPut("/reservation-policy", PutPolicyAsync)
             .WithName("putReservationPolicy")
             .WithSummary("Replace the reservation policy")
@@ -443,6 +458,9 @@ public static class VenueAdminEndpoints
 
     private static async Task<IResult> GetPolicyAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
         Results.Ok(await service.GetReservationPolicyAsync(branchId, ct));
+
+    private static async Task<IResult> GetPolicyDefaultsAsync(Guid branchId, IBranchSettingsService service, CancellationToken ct) =>
+        Results.Ok(await service.GetReservationPolicyDefaultsAsync(branchId, ct));
 
     private static async Task<IResult> PutPolicyAsync(
         Guid branchId, ReservationPolicyCommand command, IBranchSettingsService service, CancellationToken ct) =>

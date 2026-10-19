@@ -143,6 +143,40 @@ public sealed record ReservationPolicyCommand(
     }
 }
 
+/// <summary>One field's editing bounds, as <see cref="ReservationPolicyLimits"/> enforces them.</summary>
+/// <param name="Field">The wire name, e.g. <c>turnTimeMinutes</c>.</param>
+/// <param name="Min">The least a save accepts.</param>
+/// <param name="Max">The most a save accepts, or null where there is no ceiling.</param>
+public sealed record ReservationPolicyBound(string Field, decimal Min, decimal? Max);
+
+/// <summary>
+/// What a branch's policy ships with and the bounds a save is held to - read from the server so the
+/// console's "default" line and its reset cannot drift from <see cref="ReservationPolicy.DefaultFor"/>.
+/// </summary>
+/// <param name="Defaults">The policy a branch of this venue's type starts with.</param>
+/// <param name="Bounds">Every bounded field, in the order the form lists them.</param>
+public sealed record ReservationPolicyDefaultsView(
+    ReservationPolicyView Defaults,
+    IReadOnlyList<ReservationPolicyBound> Bounds)
+{
+    /// <summary>The bounds <see cref="ReservationPolicyLimits.Check"/> applies, field by field.</summary>
+    public static readonly IReadOnlyList<ReservationPolicyBound> AllBounds =
+    [
+        new(ReservationPolicyLimits.Fields.BookingWindowDays, ReservationPolicyLimits.MinBookingWindowDays, ReservationPolicyLimits.MaxBookingWindowDays),
+        new(ReservationPolicyLimits.Fields.MinLeadMinutes, 0, ReservationPolicyLimits.MaxMinLeadMinutes),
+        new(ReservationPolicyLimits.Fields.CancellationDeadlineMinutes, 0, ReservationPolicyLimits.MaxCancellationDeadlineMinutes),
+        new(ReservationPolicyLimits.Fields.TurnTimeMinutes, ReservationPolicyLimits.MinTurnTimeMinutes, ReservationPolicyLimits.MaxTurnTimeMinutes),
+        new(ReservationPolicyLimits.Fields.BufferMinutes, 0, ReservationPolicyLimits.MaxBufferMinutes),
+        new(ReservationPolicyLimits.Fields.WalkInHoldbackMinutes, 0, ReservationPolicyLimits.MaxWalkInHoldbackMinutes),
+        new(ReservationPolicyLimits.Fields.MaxSeatOverhang, 0, null),
+        new(ReservationPolicyLimits.Fields.GraceMinutes, 0, ReservationPolicyLimits.MaxGraceMinutes),
+        new(ReservationPolicyLimits.Fields.LateNudgeAfterMinutes, 0, ReservationPolicyLimits.MaxLateNudgeAfterMinutes),
+        new(ReservationPolicyLimits.Fields.GraceExtensionMinutes, 0, ReservationPolicyLimits.MaxGraceExtensionMinutes),
+        new(ReservationPolicyLimits.Fields.ApprovalRequiredAbovePartySize, ReservationPolicyLimits.MinApprovalRequiredAbovePartySize, null),
+        new(ReservationPolicyLimits.Fields.ServiceChargePercent, 0m, 100m),
+    ];
+}
+
 /// <summary>
 /// The policy after the change, and what the change did <i>not</i> do.
 /// </summary>
@@ -545,6 +579,10 @@ public interface IBranchSettingsService
         CancellationToken cancellationToken = default);
 
     Task<ReservationPolicyView> GetReservationPolicyAsync(Guid branchId, CancellationToken cancellationToken = default);
+
+    /// <summary>What the branch's policy ships with, by its venue's type, and the editing bounds.</summary>
+    /// <exception cref="KeyNotFoundException">No such branch.</exception>
+    Task<ReservationPolicyDefaultsView> GetReservationPolicyDefaultsAsync(Guid branchId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Replaces the policy. <b>Never touches an existing reservation</b>: bookings that fall

@@ -35,6 +35,9 @@ public static class FieldLengths
     /// <summary>A diner's review text.</summary>
     public const int ReviewText = 1000;
 
+    /// <summary>The venue's public reply under a review. Shorter than a review: an answer, not a rebuttal.</summary>
+    public const int ReviewReply = 500;
+
     /// <summary>A branch's amenity keys, comma-joined.</summary>
     public const int AmenityKeys = 200;
     public const int Url = 2048;

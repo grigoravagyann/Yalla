@@ -49,12 +49,16 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
 
                 // The tables these rows name have not changed in this migration, so today's entities
                 // write them as the old code did - but for the columns later migrations (VenueRestore,
-                // StaffSessionGeneration) give Venues and StaffMembers, which today's entities write and
-                // are put in place for them to find.
+                // StaffSessionGeneration, SpecialDaysVersion, ReviewReplies) give Venues, StaffMembers,
+                // Branches and BranchReviews, which today's entities write and are put in place for them
+                // to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
                     + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
-                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;");
+                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;"
+                    + "ALTER TABLE dbo.BranchReviews ADD ReplyText nvarchar(500) NULL, ReplyAuthorName nvarchar(200) NULL, "
+                    + "ReplyAuthorRole int NULL, ReplyByStaffMemberId uniqueidentifier NULL, RepliedAtUtc datetime2 NULL, "
+                    + "ReplyUpdatedAtUtc datetime2 NULL;");
 
                 branch = await TestBranchBuilder.CreateAsync(db);
                 admin = await AuthTestData.CreatePlatformAdminAsync(db);

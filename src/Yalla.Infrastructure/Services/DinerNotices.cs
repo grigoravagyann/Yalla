@@ -214,6 +214,54 @@ internal static class DinerNotices
             branchId));
 
     /// <summary>
+    /// The venue answered the diner's review. Like <see cref="ReviewHidden"/>, no push: the entry is
+    /// written with the reply.
+    /// </summary>
+    public static void ReviewReplied(
+        YallaDbContext db,
+        Guid dinerUserId,
+        Guid branchId,
+        Guid reviewId,
+        string venueName,
+        string branchName,
+        DateTime atUtc) =>
+        db.DinerNotifications.Add(new DinerNotification(
+            dinerUserId,
+            DinerNotificationKinds.ReviewReplied,
+            Params(new()
+            {
+                ["venueName"] = venueName,
+                ["branchName"] = branchName,
+                ["reviewId"] = reviewId.ToString(),
+            }),
+            atUtc,
+            branchId));
+
+    /// <summary>
+    /// Takes back the diner's unread "the venue replied" entry for a branch, in the caller's unit of work,
+    /// when the reply it announced is removed - most often the venue's undo a few seconds later.
+    /// </summary>
+    /// <remarks>
+    /// By the branch: a diner has one review per branch, so the author and the branch name the review.
+    /// An entry already read is history and stays.
+    /// </remarks>
+    public static async Task TakeBackUnreadReplyAsync(
+        YallaDbContext db, Guid dinerUserId, Guid branchId, CancellationToken cancellationToken)
+    {
+        var unread = await db.DinerNotifications
+            .Where(n => n.DinerUserId == dinerUserId
+                        && n.BranchId == branchId
+                        && n.Kind == DinerNotificationKinds.ReviewReplied
+                        && n.ReadAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        if (unread.Count > 0)
+        {
+            db.DinerNotifications.RemoveRange(unread);
+        }
+    }
+
+    /// <summary>
     /// Removes a booking's entries that have not appeared yet - its reminder - in the caller's unit of work.
     /// </summary>
     /// <remarks>
