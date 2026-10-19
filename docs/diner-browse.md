@@ -426,7 +426,10 @@ participant, the tablet, the staff member - and per remote address otherwise.
 - **distanceKm** = great-circle (haversine) distance from the sent `lat`/`lng`, to 0.1 km. The app may
   also compute it from `latitude`/`longitude`.
 - **isOpenNow** = inside an opening block now in the branch's zone, including yesterday's
-  past-midnight block (the same rule as the web branch page).
+  past-midnight block, with special opening days replacing their date's weekly hours (the same rule as
+  the web branch page). The detail's `specialDays` lists them from the service date (yesterday while
+  last night's special block still runs past midnight) through 60 days after today - show today's from
+  there when today is one - and the day's slots carry `specialDay` for the date asked.
 - **marker state** = `TableStateProjection.Derive(physical status, next Confirmed/PendingApproval
   booking, now, branch buffer)` - the staff floor's rule.
 - **opening a tab by booking code** (`POST /api/tabs/open-by-booking`) joins only the booking's own
@@ -636,6 +639,15 @@ error code are gone, and changing the cover no longer touches any table.
 A room (`FloorArea`) has 0-10 ordered photos; a table is pinned on one of **its own room's** photos -
 `photoId` plus `photoX`/`photoY`, fractions 0-1 from the left and the top - or on none. The drawn floor
 plan is gone: no canvas, no table geometry, no `TableShape`.
+
+**Room photos at 4:3 (venue console phase 3, 2026-10-19).** The console and the apps show room photos in
+a 4:3 frame, like dish and cover photos - but the server never crops: every photo is stored whole at its own
+aspect (resized only, upright from EXIF), `PhotoView.width`/`height` are its real size, and a pin is a fraction
+of that whole image. Cropping on upload would move every pin already placed. So a pin is drawn over the photo
+*contained* in the frame (letterboxed when it is not 4:3) at `left + x * width`, `top + y * height` of the
+image's own rect, and placing one inverts that. Drawn with `object-fit: cover`, a pin on any non-4:3 photo
+would be shown - and saved - somewhere else. No migration: existing pins are already fractions of the whole
+image.
 
 **`GET /api/branches/{branchId}/floor-plan`** → `FloorPlanView`
 `{ branchId, areas: [ { id, name, displayOrder, photos: [PhotoView] } ], tables: [ { id, label, seats,

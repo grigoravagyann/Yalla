@@ -184,6 +184,7 @@ internal sealed class PublicVenueQuery(
 
         var occupied = await OccupiedTableLabelsAsync(plan.BranchId, cancellationToken);
         var openNow = await OpenNowAsync([plan.BranchId], cancellationToken);
+        var specialDays = await SpecialDaysAsync(plan.BranchId, plan.Page.TimeZoneId, cancellationToken);
 
         // Counted off the plan this page draws, less the tables a live read says are taken - not
         // from FreeTableCountsAsync, which reads every active table in the database. The plan is
@@ -198,6 +199,7 @@ internal sealed class PublicVenueQuery(
         {
             FreeTableCount = tables.Count(t => t.IsFree),
             IsOpenNow = openNow.Contains(plan.BranchId),
+            SpecialDays = specialDays,
 
             // Stamped from the server clock, beside the reads it describes. This is what lets the
             // page say "4 tables free, as of a minute ago" instead of implying it is live - which
@@ -517,6 +519,9 @@ internal sealed class PublicVenueQuery(
             branch.Longitude,
             branch.TimeZoneId,
             hours,
+
+            // Placeholder. Read live by the caller: which days are "upcoming" moves at midnight.
+            SpecialDays: [],
             IsOpenNow: false,
             FreeTableCount: 0,
 
@@ -644,6 +649,24 @@ internal sealed class PublicVenueQuery(
             })
             ?? [];
     }
+
+    /// <summary>
+    /// The special days ahead, held for <see cref="LiveFor"/> beside "open now" rather than in the cached plan:
+    /// which days are ahead moves at midnight, and a holiday saved this minute should be on the page this minute.
+    /// </summary>
+    private async Task<IReadOnlyList<SpecialOpeningDayView>> SpecialDaysAsync(
+        Guid branchId,
+        string timeZoneId,
+        CancellationToken cancellationToken) =>
+        await cache.GetOrCreateAsync(
+            $"public:special-days:{branchId}",
+            async entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = LiveFor;
+
+                return await OpeningCalendars.UpcomingAsync(db, branchId, timeZoneId, clock.UtcNow, cancellationToken);
+            })
+        ?? [];
 
     // Shared with the diner app's listing routes, so the web page and the app cannot disagree.
     private Task<HashSet<Guid>> ComputeOpenNowAsync(

@@ -15,9 +15,12 @@ namespace Yalla.Domain.Menus;
 /// requirement exists to prevent.
 /// </para>
 /// <para>
-/// <see cref="Rule"/> is the definition. <see cref="IsComplete(MenuItem)"/> is the same tree
-/// compiled, for the paths that already hold the entity; <see cref="Incomplete"/> is the same tree
-/// negated, for the queries that count what is missing in SQL. None of the three is written twice.
+/// <see cref="Rule"/> is the definition, built from <see cref="Fields"/> - one test per field, named
+/// as the wire names it. <see cref="IsComplete(MenuItem)"/> is the same tree compiled, for the paths
+/// that already hold the entity; <see cref="Incomplete"/> is the same tree negated, for the queries
+/// that count what is missing in SQL; <see cref="MissingFields(MenuItem)"/> asks the same per-field
+/// tests which ones fail, so the console can say "photo, allergens" without a copy of the rule. None
+/// of them is written twice.
 /// </para>
 /// <para>
 /// Blank is not a separate case from null: every one of these fields goes through
@@ -27,6 +30,24 @@ namespace Yalla.Domain.Menus;
 /// </remarks>
 public static class MenuItemCompleteness
 {
+    /// <summary>
+    /// Each field the rule asks for, under the name the item's wire uses, with the test it has to pass:
+    /// <c>photo</c>, <c>description</c>, <c>ingredients</c>, <c>allergens</c>, <c>portionSize</c>,
+    /// <c>prepMinutes</c> (set, and more than zero). In the order the console lists them.
+    /// </summary>
+    /// <remarks>
+    /// Declared before <see cref="Rule"/>, which is built from it: static fields initialise in order.
+    /// </remarks>
+    public static readonly IReadOnlyList<(string Field, Expression<Func<MenuItem, bool>> Present)> Fields =
+    [
+        ("photo", item => item.PhotoId != null),
+        ("description", item => item.Description != null),
+        ("ingredients", item => item.Ingredients != null),
+        ("allergens", item => item.Allergens != null),
+        ("portionSize", item => item.PortionSize != null),
+        ("prepMinutes", item => item.PrepMinutes != null && item.PrepMinutes > 0),
+    ];
+
     /// <summary>
     /// The definition: a photo, a description, ingredients, allergens, a portion size and a prep
     /// time.
@@ -38,14 +59,7 @@ public static class MenuItemCompleteness
     /// <c>Name</c> and <c>PriceAmd</c> are absent because they are required to <i>save</i> an item
     /// at all, and an item without them was never created.
     /// </remarks>
-    public static readonly Expression<Func<MenuItem, bool>> Rule = item =>
-        item.PhotoId != null
-        && item.Description != null
-        && item.Ingredients != null
-        && item.Allergens != null
-        && item.PortionSize != null
-        && item.PrepMinutes != null
-        && item.PrepMinutes > 0;
+    public static readonly Expression<Func<MenuItem, bool>> Rule = AllOf(Fields);
 
     /// <summary>
     /// The negation of <see cref="Rule"/>, for the queries that count what a branch still owes.
@@ -59,11 +73,41 @@ public static class MenuItemCompleteness
 
     private static readonly Func<MenuItem, bool> Compiled = Rule.Compile();
 
+    private static readonly (string Field, Func<MenuItem, bool> Present)[] CompiledFields =
+        [.. Fields.Select(f => (f.Field, f.Present.Compile()))];
+
     /// <summary>The same rule, over an item already in memory.</summary>
     public static bool IsComplete(MenuItem item)
     {
         ArgumentNullException.ThrowIfNull(item);
 
         return Compiled(item);
+    }
+
+    /// <summary>The fields an item still lacks, by their wire names, in <see cref="Fields"/> order. Empty: complete.</summary>
+    public static IReadOnlyList<string> MissingFields(MenuItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        return [.. CompiledFields.Where(f => !f.Present(item)).Select(f => f.Field)];
+    }
+
+    /// <summary>The per-field tests joined with AND over one parameter - a tree EF translates as it did the written-out rule.</summary>
+    private static Expression<Func<MenuItem, bool>> AllOf(
+        IReadOnlyList<(string Field, Expression<Func<MenuItem, bool>> Present)> fields)
+    {
+        var item = Expression.Parameter(typeof(MenuItem), "item");
+
+        var body = fields
+            .Select(f => new Rebind(f.Present.Parameters[0], item).Visit(f.Present.Body))
+            .Aggregate(Expression.AndAlso);
+
+        return Expression.Lambda<Func<MenuItem, bool>>(body, item);
+    }
+
+    /// <summary>Points one lambda's parameter at another, so several bodies share it.</summary>
+    private sealed class Rebind(ParameterExpression from, ParameterExpression to) : ExpressionVisitor
+    {
+        protected override Expression VisitParameter(ParameterExpression node) => node == from ? to : node;
     }
 }

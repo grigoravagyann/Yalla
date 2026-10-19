@@ -71,7 +71,16 @@ public sealed record BranchOverview(
 /// at 00:00 - "until 00:00" - and for last night's block, which closes today.
 /// </param>
 /// <param name="OpensAt">While shut: the next opening later today. Absent when open, or when nothing opens later today.</param>
-public sealed record OverviewHours(bool IsOpen, TimeOnly? ClosesAt, bool ClosesNextDay, TimeOnly? OpensAt);
+/// <param name="SpecialDay">
+/// The service date's special opening day - a holiday, a closure, different hours - when it has one; absent on an
+/// ordinary day. Everything above already reads it.
+/// </param>
+public sealed record OverviewHours(
+    bool IsOpen,
+    TimeOnly? ClosesAt,
+    bool ClosesNextDay,
+    TimeOnly? OpensAt,
+    BranchSettings.SpecialOpeningDayView? SpecialDay = null);
 
 /// <summary>The service day's bookings by status.</summary>
 /// <param name="Total">Every booking still on the books: pending, confirmed, seated, completed and no-shows - not the cancelled or declined.</param>

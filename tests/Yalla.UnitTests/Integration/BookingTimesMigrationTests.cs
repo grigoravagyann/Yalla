@@ -44,10 +44,11 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
             {
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
 
-                // StaffSessionGeneration sorts after this migration, but today's StaffMember writes its
-                // column, so it is put in place for the fixture's staff to find.
+                // StaffSessionGeneration and SpecialDaysVersion sort after this migration, but today's StaffMember
+                // and Branch write their columns, so they are put in place for the fixture to find.
                 await db.Database.ExecuteSqlRawAsync(
-                    "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;");
+                    "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
+                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;");
 
                 // Nothing the branch, its tables or its room write changed in this migration, so today's
                 // entities write the schema before it as they are.

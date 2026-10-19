@@ -40,6 +40,11 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasDefaultValue(0)
             .IsConcurrencyToken();
 
+        // The special days' revision. Compared inside the branch lock by their replace, so it needs no token.
+        builder.Property(b => b.SpecialDaysVersion)
+            .IsRequired()
+            .HasDefaultValue(0);
+
         builder.Property(b => b.IsActive)
             .IsRequired();
 

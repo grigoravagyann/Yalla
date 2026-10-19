@@ -98,15 +98,18 @@ internal sealed class TableLock(
     /// True when this exception is SQL Server refusing to wait any longer, at whatever depth.
     /// </summary>
     /// <remarks>
-    /// Error 1222 can surface bare from an explicit statement or wrapped in a
-    /// <see cref="DbUpdateException"/> from <c>SaveChanges</c>, and callers must not have to know
-    /// which. Anything else is a real failure and is left alone.
+    /// Error 1222 can surface bare from an explicit statement, wrapped in a
+    /// <see cref="DbUpdateException"/> from <c>SaveChanges</c>, or wrapped in an
+    /// <see cref="InvalidOperationException"/> by the execution strategy around a bulk
+    /// <c>ExecuteDeleteAsync</c>, and callers must not have to know which. Anything else is a real
+    /// failure and is left alone.
     /// </remarks>
     public static bool IsTimeout(Exception exception) =>
         exception switch
         {
             SqlException { Number: LockTimeoutErrorNumber } => true,
             DbUpdateException { InnerException: SqlException { Number: LockTimeoutErrorNumber } } => true,
+            InvalidOperationException { InnerException: SqlException { Number: LockTimeoutErrorNumber } } => true,
             _ => false,
         };
 

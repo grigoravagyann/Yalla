@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
+using Yalla.Application.BranchSettings;
 using Yalla.Application.Messaging;
 using Yalla.Application.Overview;
 using Yalla.Application.Reservations;
@@ -17,7 +18,7 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// <b>At most five reads after the guard, however busy the day.</b> The branch with its room and its open
 /// tabs (one statement: the table, sitting and tab aggregates are scalar subqueries beside the branch row),
-/// its opening hours, the service day's bookings, the tabs closed in the two windows compared, and - only
+/// its opening hours with the special days around today, the service day's bookings, the tabs closed in the two windows compared, and - only
 /// when a confirmed guest has the app - the late nudges the outbox holds for them. Everything else - the
 /// counts by status, the load per hour, the late ones - is worked out from those rows in memory, so a busy
 /// Saturday costs what a quiet Tuesday does.
@@ -26,7 +27,8 @@ namespace Yalla.Infrastructure.Services;
 /// <b>The service day, not the calendar's.</b> While last night's block is still open past midnight, the
 /// branch is still in last night's service; otherwise it is in today's. A booking belongs to the service day
 /// it starts in - 00:30 on Sunday inside Saturday's block is Saturday's - so the bookings are read for the
-/// service date and the day after, and sorted into service days by the weekly hours.
+/// service date and the day after, and sorted into service days by the hours on those dates - the weekly ones,
+/// or a special day's where one replaces them.
 /// </para>
 /// <para>
 /// <b>A waiting change counts where it is still promised.</b> A confirmed booking moved at short notice is
@@ -88,13 +90,12 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         // Whole seconds: the screen says 18:42, and a fraction of a tick is not a time anybody reads.
         var timeNow = new TimeOnly(localNow.Hour, localNow.Minute, localNow.Second);
 
-        var hours = await db.OpeningHours
-            .AsNoTracking()
-            .Where(h => h.BranchId == branchId)
-            .Select(h => new HoursRow(h.Day, h.OpensAt, h.ClosesAt, h.ClosesNextDay))
-            .ToListAsync(cancellationToken);
+        // The week and the special days from the day before yesterday to tomorrow: the service date is today
+        // or yesterday, and sorting bookings into it asks about the day after and each day's evening before.
+        var hours = await OpeningCalendars.ForBranchAsync(
+            db, branchId, today.AddDays(-2), today.AddDays(1), cancellationToken);
 
-        var serviceDate = ServiceDayOf(hours, today, timeNow);
+        var serviceDate = hours.ServiceDateOf(localNow);
         var nextDate = serviceDate.AddDays(1);
 
         var rows = await db.Reservations
@@ -156,7 +157,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             timeNow,
             serviceDate,
             branch.GraceMinutes,
-            HoursNow(hours, localNow),
+            HoursNow(hours, localNow, serviceDate),
             Counts(entries, nowUtc),
             new OverviewRoom(branch.PeopleInRoom, branch.OccupiedTables, branch.Tables, branch.OutOfServiceTables),
             new OverviewOpenTabs(branch.OpenTabs, branch.UnpaidAmd),
@@ -198,19 +199,13 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     // ---------------------------------------------------------------- the service day
 
     /// <summary>
-    /// The service day a moment at the branch belongs to: the day before when it falls inside that day's
-    /// block running past midnight, else its own date. A block closing at 00:00 runs into nothing.
+    /// Whether a booking starting at <paramref name="date"/> <paramref name="time"/> belongs to the service date:
+    /// it starts on it, or after midnight on the next date inside its block running past midnight. A block closing
+    /// at 00:00 runs into nothing.
     /// </summary>
-    private static DateOnly ServiceDayOf(List<HoursRow> hours, DateOnly date, TimeOnly time)
-    {
-        var dayBefore = date.AddDays(-1).DayOfWeek;
-
-        return hours.Any(h => h.Day == dayBefore && RunsPastMidnight(h) && time < h.ClosesAt)
-            ? date.AddDays(-1)
-            : date;
-    }
-
-    private static bool RunsPastMidnight(HoursRow block) => block.ClosesNextDay && block.ClosesAt != TimeOnly.MinValue;
+    private static bool InServiceDay(OpeningCalendar hours, DateOnly date, TimeOnly time, DateOnly serviceDate) =>
+        (date == serviceDate || date == serviceDate.AddDays(1))
+        && hours.ServiceDateOf(date.ToDateTime(time)) == serviceDate;
 
     /// <summary>
     /// The service day's bookings as the screen counts them - each at the slot it holds - and the slots
@@ -218,7 +213,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     /// </summary>
     private static (List<Entry> Entries, List<Entry> AskedFor) ServiceDayBookings(
         List<BookingRow> rows,
-        List<HoursRow> hours,
+        OpeningCalendar hours,
         DateOnly serviceDate)
     {
         var entries = new List<Entry>();
@@ -226,7 +221,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
         foreach (var row in rows)
         {
-            var asked = ServiceDayOf(hours, row.LocalDate, row.LocalStartTime) == serviceDate;
+            var asked = InServiceDay(hours, row.LocalDate, row.LocalStartTime, serviceDate);
 
             if (row.Status == ReservationStatus.PendingApproval
                 && row.PreviousTable is { } previousTable
@@ -234,7 +229,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 && row.PreviousEndUtc is { } previousEnd
                 && row.PreviousLocalDate is { } previousDate
                 && row.PreviousLocalStartTime is { } previousTime
-                && ServiceDayOf(hours, previousDate, previousTime) == serviceDate)
+                && InServiceDay(hours, previousDate, previousTime, serviceDate))
             {
                 // Still promised at its confirmed slot today: counted there, with the change it asks for apart.
                 entries.Add(new Entry(
@@ -299,39 +294,30 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     }
 
     /// <summary>
-    /// Open now and until when, or shut and opening when - the same reading of the weekly hours as
-    /// <c>BranchOpenNow</c>, which the diner's listing uses, so the console and the app agree.
+    /// Open now and until when, or shut and opening when - the same reading of the calendar as
+    /// <c>BranchOpenNow</c>, which the diner's listing uses, so the console and the app agree. With the service
+    /// date's special day, when it has one.
     /// </summary>
-    private static OverviewHours HoursNow(List<HoursRow> hours, DateTime localNow)
+    private static OverviewHours HoursNow(OpeningCalendar hours, DateTime localNow, DateOnly serviceDate)
     {
-        var day = localNow.DayOfWeek;
-        var yesterday = day == DayOfWeek.Sunday ? DayOfWeek.Saturday : day - 1;
-        var time = TimeOnly.FromDateTime(localNow);
+        var today = DateOnly.FromDateTime(localNow);
+        var special = hours.SpecialDayOn(serviceDate) is { } day ? SpecialOpeningDayView.From(day) : null;
 
-        // Today's block that has opened and not closed - one past midnight has not closed today at all.
-        var todays = hours.FirstOrDefault(h =>
-            h.Day == day && time >= h.OpensAt && (h.ClosesNextDay || time < h.ClosesAt));
-
-        if (todays is not null)
+        // Today's block that has opened and not closed first, then last night's still running; one that closes
+        // on a later date than today reads "(next day)" - a midnight close is "until 00:00".
+        if (hours.OpenAt(localNow) is { } open)
         {
-            // A midnight close is "until 00:00", not the next day.
-            return new OverviewHours(true, todays.ClosesAt, RunsPastMidnight(todays), null);
+            var closesLater = DateOnly.FromDateTime(open.Closes) > today && open.Block.RunsPastMidnight;
+
+            return new OverviewHours(true, open.Block.ClosesAt, closesLater, null, special);
         }
 
-        // Last night's block, still running: it closes today, so not "the next day".
-        var lastNight = hours.FirstOrDefault(h => h.Day == yesterday && RunsPastMidnight(h) && time < h.ClosesAt);
-
-        if (lastNight is not null)
-        {
-            return new OverviewHours(true, lastNight.ClosesAt, false, null);
-        }
-
-        var next = hours
-            .Where(h => h.Day == day && h.OpensAt > time)
-            .Select(h => (TimeOnly?)h.OpensAt)
+        var next = hours.IntervalsOn(today)
+            .Where(i => i.Opens > localNow)
+            .Select(i => (TimeOnly?)i.Block.OpensAt)
             .Min();
 
-        return new OverviewHours(false, null, false, next);
+        return new OverviewHours(false, null, false, next, special);
     }
 
     /// <summary>
@@ -341,7 +327,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     private static List<OverviewLoadHour> Load(
         List<Entry> entries,
         List<Entry> askedFor,
-        List<HoursRow> hours,
+        OpeningCalendar hours,
         BranchZone zone,
         DateOnly serviceDate)
     {
@@ -388,7 +374,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
         // The hours the branch is open on the service date: from each block's opening to its last hour,
         // past midnight for one that runs into the next day.
-        foreach (var block in hours.Where(h => h.Day == serviceDate.DayOfWeek))
+        foreach (var block in hours.BlocksOn(serviceDate))
         {
             var closesMinute = (block.ClosesAt.Hour * 60) + block.ClosesAt.Minute;
 
@@ -411,15 +397,14 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     private async Task<OverviewRevenue> RevenueAsync(
         Guid branchId,
         BranchZone zone,
-        List<HoursRow> hours,
+        OpeningCalendar hours,
         DateOnly serviceDate,
         DateTime localNow,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var opens = hours
-            .Where(h => h.Day == serviceDate.DayOfWeek)
-            .Select(h => (TimeOnly?)h.OpensAt)
+        var opens = hours.BlocksOn(serviceDate)
+            .Select(b => (TimeOnly?)b.OpensAt)
             .Min() ?? TimeOnly.MinValue;
 
         var lastWeek = serviceDate.AddDays(-7);
@@ -520,8 +505,6 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
     private static bool IsCancelled(ReservationStatus status) =>
         status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue;
-
-    private sealed record HoursRow(DayOfWeek Day, TimeOnly OpensAt, TimeOnly ClosesAt, bool ClosesNextDay);
 
     private sealed record Nudge(DateTime AtUtc, bool Sent);
 

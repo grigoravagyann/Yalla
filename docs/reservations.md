@@ -945,6 +945,42 @@ says 00:00-23:59. Pinned through the pipeline by
 `VenueAdminEndpointTests.Opening_hours_that_open_and_close_at_the_same_minute_are_refused_naming_the_row`
 (QA 2026-10-16, parity P1 - the console's mock saved 09:00-09:00 as "next day").
 
+### Special opening days
+
+A holiday, a closure or different hours on one date (`GET`/`PUT /api/branches/{id}/opening-hours/exceptions`)
+**replaces that date's weekly blocks**; no blocks is shut all day. A date's blocks are the ones that *open* on
+it, exactly as in the week: 31 December 18:00-03:00 runs into 1 January even when 1 January is itself shut, and
+a Friday's weekly 10:00-01:00 still runs into a Saturday that is a special day.
+
+Every reader asks one type, `OpeningCalendar` (the week with the special days laid over it), loaded through
+`OpeningCalendars` for the dates the question needs - and a date outside the window it was loaded for throws
+rather than quietly falling back to the weekday. The readers: single-slot availability and the day's slots
+(same statement as before, the special days of the two dates beside the weekly rows), booking and changing a
+booking (`reservation-outside-opening-hours`), the console's Overview (service day, "open until", the load
+chart's hours, where the takings start, and `hours.specialDay`), `BranchOpenNow` behind every `isOpenNow`, and
+the public page and listing detail (`specialDays`, from the service date - yesterday while last night's special
+block is still running, so 01:00 on New Year's Day still names the Eve - through 60 days after today). Readiness
+is not one: `no-hours`
+is about the week being set, and a special day is not a setup step. The floor reads no hours.
+
+The list from today at the branch on is replaced whole, under the branch row lock, against the revision the
+editor loaded: `GET` returns `{ version, days }` - from the service date, so while last night's special block
+still runs its day is listed first, read-only, as on the public page - `PUT` takes `{ expectedVersion, days }`, and a list saved since
+is refused with 409 `concurrent-update` and `context.currentVersion` (`Branches.SpecialDaysVersion`), so the
+second of two editors cannot undo the first one's holiday. Days before today are kept, because last night's
+special block may still be running and the Overview still reads it; an entry dated before today is **ignored**,
+so a console left open past midnight still saves. Refusals are 422 with fields under `days` - `days[n].date`
+(`required`, `max` past 366 days, `conflict` twice), `days[n].note` (`max` 60), `days[n].blocks` (`required`,
+`max` 4), `days[n].blocks[m].opensAt` (`conflict`, overlap), `days[n].blocks[m].closesAt` (`conflict`, no length),
+`days[100]` (`max` 100 days) - and `expectedVersion` (`required`). A lock wait that runs out, on the save or on
+the delete before it, is 409 `concurrent-update`, never a 500.
+
+**A save never touches a booking.** `affectedReservationIds` are the live future ones this save *newly* put
+outside the hours: starting on a date whose special day was added, removed or given other blocks (a new note is
+no change), or just after midnight following one, that fitted the calendar before the save and do not now. So
+adding 6 January reports 6 January's guests, not again the 1 January ones an earlier save already reported.
+Pinned by `SpecialOpeningDayTests` and `OpeningCalendarTests`.
+
 **There is no slot list.** The time a diner picks is the client's control; every availability read
 answers the one time it was asked about, and outside the hours it says `unavailableReason`
 `OutsideOpeningHours` on the branch and on every table, and a booking for that time is

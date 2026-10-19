@@ -351,6 +351,15 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
 
+        // Somebody saved the special days since this editor loaded them. The list is replaced whole, so the
+        // later save is refused rather than allowed to undo the other; the current version rides along.
+        Yalla.Application.BranchSettings.SpecialOpeningDaysChangedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ConcurrentUpdate,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
+
         // A table that is booked and not yet sat at cannot go: deactivating it would strand the
         // booking. The tables and the booking codes ride along so the console can say what to move.
         Yalla.Application.BranchSettings.TableHasFutureBookingsException e => new MappedError(

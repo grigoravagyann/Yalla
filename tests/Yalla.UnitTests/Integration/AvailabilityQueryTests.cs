@@ -377,9 +377,9 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.NotNull(availability);
         Assert.Equal(8, availability.Tables.Count);
 
-        // Eight tables, one statement. A projection that regressed into a query per table would
-        // return byte-identical results and only show up here.
-        Assert.Equal(1, counter.Count);
+        // Eight tables, one statement - and the special days' small one beside it. A projection that
+        // regressed into a query per table would return byte-identical results and only show up here.
+        Assert.Equal(2, counter.Count);
     }
 
     [SkippableFact]
@@ -721,8 +721,8 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         Assert.NotNull(day);
         Assert.Equal(47, day.Slots.Count);
 
-        // Ninety-six times, eight tables, one statement.
-        Assert.Equal(1, counter.Count);
+        // Ninety-six times, eight tables, one statement - and the special days' small one beside it.
+        Assert.Equal(2, counter.Count);
 
         var sql = query.GetDaySlotsQuerySql(new DaySlotsRequest(branch.BranchId, BookingDate, 2, Guid.CreateVersion7()));
         output.WriteLine(sql);
