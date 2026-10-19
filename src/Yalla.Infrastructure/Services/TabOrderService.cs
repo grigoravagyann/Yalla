@@ -270,13 +270,18 @@ internal sealed class TabOrderService(
             RequireNoGuestOnASharedLine(command.Items);
 
             // The order's guest and each line's own, by one rule: somebody approved on this tab.
-            foreach (var named in command.Items
-                         .Select(i => i.ParticipantId)
-                         .Prepend(command.OnBehalfOfParticipantId)
-                         .OfType<Guid>()
-                         .Distinct())
+            // The order's first, then the lines in order, so a refusal names the first field at fault.
+            if (command.OnBehalfOfParticipantId is { } onBehalfOf)
             {
-                RequireNameable(tab, named);
+                RequireNameable(tab, onBehalfOf, "onBehalfOfParticipantId");
+            }
+
+            for (var i = 0; i < command.Items.Count; i++)
+            {
+                if (command.Items[i].ParticipantId is { } named)
+                {
+                    RequireNameable(tab, named, $"items[{i}].participantId");
+                }
             }
 
             var order = TabOrder.PlacedByStaffMember(
@@ -326,23 +331,17 @@ internal sealed class TabOrderService(
     /// One check for <c>onBehalfOfParticipantId</c> and every line's <c>participantId</c>, so the two
     /// cannot drift: somebody who is not on this tab - made up, or at another table - is not found;
     /// somebody still waiting on the host is not on the tab yet, and somebody the host took off it is
-    /// not on it any more.
+    /// not on it any more. Each refusal names the field and the guest, so a tablet can tell it from
+    /// the other refusals that share its status and code.
     /// </remarks>
-    private static void RequireNameable(Tab tab, Guid participantId)
+    private static void RequireNameable(Tab tab, Guid participantId, string field)
     {
         var named = tab.Participants.FirstOrDefault(p => p.Id == participantId)
-                    ?? throw new KeyNotFoundException($"Participant {participantId} is not on tab {tab.Id}.");
+                    ?? throw new NamedGuestNotOnTabException(tab.Id, participantId, field);
 
-        switch (named.Status)
+        if (named.Status != ParticipantStatus.Approved)
         {
-            case ParticipantStatus.Approved:
-                return;
-            case ParticipantStatus.Removed:
-                throw new DomainStateException(
-                    "That guest was taken off the tab, so an order cannot be put in their name.");
-            default:
-                throw new DomainStateException(
-                    "That guest is not on the tab yet, so an order cannot be put in their name.");
+            throw new NamedGuestNotOrderableException(participantId, named.Status, field);
         }
     }
 

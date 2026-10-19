@@ -202,17 +202,26 @@ public static class OrderingEndpoints
                 StatusCodes.Status400BadRequest,
                 "`invalid-request`: a shared line named a guest. `context.field` is `items[i].participantId`.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff, or another branch's tab.")
-            .ProducesProblemDetails(
+            .ProducesProblem<NamedGuestRefusedProblem>(
                 StatusCodes.Status404NotFound,
-                "`not-found`: `onBehalfOfParticipantId` or a line's `participantId` is not on this tab - "
-                + "made up, or a guest at another table.")
+                "`not-found`. When `onBehalfOfParticipantId` or a line's `participantId` is not on this tab - "
+                + "made up, or a guest at another table - `context` names it: `field` "
+                + "(`onBehalfOfParticipantId` or `items[i].participantId`) and `participantId`. Any other "
+                + "404 here (a dish on no menu, an unknown tab) has no `context`.")
+            .ProducesProblem<NamedGuestRefusedProblem>(
+                StatusCodes.Status409Conflict,
+                "`conflicting-state` about a named guest: `context` carries `field`, `participantId` and "
+                + "`participantStatus` (1 not let on yet, 3 taken off). A `conflicting-state` without a "
+                + "`participantId` is something else, e.g. another branch's dish.")
             .ProducesProblem<MenuItemUnavailableProblem>(
                 StatusCodes.Status409Conflict, "`menu-item-unavailable`, with the dish named.")
             .ProducesProblem<TabNotAcceptingOrdersProblem>(
                 StatusCodes.Status409Conflict,
-                "`tab-not-accepting-orders`: the bill has been asked for. Also `menu-item-unavailable`, "
-                + "with the dish named, and `conflicting-state` when the guest named on the order or a "
-                + "line is still waiting for the host to let them on.");
+                "`tab-not-accepting-orders`: the tab takes no more orders. `context.status` says why - 2 "
+                + "Closing (the bill has been asked for), 3 Closed (paid and settled), 4 Abandoned "
+                + "(written off). Also `menu-item-unavailable`, with the dish named, and "
+                + "`conflicting-state`: with `context.participantId` when a guest the order named is not "
+                + "orderable for (not let on yet, or taken off), without it for anything else.");
 
         staff.MapPost("/lines/{lineId:guid}/void", VoidLineAsync)
             .WithName("voidTabLine")

@@ -88,12 +88,14 @@ public sealed class LineAttributionEndpointTests(SqlServerFixture fixture)
         Assert.Equal("invalid-request", shared.Problem.GetProperty("code").GetString());
         Assert.Equal("items[1].participantId", shared.Problem.GetProperty("context").GetProperty("field").GetString());
 
-        // Somebody who is not on this tab, made up or at the next table; somebody still waiting.
-        foreach (var (participantId, status, code) in new[]
+        // Somebody who is not on this tab, made up or at the next table; somebody still waiting. Each
+        // refusal names the field and the guest, so the tablet can tell "that guest" from the other
+        // causes of the same status and code; a pending guest's says how far they got.
+        foreach (var (participantId, status, code, participantStatus) in new (Guid, HttpStatusCode, string, int?)[]
                  {
-                     (Guid.CreateVersion7(), HttpStatusCode.NotFound, "not-found"),
-                     (elsewhere.ParticipantId, HttpStatusCode.NotFound, "not-found"),
-                     (pending.ParticipantId, HttpStatusCode.Conflict, "conflicting-state"),
+                     (Guid.CreateVersion7(), HttpStatusCode.NotFound, "not-found", null),
+                     (elsewhere.ParticipantId, HttpStatusCode.NotFound, "not-found", null),
+                     (pending.ParticipantId, HttpStatusCode.Conflict, "conflicting-state", 1),
                  })
         {
             var onTheLine = await SendAsync(
@@ -106,6 +108,26 @@ public sealed class LineAttributionEndpointTests(SqlServerFixture fixture)
             Assert.Equal(
                 onTheOrder.Problem.GetProperty("detail").GetString(),
                 onTheLine.Problem.GetProperty("detail").GetString());
+
+            foreach (var (problem, field) in new[]
+                     {
+                         (onTheLine.Problem, "items[1].participantId"),
+                         (onTheOrder.Problem, "onBehalfOfParticipantId"),
+                     })
+            {
+                var context = problem.GetProperty("context");
+                Assert.Equal(field, context.GetProperty("field").GetString());
+                Assert.Equal(participantId, context.GetProperty("participantId").GetGuid());
+
+                if (participantStatus is { } expected)
+                {
+                    Assert.Equal(expected, context.GetProperty("participantStatus").GetInt32());
+                }
+                else
+                {
+                    Assert.False(context.TryGetProperty("participantStatus", out _), "A guest not on the tab has no status.");
+                }
+            }
         }
 
         // From the diner's own phone, on the diner route: 403, as the order-level field is.
@@ -391,6 +413,105 @@ public sealed class LineAttributionEndpointTests(SqlServerFixture fixture)
         Assert.Equal(
             new[] { TestMenu.KhachapuriAmd, TestMenu.WineAmd }.Order(),
             hers.GetProperty("items").EnumerateArray().Select(i => i.GetProperty("lineTotalAmd").GetInt64()).Order());
+    }
+
+    /// <summary>
+    /// The refusals a staff order shares a status and code with are told apart from a named guest's:
+    /// only the guest's names a guest, and a tab that no longer takes orders says which state it is in.
+    /// </summary>
+    /// <remarks>
+    /// A tablet that queued a round offline sends it later, and several things can have changed: a
+    /// dish deleted from the menu it cached (404), a dish of another branch (409), a tab that does not
+    /// exist (404), a guest who left (404 or 409), a table that paid and went (409). The statuses and
+    /// codes stay as they were; what tells the guest apart is <c>context.participantId</c>, which
+    /// nothing else carries, and the closed tab has its own code with <c>context.status</c>.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_named_guests_refusal_is_told_apart_from_the_other_refusals_with_the_same_status()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        TestMenu menu;
+        TestMenu otherMenu;
+        string qrToken;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+            menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+            otherMenu = await TestMenuBuilder.CreateAsync(db, (await AuthTestData.CreateBranchAsync(db)).BranchId);
+            qrToken = await db.DiningTables.AsNoTracking()
+                .Where(t => t.BranchId == branch.BranchId)
+                .OrderBy(t => t.Label)
+                .Select(t => t.QrToken)
+                .FirstAsync();
+        }
+
+        var host = await ScanAsync(factory, qrToken, "Ani");
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        async Task<(HttpStatusCode Status, JsonElement Problem)> OrderAsync(Guid tabId, Guid menuItemId)
+        {
+            var response = await waiter.PostAsJsonAsync(
+                $"/api/tabs/{tabId}/staff-orders",
+                new
+                {
+                    items = new[] { new { menuItemId, quantity = 1, participantId = host.ParticipantId } },
+                    clientCommandId = Guid.CreateVersion7(),
+                });
+
+            // A refusal by a route policy has no body; one by the service is a problem.
+            var body = await response.Content.ReadAsStringAsync();
+
+            return (response.StatusCode, body.Length == 0 ? default : JsonDocument.Parse(body).RootElement.Clone());
+        }
+
+        static bool NamesAGuest(JsonElement problem) =>
+            problem.ValueKind == JsonValueKind.Object
+            && problem.TryGetProperty("context", out var context)
+            && context.ValueKind == JsonValueKind.Object
+            && context.TryGetProperty("participantId", out _);
+
+        // A dish that is not on any menu, with a guest named who is perfectly fine: 404, no guest.
+        var gone = await OrderAsync(host.TabId, Guid.CreateVersion7());
+        Assert.Equal(HttpStatusCode.NotFound, gone.Status);
+        Assert.Equal("not-found", gone.Problem.GetProperty("code").GetString());
+        Assert.False(NamesAGuest(gone.Problem), "A missing dish was reported as the guest.");
+
+        // Another branch's dish: 409 conflicting-state, no guest.
+        var elsewhere = await OrderAsync(host.TabId, otherMenu.Coffee);
+        Assert.Equal(HttpStatusCode.Conflict, elsewhere.Status);
+        Assert.Equal("conflicting-state", elsewhere.Problem.GetProperty("code").GetString());
+        Assert.False(NamesAGuest(elsewhere.Problem), "Another branch's dish was reported as the guest.");
+
+        // A tab that does not exist. The branch policy answers before the service does, so this is a
+        // refusal of the tab, and in no case one that names the guest.
+        var noTab = await OrderAsync(Guid.CreateVersion7(), menu.Coffee);
+        Assert.True(
+            noTab.Status is HttpStatusCode.NotFound or HttpStatusCode.Forbidden,
+            $"An unknown tab answered {noTab.Status}.");
+        Assert.False(NamesAGuest(noTab.Problem), "An unknown tab was reported as the guest.");
+
+        // The table pays and the tab closes; a round queued before that lands afterwards.
+        var placed = await OrderAsync(host.TabId, menu.Coffee);
+        Assert.Equal(HttpStatusCode.Created, placed.Status);
+
+        var owed = (await waiter.GetFromJsonAsync<JsonElement>($"/api/tabs/{host.TabId}/participants"))
+            .GetProperty("totals").GetProperty("remainingAmd").GetInt64();
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await waiter.PostAsJsonAsync(
+                $"/api/tabs/{host.TabId}/payments/cash",
+                new { amountAmd = owed, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() })).StatusCode);
+
+        var late = await OrderAsync(host.TabId, menu.Khachapuri);
+        Assert.Equal(HttpStatusCode.Conflict, late.Status);
+        Assert.Equal("tab-not-accepting-orders", late.Problem.GetProperty("code").GetString());
+        Assert.Equal(3, late.Problem.GetProperty("context").GetProperty("status").GetInt32());
+        Assert.Equal(host.TabId, late.Problem.GetProperty("context").GetProperty("tabId").GetGuid());
+        Assert.False(NamesAGuest(late.Problem), "A closed tab was reported as the guest.");
     }
 
     // ------------------------------------------------------------ helpers

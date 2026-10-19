@@ -337,6 +337,10 @@ public class SwaggerExposureTests
 
             // A first review with no visit: the app says how long after a visit a review is open.
             ["ReviewNeedsVisitProblem"] = ["branchId", "windowDays"],
+
+            // A staff order refused over a named guest: the tablet tells it from a deleted dish or
+            // another branch's dish, which share its status and code, by these.
+            ["NamedGuestRefusedProblem"] = ["field", "participantId", "participantStatus"],
         };
 
         // Schema ids are fully qualified in this document, so match on the tail.

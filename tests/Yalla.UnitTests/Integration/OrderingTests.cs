@@ -360,9 +360,20 @@ public sealed class OrderingTests(SqlServerFixture fixture)
                 orderLevel.GetType() == lineLevel.GetType() && orderLevel.Message == lineLevel.Message,
                 $"Naming {who} on a line was answered with {lineLevel.GetType().Name} ({lineLevel.Message}), "
                 + $"and on the order with {orderLevel.GetType().Name} ({orderLevel.Message}).");
-            Assert.IsType(
-                participantId == pending ? typeof(DomainStateException) : typeof(KeyNotFoundException),
-                lineLevel);
+            if (participantId == pending)
+            {
+                var refusal = Assert.IsType<NamedGuestNotOrderableException>(lineLevel);
+                Assert.Equal(ParticipantStatus.PendingApproval, refusal.ParticipantStatus);
+                Assert.Equal("items[1].participantId", refusal.Field);
+                Assert.Equal("onBehalfOfParticipantId", ((NamedGuestNotOrderableException)orderLevel).Field);
+            }
+            else
+            {
+                var refusal = Assert.IsType<NamedGuestNotOnTabException>(lineLevel);
+                Assert.Equal("items[1].participantId", refusal.Field);
+                Assert.Equal(participantId, refusal.ParticipantId);
+                Assert.Equal("onBehalfOfParticipantId", ((NamedGuestNotOnTabException)orderLevel).Field);
+            }
         }
 
         await using var verify = fixture.CreateContext(world.Clock);
@@ -626,7 +637,7 @@ public sealed class OrderingTests(SqlServerFixture fixture)
                 .RemoveParticipantAsync(world.TabId, world.HostId, world.GuestId);
         }
 
-        var refused = await Assert.ThrowsAsync<DomainStateException>(
+        var refused = await Assert.ThrowsAsync<NamedGuestNotOrderableException>(
             () => fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
                 .PlaceOrderAsync(new PlaceOrderCommand(
                     world.TabId,
@@ -634,6 +645,9 @@ public sealed class OrderingTests(SqlServerFixture fixture)
                     Guid.CreateVersion7())));
 
         Assert.Contains("taken off the tab", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(ParticipantStatus.Removed, refused.ParticipantStatus);
+        Assert.Equal(world.GuestId, refused.ParticipantId);
+        Assert.Equal("items[0].participantId", refused.Field);
         Assert.DoesNotContain("not on the tab yet", refused.Message, StringComparison.Ordinal);
     }
 

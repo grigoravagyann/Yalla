@@ -440,7 +440,12 @@ order-level field is a **default for the lines that name nobody**, not a claim o
   `onBehalfOfParticipantId` - the tab, the order answer, the kitchen queue, the stream - absent on a
   split line.
 - Both fields are checked by one rule: an approved participant on this tab (404 `not-found`; 409
-  `conflicting-state` for a guest not let on yet, or one taken off). A phone naming anybody is 403,
+  `conflicting-state` for a guest not let on yet, or one taken off). Those refusals carry
+  `context.field` (`onBehalfOfParticipantId` or `items[i].participantId`) and `context.participantId`
+  (plus `participantStatus` on the 409), from `NamedGuestNotOnTabException` and
+  `NamedGuestNotOrderableException`, and nothing else with the same status and code does: a dish on no menu, another branch's dish and
+  an unknown tab have no `participantId`, and a closed tab is `tab-not-accepting-orders` with
+  `context.status`. A phone naming anybody is 403,
   before anything else about the body. A waiter's `isShared` line that names a `participantId` is
   400 `invalid-request` with `context.field` `items[i].participantId` - checked after the replay
   lookup, so a retry gets its original order whatever its body says now.

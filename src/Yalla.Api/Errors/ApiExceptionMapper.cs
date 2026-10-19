@@ -157,6 +157,34 @@ internal static class ApiExceptionMapper
                 ["status"] = (int)e.Status,
             }),
 
+        // A guest a waiter named on a staff order who is not on the tab, or not orderable on it. The
+        // status and code stay those of the base types (404 not-found, 409 conflicting-state); the
+        // context is what lets a tablet tell "that guest" from a deleted dish or another branch's
+        // dish, which answer the same. Both must stay ABOVE KeyNotFoundException and
+        // DomainStateException, which they derive from.
+        NamedGuestNotOnTabException e => new MappedError(
+            StatusCodes.Status404NotFound,
+            ErrorCodes.NotFound,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["field"] = e.Field,
+                ["participantId"] = e.ParticipantId,
+            }),
+
+        NamedGuestNotOrderableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ConflictingState,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["field"] = e.Field,
+                ["participantId"] = e.ParticipantId,
+                ["participantStatus"] = (int)e.ParticipantStatus,
+            }),
+
         // A tab hangs off a sitting. Its own code so the tablet can say "seat them first" rather
         // than show a generic conflict.
         TableNotSeatedException e => new MappedError(
