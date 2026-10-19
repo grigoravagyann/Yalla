@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
 
@@ -31,7 +32,8 @@ public sealed class VenueAccountEndpointTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             branch = await AuthTestData.CreateBranchAsync(db);
-            owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId);
+            // An owner's row may name a branch; they still run every branch, so none is answered.
+            owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId, branch.BranchId);
             generalManager = await AuthTestData.SeedGeneralManagerAsync(db, branch.VenueId);
         }
 
@@ -198,30 +200,87 @@ public sealed class VenueAccountEndpointTests(SqlServerFixture fixture)
         }
 
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+        var start = factory.Clock.UtcNow;
 
+        // Ten wrong guesses, a minute apart: minutes 0 to 9.
         for (var i = 0; i < 10; i++)
+        {
+            if (i > 0)
+            {
+                factory.Clock.Advance(TimeSpan.FromMinutes(1));
+            }
+
+            Assert.Equal(
+                HttpStatusCode.UnprocessableEntity,
+                (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = $"wrong-{i}-password", newPassword = NewPassword })).StatusCode);
+        }
+
+        // Right password or not - and for as long as the oldest guess, at minute 0, is in the window.
+        var locked = await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword });
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
+        Assert.True(locked.Headers.RetryAfter?.Delta is { TotalSeconds: >= 355 and <= 360 }, $"Retry-After was {locked.Headers.RetryAfter}");
+
+        var problem = await locked.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("too-many-attempts", problem.GetProperty("code").GetString());
+        Assert.InRange(problem.GetProperty("context").GetProperty("retryAfterSeconds").GetInt32(), 355, 360);
+
+        factory.Clock.Advance(start.AddMinutes(15).AddSeconds(-1) - factory.Clock.UtcNow);
+        Assert.Equal(
+            HttpStatusCode.TooManyRequests,
+            (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = "wrong-again-password", newPassword = NewPassword })).StatusCode);
+
+        // The oldest has aged out, so one more guess is heard - and it is the tenth in the window again,
+        // so the one after is not: the lock lifts guess by guess, not all at once.
+        factory.Clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(
+            HttpStatusCode.UnprocessableEntity,
+            (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = "wrong-again-password", newPassword = NewPassword })).StatusCode);
+
+        var again = await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword });
+        Assert.Equal(HttpStatusCode.TooManyRequests, again.StatusCode);
+        Assert.True(again.Headers.RetryAfter?.Delta is { TotalSeconds: > 0 and <= 60 }, $"Retry-After was {again.Headers.RetryAfter}");
+
+        // Once the minute-1 guess is out too, the right password works.
+        factory.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword })).StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Wrong_guesses_sent_at_once_are_counted_one_at_a_time_and_stop_at_ten()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+
+        for (var i = 0; i < 9; i++)
         {
             Assert.Equal(
                 HttpStatusCode.UnprocessableEntity,
                 (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = $"wrong-{i}-password", newPassword = NewPassword })).StatusCode);
         }
 
-        // Right password or not.
-        var locked = await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword });
+        // Eight more at once: one is the tenth, and the other seven find the lock.
+        var burst = await Task.WhenAll(Enumerable.Range(0, 8).Select(i =>
+            manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = $"burst-{i}-password", newPassword = NewPassword })));
 
-        Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
-        Assert.True(locked.Headers.RetryAfter?.Delta is { TotalSeconds: > 0 and <= 900 }, $"Retry-After was {locked.Headers.RetryAfter}");
+        Assert.Equal(1, burst.Count(r => r.StatusCode == HttpStatusCode.UnprocessableEntity));
+        Assert.Equal(7, burst.Count(r => r.StatusCode == HttpStatusCode.TooManyRequests));
 
-        var problem = await locked.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("too-many-attempts", problem.GetProperty("code").GetString());
-        Assert.True(problem.GetProperty("context").GetProperty("retryAfterSeconds").GetInt32() > 0);
-
-        // Fifteen minutes on, the oldest guess has left the window and the right password works.
-        factory.Clock.Advance(TimeSpan.FromMinutes(15) + TimeSpan.FromSeconds(1));
-
+        await using var verify = fixture.CreateContext(factory.Clock);
         Assert.Equal(
-            HttpStatusCode.OK,
-            (await manager.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword })).StatusCode);
+            10,
+            await verify.PlatformAuditLogs.CountAsync(l => l.ActorStaffMemberId == branch.ManagerId && l.Action == "account.password-change-failed"));
     }
 
     [SkippableFact]
@@ -397,6 +456,93 @@ public sealed class VenueAccountEndpointTests(SqlServerFixture fixture)
         Assert.Equal(
             HttpStatusCode.Forbidden,
             (await floor.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = branch.ManagerPassword, newPassword = NewPassword })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await floor.PatchAsJsonAsync("/api/venue/me", new { fullName = "Floor Manager" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await floor.PostAsync("/api/venue/me/sessions/sign-out-others", content: null)).StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task A_deactivated_or_demoted_staff_member_is_refused_while_their_token_still_validates()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        // A manager's token, minted while they were one: neither change below moves the session generation.
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+        Assert.Equal(HttpStatusCode.OK, (await manager.GetAsync("/api/venue/me")).StatusCode);
+
+        await SetStaffAsync(factory, branch.ManagerId, s => s.SetActive(false));
+        await AssertRefusedAsync(manager);
+
+        // Back on, but a waiter now - with the Manager token still in hand.
+        await SetStaffAsync(factory, branch.ManagerId, s =>
+        {
+            s.SetActive(true);
+            s.Reassign(StaffRole.Waiter, branch.BranchId);
+        });
+        await AssertRefusedAsync(manager);
+
+        static async Task AssertRefusedAsync(HttpClient client)
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/venue/me")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PatchAsJsonAsync("/api/venue/me", new { fullName = "Not Any More" })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/venue/me/sessions")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/venue/me/sessions/sign-out-others", content: null)).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await client.PostAsJsonAsync("/api/venue/me/password", new { currentPassword = AuthTestData.ManagerPassword, newPassword = NewPassword })).StatusCode);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Signing_out_elsewhere_from_a_token_that_names_no_sign_in_is_refused_and_ends_nothing()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        var (_, refresh) = await SignInAsync(factory, branch.ManagerEmail, branch.ManagerPassword);
+
+        // A valid admin-panel token with no rch claim: there is no telling which sign-in to keep.
+        string chainless;
+        using (var scope = factory.Services.CreateScope())
+        {
+            (chainless, _) = scope.ServiceProvider.GetRequiredService<TokenIssuer>().IssueVenueUserToken(
+                branch.ManagerId, branch.VenueId, branch.BranchId, StaffRole.Manager, sessionGeneration: 0);
+        }
+
+        using var client = factory.CreateClientWithToken(chainless);
+        var refused = await client.PostAsync("/api/venue/me/sessions/sign-out-others", content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Equal("sign-in-unknown", (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        // Nothing ended: the token still works and the sign-in still refreshes.
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/venue/me")).StatusCode);
+
+        using var anonymous = factory.CreateClient();
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await anonymous.PostAsJsonAsync("/api/auth/venue/refresh", new { refreshToken = refresh })).StatusCode);
+    }
+
+    private async Task SetStaffAsync(YallaApiFactory factory, Guid staffMemberId, Action<Yalla.Domain.Staff.StaffMember> change)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+        change(await db.StaffMembers.SingleAsync(s => s.Id == staffMemberId));
+        await db.SaveChangesAsync();
     }
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);

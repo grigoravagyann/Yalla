@@ -48,7 +48,8 @@ public static class VenueAccountEndpoints
                 "`fullName` is theirs to change. `email` is the sign-in address and is not: whoever outranks "
                 + "them gives them a new sign-in link for a new address (`issueStaffSignIn`), and an owner's is "
                 + "changed by the platform. `role` 1 Owner, 6 GeneralManager, 2 Manager; `branchId` is a branch "
-                + "manager's home branch and null for the venue-wide ranks. `staffMemberId` and `venueId` are "
+                + "manager's home branch and is absent for the venue-wide ranks (an owner's row may name a "
+                + "branch; they still run every one). `staffMemberId` and `venueId` are "
                 + "what `setStaffPin` takes for their own tablet PIN.")
             .Produces<VenueUserProfile>()
             .ProducesProblemDetails(
@@ -127,8 +128,14 @@ public static class VenueAccountEndpoints
                 + "**This request's access token ends too, and its refresh token is kept**: refresh "
                 + "(`refreshVenueUserToken`) with the one you hold and carry on. No fresh pair is answered, on "
                 + "purpose - an access token alone must not be able to mint a new 30-day refresh token. **Audited** "
-                + "as `account.sign-out-others`.")
+                + "as `account.sign-out-others`.\n\n"
+                + "A token that names no sign-in (no refresh-chain claim, from before the claim existed) "
+                + "cannot say which one to keep: `409 sign-in-unknown`, and nothing is changed - sign in "
+                + "again and retry.")
             .Produces<SignedOutElsewhere>()
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`sign-in-unknown`: the token names no sign-in to keep. Nothing changed.")
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
                 "Not an owner, general manager or branch manager signed in to the admin panel.");

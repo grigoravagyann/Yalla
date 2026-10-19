@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Staff;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
@@ -123,25 +124,27 @@ internal sealed class VenueUserAccountService(
 
     public async Task<SignedOutElsewhere> SignOutOthersAsync(Guid? currentChainId, CancellationToken cancellationToken = default)
     {
-        var me = await RequireSelfAsync("Sign out your other sign-ins", tracked: true, cancellationToken);
-        var nowUtc = clock.UtcNow;
+        // A token that names no sign-in cannot say which one to keep, and keeping none would sign the
+        // caller out with the rest. Refused before anything is read or written.
+        if (currentChainId is not { } keep)
+        {
+            throw new SignInUnknownException();
+        }
 
-        var others = await db.RefreshTokens
-            .Where(t => t.SubjectType == RefreshTokenSubject.VenueUser
-                        && t.SubjectId == me.Id
-                        && t.RevokedAtUtc == null
-                        && t.RotatedAtUtc == null
-                        && t.ExpiresAtUtc > nowUtc
-                        && (currentChainId == null || t.ChainId != currentChainId))
-            .Select(t => t.ChainId)
-            .Distinct()
-            .CountAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var me = await RequireSelfAsync("Sign out your other sign-ins", tracked: true, cancellationToken);
+
+        // Under the account's lock (the store takes it), so a refresh in flight on another device either
+        // finished first - and its successor is ended here - or waits and finds its token revoked.
+        var ended = await refreshTokens.RevokeAllForSubjectExceptChainAsync(
+            RefreshTokenSubject.VenueUser, me.Id, keep, "signed-out-elsewhere", cancellationToken);
 
         // Every access token ends with the generation - this request's too, which is why the chain it
-        // names is kept: the console refreshes on it and carries on under the new generation.
+        // names is kept: the console refreshes on it and carries on under the new generation. Read
+        // again under the lock, so the bump is from the generation as it stands.
+        await db.Entry(me).ReloadAsync(cancellationToken);
         me.EndSessions();
-        await refreshTokens.RevokeAllForSubjectExceptChainAsync(
-            RefreshTokenSubject.VenueUser, me.Id, currentChainId, "signed-out-elsewhere", cancellationToken);
 
         await PlatformAudit.RecordAsync(
             db,
@@ -149,17 +152,18 @@ internal sealed class VenueUserAccountService(
             clock,
             SignOutOthersAuditAction,
             new AuditTarget(StaffTargetType, me.Id, me.FullName, me.VenueId),
-            new { endedSessions = others },
+            new { endedSessions = ended },
             cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         // After the commit, so no other request re-reads the old generation into the cache.
         authority.InvalidateVenueUser(me.Id);
 
-        logger.LogInformation("Staff member {StaffMemberId} signed {Count} other sign-ins out.", me.Id, others);
+        logger.LogInformation("Staff member {StaffMemberId} signed {Count} other sign-ins out.", me.Id, ended);
 
-        return new SignedOutElsewhere(others);
+        return new SignedOutElsewhere(ended);
     }
 
     /// <summary>
@@ -192,8 +196,12 @@ internal sealed class VenueUserAccountService(
     private static OwnAccountAudit Audit(StaffMember me) =>
         new(RenameAuditAction, PasswordChangeAuditAction, PasswordChangeFailedAuditAction, me.VenueId);
 
+    /// <summary>
+    /// The profile. A branch only for a branch manager: an owner's row may name one, but an owner runs
+    /// every branch, and the console would read a branch here as "confined to it".
+    /// </summary>
     private static VenueUserProfile Profile(StaffMember me) =>
-        new(me.Id, me.FullName, me.Email!, me.Role, me.VenueId!.Value, me.BranchId);
+        new(me.Id, me.FullName, me.Email!, me.Role, me.VenueId!.Value, me.Role == StaffRole.Manager ? me.BranchId : null);
 
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 }

@@ -406,6 +406,13 @@ public static class ErrorCodes
     /// </summary>
     public const string PinTaken = "pin-taken";
 
+    /// <summary>
+    /// The access token names no sign-in (no refresh-chain claim), so "sign out everywhere else" cannot
+    /// tell which sign-in to keep. HTTP 409; nothing changed - sign in again and retry. Minted by
+    /// <c>SignInUnknownException</c>.
+    /// </summary>
+    public const string SignInUnknown = "sign-in-unknown";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -477,6 +484,7 @@ public static class ErrorCodes
         ReservationOverlapsOwn => "You already have a booking then",
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
+        SignInUnknown => "Sign-in not identified",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

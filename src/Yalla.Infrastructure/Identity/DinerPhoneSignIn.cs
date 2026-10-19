@@ -67,6 +67,13 @@ internal sealed class DinerPhoneSignIn(
                 "invalid-credentials", "That username or email and password do not match an account.");
         }
 
+        // From here to the save, one transaction - the caller's if it has one. Displacing a registrant
+        // revokes their refresh tokens under the account's lock, which the transaction holds, so a
+        // refresh of one of them cannot mint a successor behind the revocation.
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
         var isNewAccount = diner is null;
 
         if (diner is null)
@@ -116,6 +123,11 @@ internal sealed class DinerPhoneSignIn(
             diner.Id, diner.SessionGeneration, refreshEntity.ChainId, phoneProvedAtUtc: nowUtc);
 
         await db.SaveChangesAsync(cancellationToken);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         if (displaced)
         {

@@ -96,6 +96,14 @@ internal sealed class OwnAccountChanges(
         OwnAccountAudit audit,
         CancellationToken cancellationToken)
     {
+        // One account, one change at a time: the account's lock, held to the commit, is taken before
+        // the wrong guesses are counted - so eight sent at once cannot all find nine and all be heard -
+        // and it is the lock every refresh of the account's tokens takes, so none can mint a successor
+        // behind the revocation below. The row is read again under it.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await refreshTokens.LockSubjectAsync(RefreshTokenSubject.VenueUser, account.Id, cancellationToken);
+        await db.Entry(account).ReloadAsync(cancellationToken);
+
         var nowUtc = clock.UtcNow;
 
         // Refused before the hash is checked at all: a locked account answers the same whether the
@@ -154,6 +162,7 @@ internal sealed class OwnAccountChanges(
                 cancellationToken);
 
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
 
         if (violations.Count > 0)
@@ -194,6 +203,7 @@ internal sealed class OwnAccountChanges(
             cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         // After the commit, so no other request re-reads the old generation into the cache.
         authority.InvalidateVenueUser(account.Id);

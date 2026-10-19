@@ -139,6 +139,11 @@ internal sealed class VenueUserAuthService(
         var nowUtc = clock.UtcNow;
         var hash = Secrets.Hash(resetToken ?? string.Empty);
 
+        // One transaction, because the revocation below runs under the account's lock and the lock is
+        // the transaction's: a refresh of one of the account's tokens either finished first, and its
+        // successor is revoked here, or waits and finds its token revoked.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var token = await db.PasswordResetTokens
             .Include(t => t.StaffMember)
             .FirstOrDefaultAsync(t => t.TokenHash == hash, cancellationToken);
@@ -160,6 +165,7 @@ internal sealed class VenueUserAuthService(
             RefreshTokenSubject.VenueUser, token.StaffMemberId, "password-changed", cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         // After the commit, so no other request re-reads the old generation into the cache.
         authority.InvalidateVenueUser(token.StaffMemberId);

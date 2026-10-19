@@ -11,7 +11,10 @@ namespace Yalla.Application.Auth;
 /// </param>
 /// <param name="Role">1 Owner, 6 GeneralManager, 2 Manager (a branch manager).</param>
 /// <param name="VenueId">The venue they work for.</param>
-/// <param name="BranchId">A branch manager's home branch; null for an owner or general manager, who run every branch.</param>
+/// <param name="BranchId">
+/// A branch manager's home branch. Absent on the wire (null) for an owner or general manager, who run every
+/// branch - an owner's row may name a branch, and it is still not answered here.
+/// </param>
 public sealed record VenueUserProfile(
     Guid StaffMemberId,
     string FullName,
@@ -90,7 +93,10 @@ public interface IVenueUserAccountService
     /// their access tokens stop at once. The caller's access token stops too; the caller's refresh chain is
     /// kept, so it refreshes and carries on. Audited as <c>account.sign-out-others</c>.
     /// </summary>
-    /// <param name="currentChainId">The chain to keep. Null keeps none.</param>
+    /// <param name="currentChainId">The chain to keep - the request's own sign-in.</param>
+    /// <exception cref="Yalla.Domain.Identity.SignInUnknownException">
+    /// <paramref name="currentChainId"/> is null: the token names no sign-in, so there is none to keep. Nothing changes.
+    /// </exception>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<SignedOutElsewhere> SignOutOthersAsync(Guid? currentChainId, CancellationToken cancellationToken = default);
 }

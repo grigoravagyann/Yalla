@@ -532,7 +532,13 @@ the store (active, a venue rank, a sign-in).
   generation, so their access tokens stop now rather than within fifteen minutes. The caller's access
   token stops with them and **the caller's chain is kept**: the console refreshes and carries on. It
   answers no fresh pair on purpose - an access token alone must never turn itself into a thirty-day
-  refresh token; the password change, which proves the password, is the one that does.
+  refresh token; the password change, which proves the password, is the one that does. A token with no
+  `rch` claim cannot say which sign-in to keep, so it is refused with `409 sign-in-unknown` and nothing
+  changes; signing in again gives a token that names its chain.
+- **The profile's `branchId`** is a branch manager's home branch only. An owner's row may name a branch,
+  but an owner runs every branch, so the profile leaves it out - as it does for a general manager.
+- **The wrong guesses are counted one at a time.** The change takes the account's lock (below) before it
+  counts, so guesses sent at once queue on it and the tenth is the last one heard.
 - **The tablet PIN** stays where it was: a staff member sets their own through
   `POST /api/venues/{venueId}/staff/{staffMemberId}/pin` with the ids `GET /api/venue/me` answers - 4 to 8
   digits, `409 pin-taken` when somebody else on the same tablet taps it.
@@ -690,6 +696,27 @@ reset link points at.
 | Tab participant | Tab close + 2h grace, 12h ceiling | None - rejoin the tab |
 | Staff device | 365 days | None - re-enrol |
 | Staff session | 30 minutes | Renewal handle, dies after 30 minutes idle |
+
+### Refreshing and revoking are serialised per account
+
+A refresh reads its token and then rotates it; a revocation - a password reset or change, signing out
+everywhere else, a sign-out, a number proved by its owner, a deletion - reads the account's tokens and then
+revokes them. Nothing on the row says it changed in between, so a refresh that read its token just before
+a revocation committed used to mint a successor the revocation never saw, and the sign-in that was meant
+to end carried on for thirty days. Diner, venue user and platform admin alike.
+
+So `RefreshTokenStore` does both under **the account's lock**: an update lock on the `StaffMembers` or
+`DinerUsers` row, held by the transaction to its commit, taken before any token is read (and the token
+read again under it). Whichever side comes second waits for the other's commit: a refresh that waited finds
+its token revoked and is refused; a revocation that waited finds the successor and ends it too. Every
+rotation and revocation therefore runs in a transaction - the refresh, sign-out, reset, password-change and
+sign-out-elsewhere paths open one, and the store refuses without one. `RefreshRevocationRaceTests` holds
+each side open while the other runs, in both orders, for a staff member and a diner.
+
+A revocation ends only the tokens that could still be exchanged - unrevoked, unrotated, unexpired, one per
+live sign-in. Rotated rows are refused already and are **never pruned**, so a long-lived account
+accumulates one row per renewal; a periodic prune of rows long past their expiry is a follow-up, not built.
+The reuse alarm and sign-out still mark their whole chain.
 
 ### What a device token can and cannot do
 
