@@ -112,8 +112,8 @@ for a year against the last.
 **Per-section CSV is built in the browser**, from the JSON the screen already has. The rules are the ones
 `?format=csv` follows - UTF-8 with a byte-order mark (Excel reads Armenian names), RFC 4180 quoting, plain
 digits with a `.` decimal, whole dram, ISO dates, an empty cell (never 0) for a missing previous value - plus
-a leading `'` on a text cell that starts with `=`, `+`, `-` or `@`, because dish names and void reasons are
-typed by staff. No new endpoint: the file always matches the screen, previous-period columns included, and
+a leading `'` on a text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return, because dish names
+and void reasons are typed by staff. No new endpoint: the file always matches the screen, previous-period columns included, and
 "export everything" costs no round trips. `?format=csv` stays for anybody using the API directly.
 
 ## 5. What is not built, and why

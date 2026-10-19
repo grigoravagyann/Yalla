@@ -122,6 +122,54 @@ public class StaffShiftRulesTests
     }
 
     [Fact]
+    public void Seconds_are_dropped_so_the_length_check_is_exact()
+    {
+        var slot = StaffShiftRules.Normalise(Today, new TimeOnly(10, 0, 59), new TimeOnly(18, 0, 30), dayOff: false, Today);
+
+        Assert.Equal((T(10), T(18)), (slot.StartsAt!.Value, slot.EndsAt!.Value));
+
+        // 10:00:30 to 10:00:45 is no length at all once it is minutes.
+        Assert.Equal(
+            ["endsAt:conflict"],
+            Fields(Assert.Throws<FieldValidationException>(() => StaffShiftRules.Normalise(
+                Today, new TimeOnly(10, 0, 30), new TimeOnly(10, 0, 45), dayOff: false, Today))));
+    }
+
+    [Fact]
+    public void A_shift_still_running_may_keep_its_earlier_date()
+    {
+        // Yesterday's 18:00-02:00, corrected at 00:30 today: its own date is the earliest it may keep.
+        var corrected = StaffShiftRules.Normalise(Today.AddDays(-1), T(18), T(3), dayOff: false, Today, earliest: Today.AddDays(-1));
+
+        Assert.Equal(Today.AddDays(-1), corrected.Date);
+
+        var earlier = Assert.Throws<FieldValidationException>(() => StaffShiftRules.Normalise(
+            Today.AddDays(-2), T(18), T(3), dayOff: false, Today, earliest: Today.AddDays(-1)));
+
+        Assert.Equal(Today.AddDays(-1), earlier.Violations[0].Min);
+    }
+
+    [Fact]
+    public void Shifts_at_branches_in_two_zones_are_compared_as_instants_not_wall_clocks()
+    {
+        // Yerevan 10:00-13:00 is 06:00-09:00 UTC; London 07:00-09:00 (summer time) is 06:00-08:00 UTC.
+        static ShiftSlot At(DateOnly date, int from, int to, int utcOffset) => Shift(date, from, to) with
+        {
+            StartUtc = date.ToDateTime(T(from)).AddHours(-utcOffset),
+            EndUtc = date.ToDateTime(T(to)).AddHours(-utcOffset),
+        };
+
+        var yerevan = At(Today, 10, 13, 4);
+
+        // Apart on the wall clock, together in time: refused.
+        Assert.Throws<FieldValidationException>(() => StaffShiftRules.RequireNoClash(At(Today, 7, 9, 1), [yerevan]));
+
+        // Together on the wall clock, apart in time (10:00-11:00 UTC): fine. So is touching at 06:00 UTC.
+        StaffShiftRules.RequireNoClash(At(Today, 11, 12, 1), [yerevan]);
+        StaffShiftRules.RequireNoClash(At(Today, 5, 7, 1), [yerevan]);
+    }
+
+    [Fact]
     public void A_read_window_defaults_to_two_weeks_from_the_service_date_and_is_capped()
     {
         Assert.Equal((Today, Today.AddDays(13)), StaffShiftRules.Window(null, null, Today));

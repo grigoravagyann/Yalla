@@ -118,6 +118,15 @@ public sealed record ShiftSlot(DateOnly Date, TimeOnly? StartsAt, TimeOnly? Ends
 {
     public bool IsDayOff => StartsAt is null;
 
+    /// <summary>
+    /// The start as an instant, in its branch's zone; null on a day off or when not read in a zone. Two shifts that both
+    /// carry instants are compared by them, so shifts at branches in two zones clash by time, not by wall clock.
+    /// </summary>
+    public DateTime? StartUtc { get; init; }
+
+    /// <summary>The end as an instant; see <see cref="StartUtc"/>.</summary>
+    public DateTime? EndUtc { get; init; }
+
     /// <summary>Local start; null on a day off.</summary>
     public DateTime? LocalStart => StartsAt is { } start ? Date.ToDateTime(start) : null;
 
@@ -140,7 +149,8 @@ public sealed record ShiftSlot(DateOnly Date, TimeOnly? StartsAt, TimeOnly? Ends
 /// </para>
 /// <para>
 /// <b>One person, one place at a time.</b> Two of a person's shifts may touch - 10:00-16:00 and 16:00-22:00 - but not
-/// overlap, at this branch or another of the venue's; and a day off has nothing else on its date. Every problem is
+/// overlap, at this branch or another of the venue's - compared as instants when the slots carry them, so branches in
+/// two zones clash by time - and a day off has nothing else on its date. Every problem is
 /// named by its field with the bound it broke, as the other console forms are.
 /// </para>
 /// </remarks>
@@ -155,24 +165,39 @@ public static class StaffShiftRules
     /// <summary>How many days a read covers when it names no end: two weeks.</summary>
     public const int DefaultWindowDays = 14;
 
-    /// <summary>Checks one shift's own fields.</summary>
+    /// <summary>Checks one shift's own fields. Times are whole minutes: seconds are dropped.</summary>
+    /// <param name="date">The local date it starts on.</param>
+    /// <param name="startsAt">Wall clock; required unless <paramref name="dayOff"/>.</param>
+    /// <param name="endsAt">Wall clock; required unless <paramref name="dayOff"/>.</param>
+    /// <param name="dayOff">A day off: no times.</param>
+    /// <param name="serviceDate">Today at the branch. The horizon counts from it.</param>
+    /// <param name="earliest">
+    /// The earliest date allowed when it is before <paramref name="serviceDate"/>: a shift from last night still running,
+    /// which may be corrected on its own date. The service date otherwise.
+    /// </param>
     /// <exception cref="FieldValidationException">Every problem, named.</exception>
-    public static ShiftSlot Normalise(DateOnly? date, TimeOnly? startsAt, TimeOnly? endsAt, bool dayOff, DateOnly serviceDate)
+    public static ShiftSlot Normalise(
+        DateOnly? date, TimeOnly? startsAt, TimeOnly? endsAt, bool dayOff, DateOnly serviceDate, DateOnly? earliest = null)
     {
         var violations = new List<FieldViolation>();
         var horizon = serviceDate.AddDays(HorizonDays);
+        var minimum = earliest is { } allowed && allowed < serviceDate ? allowed : serviceDate;
+
+        // Whole minutes, so 10:00:30-10:00:45 is no length rather than fifteen seconds, and 16 hours means 960 minutes.
+        startsAt = startsAt is { } rawStart ? new TimeOnly(rawStart.Hour, rawStart.Minute) : null;
+        endsAt = endsAt is { } rawEnd ? new TimeOnly(rawEnd.Hour, rawEnd.Minute) : null;
 
         if (date is not { } day || day == default)
         {
             violations.Add(new FieldViolation("date", "A shift needs a date.", FieldBounds.Required));
         }
-        else if (day < serviceDate)
+        else if (day < minimum)
         {
             violations.Add(new FieldViolation(
                 "date",
-                $"{day:yyyy-MM-dd} has passed at the branch; shifts are planned from {serviceDate:yyyy-MM-dd} on.",
+                $"{day:yyyy-MM-dd} has passed at the branch; shifts are planned from {minimum:yyyy-MM-dd} on.",
                 FieldBounds.Min,
-                Min: serviceDate,
+                Min: minimum,
                 Value: day));
         }
         else if (day > horizon)
@@ -270,7 +295,14 @@ public static class StaffShiftRules
                 continue;
             }
 
-            if (candidate.LocalStart < other.LocalEnd && other.LocalStart < candidate.LocalEnd)
+            // As instants when both carry them - two branches, two zones - and on the wall clock otherwise.
+            var (start, end, otherStart, otherEnd) =
+                candidate.StartUtc is not null && candidate.EndUtc is not null
+                && other.StartUtc is not null && other.EndUtc is not null
+                    ? (candidate.StartUtc, candidate.EndUtc, other.StartUtc, other.EndUtc)
+                    : (candidate.LocalStart, candidate.LocalEnd, other.LocalStart, other.LocalEnd);
+
+            if (start < otherEnd && otherStart < end)
             {
                 throw new FieldValidationException(new FieldViolation(
                     "startsAt",

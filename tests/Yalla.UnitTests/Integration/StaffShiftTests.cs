@@ -299,6 +299,146 @@ public sealed class StaffShiftTests(SqlServerFixture fixture)
         Assert.Empty((await shifts.ListAsync(team.BranchId)).Shifts);
     }
 
+    // ---------------------------------------------------------------- review round 1
+
+    [SkippableFact]
+    public async Task Moving_a_person_takes_their_future_shifts_off_the_branches_they_leave()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Noon);
+        await using var db = fixture.CreateContext(clock);
+        var team = await TeamAsync(db);
+        var shifts = fixture.CreateStaffShiftService(db, clock, TestActor.Owner(team.OwnerId));
+        var staff = fixture.CreateStaffManagementService(db, clock, TestActor.Owner(team.OwnerId));
+
+        // The waiter's history at the branch, and two shifts still to come there.
+        db.StaffShifts.Add(new StaffShift(team.WaiterId, team.BranchId, Today.AddDays(-1), T(10), T(18)));
+        await db.SaveChangesAsync();
+        await shifts.CreateAsync(team.BranchId, new CreateShiftCommand(team.WaiterId, Today, T(16), T(23)));
+        await shifts.CreateAsync(team.BranchId, new CreateShiftCommand(team.WaiterId, Tomorrow, T(16), T(23)));
+
+        // The general manager works both branches tomorrow.
+        await shifts.CreateAsync(team.BranchId, new CreateShiftCommand(team.GeneralManagerId, Tomorrow, T(9), T(13)));
+        await shifts.CreateAsync(team.SiblingBranchId, new CreateShiftCommand(team.GeneralManagerId, Tomorrow, T(14), T(20)));
+
+        // The waiter moves to the sibling branch; the general manager becomes its branch manager.
+        await staff.UpdateAsync(team.VenueId, team.WaiterId, new UpdateStaffCommand(SetBranch: true, BranchId: team.SiblingBranchId));
+        await staff.UpdateAsync(
+            team.VenueId,
+            team.GeneralManagerId,
+            new UpdateStaffCommand(Role: StaffRole.Manager, SetBranch: true, BranchId: team.SiblingBranchId));
+
+        await using (var verify = fixture.CreateContext(clock))
+        {
+            // Today on at the branch they left is gone; history stays, and the sibling's shift stays.
+            Assert.Equal(
+                [(team.BranchId, Today.AddDays(-1))],
+                (await verify.StaffShifts.AsNoTracking().Where(s => s.StaffMemberId == team.WaiterId)
+                    .Select(s => new { s.BranchId, s.Date }).ToListAsync())
+                .Select(s => (s.BranchId, s.Date)));
+
+            Assert.Equal(
+                [team.SiblingBranchId],
+                await verify.StaffShifts.AsNoTracking().Where(s => s.StaffMemberId == team.GeneralManagerId)
+                    .Select(s => s.BranchId).ToListAsync());
+        }
+
+        // A shift orphaned some other way - the row moved without the service - is not listed, counted or clashed
+        // with at the branch the person left, and can still be taken off.
+        var stale = await shifts.CreateAsync(team.BranchId, new CreateShiftCommand(team.CookId, Today, T(9), T(17)));
+
+        var cook = await db.StaffMembers.FirstAsync(s => s.Id == team.CookId);
+        cook.Reassign(StaffRole.Kitchen, team.SiblingBranchId);
+        await db.SaveChangesAsync();
+
+        var listed = await shifts.ListAsync(team.BranchId, Today.AddDays(-1), Tomorrow);
+
+        Assert.Empty(listed.Shifts);
+        Assert.Equal(0, listed.OnShiftToday);
+
+        await shifts.CreateAsync(team.SiblingBranchId, new CreateShiftCommand(team.CookId, Today, T(10), T(16)));
+        await shifts.DeleteAsync(team.BranchId, stale.Id);
+
+        Assert.Equal(
+            [team.SiblingBranchId],
+            await db.StaffShifts.AsNoTracking().Where(s => s.StaffMemberId == team.CookId).Select(s => s.BranchId).ToListAsync());
+    }
+
+    [SkippableFact]
+    public async Task A_branch_manager_cannot_plan_somebody_who_works_the_whole_venue()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Noon);
+        await using var db = fixture.CreateContext(clock);
+        var team = await TeamAsync(db);
+
+        // A waiter with no branch is on every branch's tablets - further than a branch manager reaches.
+        await Assert.ThrowsAsync<StaffPermissionException>(() => fixture
+            .CreateStaffShiftService(db, clock, TestActor.Manager(team.ManagerId))
+            .CreateAsync(team.BranchId, new CreateShiftCommand(team.VenueWideWaiterId, Today, T(10), T(18))));
+
+        var planned = await fixture.CreateStaffShiftService(db, clock, TestActor.GeneralManager(team.GeneralManagerId))
+            .CreateAsync(team.BranchId, new CreateShiftCommand(team.VenueWideWaiterId, Today, T(10), T(18)));
+
+        Assert.Equal(team.VenueWideWaiterId, planned.StaffMemberId);
+    }
+
+    [SkippableFact]
+    public async Task A_past_shift_is_history_unless_it_is_still_running()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        // 00:30 on Tuesday in Yerevan; the branch shut at 23:00, so Tuesday is the service day.
+        var clock = new TestClock(new DateTime(2026, 10, 19, 20, 30, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var team = await TeamAsync(db);
+        var shifts = fixture.CreateStaffShiftService(db, clock, TestActor.Owner(team.OwnerId));
+
+        var ended = new StaffShift(team.CookId, team.BranchId, Today, T(10), T(18));
+        var running = new StaffShift(team.WaiterId, team.BranchId, Today, T(18), T(2));
+        db.StaffShifts.AddRange(ended, running);
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<DomainStateException>(() => shifts.UpdateAsync(
+            team.BranchId, ended.Id, new UpdateShiftCommand(Today, T(10), T(19))));
+        await Assert.ThrowsAsync<DomainStateException>(() => shifts.DeleteAsync(team.BranchId, ended.Id));
+
+        // Still running at 00:30: its end may be corrected on its own date, not moved earlier.
+        var corrected = await shifts.UpdateAsync(team.BranchId, running.Id, new UpdateShiftCommand(Today, T(18), T(3)));
+
+        Assert.Equal((Today, T(3)), (corrected.Date, corrected.EndsAt!.Value));
+
+        var earlier = await Assert.ThrowsAsync<FieldValidationException>(() => shifts.UpdateAsync(
+            team.BranchId, running.Id, new UpdateShiftCommand(Today.AddDays(-1), T(18), T(3))));
+
+        Assert.Equal(("date", FieldBounds.Min), (earlier.Field, earlier.Violations[0].Bound));
+
+        await shifts.DeleteAsync(team.BranchId, running.Id);
+    }
+
+    [SkippableFact]
+    public async Task Shifts_at_branches_in_two_zones_clash_by_the_clock_on_the_wall_of_neither()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Noon);
+        await using var db = fixture.CreateContext(clock);
+        var team = await TeamAsync(db, siblingTimeZoneId: "Europe/London");
+        var shifts = fixture.CreateStaffShiftService(db, clock, TestActor.Owner(team.OwnerId));
+
+        // Tomorrow, in Yerevan: 10:00-13:00 is 06:00-09:00 UTC.
+        await shifts.CreateAsync(team.BranchId, new CreateShiftCommand(team.GeneralManagerId, Tomorrow, T(10), T(13)));
+
+        // London on summer time: 07:00-09:00 is 06:00-08:00 UTC - the same hours, whatever the wall clocks say.
+        await Assert.ThrowsAsync<FieldValidationException>(() => shifts.CreateAsync(
+            team.SiblingBranchId, new CreateShiftCommand(team.GeneralManagerId, Tomorrow, T(7), T(9))));
+
+        // 11:00-12:00 in London is 10:00-11:00 UTC: after the Yerevan shift, though the wall clocks overlap.
+        await shifts.CreateAsync(team.SiblingBranchId, new CreateShiftCommand(team.GeneralManagerId, Tomorrow, T(11), T(12)));
+    }
+
     // ---------------------------------------------------------------- over HTTP
 
     [SkippableFact]
@@ -395,14 +535,16 @@ public sealed class StaffShiftTests(SqlServerFixture fixture)
         Guid WaiterId,
         Guid SecondWaiterId,
         Guid CookId,
-        Guid SiblingWaiterId);
+        Guid SiblingWaiterId,
+        Guid VenueWideWaiterId);
 
     private static async Task<TeamIds> TeamAsync(
         YallaDbContext db,
-        IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null)
+        IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null,
+        string? siblingTimeZoneId = null)
     {
         var branch = await TestBranchBuilder.CreateAsync(db, openingHours: openingHours);
-        var sibling = await AuthTestData.AddBranchAsync(db, branch.VenueId, branch.TimeZoneId);
+        var sibling = await AuthTestData.AddBranchAsync(db, branch.VenueId, siblingTimeZoneId ?? branch.TimeZoneId);
 
         StaffMember Person(string name, StaffRole role, Guid? branchId) =>
             new(branch.VenueId, name, $"+3749{Guid.NewGuid():N}"[..12], role, "hash", branchId);
@@ -414,8 +556,9 @@ public sealed class StaffShiftTests(SqlServerFixture fixture)
         var secondWaiter = Person("Hayk Waiter", StaffRole.Waiter, branch.BranchId);
         var cook = Person("Sona Cook", StaffRole.Kitchen, branch.BranchId);
         var siblingWaiter = Person("Tigran Waiter", StaffRole.Waiter, sibling);
+        var venueWideWaiter = Person("Gor Floater", StaffRole.Waiter, null);
 
-        db.StaffMembers.AddRange(owner, coOwner, generalManager, secondManager, secondWaiter, cook, siblingWaiter);
+        db.StaffMembers.AddRange(owner, coOwner, generalManager, secondManager, secondWaiter, cook, siblingWaiter, venueWideWaiter);
         await db.SaveChangesAsync();
 
         return new TeamIds(
@@ -430,7 +573,8 @@ public sealed class StaffShiftTests(SqlServerFixture fixture)
             branch.WaiterId,
             secondWaiter.Id,
             cook.Id,
-            siblingWaiter.Id);
+            siblingWaiter.Id,
+            venueWideWaiter.Id);
     }
 
     private static async Task DeactivateAsync(YallaDbContext db, Guid staffMemberId)

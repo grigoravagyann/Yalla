@@ -905,8 +905,8 @@ public static class VenueAdminEndpoints
                 + "`serviceDate` is today at the branch, as on the Overview: its own date, or yesterday while last "
                 + "night's opening block still runs past midnight. `from` defaults to it and `to` to two weeks from "
                 + "`from`; at most 92 days (`to` `min` / `max` otherwise). `onShiftToday` counts the active people "
-                + "with a working shift here dated `serviceDate`. Only active people's shifts are listed, by date, "
-                + "then start (days off first).\n\n"
+                + "with a working shift here dated `serviceDate`. Only the shifts of active people who still work "
+                + "at this branch (theirs, or the whole venue) are listed, by date, then start (days off first).\n\n"
                 + "An owner or general manager at any branch of their venue, a branch manager at their own, a "
                 + "platform admin anywhere.")
             .Produces<BranchShiftsView>()
@@ -920,13 +920,15 @@ public static class VenueAdminEndpoints
             .WithDescription(
                 "`staffMemberId` must work at this branch (its own people, or an owner or general manager of the "
                 + "venue) and be active. The caller must be able to manage them - the staff edit's rank check: an "
-                + "owner anyone, a general manager branch managers, waiters and kitchen, a branch manager waiters and "
-                + "kitchen at their own branch - or be them.\n\n"
+                + "owner anyone including a co-owner, a general manager branch managers, waiters and kitchen, a branch "
+                + "manager waiters and kitchen of their own branch only (not one who works the whole venue) - or be "
+                + "them. Times are whole minutes; seconds are dropped.\n\n"
                 + "**Every refusal names its field**: `staffMemberId` `required`; `date` `required`, `min` (before "
                 + "the service date), `max` (more than 92 days after it) or `conflict` (a day off and anything else "
                 + "on one date for the person); `startsAt`/`endsAt` `required` for a working shift; `startsAt` "
                 + "`conflict` for times on a day off, or when it overlaps another of the person's shifts at any "
-                + "branch of the venue (touching is fine); `endsAt` `conflict` (no length) or `max` (longer than "
+                + "branch of the venue, compared as instants in each branch's zone (touching is fine); `endsAt` "
+                + "`conflict` (no length) or `max` (longer than "
                 + "16 hours, `max` 960 minutes).\n\n"
                 + "Writes for one person queue on their staff row, so two overlapping shifts saved at once cannot "
                 + "both land.")
@@ -942,21 +944,30 @@ public static class VenueAdminEndpoints
             .WithSummary("Move or retime a shift")
             .WithDescription(
                 "The whole shift again - `date`, and `startsAt` and `endsAt` or `dayOff` - with the same rules and "
-                + "refusals as planning one; the person does not change. Last write wins.")
+                + "refusals as planning one; the person does not change. Last write wins.\n\n"
+                + "A shift dated before the service date is history: 409 `conflicting-state` - unless it is still "
+                + "running (its end is after now at the branch), when its times may be corrected on its own date "
+                + "(`date` `min` is then that date).")
             .Produces<StaffShiftView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The caller may not manage this person.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such shift at this branch.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conflicting-state`: the person is deactivated.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`conflicting-state`: the person is deactivated, or the shift is past and over.")
             .ProducesProblem<ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity, "A field breaks a rule; `context.fields` names each.");
 
         group.MapDelete("/{shiftId:guid}", DeleteShiftAsync)
             .WithName("deleteShift")
             .WithSummary("Remove a shift")
-            .WithDescription("Gone, not hidden. To undo, plan it again. A second delete of the same shift is 404.")
+            .WithDescription(
+                "Gone, not hidden. To undo, plan it again. A second delete of the same shift is 404. A past shift that "
+                + "has ended is history (409 `conflicting-state`). A shift left at a branch its person no longer works "
+                + "at may be removed by anybody of the venue who outranks them.")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The caller may not manage this person.")
-            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such shift at this branch.");
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such shift at this branch.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conflicting-state`: a past shift that has ended.");
     }
 
     private static async Task<IResult> ListShiftsAsync(

@@ -18,17 +18,25 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// <b>Who.</b> Every call goes through <see cref="IStaffBranchGuard"/> first, underneath the route's
 /// <c>BranchScoped</c> policy: an owner or general manager at any branch of their venue, a branch manager at their own,
-/// a platform admin anywhere. A write then asks the staff edit's rank question from the stored rows - may the caller
-/// manage this person - or is it the person themselves.
+/// a platform admin anywhere. A write then asks the staff edit's questions from the stored rows: <b>rank</b> - may the
+/// caller manage this person, or is it the person themselves - and <b>reach</b>, as <c>StaffManagementService</c> asks
+/// it: a branch manager plans only the people of their own branch, never somebody who works the whole venue.
 /// </para>
 /// <para>
 /// <b>Today is the service day</b>, the Overview's: the branch's own date, or yesterday while last night's opening
-/// block still runs past midnight. Shifts before it are history and are not planned.
+/// block still runs past midnight. Shifts before it are history: not planned, changed or removed - except one still
+/// running, whose times may be corrected on its own date.
 /// </para>
 /// <para>
 /// <b>One person, one place at a time.</b> A write takes the person's lock - the update lock on their staff row the
-/// account lock already uses - and checks their other shifts, at every branch of the venue, inside it. Two managers
-/// adding overlapping shifts for the same waiter at once are serialised, and the second is refused by name.
+/// account lock already uses - and checks their other shifts, at every branch of the venue, inside it, as instants:
+/// each shift in its own branch's zone. Two managers adding overlapping shifts for the same waiter at once are
+/// serialised, and the second is refused by name.
+/// </para>
+/// <para>
+/// <b>Only the branches a person covers.</b> A shift counts - listed, counted, clashed with - only while its person
+/// still works at its branch (their branch, or the whole venue). Moving somebody takes their future shifts elsewhere off
+/// in the same save (<c>StaffManagementService</c>); one left behind some other way is ignored, and can be removed.
 /// </para>
 /// <para>
 /// Not audited, like the other staff edits short of creating a person or giving them a sign-in; logged.
@@ -49,20 +57,15 @@ internal sealed class StaffShiftService(
         await branchGuard.RequireAtBranchAsync(branchId, "Read the shifts", cancellationToken);
 
         var branch = await LoadBranchAsync(branchId, cancellationToken);
-        var serviceDate = await ServiceDateAsync(branch, cancellationToken);
+        var (serviceDate, _) = await ServiceDayAsync(branch, cancellationToken);
         var (first, last) = StaffShiftRules.Window(from, to, serviceDate);
 
-        var shifts = await db.StaffShifts
-            .AsNoTracking()
-            .Where(s => s.BranchId == branchId && s.Date >= first && s.Date <= last && s.StaffMember.IsActive)
+        var shifts = await Covered(db.StaffShifts.AsNoTracking())
+            .Where(s => s.BranchId == branchId && s.Date >= first && s.Date <= last)
             .ToListAsync(cancellationToken);
 
-        var onShiftToday = await db.StaffShifts
-            .AsNoTracking()
-            .Where(s => s.BranchId == branchId
-                        && s.Date == serviceDate
-                        && s.StartsAt != null
-                        && s.StaffMember.IsActive)
+        var onShiftToday = await Covered(db.StaffShifts.AsNoTracking())
+            .Where(s => s.BranchId == branchId && s.Date == serviceDate && s.StartsAt != null)
             .Select(s => s.StaffMemberId)
             .Distinct()
             .CountAsync(cancellationToken);
@@ -106,12 +109,14 @@ internal sealed class StaffShiftService(
         await LockPersonAsync(command.StaffMemberId, cancellationToken);
 
         var person = await LoadPersonAsync(branch, command.StaffMemberId, cancellationToken);
-        await RequireMayPlanAsync(actingId, person, "Planning a shift", cancellationToken);
+        await RequireMayPlanAsync(actingId, person, "Planning a shift", requireReach: true, cancellationToken);
 
-        var serviceDate = await ServiceDateAsync(branch, cancellationToken);
-        var slot = StaffShiftRules.Normalise(command.Date, command.StartsAt, command.EndsAt, command.DayOff, serviceDate);
+        var (serviceDate, _) = await ServiceDayAsync(branch, cancellationToken);
+        var slot = InZone(
+            StaffShiftRules.Normalise(command.Date, command.StartsAt, command.EndsAt, command.DayOff, serviceDate),
+            BranchZone.For(branch.TimeZoneId));
 
-        StaffShiftRules.RequireNoClash(slot, await OthersAroundAsync(person.Id, slot.Date, exceptShiftId: null, cancellationToken));
+        StaffShiftRules.RequireNoClash(slot, await OthersAroundAsync(person, slot.Date, exceptShiftId: null, cancellationToken));
 
         var shift = new StaffShift(person.Id, branchId, slot.Date, slot.StartsAt, slot.EndsAt);
         db.StaffShifts.Add(shift);
@@ -146,12 +151,18 @@ internal sealed class StaffShiftService(
                     ?? throw ShiftNotFound(shiftId);
 
         var person = await LoadPersonAsync(branch, shift.StaffMemberId, cancellationToken);
-        await RequireMayPlanAsync(actingId, person, "Changing a shift", cancellationToken);
+        await RequireMayPlanAsync(actingId, person, "Changing a shift", requireReach: true, cancellationToken);
 
-        var serviceDate = await ServiceDateAsync(branch, cancellationToken);
-        var slot = StaffShiftRules.Normalise(command.Date, command.StartsAt, command.EndsAt, command.DayOff, serviceDate);
+        var (serviceDate, localNow) = await ServiceDayAsync(branch, cancellationToken);
+        RequireNotHistory(shift, serviceDate, localNow, "changed");
 
-        StaffShiftRules.RequireNoClash(slot, await OthersAroundAsync(person.Id, slot.Date, shift.Id, cancellationToken));
+        // A shift from before the service day that is still running may be corrected - on its own date, no earlier.
+        var slot = InZone(
+            StaffShiftRules.Normalise(
+                command.Date, command.StartsAt, command.EndsAt, command.DayOff, serviceDate, earliest: shift.Date),
+            BranchZone.For(branch.TimeZoneId));
+
+        StaffShiftRules.RequireNoClash(slot, await OthersAroundAsync(person, slot.Date, shift.Id, cancellationToken));
 
         shift.Reschedule(slot.Date, slot.StartsAt, slot.EndsAt);
 
@@ -173,9 +184,16 @@ internal sealed class StaffShiftService(
         var shift = await db.StaffShifts.FirstOrDefaultAsync(s => s.Id == shiftId && s.BranchId == branchId, cancellationToken)
                     ?? throw ShiftNotFound(shiftId);
 
-        // A deactivated person's shifts are hidden, not locked: taking one off is harmless, so only the rank applies.
-        var person = await LoadPersonAsync(branch, shift.StaffMemberId, cancellationToken, requireActive: false);
-        await RequireMayPlanAsync(actingId, person, "Removing a shift", cancellationToken);
+        // A deactivated person's shifts are hidden, not locked; one left at a branch its person no longer works at is
+        // ignored everywhere. Taking either off is harmless, so the person need only be of this venue and within the
+        // caller's rank - and within their reach only while the shift is one the branch still counts.
+        var person = await LoadPersonAsync(branch, shift.StaffMemberId, cancellationToken, requireActive: false, requireCovers: false);
+        var stale = person.BranchId is { } home && home != branchId;
+
+        await RequireMayPlanAsync(actingId, person, "Removing a shift", requireReach: !stale, cancellationToken);
+
+        var (serviceDate, localNow) = await ServiceDayAsync(branch, cancellationToken);
+        RequireNotHistory(shift, serviceDate, localNow, "removed");
 
         db.StaffShifts.Remove(shift);
         await db.SaveChangesAsync(cancellationToken);
@@ -189,6 +207,11 @@ internal sealed class StaffShiftService(
 
     private sealed record BranchRow(Guid Id, Guid VenueId, string TimeZoneId);
 
+    /// <summary>The shifts whose person still works at their branch: venue-wide, or that very branch.</summary>
+    private static IQueryable<StaffShift> Covered(IQueryable<StaffShift> shifts) =>
+        shifts.Where(s => s.StaffMember.IsActive
+                          && (s.StaffMember.BranchId == null || s.StaffMember.BranchId == s.BranchId));
+
     private async Task<BranchRow> LoadBranchAsync(Guid branchId, CancellationToken cancellationToken) =>
         await db.Branches
             .AsNoTracking()
@@ -197,14 +220,23 @@ internal sealed class StaffShiftService(
             .FirstOrDefaultAsync(cancellationToken)
         ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
-    /// <summary>The branch's service date now: today, or yesterday while last night's block still runs past midnight.</summary>
-    private async Task<DateOnly> ServiceDateAsync(BranchRow branch, CancellationToken cancellationToken)
-    {
-        var localNow = BranchZone.For(branch.TimeZoneId).ToLocal(clock.UtcNow);
-        var today = DateOnly.FromDateTime(localNow);
-        var calendar = await OpeningCalendars.ForBranchAsync(db, branch.Id, today.AddDays(-1), today, cancellationToken);
+    private Task<(DateOnly ServiceDate, DateTime LocalNow)> ServiceDayAsync(BranchRow branch, CancellationToken cancellationToken) =>
+        OpeningCalendars.ServiceDayAsync(db, branch.Id, branch.TimeZoneId, clock.UtcNow, cancellationToken);
 
-        return calendar.ServiceDateOf(localNow);
+    /// <summary>
+    /// Refuses a shift from before the service day that has ended: history. One still running - last night's
+    /// 18:00-02:00 at 00:30 after the branch shut - may still be corrected or taken off.
+    /// </summary>
+    /// <exception cref="DomainStateException">The shift is past and over. Answers 409 <c>conflicting-state</c>.</exception>
+    private static void RequireNotHistory(StaffShift shift, DateOnly serviceDate, DateTime localNow, string what)
+    {
+        if (shift.Date >= serviceDate || shift.LocalEnd > localNow)
+        {
+            return;
+        }
+
+        throw new DomainStateException(
+            $"The shift on {shift.Date:yyyy-MM-dd} is over, and past shifts are history: it cannot be {what}.");
     }
 
     /// <summary>
@@ -217,15 +249,17 @@ internal sealed class StaffShiftService(
             .ToListAsync(cancellationToken);
 
     /// <summary>
-    /// The person, if they work at this branch: its own people, or an owner or general manager of its venue.
+    /// The person, if they are of this branch's venue and - when <paramref name="requireCovers"/> - work at this
+    /// branch: its own people, or an owner or general manager of the venue.
     /// </summary>
-    /// <exception cref="KeyNotFoundException">Not of this venue, or at another of its branches.</exception>
+    /// <exception cref="KeyNotFoundException">Not of this venue, or (when <paramref name="requireCovers"/>) at another of its branches.</exception>
     /// <exception cref="DomainStateException">Deactivated, when <paramref name="requireActive"/>.</exception>
     private async Task<StaffMember> LoadPersonAsync(
         BranchRow branch,
         Guid staffMemberId,
         CancellationToken cancellationToken,
-        bool requireActive = true)
+        bool requireActive = true,
+        bool requireCovers = true)
     {
         var person = await db.StaffMembers
             .AsNoTracking()
@@ -233,7 +267,7 @@ internal sealed class StaffShiftService(
 
         if (person is null
             || person.Role == StaffRole.PlatformAdmin
-            || (person.BranchId is { } home && home != branch.Id))
+            || (requireCovers && person.BranchId is { } home && home != branch.Id))
         {
             throw new KeyNotFoundException($"Staff member {staffMemberId} does not work at this branch.");
         }
@@ -248,13 +282,19 @@ internal sealed class StaffShiftService(
     }
 
     /// <summary>
-    /// The staff edit's rank question, from the stored rows: you plan the shifts of the people you could have created,
-    /// and your own.
+    /// The staff edit's questions, from the stored rows: you plan the shifts of the people you could have created, and
+    /// your own - and, below the venue-wide ranks, only the people of your own branch.
     /// </summary>
+    /// <remarks>
+    /// The reach half mirrors <c>StaffManagementService.RequireReach</c>: a branch manager is confined to their branch,
+    /// and somebody with no branch on their row - a venue-wide waiter, on every branch's tablets - is further than
+    /// that, though the guard let the manager in to this branch.
+    /// </remarks>
     private async Task RequireMayPlanAsync(
         Guid actingId,
         StaffMember person,
         string operation,
+        bool requireReach,
         CancellationToken cancellationToken)
     {
         if (person.Id == actingId)
@@ -262,41 +302,58 @@ internal sealed class StaffShiftService(
             return;
         }
 
-        // The guard has read this row already and found it active and in reach; its role is what is asked here.
-        var actingRole = await db.StaffMembers
+        // The guard has read this row already and found it active and in reach of the branch.
+        var acting = await db.StaffMembers
             .AsNoTracking()
             .Where(s => s.Id == actingId)
-            .Select(s => s.Role)
+            .Select(s => new { s.Role, s.BranchId })
             .FirstAsync(cancellationToken);
 
-        if (!StaffRoleRules.MayManage(actingRole, person.Role))
+        if (!StaffRoleRules.MayManage(acting.Role, person.Role))
         {
             throw new StaffPermissionException(
-                $"{operation} for a {person.Role}", actingRole, RequiredRoleFor(person.Role));
+                $"{operation} for a {person.Role}", acting.Role, RequiredRoleFor(person.Role));
+        }
+
+        var reachesWholeVenue = acting.Role == StaffRole.PlatformAdmin || StaffRoleRules.CoversWholeVenue(acting.Role);
+
+        if (requireReach && !reachesWholeVenue && (acting.BranchId is not { } home || person.BranchId != home))
+        {
+            throw new StaffPermissionException(
+                $"{operation} for a {person.Role} beyond your branch", acting.Role, StaffRole.GeneralManager);
         }
     }
 
-    /// <summary>The person's other shifts from the day before to the day after - every one that could clash.</summary>
+    /// <summary>
+    /// The person's other shifts around <paramref name="date"/> - two days either side, so a shift at a branch in
+    /// another zone is not missed - at the branches they still work at, each as instants in its own branch's zone.
+    /// </summary>
     private async Task<IReadOnlyList<ShiftSlot>> OthersAroundAsync(
-        Guid staffMemberId,
+        StaffMember person,
         DateOnly date,
         Guid? exceptShiftId,
         CancellationToken cancellationToken)
     {
-        var from = date.AddDays(-1);
-        var to = date.AddDays(1);
+        var from = date.AddDays(-2);
+        var to = date.AddDays(2);
+        var home = person.BranchId;
 
         var rows = await db.StaffShifts
             .AsNoTracking()
-            .Where(s => s.StaffMemberId == staffMemberId
+            .Where(s => s.StaffMemberId == person.Id
                         && s.Date >= from
                         && s.Date <= to
+                        && (home == null || s.BranchId == home)
                         && (exceptShiftId == null || s.Id != exceptShiftId))
-            .Select(s => new { s.Date, s.StartsAt, s.EndsAt })
+            .Select(s => new { s.Date, s.StartsAt, s.EndsAt, s.Branch.TimeZoneId })
             .ToListAsync(cancellationToken);
 
-        return [.. rows.Select(r => new ShiftSlot(r.Date, r.StartsAt, r.EndsAt))];
+        return [.. rows.Select(r => InZone(new ShiftSlot(r.Date, r.StartsAt, r.EndsAt), BranchZone.For(r.TimeZoneId)))];
     }
+
+    /// <summary>The slot with its instants, read in <paramref name="zone"/>.</summary>
+    private static ShiftSlot InZone(ShiftSlot slot, BranchZone zone) =>
+        slot with { StartUtc = Instant(zone, slot.LocalStart), EndUtc = Instant(zone, slot.LocalEnd) };
 
     private async Task<Guid> ShiftOwnerAsync(Guid branchId, Guid shiftId, CancellationToken cancellationToken)
     {
