@@ -78,6 +78,9 @@ public static class PublicEndpoints
             .WithDescription(
                 "Address, coordinates, opening hours, whether it is open **now** in its own time "
                 + "zone, the live free-table count, and the floor plan in diner shape.\n\n"
+                + "`venueBranchCount`: how many of the venue's branches `GET /api/public/venues` lists - the "
+                + "ones switched on, this one included; a branch switched off is neither listed nor counted "
+                + "- read live with the booking switch, for the page's \"All N branches\" link.\n\n"
                 + "The floor plan here is not the editor's: it carries no QR tokens and no table "
                 + "status beyond whether somebody is sitting there. A QR token is the credential "
                 + "that opens a tab.\n\n"
@@ -322,7 +325,9 @@ public static class PublicEndpoints
                 "`listing` is the card exactly as the list serves it. Beside it: `about`, `websiteUrl`, "
                 + "`phoneE164`, `amenities`, `openingHours` (`day` 0 = Sunday, wall-clock `opensAt`/"
                 + "`closesAt` as `HH:mm:ss`, `closesNextDay`), `gallery` (pictures beyond the cover, in "
-                + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three) and "
+                + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three), "
+                + "`ratingCounts` (shown reviews per star, **one star first**: always five numbers, adding up "
+                + "to `listing.reviewCount`) and "
                 + "`rooms` - the rooms with their photos and the live pins on them, exactly as "
                 + "`GET /api/public/branches/{branchId}/rooms` serves them.\n\n"
                 + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
@@ -339,8 +344,12 @@ public static class PublicEndpoints
             .WithName("getPublicBranchReviews")
             .WithSummary("A page of a branch's reviews, newest first")
             .WithDescription(
-                "Twenty a page from `page=1`. `rating` and `reviewCount` are read live. Each review "
-                + "carries `authorName` as a first name and last initial, never the account or its id.")
+                "Twenty a page from `page=1`. `rating`, `reviewCount` and `ratingCounts` are read live, "
+                + "over the shown reviews only (one taken down by moderation counts nowhere). "
+                + "`ratingCounts` is the whole branch's star distribution, the same on every page: five "
+                + "numbers, **one star first** (`[1★, 2★, 3★, 4★, 5★]`), zeros included, adding up to "
+                + "`reviewCount`. Each review carries `authorName` as a first name and last initial, never "
+                + "the account or its id.")
             .Produces<PublicReviewPage>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`page` below 1, or past the last page that can exist.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")

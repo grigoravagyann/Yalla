@@ -129,8 +129,13 @@ tab, the Development seed and the contract changes in progress - is
 
 Two halves, and the split matters. The **stable** half — address, coordinates, hours, the room,
 the policy, `bookingWindowDays` — is cached for minutes. The **live** half — `freeTableCount`,
-`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings` and `phoneE164` — is
-read per request and stamped with `asOfUtc`.
+`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings`, `phoneE164` and
+`venueBranchCount` — is read per request and stamped with `asOfUtc`.
+
+`venueBranchCount` is how many of the venue's branches the chooser (`GET /api/public/venues`) lists:
+the ones switched on, this one included. A branch switched off is neither listed there nor counted
+here. It is for the page's "All N branches" link, so the page does not download every venue to count
+one venue's branches; it rides on the live published-check query as a correlated count.
 
 `acceptsAppBookings` (K9) is `acceptsWebBookings` **and** a reservation policy somebody at the venue has
 saved: the diner app books only where both hold, and `POST /api/reservations` from the app channel is
@@ -326,6 +331,7 @@ else is elided.
   },
   "phoneE164": "+37411223344",
   "acceptsWebBookings": true,
+  "venueBranchCount": 3,
   "bookingWindowDays": 14,
   "policy": {
     "turnTimeMinutes": 90,
