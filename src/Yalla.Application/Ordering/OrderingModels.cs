@@ -97,7 +97,7 @@ public sealed record RecordCashPaymentCommand(
 /// <param name="OnBehalfOfParticipantId">
 /// Who a waiter keyed this line in for: the line's own <c>participantId</c> when one was sent,
 /// otherwise the order's <c>onBehalfOfParticipantId</c>. Null on a diner's own order (the line is
-/// the orderer's) and when the waiter named nobody.
+/// the orderer's), when the waiter named nobody, and on a shared line, which is the table's.
 /// </param>
 public sealed record OrderLineView(
     Guid LineId,

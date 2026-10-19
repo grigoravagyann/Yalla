@@ -62,8 +62,6 @@ internal sealed class TabOrderService(
             throw new ArgumentException("An order must contain at least one item.", nameof(command));
         }
 
-        RequireNoGuestOnASharedLine(command.Items);
-
         if (await FindReplayAsync(command.TabId, command.ClientCommandId, cancellationToken) is { } replay)
         {
             logger.LogInformation(
@@ -102,8 +100,9 @@ internal sealed class TabOrderService(
                 isTableAttributed = l.IsTableAttributed,
 
                 // Each line's guest, as the tab reads it: its own when the waiter named one for it,
-                // otherwise the order's. A phone catching up attributes the line from this.
-                onBehalfOfParticipantId = l.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId,
+                // otherwise the order's, and nobody's on a shared line. A phone catching up
+                // attributes the line from this.
+                onBehalfOfParticipantId = OnBehalfOf(order, l),
             }),
         });
 
@@ -265,6 +264,11 @@ internal sealed class TabOrderService(
             await branchGuard.RequireAsync(
                 staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
+            // Here, after the replay lookup and the caller's kind, not before: a retry answers with
+            // the order it already placed whatever its body says now, and a phone naming anybody is
+            // refused as a phone (403) before the shape of what it named is looked at.
+            RequireNoGuestOnASharedLine(command.Items);
+
             // The order's guest and each line's own, by one rule: somebody approved on this tab.
             foreach (var named in command.Items
                          .Select(i => i.ParticipantId)
@@ -320,18 +324,25 @@ internal sealed class TabOrderService(
     /// </summary>
     /// <remarks>
     /// One check for <c>onBehalfOfParticipantId</c> and every line's <c>participantId</c>, so the two
-    /// cannot drift: somebody who is not on this tab - made up, or at another table - is not found,
-    /// and somebody still waiting on the host is not on the tab yet.
+    /// cannot drift: somebody who is not on this tab - made up, or at another table - is not found;
+    /// somebody still waiting on the host is not on the tab yet, and somebody the host took off it is
+    /// not on it any more.
     /// </remarks>
     private static void RequireNameable(Tab tab, Guid participantId)
     {
         var named = tab.Participants.FirstOrDefault(p => p.Id == participantId)
                     ?? throw new KeyNotFoundException($"Participant {participantId} is not on tab {tab.Id}.");
 
-        if (named.Status != ParticipantStatus.Approved)
+        switch (named.Status)
         {
-            throw new DomainStateException(
-                "That guest is not on the tab yet, so an order cannot be put in their name.");
+            case ParticipantStatus.Approved:
+                return;
+            case ParticipantStatus.Removed:
+                throw new DomainStateException(
+                    "That guest was taken off the tab, so an order cannot be put in their name.");
+            default:
+                throw new DomainStateException(
+                    "That guest is not on the tab yet, so an order cannot be put in their name.");
         }
     }
 
@@ -343,7 +354,7 @@ internal sealed class TabOrderService(
     /// owns the lines that have an owner, and a shared line has none: an order for Narine with the
     /// table's bottle on it splits the bottle. A line that names a guest <b>and</b> says it is
     /// shared contradicts itself, and keeping either half quietly bills somebody for what the waiter
-    /// did not mean - so it is refused, naming the line, before anything is read.
+    /// did not mean - so it is refused, naming the line, before any guest it names is looked up.
     /// </remarks>
     private static void RequireNoGuestOnASharedLine(IReadOnlyList<OrderItemInput> items)
     {
@@ -597,17 +608,20 @@ internal sealed class TabOrderService(
     /// Who to tell that an order is ready: everybody with an account it is for.
     /// </summary>
     /// <remarks>
-    /// The order's own guest - who ordered it, or who a waiter keyed it in for - as it always was,
-    /// and now also each guest a waiter named on a line of it that is still on the bill: one round
-    /// for the table can be three people's dinners, and each of them is waiting for theirs. One
-    /// entry per account, in account order, which is the order the account locks are then taken in.
+    /// The diner who ordered it from their phone, as it always was, and each guest who owns a line of
+    /// it that is still on the bill - named on the line, or by the order for a line that names nobody
+    /// (<see cref="TabOrder.OwnerOf"/>). One round for the table can be three people's dinners, and
+    /// each of them is waiting for theirs. The order-level guest is <b>not</b> told as such: an order
+    /// "for Ani" whose every line the waiter put on Bob, or whose lines for Ani were all voided, has
+    /// nothing of hers left to be ready. One entry per account, in account order, which is the order
+    /// the account locks are then taken in.
     /// </remarks>
     private static List<(TabParticipant Participant, Guid DinerUserId)> ReadyRecipients(TabOrder order)
     {
         var owners = order.Lines
             .Where(l => !l.IsVoided)
             .Select(order.OwnerOf)
-            .Prepend(order.OwningParticipantId)
+            .Prepend(order.PlacedByParticipantId)
             .OfType<Guid>()
             .ToHashSet();
 
@@ -819,7 +833,14 @@ internal sealed class TabOrderService(
             line.IsTableAttributed,
             line.Note,
             [.. line.Shares.Select(s => s.TabParticipantId)],
-            line.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId);
+            OnBehalfOf(order, line));
+
+    /// <summary>
+    /// The guest a waiter keyed this line in for, as every read reports it: the line's own, else the
+    /// order's - and nobody on a split line, which belongs to the table whatever the order says.
+    /// </summary>
+    private static Guid? OnBehalfOf(TabOrder order, TabOrderLine line) =>
+        line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId;
 
     private static KitchenOrderView ToKitchenView(TabOrder order, string tableLabel, DateTime nowUtc) =>
         new(

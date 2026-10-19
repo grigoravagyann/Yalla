@@ -247,8 +247,11 @@ down. Review writes and reports, and both photo uploads, share the `diner-write`
 `IX_TabParticipants_UserId`) and takes the union of:
 
 1. orders **placed from the diner's phone** (`PlacedByParticipantId` is one of those rows),
-2. orders a waiter keyed in **on the diner's behalf** (`OnBehalfOfParticipantId` is one of those rows,
-   on the order or on any one of its lines - the tablet names a guest per line),
+2. orders a waiter keyed in **on the diner's behalf**: with an unsplit line that is theirs - named for
+   them on the line (`TabOrderLines.OnBehalfOfParticipantId`), or by the order
+   (`TabOrders.OnBehalfOfParticipantId`) on a line that names nobody. An order "for" them whose every
+   line was put on somebody else, or that carries only the table's shared bottle, is not theirs; a
+   voided line of theirs still counts, and shows labelled,
 3. orders a waiter keyed in **for the whole table** (neither set) on a tab where the diner may see the
    table's total.
 

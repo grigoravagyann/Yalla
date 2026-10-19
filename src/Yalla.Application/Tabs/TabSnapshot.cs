@@ -134,7 +134,8 @@ public sealed record TabParticipantSnapshot(
 /// poured.
 /// </param>
 /// <param name="OnBehalfOfParticipantId">
-/// Who a waiter keyed the line in for, when the waiter knew - the line's own guest, else its order's. The line is theirs exactly as if they
+/// Who a waiter keyed the line in for, when the waiter knew - the line's own guest, else its order's,
+/// and nobody on a split line. The line is theirs exactly as if they
 /// had ordered it from their own phone - <c>TabBilling</c> charges it to them.
 /// </param>
 /// <param name="IsTableAttributed">

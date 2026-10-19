@@ -424,23 +424,34 @@ total sees those lines on `myLines` (the ones they were there for, flagged `isTa
 
 `myItemsSubtotalAmd` is the unsplit, unvoided own lines; split ones on `myLines` carry `isShared` or
 `isTableAttributed` and are apportioned by `/shares`. Every line on the wire carries
-`onBehalfOfParticipantId` and `isTableAttributed`.
+`onBehalfOfParticipantId` and `isTableAttributed`. Pinned by
+`TabProjectionTests.Own_items_are_what_the_split_charges_each_person_for` (with the total and without),
+and over HTTP by `ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines` and
+`sharedItemsAmd = half the bottle + half the table's khachapuri after its comp`.
 
 **Who, per line (2026-10-19).** The floor tablet assigns each line of a spoken round to the table
 (shared) or a named guest and sends the round once. `OrderItemRequest.participantId` is that line's
 guest, stored on `TabOrderLines.OnBehalfOfParticipantId`, and it overrides the order's
-`onBehalfOfParticipantId` for that line alone - so one send is one order and one kitchen ticket. A
-line's `onBehalfOfParticipantId` on every read (the tab, the order answer, the kitchen queue, the
-stream) is its own guest, else its order's. Both fields are checked by one rule (an approved
-participant on this tab: 404 `not-found`, 409 `conflicting-state`), both are refused from a phone
-(403), and **a shared line has no owner**: the order's guest never reaches one, and a line that is
-`isShared` and names a `participantId` is 400 `invalid-request` with `context.field`
-`items[i].participantId`. "Order ready" goes to every guest with a line on the order, and the diner's
-Orders tab lists the order for each of them (see `diner-browse.md`). Pinned by `OrderingTests` ("who,
-per line") and `LineAttributionEndpointTests`. Pinned by
-`TabProjectionTests.Own_items_are_what_the_split_charges_each_person_for` (with the total and without),
-and over HTTP by `ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines` and
-`sharedItemsAmd = half the bottle + half the table's khachapuri after its comp`.
+`onBehalfOfParticipantId` for that line alone - so one send is one order and one kitchen ticket. The
+order-level field is a **default for the lines that name nobody**, not a claim on the order.
+
+- A line's owner is `TabOrder.OwnerOf`: its own guest, else the order's, and **nobody on a shared or
+  table-attributed line** whatever the order says. Every read reports exactly that as the line's
+  `onBehalfOfParticipantId` - the tab, the order answer, the kitchen queue, the stream - absent on a
+  split line.
+- Both fields are checked by one rule: an approved participant on this tab (404 `not-found`; 409
+  `conflicting-state` for a guest not let on yet, or one taken off). A phone naming anybody is 403,
+  before anything else about the body. A waiter's `isShared` line that names a `participantId` is
+  400 `invalid-request` with `context.field` `items[i].participantId` - checked after the replay
+  lookup, so a retry gets its original order whatever its body says now.
+- "Order ready" goes to the diner who ordered from their phone and to each owner of a line still on
+  the bill. An order-level guest with no line of theirs left (all put on others, or voided) is not
+  told. Keys: `order:{id}:ready` for the order's own owner, `order:{id}:ready:{participantId}` for
+  everybody else.
+- The diner's Orders tab lists the order for each guest who owns an unsplit line of it (see
+  `diner-browse.md`).
+
+Pinned by `OrderingTests` ("who, per line") and `LineAttributionEndpointTests`.
 
 **The Orders tab agrees.** `GET /api/diner/orders` (`DinerOrderQuery`) lists an order the diner
 placed, one keyed in on their behalf, and a waiter's order for the whole table only when they may see

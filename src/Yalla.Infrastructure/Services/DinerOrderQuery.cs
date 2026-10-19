@@ -85,14 +85,19 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     /// <remarks>
     /// <para>
     /// <b>Starts from the diner, not from the order history.</b> Their participant rows come first, by
-    /// the <c>TabParticipants(UserId)</c> index, and the orders are then four seeks - placed by, on
-    /// behalf of, with a line keyed in for them, and whole-table on a tab - rather than a scan of
-    /// every order on the platform.
+    /// the <c>TabParticipants(UserId)</c> index, and the orders are then four seeks - placed by, a
+    /// line named for them, a line the order names them for, and whole-table on a tab - rather than
+    /// a scan of every order on the platform.
     /// </para>
     /// <para>
-    /// <b>A line keyed in for them makes the order theirs too.</b> The tablet names a guest per line,
-    /// so one round can be several people's; each finds it on their list. What they are shown of it
-    /// is <see cref="LoadAsync"/>'s to decide.
+    /// <b>A waiter's order is theirs by its lines, not by its header.</b> The tablet names a guest per
+    /// line, so one round can be several people's; each finds it on their list by a line that is
+    /// theirs (<see cref="TabOrder.OwnerOf"/>): unsplit, and named for them on the line, or by the
+    /// order on a line that names nobody. An order "for Ani" whose every line the waiter put on Bob
+    /// has nothing of Ani's on it, so it is not on her list; nor is one for her that carries only the
+    /// table's bottle - a shared line is nobody's, as on a phone's order. A voided line still counts:
+    /// the order stays on the list with the line labelled, as it always did. What they are shown of
+    /// it is <see cref="LoadAsync"/>'s to decide.
     /// </para>
     /// <para>
     /// <b>A whole-table order follows the tab view's rule</b> (<see cref="TabProjection.IsOwnLine"/>).
@@ -135,11 +140,18 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
         var candidates = db.TabOrders
             .Where(o => o.PlacedByParticipantId != null && participantIds.Contains(o.PlacedByParticipantId.Value))
             .Select(o => o.Id)
-            .Union(db.TabOrders
-                .Where(o => o.OnBehalfOfParticipantId != null && participantIds.Contains(o.OnBehalfOfParticipantId.Value))
-                .Select(o => o.Id))
             .Union(db.TabOrderLines
-                .Where(l => l.OnBehalfOfParticipantId != null && participantIds.Contains(l.OnBehalfOfParticipantId.Value))
+                .Where(l => !l.IsShared
+                            && !l.IsTableAttributed
+                            && l.OnBehalfOfParticipantId != null
+                            && participantIds.Contains(l.OnBehalfOfParticipantId.Value))
+                .Select(l => l.TabOrderId))
+            .Union(db.TabOrderLines
+                .Where(l => !l.IsShared
+                            && !l.IsTableAttributed
+                            && l.OnBehalfOfParticipantId == null
+                            && l.TabOrder.OnBehalfOfParticipantId != null
+                            && participantIds.Contains(l.TabOrder.OnBehalfOfParticipantId.Value))
                 .Select(l => l.TabOrderId))
             .Union(db.TabOrders
                 .Where(o => wholeTableTabIds.Contains(o.TabId)
@@ -278,7 +290,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                             l.VoidedAtUtc,
                             l.VoidReason,
                             l.Shares,
-                            l.OnBehalfOfParticipantId ?? r.OnBehalfOfParticipantId,
+                            l.IsShared || l.IsTableAttributed ? null : l.OnBehalfOfParticipantId ?? r.OnBehalfOfParticipantId,
                             l.IsTableAttributed);
 
                         return mySeats.Any(seat => TabProjection.IsOwnLine(line, seat.ParticipantId, tableTotalVisible: false));

@@ -158,8 +158,11 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
 
                 // Who a waiter keyed it in for. Without it a guest's own spoken order was nobody's
                 // on the projection while /shares charged them for it. The line's own guest first:
-                // one round can name a different guest on every line (TabOrder.OwnerOf).
-                OnBehalfOfParticipantId = l.OnBehalfOfParticipantId ?? l.TabOrder.OnBehalfOfParticipantId,
+                // one round can name a different guest on every line (TabOrder.OwnerOf). Nobody on a
+                // shared or table-attributed line: it is the table's, whatever the order said.
+                OnBehalfOfParticipantId = l.IsShared || l.IsTableAttributed
+                    ? null
+                    : l.OnBehalfOfParticipantId ?? l.TabOrder.OnBehalfOfParticipantId,
                 OrderStatus = l.TabOrder.Status,
                 l.NameSnapshot,
                 l.UnitPriceAmdSnapshot,
