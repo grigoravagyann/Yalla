@@ -145,9 +145,100 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
             (await cook.GetAsync($"/api/branches/{kitchen.Branch.BranchId}/service-requests")).StatusCode);
     }
 
+    /// <summary>
+    /// The cook's ticket says which waiter sent it, by name and nothing more; a phone's says nobody.
+    /// </summary>
+    /// <remarks>
+    /// The kitchen screen prints the sender under the table - "Narek", or "from the app"
+    /// (Հավելվածից) when <c>placedByName</c> is absent - so a cook with a question knows whom to ask.
+    /// The ticket's members are pinned whole: the name is the one column of the staff row that rides
+    /// along, and a phone number or an id added beside it later would have to change this test.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_cooks_queue_names_the_waiter_who_sent_a_ticket_and_nothing_else_of_theirs()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var kitchen = await ArrangeAsync(factory);
+
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, kitchen.Branch));
+
+        var placed = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{kitchen.TabId}/staff-orders",
+            new
+            {
+                items = new object[]
+                {
+                    new { menuItemId = kitchen.Menu.Khachapuri, quantity = 1, participantId = kitchen.HostParticipantId },
+                    new { menuItemId = kitchen.Menu.Wine, quantity = 1, isShared = true },
+                },
+                clientCommandId = Guid.CreateVersion7(),
+            });
+        Assert.Equal(HttpStatusCode.Created, placed.StatusCode);
+        var spokenId = (await placed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("orderId").GetGuid();
+
+        string waiterName;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            waiterName = await db.StaffMembers
+                .Where(s => s.Id == kitchen.Branch.WaiterId)
+                .Select(s => s.FullName)
+                .SingleAsync();
+        }
+
+        using var cook = factory.CreateClientWithToken(await SignInCookAsync(factory, kitchen.Branch));
+        var queue = (await ReadAsync(cook, $"/api/branches/{kitchen.Branch.BranchId}/orders")).EnumerateArray().ToList();
+
+        var spoken = queue.Single(o => o.GetProperty("orderId").GetGuid() == spokenId);
+        var fromPhone = queue.Single(o => o.GetProperty("orderId").GetGuid() == kitchen.OrderId);
+
+        Assert.Equal(waiterName, spoken.GetProperty("placedByName").GetString());
+
+        // Absent, not null: the wire omits a null member, and the generated client reads it as optional.
+        Assert.False(
+            fromPhone.TryGetProperty("placedByName", out _),
+            "A phone's order came back with a placedByName member.");
+
+        Assert.Equal(
+            new[]
+            {
+                "estimatedReadyAtUtc", "lines", "orderId", "placedAtUtc", "placedByName", "status", "tabId",
+                "tableLabel", "waitingMinutes",
+            },
+            spoken.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+
+        // Each line says whose it is (gap 3) beside who sent the ticket: the named dish its guest, the
+        // table's bottle nobody - absent, not null.
+        AssertLineOwners(spoken);
+
+        // The answer to a move is the same ticket, sender and line owners included.
+        var moved = await MoveAsync(waiter, spokenId, TabOrderStatus.InKitchen);
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+
+        var movedTicket = await moved.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(waiterName, movedTicket.GetProperty("placedByName").GetString());
+        AssertLineOwners(movedTicket);
+
+        void AssertLineOwners(JsonElement ticket)
+        {
+            var lines = ticket.GetProperty("lines").EnumerateArray().ToList();
+
+            Assert.Equal(
+                kitchen.HostParticipantId,
+                lines.Single(l => l.GetProperty("menuItemId").GetGuid() == kitchen.Menu.Khachapuri)
+                    .GetProperty("onBehalfOfParticipantId").GetGuid());
+            Assert.False(
+                lines.Single(l => l.GetProperty("menuItemId").GetGuid() == kitchen.Menu.Wine)
+                    .TryGetProperty("onBehalfOfParticipantId", out _),
+                "The table's bottle came back in somebody's name.");
+        }
+    }
+
     // ------------------------------------------------------------ helpers
 
-    private sealed record Kitchen(AuthBranch Branch, Guid OrderId);
+    private sealed record Kitchen(AuthBranch Branch, TestMenu Menu, Guid TabId, Guid HostParticipantId, Guid OrderId);
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
 
@@ -193,7 +284,8 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
 
         var orderId = (await placed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("orderId").GetGuid();
 
-        return new Kitchen(branch, orderId);
+        return new Kitchen(
+            branch, menu, tabId, body.GetProperty("tab").GetProperty("me").GetProperty("participantId").GetGuid(), orderId);
     }
 
     /// <summary>

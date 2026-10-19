@@ -1517,6 +1517,158 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         }
     }
 
+    // ------------------------------------------------------------ 13. who sent a ticket
+
+    /// <summary>
+    /// Each ticket on the kitchen queue names the waiter who sent it; a phone's names nobody.
+    /// </summary>
+    /// <remarks>
+    /// The kitchen screen's ticket says "Narek" or "from the app" (Հավելվածից) under the table, so a
+    /// cook with a question knows whom to ask. The name is joined onto the queue's one query rather
+    /// than looked up per ticket: a Friday-night queue is forty tickets, and forty lookups on every
+    /// poll is the kind of cost that only shows up in production. The command count with three
+    /// tickets from three senders is the count with one.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Each_kitchen_ticket_names_the_waiter_who_sent_it_and_a_phones_names_nobody_in_one_query()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        await fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+
+        // The queue with the phone's ticket alone: the baseline.
+        var baseline = new CommandCountingInterceptor();
+        await using (var countDb = fixture.CreateContext(world.Clock, baseline))
+        {
+            var alone = await fixture.CreateOrderService(countDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+                .GetBranchOrdersAsync(world.Branch.BranchId, null);
+
+            Assert.Null(Assert.Single(alone).PlacedByName);
+        }
+
+        var colleague = await AnotherWaiterAsync(db, world, "Ani Petrosyan");
+
+        foreach (var (staffId, item) in new[] { (world.Branch.WaiterId, world.Menu.Khachapuri), (colleague, world.Menu.Wine) })
+        {
+            world.Clock.Advance(TimeSpan.FromMinutes(1));
+
+            await using var orderDb = fixture.CreateContext(world.Clock);
+            await fixture.CreateOrderService(orderDb, world.Clock, TestActor.Waiter(staffId))
+                .PlaceOrderAsync(new PlaceOrderCommand(world.TabId, [new OrderItemInput(item, 1)], Guid.CreateVersion7()));
+        }
+
+        var waiterName = await db.StaffMembers
+            .Where(s => s.Id == world.Branch.WaiterId)
+            .Select(s => s.FullName)
+            .SingleAsync();
+
+        var counter = new CommandCountingInterceptor();
+        await using var readDb = fixture.CreateContext(world.Clock, counter);
+        var queue = await fixture.CreateOrderService(readDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .GetBranchOrdersAsync(world.Branch.BranchId, null);
+
+        // Oldest first: the phone's, then each waiter's, by the name the roster shows them under.
+        Assert.Equal([null, waiterName, "Ani Petrosyan"], queue.Select(o => o.PlacedByName));
+        Assert.Equal(baseline.Count, counter.Count);
+    }
+
+    /// <summary>
+    /// A ticket names its waiter as they are now - renamed, or no longer working here - and the
+    /// answer to moving it says the same as the queue.
+    /// </summary>
+    /// <remarks>
+    /// Read at the time of reading, not snapshotted onto the order: the ticket is a question about
+    /// who to ask right now, and a corrected spelling should reach the screen. A waiter deactivated
+    /// mid-shift still sent that order, so their name stays on it rather than turning it into an
+    /// app order nobody sent. Only the name: the queue carries no other column of the staff row.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_ticket_names_its_waiter_as_they_are_now_renamed_or_deactivated_and_moving_it_says_the_same()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var spoken = await fixture.CreateOrderService(db, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7()));
+
+        await using (var staffDb = fixture.CreateContext(world.Clock))
+        {
+            var waiter = await staffDb.StaffMembers.SingleAsync(s => s.Id == world.Branch.WaiterId);
+            waiter.Rename("Narek Hakobyan");
+            waiter.SetActive(false);
+            await staffDb.SaveChangesAsync();
+        }
+
+        await using var readDb = fixture.CreateContext(world.Clock);
+        var kitchen = fixture.CreateOrderService(readDb, world.Clock, TestActor.Manager(world.Branch.ManagerId));
+
+        var ticket = Assert.Single(await kitchen.GetBranchOrdersAsync(world.Branch.BranchId, null));
+        Assert.Equal("Narek Hakobyan", ticket.PlacedByName);
+
+        var moved = await kitchen.MoveOrderStatusAsync(spoken.OrderId, TabOrderStatus.InKitchen);
+        Assert.Equal("Narek Hakobyan", moved.PlacedByName);
+
+        // And a phone's order, moved, still names nobody.
+        await using var phoneDb = fixture.CreateContext(world.Clock);
+        var fromPhone = await fixture.CreateOrderService(phoneDb, world.Clock, TestActor.Participant(world.GuestId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+
+        await using var moveDb = fixture.CreateContext(world.Clock);
+        var movedFromPhone = await fixture.CreateOrderService(moveDb, world.Clock, TestActor.Manager(world.Branch.ManagerId))
+            .MoveOrderStatusAsync(fromPhone.OrderId, TabOrderStatus.InKitchen);
+
+        Assert.Null(movedFromPhone.PlacedByName);
+    }
+
+    /// <summary>
+    /// Moving a waiter's ticket reads the sender's name in the same round trip as the order: the
+    /// move costs the database what moving a phone's ticket does.
+    /// </summary>
+    [SkippableFact]
+    public async Task Moving_a_waiters_ticket_reads_the_senders_name_without_another_round_trip()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var world = await ArrangeAsync();
+        await using var db = world.Db;
+
+        var fromPhone = await fixture.CreateOrderService(db, world.Clock, TestActor.Participant(world.HostId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Coffee, 1)], Guid.CreateVersion7()));
+
+        await using var waiterDb = fixture.CreateContext(world.Clock);
+        var spoken = await fixture.CreateOrderService(waiterDb, world.Clock, TestActor.Waiter(world.Branch.WaiterId))
+            .PlaceOrderAsync(new PlaceOrderCommand(
+                world.TabId, [new OrderItemInput(world.Menu.Khachapuri, 1)], Guid.CreateVersion7()));
+
+        async Task<(KitchenOrderView Ticket, int Commands)> MoveAsync(Guid orderId)
+        {
+            var counter = new CommandCountingInterceptor();
+            await using var moveDb = fixture.CreateContext(world.Clock, counter);
+
+            var ticket = await fixture.CreateOrderService(moveDb, world.Clock, TestActor.Manager(world.Branch.ManagerId))
+                .MoveOrderStatusAsync(orderId, TabOrderStatus.InKitchen);
+
+            return (ticket, counter.Count);
+        }
+
+        var phoneMove = await MoveAsync(fromPhone.OrderId);
+        var spokenMove = await MoveAsync(spoken.OrderId);
+
+        Assert.Null(phoneMove.Ticket.PlacedByName);
+        Assert.False(string.IsNullOrEmpty(spokenMove.Ticket.PlacedByName));
+        Assert.Equal(phoneMove.Commands, spokenMove.Commands);
+    }
+
     // ------------------------------------------------------------ helpers
 
     // ------------------------------------------------------------ the clock does not gate a tab
@@ -1568,12 +1720,12 @@ public sealed class OrderingTests(SqlServerFixture fixture)
         return opened.Tab.Me.ParticipantId;
     }
 
-    /// <summary>A second waiter on the same branch.</summary>
-    private static async Task<Guid> AnotherWaiterAsync(YallaDbContext db, World world)
+    /// <summary>A second waiter on the same branch, under <paramref name="fullName"/>.</summary>
+    private static async Task<Guid> AnotherWaiterAsync(YallaDbContext db, World world, string fullName = "Second Waiter")
     {
         var colleague = new StaffMember(
             world.Branch.VenueId,
-            "Second Waiter",
+            fullName,
             $"+3743{Random.Shared.Next(1_000_000, 9_999_999)}",
             StaffRole.Waiter,
             "hash",
