@@ -1036,7 +1036,8 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
                 break;
 
             case ReservationStatus.NoShow:
-                booking.MarkNoShow(now);
+                // Recorded from the start, as the floor may; the refusal is about the status, not the hour.
+                booking.MarkNoShow(booking.StartUtc);
                 break;
 
             case ReservationStatus.Completed:

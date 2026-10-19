@@ -345,6 +345,15 @@ public static class ErrorCodes
     public const string ReservationNotChangeable = "reservation-not-changeable";
 
     /// <summary>
+    /// A no-show recorded against a confirmed booking whose start has not come yet - through
+    /// <c>no-show</c> or <c>release</c> with <c>outcome</c> 1. HTTP 409, with
+    /// <c>context.reservationId</c> and <c>context.startUtc</c>, from when a no-show may be recorded.
+    /// Nothing changed. Letting the booking go as the venue's doing (<c>outcome</c> 2) and releasing
+    /// the table's hold are allowed at any time. Minted by <c>ReservationNotStartedException</c>.
+    /// </summary>
+    public const string ReservationNotStarted = "reservation-not-started";
+
+    /// <summary>
     /// Approving or declining a booking whose chance to be answered has gone: its short-notice answer
     /// window closed, it was already declined because nobody answered in time, or - approving only -
     /// it has started. HTTP 409, with <c>context.reservationId</c>, <c>context.status</c>,
@@ -484,6 +493,7 @@ public static class ErrorCodes
         ReviewNeedsVisit => "Review needs a visit",
         BookingsNotAccepted => "Bookings not accepted",
         ReservationNotChangeable => "Booking can no longer be changed",
+        ReservationNotStarted => "Booking has not started yet",
         ReservationApprovalExpired => "Too late to answer this booking",
         ReservationFreeByRequired => "Free the table by the time required",
         TableRequestNotPending => "This request no longer needs an answer",

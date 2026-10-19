@@ -389,6 +389,18 @@ Both outcomes:
 - Idempotent by `clientCommandId`, and a booking already released answers with what the first attempt
   got. A tablet replaying its queue must not put two no-shows on a diner's record.
 
+**A no-show only from the booking's start.** `NoShow` - through `release` or its other door,
+`POST /api/reservations/{id}/no-show`, which the console's row menu uses too - is refused before `startUtc`
+with **409 `reservation-not-started`** (`context.reservationId`, `context.startUtc`), and nothing changes:
+the booking stays confirmed and its table's hold stays. Nobody can have failed to come before they were due,
+and a no-show counts against the diner - while the tablet's hold attaches to the table's next booking
+whatever day it is on, so without this the wrong button on a hold put a no-show on somebody due tomorrow.
+**No grace on top:** from the start itself the waiter may record it. The branch's grace period times the
+late nudge; whether a party past their time is late or absent is the waiter's call, as above.
+`CancelledByVenue` and the table's own `release-hold` are allowed at any time - letting a booking or a hold
+go early costs the diner nothing. Checked in `Reservation.MarkNoShow`, so every way of recording a no-show
+answers the same; pinned by `LateBookingEndpointTests`.
+
 The threshold rule itself is unchanged: `RequiresApproval` is `>` and the shipped threshold is three,
 so it is the **fourth** no-show in the window that costs instant confirmation.
 
@@ -1223,6 +1235,7 @@ facts under `context`:
 | a signed-in diner booking, or moving a booking to, a sitting that overlaps another of their own live bookings (pending, confirmed, seated) at the same branch | 409 | `reservation-overlaps-own`, with `context.reservationId`, `code`, `localDate` (`"2026-10-22"`), `localStartTime` (`"19:30:00"`), `tableLabel` - the booking already held |
 | the command id belongs to another caller, or another command | 409 | `client-command-id-in-use` |
 | changing a booking that is not pending or confirmed, or has started | 409 | `reservation-not-changeable`, with `context.reservationId`, `status`, `startUtc` |
+| a no-show (`no-show`, or `release` with `outcome` 1) before the booking's start | 409 | `reservation-not-started`, with `context.reservationId`, `startUtc` |
 | changing a booking that was cancelled, approved or seated meanwhile | 409 | `concurrent-update` |
 | approving or declining past the short-notice window, after the sweep declined it, or approving once it has started | 409 | `reservation-approval-expired`, with `context.reservationId`, `status`, `startUtc`, `approvalExpiresAtUtc` |
 | the lock could not be had | 503 | `reservation-lock-timeout`, with `context.retryable` true |

@@ -64,7 +64,13 @@ public class ReservationFloorEndpointTests(SqlServerFixture fixture)
             (await noKey.Content.ReadFromJsonAsync<JsonElement>())
                 .GetProperty("context").GetProperty("field").GetString());
 
-        // And properly, which writes the outcome that counts against the diner.
+        // And properly, once the booking has started, which writes the outcome that counts against
+        // the diner.
+        await using (var startDb = fixture.CreateContext(factory.Clock))
+        {
+            factory.Clock.UtcNow = (await startDb.Reservations.AsNoTracking().FirstAsync(r => r.Id == booking)).StartUtc;
+        }
+
         var marked = await waiter.PostAsJsonAsync(
             $"/api/reservations/{booking}/no-show",
             new { clientCommandId = Guid.CreateVersion7(), reason = "nobody came" });

@@ -138,7 +138,8 @@ public class RescheduleRuleTests
                 break;
 
             case ReservationStatus.NoShow:
-                booking.MarkNoShow(NowUtc);
+                // A no-show is recorded from the start, never the day before it.
+                booking.MarkNoShow(StartUtc);
                 break;
         }
 

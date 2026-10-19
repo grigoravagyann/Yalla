@@ -712,6 +712,20 @@ internal static class ApiExceptionMapper
                 ["startUtc"] = e.StartUtc,
             }),
 
+        // A no-show before the booking's start: nobody can have failed to come yet. Its own code so the
+        // tablet can say "not due until 19:00" rather than a conflict the waiter answers by tapping again.
+        // Must stay ABOVE DomainStateException, which it derives from.
+        ReservationNotStartedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationNotStarted,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["startUtc"] = e.StartUtc,
+            }),
+
         // A yes or no that came too late: the short-notice window closed, the booking was already
         // declined for no answer, or it has started. Its own code so the tablet drops the request and
         // says why, rather than showing a conflict the waiter answers by tapping again. Must stay ABOVE

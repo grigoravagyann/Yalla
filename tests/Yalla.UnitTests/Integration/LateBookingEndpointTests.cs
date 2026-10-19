@@ -79,7 +79,9 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
                 $"/api/reservations/{booking}/no-show",
                 new { clientCommandId = Guid.CreateVersion7() })).StatusCode);
 
-        // Their own waiter can.
+        // Their own waiter can, once the party is late - a no-show before the start is refused.
+        await RunLateAsync(factory, diner, booking);
+
         var commandId = Guid.CreateVersion7();
         var released = await waiter.PostAsJsonAsync(
             $"/api/reservations/{booking}/no-show", new { clientCommandId = commandId });
@@ -150,6 +152,9 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
 
         await HoldTableAsync(waiter, branch, branch.TableIds[0]);
         await HoldTableAsync(waiter, branch, branch.TableIds[1]);
+
+        // Past the later of the two starts, so both are no-shows a waiter may record.
+        await RunLateAsync(factory, another, throughRelease);
 
         var byName = await (await waiter.PostAsJsonAsync(
                 $"/api/reservations/{throughNoShow}/no-show",
@@ -389,6 +394,135 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
         Assert.True(body.GetProperty("extensionMinutes").GetInt32() > 0);
     }
 
+    /// <summary>
+    /// A no-show is a statement about a start time that has passed. Before it, both doors refuse with
+    /// <c>reservation-not-started</c> and nothing about the booking or its table changes; from the start
+    /// itself it is the waiter's call, as it always was.
+    /// </summary>
+    /// <remarks>
+    /// The hold the tablet places attaches to the table's next booking whatever day that is, so without
+    /// this a waiter could put a no-show on a diner's record two days before they were due.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_no_show_before_the_booking_starts_is_refused_through_either_door()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch);
+        var startUtc = await StartOfAsync(diner, booking);
+
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        await HoldTableAsync(waiter, branch);
+
+        async Task AssertRefusedAsync(string door)
+        {
+            object body = door == "no-show"
+                ? new { clientCommandId = Guid.CreateVersion7() }
+                : new { outcome = (int)ReleaseOutcome.NoShow, clientCommandId = Guid.CreateVersion7() };
+
+            var refused = await waiter.PostAsJsonAsync($"/api/reservations/{booking}/{door}", body);
+
+            Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+
+            var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+            var context = problem.GetProperty("context");
+
+            Assert.Equal("reservation-not-started", problem.GetProperty("code").GetString());
+            Assert.Equal(booking, context.GetProperty("reservationId").GetGuid());
+            Assert.Equal(startUtc, context.GetProperty("startUtc").GetDateTime());
+        }
+
+        // Two days out, through both doors.
+        await AssertRefusedAsync("no-show");
+        await AssertRefusedAsync("release");
+
+        // A minute before the start is still before it.
+        factory.Clock.UtcNow = startUtc.AddMinutes(-1);
+        await AssertRefusedAsync("no-show");
+
+        // Nothing moved: the booking is still the diner's and still confirmed.
+        var upcoming = (await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine"))
+            .GetProperty("upcoming").EnumerateArray()
+            .Single(r => r.GetProperty("id").GetGuid() == booking);
+
+        Assert.Equal((int)ReservationStatus.Confirmed, upcoming.GetProperty("status").GetInt32());
+
+        // From the start itself, the waiter's call.
+        factory.Clock.UtcNow = startUtc;
+
+        var released = await waiter.PostAsJsonAsync(
+            $"/api/reservations/{booking}/no-show", new { clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+        Assert.Equal(
+            (int)ReservationStatus.NoShow,
+            (await released.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("reservation").GetProperty("status").GetInt32());
+    }
+
+    /// <summary>
+    /// Only the no-show waits for the start. Letting a booking go because the guest called, and letting
+    /// a hold go, are the venue's to do at any time.
+    /// </summary>
+    [SkippableFact]
+    public async Task Before_the_start_the_venue_may_still_let_a_booking_go_and_release_a_hold()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db);
+        }
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        using var another = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var calledAhead = await BookAsync(diner, factory, branch, branch.TableIds[0]);
+        await BookAsync(another, factory, branch, branch.TableIds[1], time: new TimeOnly(19, 0));
+
+        await HoldTableAsync(waiter, branch, branch.TableIds[0]);
+        await HoldTableAsync(waiter, branch, branch.TableIds[1]);
+
+        var cancelled = await waiter.PostAsJsonAsync(
+            $"/api/reservations/{calledAhead}/release",
+            new { outcome = (int)ReleaseOutcome.CancelledByVenue, clientCommandId = Guid.CreateVersion7() });
+
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+
+        var body = await cancelled.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(
+            (int)ReservationStatus.CancelledByVenue,
+            body.GetProperty("reservation").GetProperty("status").GetInt32());
+        Assert.False(body.GetProperty("countsTowardNoShowThreshold").GetBoolean());
+        Assert.True(body.GetProperty("tableFreed").GetBoolean());
+
+        var letGo = await waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{branch.TableIds[1]}/release-hold",
+            new { clientCommandId = Guid.CreateVersion7(), reason = "not needed yet" });
+
+        Assert.Equal(HttpStatusCode.OK, letGo.StatusCode);
+        Assert.Equal(
+            (int)TableStatus.Free,
+            (await letGo.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("toStatus").GetInt32());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private YallaApiFactory NewFactory() =>
@@ -425,6 +559,13 @@ public class LateBookingEndpointTests(SqlServerFixture fixture)
 
         factory.Clock.UtcNow = startUtc.AddMinutes(11);
     }
+
+    /// <summary>When a booking starts, as the diner's own list says.</summary>
+    private static async Task<DateTime> StartOfAsync(HttpClient diner, Guid booking) =>
+        (await diner.GetFromJsonAsync<JsonElement>("/api/reservations/mine"))
+            .GetProperty("upcoming").EnumerateArray()
+            .Single(r => r.GetProperty("id").GetGuid() == booking)
+            .GetProperty("startUtc").GetDateTime();
 
     /// <summary>Books a table through the real endpoint and answers with the booking's id.</summary>
     private static async Task<Guid> BookAsync(

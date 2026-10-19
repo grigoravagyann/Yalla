@@ -1225,19 +1225,26 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
-    /// Grace ran out and nobody came.
+    /// Nobody came.
     /// </summary>
     /// <remarks>
     /// The counterpart to <see cref="IsLateAt"/>: lateness is derived and needs no row written,
     /// but declaring a no-show is an action somebody takes, and it is what the rolling no-show
-    /// count later reads.
+    /// count later reads. Only from the start: before it nobody can have failed to come, and how
+    /// late is too late after it is the waiter's call, not the grace period's.
     /// </remarks>
+    /// <exception cref="ReservationNotStartedException">The booking has not started yet.</exception>
     public void MarkNoShow(DateTime atUtc)
     {
         if (Status != ReservationStatus.Confirmed)
         {
             throw new DomainStateException(
                 $"Only a confirmed reservation can be recorded as a no-show; {Code} is {Status}.");
+        }
+
+        if (Guard.NotLocalTime(atUtc, nameof(atUtc)) < StartUtc)
+        {
+            throw new ReservationNotStartedException(Id, Code, StartUtc);
         }
 
         Status = ReservationStatus.NoShow;
