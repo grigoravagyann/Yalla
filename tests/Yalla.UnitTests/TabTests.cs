@@ -119,6 +119,39 @@ public class TabOrderTests
         Assert.Throws<DomainStateException>(() => line.AddShare(participantId));
         Assert.Single(line.Shares);
     }
+
+    [Fact]
+    public void A_line_owner_is_its_own_guest_then_the_orders_and_never_on_a_split_line()
+    {
+        var (narine, aram) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        var order = TabOrder.PlacedByStaffMember(
+            Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt, onBehalfOfParticipantId: aram);
+
+        var steak = order.AddLine(Guid.CreateVersion7(), "Steak", 9_000L, 1, onBehalfOfParticipantId: narine);
+        var coffee = order.AddLine(Guid.CreateVersion7(), "Coffee", 1_200L, 1);
+        var bottle = order.AddLine(Guid.CreateVersion7(), "Wine", 9_500L, 1, isShared: true);
+
+        Assert.Equal(narine, order.OwnerOf(steak));
+        Assert.Equal(aram, order.OwnerOf(coffee));
+        Assert.Null(order.OwnerOf(bottle));
+    }
+
+    [Fact]
+    public void A_line_cannot_be_put_in_a_guests_name_on_a_phones_order_or_when_it_is_split()
+    {
+        var phone = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        var spoken = TabOrder.PlacedByStaffMember(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        var guest = Guid.CreateVersion7();
+
+        Assert.Throws<ArgumentException>(
+            () => phone.AddLine(Guid.CreateVersion7(), "Coffee", 1_200L, 1, onBehalfOfParticipantId: guest));
+        Assert.Throws<ArgumentException>(
+            () => spoken.AddLine(Guid.CreateVersion7(), "Wine", 9_500L, 1, isShared: true, onBehalfOfParticipantId: guest));
+        Assert.Throws<ArgumentException>(
+            () => spoken.AddLine(Guid.CreateVersion7(), "Wine", 9_500L, 1, isTableAttributed: true, onBehalfOfParticipantId: guest));
+        Assert.Empty(phone.Lines);
+        Assert.Empty(spoken.Lines);
+    }
 }
 
 public class TabJoinTokenTests

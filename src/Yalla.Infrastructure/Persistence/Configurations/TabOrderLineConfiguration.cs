@@ -46,6 +46,15 @@ internal sealed class TabOrderLineConfiguration : EntityConfiguration<TabOrderLi
             .HasForeignKey(l => l.MenuItemId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Only ever set on a waiter's order, and never on a shared line: the waiter said who this one
+        // line was for. Restrict, as the order's own OnBehalfOfParticipant is - a participant who
+        // appears on a bill is not deleted out from under it. The index is the FK's, and also what
+        // the diner's order list seeks on to find a line keyed in for them.
+        builder.HasOne(l => l.OnBehalfOfParticipant)
+            .WithMany()
+            .HasForeignKey(l => l.OnBehalfOfParticipantId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasOne(l => l.VoidedByStaff)
             .WithMany()
             .HasForeignKey(l => l.VoidedByStaffId)

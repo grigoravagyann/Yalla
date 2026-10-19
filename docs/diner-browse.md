@@ -247,7 +247,8 @@ down. Review writes and reports, and both photo uploads, share the `diner-write`
 `IX_TabParticipants_UserId`) and takes the union of:
 
 1. orders **placed from the diner's phone** (`PlacedByParticipantId` is one of those rows),
-2. orders a waiter keyed in **on the diner's behalf** (`OnBehalfOfParticipantId` is one of those rows),
+2. orders a waiter keyed in **on the diner's behalf** (`OnBehalfOfParticipantId` is one of those rows,
+   on the order or on any one of its lines - the tablet names a guest per line),
 3. orders a waiter keyed in **for the whole table** (neither set) on a tab where the diner may see the
    table's total.
 
@@ -256,6 +257,14 @@ only to a participant `TabPermissions.MaySeeTableTotal` allows - **approved, and
 the host** (`CanSeeTableTotal`). A guest the host hid the total from, a guest still pending approval
 and a guest removed from the tab get none of the table's orders, on the list or by id. Their own
 orders (1 and 2) they still see.
+
+**Which lines of it.** A diner who may see the table's total is shown every line of an order on their
+list. Anybody else is shown **their own lines** of it - `TabProjection.IsOwnLine`, the tab's `myLines`
+rule: what they ordered, what a waiter keyed in for them, and shared items they were at the table for.
+Until a waiter could name a guest per line that was every line of every order on their list anyway;
+a round with one guest's steak and another's coffee is not, and showing it whole would itemise the
+other guest's dish, price and all, to somebody the host hid the total from. `totalAmd` is the sum of
+the lines shown, and an order with nothing of theirs left on it is not listed.
 
 **The status filter.** `status=active` is kitchen New, InKitchen and Ready **on a tab that is still
 Open or Closing**; `status=history` is Served and Voided, **plus every order on a Closed or Abandoned

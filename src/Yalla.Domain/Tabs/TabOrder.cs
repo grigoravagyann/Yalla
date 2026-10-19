@@ -125,8 +125,25 @@ public sealed class TabOrder : Entity
         new(tabId, null, Guard.NotEmpty(staffId, nameof(staffId)), placedAtUtc,
             onBehalfOfParticipantId, clientCommandId);
 
-    /// <summary>Who owns the items on this order, or null when it belongs to the table.</summary>
+    /// <summary>
+    /// Who owns the items on this order, or null when it belongs to the table. A line can say
+    /// otherwise for itself - see <see cref="OwnerOf"/>.
+    /// </summary>
     public Guid? OwningParticipantId => PlacedByParticipantId ?? OnBehalfOfParticipantId;
+
+    /// <summary>
+    /// Who one of this order's lines is charged to whole, or null when it splits across the table.
+    /// </summary>
+    /// <remarks>
+    /// The line's own <see cref="TabOrderLine.OnBehalfOfParticipantId"/> first, then the order's
+    /// owner. A split line - shared, or table-attributed - is nobody's, whatever the order says.
+    /// </remarks>
+    public Guid? OwnerOf(TabOrderLine line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        return line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? OwningParticipantId;
+    }
 
     /// <summary>Records the kitchen estimate, from the longest prep time across the lines.</summary>
     public void EstimateReadyAt(DateTime estimatedReadyAtUtc) =>
@@ -135,6 +152,11 @@ public sealed class TabOrder : Entity
     /// <summary>
     /// Adds a line, snapshotting the item's name and price as they stand right now.
     /// </summary>
+    /// <remarks>
+    /// <c>onBehalfOfParticipantId</c> is who a waiter said this one line was for, overriding
+    /// <see cref="OnBehalfOfParticipantId"/> for it alone - see
+    /// <see cref="TabOrderLine.OnBehalfOfParticipantId"/>.
+    /// </remarks>
     public TabOrderLine AddLine(
         Guid menuItemId,
         string nameSnapshot,
@@ -142,10 +164,20 @@ public sealed class TabOrder : Entity
         int quantity,
         bool isShared = false,
         bool isTableAttributed = false,
-        string? note = null)
+        string? note = null,
+        Guid? onBehalfOfParticipantId = null)
     {
+        if (onBehalfOfParticipantId is not null && PlacedByStaffId is null)
+        {
+            throw new ArgumentException(
+                "Only a waiter keys in a line on somebody's behalf; a diner ordering from their own "
+                + "phone is already the person it is for.",
+                nameof(onBehalfOfParticipantId));
+        }
+
         var line = new TabOrderLine(
-            Id, menuItemId, nameSnapshot, unitPriceAmdSnapshot, quantity, isShared, isTableAttributed, note);
+            Id, menuItemId, nameSnapshot, unitPriceAmdSnapshot, quantity, isShared, isTableAttributed, note,
+            onBehalfOfParticipantId);
 
         _lines.Add(line);
 

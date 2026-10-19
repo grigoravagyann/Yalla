@@ -56,6 +56,27 @@ public sealed class TabOrderLine : Entity
     /// <summary>What the guest asked for: no onions, extra hot. Goes to the kitchen, not the bill.</summary>
     public string? Note { get; private set; }
 
+    /// <summary>
+    /// Who a waiter said this one line was for, when it is not who the rest of the order was for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The tablet assigns every line of a spoken round on its own - the latte to the table, the
+    /// steak to Narine - and sends the round as one order, so the kitchen gets one ticket. The
+    /// order's <see cref="TabOrder.OnBehalfOfParticipantId"/> is the default for its lines; this is
+    /// the line's own answer, and wins. Null means "whoever the order was for", which is exactly
+    /// what every line written before this column existed means.
+    /// </para>
+    /// <para>
+    /// Never set on a shared line: a shared line has no owner, which is also why the order's default
+    /// does not reach one. Only on a waiter's order, for the order-level field's reason - a diner
+    /// ordering from their own phone is already the person it is for.
+    /// </para>
+    /// </remarks>
+    public Guid? OnBehalfOfParticipantId { get; private set; }
+
+    public TabParticipant? OnBehalfOfParticipant { get; private set; }
+
     public DateTime? VoidedAtUtc { get; private set; }
 
     public Guid? VoidedByStaffId { get; private set; }
@@ -95,9 +116,18 @@ public sealed class TabOrderLine : Entity
         int quantity,
         bool isShared,
         bool isTableAttributed = false,
-        string? note = null)
+        string? note = null,
+        Guid? onBehalfOfParticipantId = null)
         : base(Guid.CreateVersion7())
     {
+        if (onBehalfOfParticipantId is not null && (isShared || isTableAttributed))
+        {
+            throw new ArgumentException(
+                "A shared line belongs to the table, so it cannot also be put in one guest's name.",
+                nameof(onBehalfOfParticipantId));
+        }
+
+        OnBehalfOfParticipantId = onBehalfOfParticipantId;
         IsTableAttributed = isTableAttributed;
         Note = Guard.OptionalText(note, nameof(note), FieldLengths.OrderNote);
         TabOrderId = Guard.NotEmpty(tabOrderId, nameof(tabOrderId));

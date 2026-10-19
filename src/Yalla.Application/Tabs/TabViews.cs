@@ -236,8 +236,10 @@ public sealed record TabParticipantSummary(
 /// <param name="VoidedAtUtc">When it was removed.</param>
 /// <param name="VoidReason">Why, in the waiter's own words.</param>
 /// <param name="OnBehalfOfParticipantId">
-/// Who a waiter keyed the order in for, when the waiter knew. The line is that person's - on their
-/// <c>myLines</c> and their share - though <paramref name="PlacedByParticipantId"/> is null.
+/// Who a waiter keyed this line in for, when the waiter knew: the guest named on the line itself, or
+/// else the one named on its order. The line is that person's - on their <c>myLines</c> and their
+/// share - though <paramref name="PlacedByParticipantId"/> is null. A shared line splits whatever
+/// this says; one round can carry a different guest on every line.
 /// </param>
 /// <param name="IsTableAttributed">
 /// True when a waiter keyed it in for nobody in particular. It splits across the people at the table

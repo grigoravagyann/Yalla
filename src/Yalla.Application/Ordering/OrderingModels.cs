@@ -12,7 +12,17 @@ namespace Yalla.Application.Ordering;
 /// moment - a friend who joins later is not on it, and one who is removed still is.
 /// </param>
 /// <param name="Note">What the guest asked for: no onions. Goes to the kitchen, not the bill.</param>
-public sealed record OrderItemInput(Guid MenuItemId, int Quantity, bool IsShared = false, string? Note = null);
+/// <param name="ParticipantId">
+/// Staff only: who this one line is for, overriding <see cref="PlaceOrderCommand.OnBehalfOfParticipantId"/>
+/// for it. Checked exactly as that is - an approved participant on this tab - and refused on a
+/// shared line, which has no owner. Null leaves the line to the order's answer.
+/// </param>
+public sealed record OrderItemInput(
+    Guid MenuItemId,
+    int Quantity,
+    bool IsShared = false,
+    string? Note = null,
+    Guid? ParticipantId = null);
 
 /// <summary>
 /// An order being placed, from either surface.
@@ -25,7 +35,8 @@ public sealed record OrderItemInput(Guid MenuItemId, int Quantity, bool IsShared
 /// </param>
 /// <param name="OnBehalfOfParticipantId">
 /// Staff only: who the spoken order was for. Null means the waiter did not know, and the lines are
-/// attributed to the table and split across everyone present.
+/// attributed to the table and split across everyone present. A line's own
+/// <see cref="OrderItemInput.ParticipantId"/> overrides it for that line.
 /// </param>
 public sealed record PlaceOrderCommand(
     Guid TabId,
@@ -83,6 +94,11 @@ public sealed record RecordCashPaymentCommand(
 /// <param name="IsTableAttributed">Nobody owns it: the waiter could not say who ordered it.</param>
 /// <param name="Note">The kitchen note.</param>
 /// <param name="SharedWithParticipantIds">Who it splits across, snapshotted at order time.</param>
+/// <param name="OnBehalfOfParticipantId">
+/// Who a waiter keyed this line in for: the line's own <c>participantId</c> when one was sent,
+/// otherwise the order's <c>onBehalfOfParticipantId</c>. Null on a diner's own order (the line is
+/// the orderer's) and when the waiter named nobody.
+/// </param>
 public sealed record OrderLineView(
     Guid LineId,
     Guid MenuItemId,
@@ -93,7 +109,8 @@ public sealed record OrderLineView(
     bool IsShared,
     bool IsTableAttributed,
     string? Note,
-    IReadOnlyList<Guid> SharedWithParticipantIds);
+    IReadOnlyList<Guid> SharedWithParticipantIds,
+    Guid? OnBehalfOfParticipantId);
 
 /// <summary>An order as it was accepted.</summary>
 /// <param name="OrderId">The order.</param>

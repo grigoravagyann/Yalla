@@ -39,12 +39,14 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             throw new ArgumentException("status is 'active' or 'history'.", nameof(status));
         }
 
-        var orders = await MineAsync(RequireDiner(), cancellationToken);
+        var mine = await MineAsync(RequireDiner(), cancellationToken);
 
-        if (orders is null)
+        if (mine is null)
         {
             return [];
         }
+
+        var orders = mine.Orders;
 
         // Active is "still on the kitchen rail, on a tab that is still open". A settled or written-off
         // tab ends every order on it whatever the rail says: most kitchens never tap "served" (the
@@ -60,16 +62,17 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             _ => orders,
         };
 
-        return await LoadAsync(orders.OrderByDescending(o => o.PlacedAtUtc).Take(MaxOrders), cancellationToken);
+        return await LoadAsync(
+            orders.OrderByDescending(o => o.PlacedAtUtc).Take(MaxOrders), mine.Seats, cancellationToken);
     }
 
     public async Task<DinerOrderView> GetAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
-        var orders = await MineAsync(RequireDiner(), cancellationToken);
+        var mine = await MineAsync(RequireDiner(), cancellationToken);
 
-        var found = orders is null
+        var found = mine is null
             ? []
-            : await LoadAsync(orders.Where(o => o.Id == orderId), cancellationToken);
+            : await LoadAsync(mine.Orders.Where(o => o.Id == orderId), mine.Seats, cancellationToken);
 
         // Somebody else's order and no order at all answer the same.
         return found.Count == 1 ? found[0] : throw new KeyNotFoundException($"Order {orderId} was not found.");
@@ -82,8 +85,14 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     /// <remarks>
     /// <para>
     /// <b>Starts from the diner, not from the order history.</b> Their participant rows come first, by
-    /// the <c>TabParticipants(UserId)</c> index, and the orders are then three seeks - placed by, on
-    /// behalf of, and whole-table on a tab - rather than a scan of every order on the platform.
+    /// the <c>TabParticipants(UserId)</c> index, and the orders are then four seeks - placed by, on
+    /// behalf of, with a line keyed in for them, and whole-table on a tab - rather than a scan of
+    /// every order on the platform.
+    /// </para>
+    /// <para>
+    /// <b>A line keyed in for them makes the order theirs too.</b> The tablet names a guest per line,
+    /// so one round can be several people's; each finds it on their list. What they are shown of it
+    /// is <see cref="LoadAsync"/>'s to decide.
     /// </para>
     /// <para>
     /// <b>A whole-table order follows the tab view's rule</b> (<see cref="TabProjection.IsOwnLine"/>).
@@ -102,7 +111,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     /// off their list, and the bottle is on their bill.
     /// </para>
     /// </remarks>
-    private async Task<IQueryable<TabOrder>?> MineAsync(Guid dinerUserId, CancellationToken cancellationToken)
+    private async Task<Mine?> MineAsync(Guid dinerUserId, CancellationToken cancellationToken)
     {
         var seats = await db.TabParticipants
             .AsNoTracking()
@@ -129,6 +138,9 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             .Union(db.TabOrders
                 .Where(o => o.OnBehalfOfParticipantId != null && participantIds.Contains(o.OnBehalfOfParticipantId.Value))
                 .Select(o => o.Id))
+            .Union(db.TabOrderLines
+                .Where(l => l.OnBehalfOfParticipantId != null && participantIds.Contains(l.OnBehalfOfParticipantId.Value))
+                .Select(l => l.TabOrderId))
             .Union(db.TabOrders
                 .Where(o => wholeTableTabIds.Contains(o.TabId)
                             && o.PlacedByParticipantId == null
@@ -136,12 +148,38 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                             && o.Lines.Any(l => l.Shares.Any(s => participantIds.Contains(s.TabParticipantId))))
                 .Select(o => o.Id));
 
-        return db.TabOrders
-            .AsNoTracking()
-            .Where(o => candidates.Contains(o.Id));
+        return new Mine(
+            db.TabOrders
+                .AsNoTracking()
+                .Where(o => candidates.Contains(o.Id)),
+            [.. seats.Select(s => new Seat(s.Id, s.TabId, TabPermissions.MaySeeTableTotal(s.Status, s.CanSeeTableTotal)))]);
     }
 
-    private async Task<List<DinerOrderView>> LoadAsync(IQueryable<TabOrder> orders, CancellationToken cancellationToken)
+    /// <summary>The diner's orders as a query, and the seats they hold on those orders' tabs.</summary>
+    private sealed record Mine(IQueryable<TabOrder> Orders, IReadOnlyList<Seat> Seats);
+
+    /// <summary>One of the diner's participant rows, and whether it may see that tab's total.</summary>
+    private sealed record Seat(Guid ParticipantId, Guid TabId, bool SeesTableTotal);
+
+    /// <summary>The orders, each with the lines this diner may be shown of it.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Every line, to a diner who may see the table's total</b> on that tab: the whole bill is
+    /// theirs to read, and a whole-table order is shown to them whole.
+    /// </para>
+    /// <para>
+    /// <b>Their own lines, to anybody else</b> - <see cref="TabProjection.IsOwnLine"/>, the rule the
+    /// tab's <c>myLines</c> and the event stream follow. Until a waiter could name a guest per line,
+    /// every line of an order on this list was the diner's own or a bottle they shared, so showing
+    /// the order whole was the same thing. A round with Narine's steak and Aram's coffee on it is
+    /// not: shown whole to Narine, with the host hiding the total from her, it would itemise Aram's
+    /// coffee, price and all. An order with nothing of theirs left on it is not listed.
+    /// </para>
+    /// </remarks>
+    private async Task<List<DinerOrderView>> LoadAsync(
+        IQueryable<TabOrder> orders,
+        IReadOnlyList<Seat> seats,
+        CancellationToken cancellationToken)
     {
         var rows = await orders
             .Select(o => new
@@ -163,16 +201,24 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                 o.Tab.TableSession.PartySize,
                 o.PlacedAtUtc,
                 o.EstimatedReadyAtUtc,
+                o.PlacedByParticipantId,
+                o.OnBehalfOfParticipantId,
                 Lines = o.Lines
                     .OrderBy(l => l.Id)
                     .Select(l => new
                     {
                         l.Id,
+                        l.MenuItemId,
                         l.NameSnapshot,
                         l.Quantity,
                         l.UnitPriceAmdSnapshot,
                         l.Note,
                         l.VoidedAtUtc,
+                        l.VoidReason,
+                        l.IsShared,
+                        l.IsTableAttributed,
+                        l.OnBehalfOfParticipantId,
+                        Shares = l.Shares.Select(s => s.TabParticipantId).ToList(),
                     })
                     .ToList(),
             })
@@ -200,11 +246,43 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             .ToLookup(e => e.Step!.Value.OrderId, e => new DinerOrderTimelineEntry(
                 DinerOrderStatuses.From(e.Step!.Value.To), e.AtUtc));
 
+        var seatsByTab = seats.ToLookup(s => s.TabId);
+
         return
         [
             .. rows.Select(r =>
             {
+                var mySeats = seatsByTab[r.TabId].ToList();
+                var wholeOrder = mySeats.Any(s => s.SeesTableTotal);
+
                 var items = r.Lines
+                    .Where(l =>
+                    {
+                        if (wholeOrder)
+                        {
+                            return true;
+                        }
+
+                        var line = new TabLineSnapshot(
+                            l.Id,
+                            r.Id,
+                            l.MenuItemId,
+                            r.PlacedByParticipantId,
+                            l.NameSnapshot,
+                            l.UnitPriceAmdSnapshot,
+                            l.Quantity,
+                            l.Note,
+                            r.Status,
+                            l.IsShared,
+                            IsVoided: l.VoidedAtUtc is not null,
+                            l.VoidedAtUtc,
+                            l.VoidReason,
+                            l.Shares,
+                            l.OnBehalfOfParticipantId ?? r.OnBehalfOfParticipantId,
+                            l.IsTableAttributed);
+
+                        return mySeats.Any(seat => TabProjection.IsOwnLine(line, seat.ParticipantId, tableTotalVisible: false));
+                    })
                     .Select(l => new DinerOrderItem(
                         l.Id,
                         l.NameSnapshot,
@@ -214,6 +292,11 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                         l.Note,
                         l.VoidedAtUtc is not null))
                     .ToList();
+
+                if (items.Count == 0)
+                {
+                    return null;
+                }
 
                 return new DinerOrderView(
                     r.Id,
@@ -237,7 +320,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                     items,
                     [new DinerOrderTimelineEntry(DinerOrderStatuses.Confirmed, r.PlacedAtUtc), .. steps[r.Id]],
                     CanCancel: false);
-            }),
+            }).OfType<DinerOrderView>(),
         ];
     }
 
