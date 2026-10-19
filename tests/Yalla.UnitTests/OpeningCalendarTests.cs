@@ -160,7 +160,7 @@ public class OpeningCalendarTests
         var byField = refused.Violations.ToDictionary(v => v.Field, v => v.Bound);
 
         // Yesterday is history: ignored, not refused.
-        Assert.False(byField.Keys.Any(k => k.StartsWith("days[0]", StringComparison.Ordinal)));
+        Assert.DoesNotContain(byField.Keys, k => k.StartsWith("days[0]", StringComparison.Ordinal));
         Assert.Equal(FieldBounds.Max, byField["days[1].date"]);
         Assert.False(byField.ContainsKey("days[2].date"));
         Assert.Equal(FieldBounds.Conflict, byField["days[3].date"]);
