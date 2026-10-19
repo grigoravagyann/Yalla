@@ -139,31 +139,51 @@ internal sealed class VenueUserAuthService(
         var nowUtc = clock.UtcNow;
         var hash = Secrets.Hash(resetToken ?? string.Empty);
 
-        var token = await db.PasswordResetTokens
-            .Include(t => t.StaffMember)
-            .FirstOrDefaultAsync(t => t.TokenHash == hash, cancellationToken);
+        // The slow part first, before any lock is held.
+        var passwordHash = hasher.Hash(newPassword!);
 
-        if (token is null || !token.IsUsableAt(nowUtc))
+        // One transaction, holding the account's lock to the commit: the link and the row are decided
+        // from what they are once it is held, not from a read taken before. A password change that
+        // spent this link while this waited, a second use of the same link, a generation moved by a
+        // sign-out elsewhere - each committed under the same lock, so each is what the reads below see.
+        // And a refresh of one of the account's tokens either finished first, and its successor is
+        // revoked here, or waits and finds its token revoked.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var token = await db.PasswordResetTokens.FirstOrDefaultAsync(t => t.TokenHash == hash, cancellationToken)
+                    ?? throw ResetLinkInvalid();
+
+        await refreshTokens.LockSubjectAsync(RefreshTokenSubject.VenueUser, token.StaffMemberId, cancellationToken);
+        await db.Entry(token).ReloadAsync(cancellationToken);
+
+        if (!token.IsUsableAt(nowUtc))
         {
-            throw new AuthenticationFailedException(
-                "reset-token-invalid", "That reset link is not valid or has expired. Ask for a new one.");
+            throw ResetLinkInvalid();
         }
 
+        // Read under the lock, so the generation moved below is the one that stands.
+        var staff = await db.StaffMembers.FirstAsync(s => s.Id == token.StaffMemberId, cancellationToken);
+        await db.Entry(staff).ReloadAsync(cancellationToken);
+
         token.Consume(nowUtc);
-        token.StaffMember.SetPasswordHash(hasher.Hash(newPassword!));
+        staff.SetPasswordHash(passwordHash);
 
         // Everything the account was signed in on is now signed out - its refresh tokens revoked and,
         // by the generation, every access token it holds ended now rather than in fifteen minutes. The
         // usual reason to reset a password is that somebody else might have had it.
-        token.StaffMember.EndSessions();
+        staff.EndSessions();
         await refreshTokens.RevokeAllForSubjectAsync(
             RefreshTokenSubject.VenueUser, token.StaffMemberId, "password-changed", cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         // After the commit, so no other request re-reads the old generation into the cache.
         authority.InvalidateVenueUser(token.StaffMemberId);
 
         logger.LogInformation("Password reset completed for staff member {StaffMemberId}.", token.StaffMemberId);
     }
+
+    private static AuthenticationFailedException ResetLinkInvalid() =>
+        new("reset-token-invalid", "That reset link is not valid or has expired. Ask for a new one.");
 }

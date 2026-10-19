@@ -754,6 +754,12 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["field"] = e.Field }),
 
+        // A token that names no sign-in, on a route that keeps this sign-in and ends the others. Its own
+        // code so the console says "sign in again" rather than a generic conflict. Must stay ABOVE
+        // DomainStateException, which it derives from.
+        SignInUnknownException e => new MappedError(
+            StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 

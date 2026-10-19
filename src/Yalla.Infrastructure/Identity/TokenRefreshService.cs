@@ -9,6 +9,11 @@ namespace Yalla.Infrastructure.Identity;
 /// <summary>
 /// The refresh endpoint's implementation for both identity types that have refresh tokens.
 /// </summary>
+/// <remarks>
+/// Each call is one transaction: <see cref="RefreshTokenStore"/> rotates and revokes under the account's
+/// lock, which the transaction holds to the commit - so a refresh and a password change, a sign-out
+/// elsewhere or a deletion of the same account cannot interleave.
+/// </remarks>
 internal sealed class TokenRefreshService(
     YallaDbContext db,
     TokenIssuer tokens,
@@ -18,8 +23,10 @@ internal sealed class TokenRefreshService(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var (successorEntity, successor, dinerUserId) =
-            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, cancellationToken);
+            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, transaction, cancellationToken);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.Id == dinerUserId, cancellationToken);
 
@@ -35,6 +42,7 @@ internal sealed class TokenRefreshService(
         var (accessToken, _) = tokens.IssueDinerToken(diner.Id, diner.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return new RefreshResult(accessToken, successor, tokens.AccessTokenSeconds);
     }
@@ -43,8 +51,10 @@ internal sealed class TokenRefreshService(
         string refreshToken,
         CancellationToken cancellationToken = default)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var (successorEntity, successor, staffMemberId) =
-            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.VenueUser, cancellationToken);
+            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.VenueUser, transaction, cancellationToken);
 
         var staff = await db.StaffMembers.FirstOrDefaultAsync(s => s.Id == staffMemberId, cancellationToken);
 
@@ -59,6 +69,7 @@ internal sealed class TokenRefreshService(
             staff.Id, staff.VenueId, staff.BranchId, staff.Role, staff.SessionGeneration, successorEntity.ChainId);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return new RefreshResult(accessToken, successor, tokens.AccessTokenSeconds);
     }
@@ -74,7 +85,9 @@ internal sealed class TokenRefreshService(
             return;
         }
 
-        await refreshTokens.RevokeChainAsync(existing.ChainId, "signed-out", cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await refreshTokens.RevokeChainAsync(existing, "signed-out", cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 }

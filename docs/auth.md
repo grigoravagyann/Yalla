@@ -492,12 +492,56 @@ row is gone - is refused with `401 session-revoked`. All of them rather than onl
 the reason to end a session is the same whichever door the token is used on. Deactivation is not part of
 this check; the services still refuse an inactive staff member from the stored row, with 403.
 
-The generation moves (`StaffMember.EndSessions`) when the password is **reset** from a link and when the
-platform admin **changes** theirs. Both also revoke every refresh token; the change spends any reset link
-still unused and answers the caller a fresh pair under the new generation, so the console carries on
-(`docs/platform-admin.md` §5). A rehash at sign-in does not move it. **A token minted before `sgen`
+The generation moves (`StaffMember.EndSessions`) when the password is **reset** from a link, when the
+platform admin or a venue user **changes** theirs, and when a venue user **signs out everywhere else**.
+A reset and a change also revoke every refresh token; the change spends any reset link still unused and
+answers the caller a fresh pair under the new generation, so the console carries on
+(`docs/platform-admin.md` §5, and "The venue console's own account" below). A rehash at sign-in does
+not move it. **A token minted before `sgen`
 existed reads as generation 0**, which is where every row starts (migration `StaffSessionGeneration`), so
 those keep working until they expire unless a bump ends them first.
+
+### The venue console's own account
+
+`/api/venue/me` is Իմ հաշիվը for an **owner, general manager or branch manager signed in with email and
+password** (policy `VenueStaffAccount`: the `VenueUser` principal type and one of the three venue ranks).
+The platform admin has `/api/platform/me`; a manager's PIN session on a tablet is refused, because a
+tablet is not where a password is changed. No route takes an id: the row is the token's, re-checked from
+the store (active, a venue rank, a sign-in).
+
+| Route | What it does |
+|---|---|
+| `GET /api/venue/me` | `{ staffMemberId, fullName, email, role, venueId, branchId? }` - `branchId` only for a branch manager |
+| `PATCH /api/venue/me` | `{ fullName }`, 1-200 after trimming; audited `account.rename`, nothing written for the same name |
+| `POST /api/venue/me/password` | `{ currentPassword, newPassword }` - the platform admin's change: every problem in one 422 (`currentPassword` `conflict` when wrong - a form error, not a 401), ten wrong ones in 15 minutes lock it with `429 too-many-attempts` and `Retry-After`, the `auth` rate limit on top; ends every session and answers a fresh pair. Audited `account.password-change` / `account.password-change-failed` |
+| `GET /api/venue/me/sessions` | `{ sessions: [{ id, signedInAtUtc, lastActiveAtUtc, isCurrent }] }`, current first |
+| `POST /api/venue/me/sessions/sign-out-others` | `{ endedSessions }`; audited `account.sign-out-others` |
+
+- **The email is not theirs to change.** Whoever outranks them issues a new sign-in link for a new
+  address; an owner's is the platform's.
+- **One set of rules.** `OwnAccountChanges` holds the name bounds, the proof of the current password, the
+  lockout counted from the audit rows and the end of every session; the platform admin's account and this
+  one each pass their own audit slugs. The feed leaves out both `-failed` slugs: they are the lockout's
+  counter, not a change.
+- **A sign-in is a refresh chain**, the one per-session record there is. A session row is a chain with a
+  token that is neither revoked, rotated nor expired; `signedInAtUtc` is the chain's first token,
+  `lastActiveAtUtc` its live one - the last renewal, about every fifteen minutes while the console is in
+  use - and `isCurrent` compares the chain with the token's `rch` claim. **Nothing records the browser,
+  the device or the place**, so none of that is on the wire.
+- **Signing out everywhere else** revokes every other chain (reason `signed-out-elsewhere`) and moves the
+  generation, so their access tokens stop now rather than within fifteen minutes. The caller's access
+  token stops with them and **the caller's chain is kept**: the console refreshes and carries on. It
+  answers no fresh pair on purpose - an access token alone must never turn itself into a thirty-day
+  refresh token; the password change, which proves the password, is the one that does. A token with no
+  `rch` claim cannot say which sign-in to keep, so it is refused with `409 sign-in-unknown` and nothing
+  changes; signing in again gives a token that names its chain.
+- **The profile's `branchId`** is a branch manager's home branch only. An owner's row may name a branch,
+  but an owner runs every branch, so the profile leaves it out - as it does for a general manager.
+- **The wrong guesses are counted one at a time.** The change takes the account's lock (below) before it
+  counts, so guesses sent at once queue on it and the tenth is the last one heard.
+- **The tablet PIN** stays where it was: a staff member sets their own through
+  `POST /api/venues/{venueId}/staff/{staffMemberId}/pin` with the ids `GET /api/venue/me` answers - 4 to 8
+  digits, `409 pin-taken` when somebody else on the same tablet taps it.
 
 ### The roles, and who reaches which branch
 
@@ -653,6 +697,50 @@ reset link points at.
 | Staff device | 365 days | None - re-enrol |
 | Staff session | 30 minutes | Renewal handle, dies after 30 minutes idle |
 
+### Refreshing and revoking are serialised per account
+
+A refresh reads its token and then rotates it; a revocation - a password reset or change, signing out
+everywhere else, a sign-out, a number proved by its owner, a deletion - reads the account's tokens and then
+revokes them. Nothing on the row says it changed in between, so a refresh that read its token just before
+a revocation committed used to mint a successor the revocation never saw, and the sign-in that was meant
+to end carried on for thirty days. Diner, venue user and platform admin alike.
+
+So `RefreshTokenStore` does both under **the account's lock**: an update lock on the `StaffMembers` or
+`DinerUsers` row, held by the transaction to its commit, taken before any token is read (and the token
+read again under it). Whichever side comes second waits for the other's commit: a refresh that waited finds
+its token revoked and is refused; a revocation that waited finds the successor and ends it too. Every
+rotation and revocation therefore runs in a transaction - the refresh, sign-out, reset, password-change and
+sign-out-elsewhere paths open one, and the store refuses without one. `RefreshRevocationRaceTests` holds
+each side open while the other runs, in both orders, for a staff member and a diner, and checks the
+second side really waited.
+
+**What a change decides, it decides under the lock.** Taking the lock only around the revocation is not
+enough when the change was decided from a read taken before it. So the password reset reads its link, takes
+the account's lock and reads the link and the staff row again before it checks the link is still usable -
+a link a password change spent meanwhile, or a second use of the same link, is refused, and the generation
+it moves is the one that stands. The phone proof that displaces a registrant locks and re-reads the diner
+before it clears the password and moves the generation, so a password the registrant set while it waited
+- and the token minted with it - is displaced too. Issuing a new sign-in link takes the person's lock
+before it retires their unused links, so an old link being redeemed at that moment either reset the
+password first or waits and finds itself retired. The password change takes the lock before it counts the
+wrong guesses. The slow part, hashing a new password, is done before the lock is taken; checking the current
+password stays after the lockout count, under it. `AccountLockRaceTests` forces each interleaving.
+
+A rotation is handed the caller's transaction (`RefreshTokenStore.RotateAsync(..., transaction, ...)`) and
+commits it only when the reuse alarm fires, because the caller then throws; any other transaction on the
+context is refused rather than committed early.
+
+**Reuse detection is strict, and clients single-flight their refresh.** Two refreshes sent with the same
+token - two tabs, or a retry racing the first attempt - are indistinguishable from a thief replaying a
+stolen copy: the second finds the token already rotated and revokes the whole chain, so both sign in again.
+This is deliberate and stays. The clients therefore send one refresh at a time per sign-in; the console
+coordinates across its tabs with the Web Locks API, so one tab refreshes and the others take its result.
+
+A revocation ends only the tokens that could still be exchanged - unrevoked, unrotated, unexpired, one per
+live sign-in. Rotated rows are refused already and are **never pruned**, so a long-lived account
+accumulates one row per renewal; a periodic prune of rows long past their expiry is a follow-up, not built.
+The reuse alarm and sign-out still mark their whole chain.
+
 ### What a device token can and cannot do
 
 Four properties, and the fourth is the one that makes the first three safe to leave in a browser on
@@ -751,6 +839,7 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `ManagerOrAbove` | Role is Manager (a branch manager), GeneralManager or Owner. Says nothing about which branch - always paired with a scope policy |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner, general manager or branch manager acting inside their own venue; the services narrow a branch manager to their branch |
+| `VenueStaffAccount` | An owner, general manager or branch manager signed in to the admin panel: principal type `VenueUser` and one of the three venue ranks. The venue console's own account (`/api/venue/me`); not a tablet session, not the platform admin |
 | `VerifiedDiner` | The token's principal type is `Diner` - there is an account to hold bookings against. A tab participant is deliberately not one. Since the password door, the name overstates it: an account that registered with a password holds this token before its number is proved, and `DinerUser.PhoneVerifiedAtUtc` is the fact about the number. The token must also belong to a live session - an active, undeleted account on the token's `sgen` - which is checked on token validation, before the policy runs |
 
 Two of these are the real security of this system, and both have tests:

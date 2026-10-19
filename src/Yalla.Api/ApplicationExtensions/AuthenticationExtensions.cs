@@ -292,6 +292,15 @@ public static class AuthenticationExtensions
                 .RequireAuthenticatedUser()
                 .AddRequirements(new VenueScopedRequirement()))
 
+            // Both requirements must hold: the admin panel's identity type, and a venue rank. The
+            // platform admin is a VenueUser too, and is left out by the role set.
+            .AddPolicy(YallaPolicies.VenueStaffAccount, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(
+                    new PrincipalTypeRequirement(new HashSet<PrincipalType> { PrincipalType.VenueUser }),
+                    new StaffRoleRequirement(
+                        new HashSet<StaffRole> { StaffRole.Manager, StaffRole.GeneralManager, StaffRole.Owner })))
+
             .AddPolicy(YallaPolicies.VerifiedDiner, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new PrincipalTypeRequirement(

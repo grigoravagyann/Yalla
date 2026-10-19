@@ -325,6 +325,13 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// so a changed password is the hash sign-in checks and a revoked token is the row refresh reads.
     /// </summary>
     internal PlatformAdminAccountService CreatePlatformAdminAccountService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, actor, CreateOwnAccountChanges(db, clock, actor));
+
+    /// <summary>
+    /// The rules a console user's own name and password change by - the platform admin's and a venue
+    /// user's - over one context, with the real hasher, token store and issuer.
+    /// </summary>
+    internal OwnAccountChanges CreateOwnAccountChanges(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(
             db,
             clock,
@@ -339,7 +346,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
                 clock),
             CreateTokenAuthority(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
-            NullLogger<PlatformAdminAccountService>.Instance);
+            NullLogger<OwnAccountChanges>.Instance);
 
     /// <summary>
     /// The onboarding checklist over one context.
@@ -383,6 +390,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             clock,
             actor,
             new SecretHasher(),
+            new RefreshTokenStore(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
             logger ?? NullLogger<StaffManagementService>.Instance);
 

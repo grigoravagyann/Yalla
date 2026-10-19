@@ -57,6 +57,17 @@ public static class YallaPolicies
     public const string VenueScoped = "VenueScoped";
 
     /// <summary>
+    /// An owner, general manager or branch manager signed in to the admin panel with email and password:
+    /// the principal type is <c>VenueUser</c> and the role one of the three venue ranks.
+    /// </summary>
+    /// <remarks>
+    /// The venue console's own account routes (<c>/api/venue/me</c>). Not <see cref="ManagerOrAbove"/>,
+    /// which also admits a manager's PIN session on a tablet - a tablet is not where a password is changed -
+    /// and the platform admin, whose account is <c>/api/platform/me</c>.
+    /// </remarks>
+    public const string VenueStaffAccount = "VenueStaffAccount";
+
+    /// <summary>
     /// A diner with an account: the token's principal type is <c>Diner</c>.
     /// </summary>
     /// <remarks>

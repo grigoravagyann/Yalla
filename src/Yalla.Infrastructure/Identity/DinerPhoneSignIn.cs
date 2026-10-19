@@ -50,7 +50,29 @@ internal sealed class DinerPhoneSignIn(
         string channel,
         CancellationToken cancellationToken)
     {
+        // From here to the save, one transaction - the caller's if it has one - holding the account's
+        // lock. The account is decided from the row as it is once the lock is held, not from the read
+        // that found it: a registrant setting a new password a moment ago moved the generation, and
+        // displacing them below has to move it past that one, or the token they were just given would
+        // survive. Displacing also revokes their refresh tokens under the same lock, so a refresh of one
+        // of them cannot mint a successor behind the revocation.
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.PhoneE164 == phone, cancellationToken);
+
+        if (diner is not null)
+        {
+            await refreshTokens.LockSubjectAsync(RefreshTokenSubject.Diner, diner.Id, cancellationToken);
+            await db.Entry(diner).ReloadAsync(cancellationToken);
+
+            if (diner.PhoneE164 != phone)
+            {
+                // Deleted, or the number moved, while this waited: the number has no account now.
+                diner = null;
+            }
+        }
 
         if (diner is { IsActive: false })
         {
@@ -60,6 +82,11 @@ internal sealed class DinerPhoneSignIn(
             // refusing, it cannot be presented again. (A deleted account has no number and is never
             // found by one.)
             await db.SaveChangesAsync(cancellationToken);
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
 
             logger.LogWarning("Phone sign-in by {Channel} refused for inactive diner {DinerUserId}.", channel, diner.Id);
 
@@ -116,6 +143,11 @@ internal sealed class DinerPhoneSignIn(
             diner.Id, diner.SessionGeneration, refreshEntity.ChainId, phoneProvedAtUtc: nowUtc);
 
         await db.SaveChangesAsync(cancellationToken);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         if (displaced)
         {
