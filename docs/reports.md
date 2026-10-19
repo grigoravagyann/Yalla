@@ -87,7 +87,36 @@ Two details worth knowing when reading it:
   later stops being counted as unreachable — which is the behaviour change the number exists to
   detect.
 
-## 4. What is not built, and why
+## 4. The venue console's Reports screen
+
+The screen (artboard `Reports`) reads the five reports above and draws nothing they do not carry. What it
+needed and they lacked was filled in, aggregates only:
+
+- **`revenue.tabs`** - closed bills with their comparison, for the summary card.
+- **`revenue.byDay` is dense and `revenue.previousByDay` is new.** One entry per local date of each period,
+  zero days included, so the chart's line and its dashed previous-period line pair by index and a CSV has a
+  row for the day nothing was taken.
+- **`occupancy.walkInGuests` / `reservationGuests`** - the people split, in guests rather than sittings: a
+  walk-in couple and a booked party of eight are one sitting each.
+- **`occupancy.turnsPerTable`** (with `activeTables`) - sittings per active table per day, two decimals.
+  Both periods divide by today's tables: the card compares how hard the room worked.
+- **Turn-time buckets are half-hour bars**, `upToMinutes` 60, 90 … 240 and an open-ended last one, each
+  "up to and including" - the console's chart with the policy marker between bars.
+- **Lead-time buckets are the console's**: under 2 hours, 6, a day, three days, a week, and a week or more,
+  each "strictly less than" and measured in minutes, so a booking made exactly two hours ahead is not "under
+  two hours".
+
+The custom range on the screen stops at 92 days; the server's cap stays at 366 for anybody asking the API
+for a year against the last.
+
+**Per-section CSV is built in the browser**, from the JSON the screen already has. The rules are the ones
+`?format=csv` follows - UTF-8 with a byte-order mark (Excel reads Armenian names), RFC 4180 quoting, plain
+digits with a `.` decimal, whole dram, ISO dates, an empty cell (never 0) for a missing previous value - plus
+a leading `'` on a text cell that starts with `=`, `+`, `-` or `@`, because dish names and void reasons are
+typed by staff. No new endpoint: the file always matches the screen, previous-period columns included, and
+"export everything" costs no round trips. `?format=csv` stays for anybody using the API directly.
+
+## 5. What is not built, and why
 
 ### No per-waiter leaderboard
 
@@ -188,7 +217,7 @@ index earns its place as the table grows — the crossover is somewhere in the t
 orders — and it costs one small write per order until then. It is reported here rather than quietly
 left in, because "we added an index" and "the query uses it" are different claims.
 
-## 5. Comparison against the previous period
+## 6. Comparison against the previous period
 
 Every numeric report carries `{ value, previous, changeFraction }`.
 
@@ -201,7 +230,7 @@ Every numeric report carries `{ value, previous, changeFraction }`.
   both zero and absent. Growth from nothing has no percentage, and every client that has tried to
   render one has printed something absurd about a venue's first week.
 
-## 6. CSV export
+## 7. CSV export
 
 `?format=csv` on any report.
 
@@ -215,7 +244,7 @@ which turns every Armenian venue name into mojibake, and the venue names are the
 Fields follow RFC 4180: quoted when they contain a comma, a quote or a newline, with inner quotes
 doubled. A menu item called `Khachapuri, Adjarian` is not hypothetical.
 
-## 7. The range cap
+## 8. The range cap
 
 `ReportRange.MaxDays` is **366** — long enough to compare this December with last, short enough that
 the query stays a range seek.

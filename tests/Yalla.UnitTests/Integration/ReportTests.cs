@@ -131,14 +131,11 @@ public class ReportTests(SqlServerFixture fixture)
         // Three of the five ran past 90 minutes: 100, 140 and 200.
         Assert.Equal(0.6m, turn.OverPolicyFraction);
 
-        // And the shape is there rather than summarised away. 50 lands in the 60 bucket, 80 in 90,
-        // 100 in 105, 140 in 150, 200 in 240.
-        Assert.Equal(1, turn.Buckets.Single(b => b.UpToMinutes == 60).Sessions);
-        Assert.Equal(1, turn.Buckets.Single(b => b.UpToMinutes == 90).Sessions);
-        Assert.Equal(1, turn.Buckets.Single(b => b.UpToMinutes == 105).Sessions);
-        Assert.Equal(1, turn.Buckets.Single(b => b.UpToMinutes == 150).Sessions);
-        Assert.Equal(1, turn.Buckets.Single(b => b.UpToMinutes == 240).Sessions);
-        Assert.Equal(5, turn.Buckets.Sum(b => b.Sessions));
+        // And the shape is there rather than summarised away, in the console's half-hour bars: 50 lands in
+        // the 60 bucket, 80 in 90, 100 in 120, 140 in 150, 200 in 210 - and the last bar is open-ended.
+        Assert.Equal(
+            [(60, 1), (90, 1), (120, 1), (150, 1), (180, 0), (210, 1), (240, 0), (int.MaxValue, 0)],
+            turn.Buckets.Select(b => (b.UpToMinutes, b.Sessions)));
 
         // The number the whole distribution exists to make visible: a policy of 90 against a median
         // of 100 is a venue refusing bookings it could take.
@@ -440,6 +437,125 @@ public class ReportTests(SqlServerFixture fixture)
         // And the number is the one the venue counted: two tabs, 20,500 dram.
         Assert.Equal(20_500L, day.GetProperty("revenueAmd").GetInt64());
         Assert.Equal(20_500L, json.GetProperty("totalAmd").GetProperty("value").GetDecimal());
+    }
+
+    // ------------------------------------------------------------ the console's Reports screen
+
+    /// <summary>
+    /// The revenue line and its dashed previous-period line: one point per day of each period, zero days included,
+    /// so the two series pair index by index - and the closed-bills card with its own comparison.
+    /// </summary>
+    [SkippableFact]
+    public async Task Revenue_by_day_is_dense_and_pairs_with_the_previous_period_day_by_day()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: Yerevan);
+
+        // Tuesday to Thursday, with Wednesday empty; the previous three days are Saturday to Monday.
+        await CloseTabAsync(db, branch, Local(Tuesday, 20, 0), totalAmd: 12_000L);
+        await CloseTabAsync(db, branch, Local(Tuesday.AddDays(2), 21, 0), totalAmd: 8_000L, tableIndex: 1);
+        await CloseTabAsync(db, branch, Local(Tuesday.AddDays(-2), 13, 0), totalAmd: 5_000L, tableIndex: 2);
+
+        var reports = SqlServerFixture.CreateReportQuery(db, TestActor.Manager(branch.ManagerId));
+
+        var report = await reports.GetRevenueAsync(new ReportRequest(branch.BranchId, Tuesday, Tuesday.AddDays(2)));
+
+        Assert.Equal(
+            [(Tuesday, 12_000L, 1), (Tuesday.AddDays(1), 0L, 0), (Tuesday.AddDays(2), 8_000L, 1)],
+            report.ByDay.Select(d => (d.LocalDate, d.RevenueAmd, d.Tabs)));
+
+        Assert.Equal(
+            [(Tuesday.AddDays(-3), 0L, 0), (Tuesday.AddDays(-2), 5_000L, 1), (Tuesday.AddDays(-1), 0L, 0)],
+            report.PreviousByDay.Select(d => (d.LocalDate, d.RevenueAmd, d.Tabs)));
+
+        Assert.Equal(new Compared(2m, 1m), report.Tabs);
+    }
+
+    /// <summary>
+    /// The people split - walk-ins against bookings counted in guests, not sittings - and the table-turnover card:
+    /// sittings per active table per day.
+    /// </summary>
+    [SkippableFact]
+    public async Task Guests_are_split_by_walk_in_and_booking_and_turnover_is_per_table_per_day()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: Yerevan, tableCount: 4);
+
+        // Tuesday and Wednesday: three walk-ins of two, and one booked party of five.
+        await SeatAsync(db, branch, Local(Tuesday, 12, 0), minutes: 60, partySize: 2);
+        await SeatAsync(db, branch, Local(Tuesday, 14, 0), minutes: 60, partySize: 2);
+        await SeatAsync(db, branch, Local(Tuesday.AddDays(1), 12, 0), minutes: 60, tableIndex: 1, partySize: 2);
+
+        var booking = await ConsoleTestData.AddBookingAsync(
+            db, branch, Tuesday.AddDays(1), ReservationStatus.Seated, partySize: 5, tableIndex: 2);
+        var booked = TableSession.SeatReservation(
+            branch.BranchId, branch.TableIds[2], booking.Id, 5, Local(Tuesday.AddDays(1), 19, 0), branch.WaiterId);
+        booked.Close(Local(Tuesday.AddDays(1), 21, 0));
+        db.TableSessions.Add(booked);
+        await db.SaveChangesAsync();
+
+        // The day before: one walk-in of three.
+        await SeatAsync(db, branch, Local(Tuesday.AddDays(-1), 13, 0), minutes: 60, partySize: 3);
+
+        var reports = SqlServerFixture.CreateReportQuery(db, TestActor.Manager(branch.ManagerId));
+
+        var report = await reports.GetOccupancyAsync(new ReportRequest(branch.BranchId, Tuesday, Tuesday.AddDays(1)));
+
+        Assert.Equal(new Compared(6m, 3m), report.WalkInGuests);
+        Assert.Equal(new Compared(5m, 0m), report.ReservationGuests);
+        Assert.Equal(4, report.ActiveTables);
+
+        // Four sittings over four tables and two days is half a turn per table per day; the two days before had one.
+        Assert.Equal(0.5m, report.TurnsPerTable.Value);
+        Assert.Equal(0.13m, report.TurnsPerTable.Previous);
+    }
+
+    /// <summary>
+    /// How far ahead people book, in the buckets the console draws: under 2 hours, 6 hours, a day, three days, a
+    /// week, and a week or more - each "under" strict, so a booking made exactly two hours ahead is not under two.
+    /// </summary>
+    [SkippableFact]
+    public async Task Lead_time_is_bucketed_as_the_console_draws_it()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(new DateTime(2026, 8, 20, 12, 0, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: Yerevan, tableCount: 3);
+
+        TimeSpan[] leads =
+        [
+            TimeSpan.FromMinutes(59),
+            TimeSpan.FromHours(2),
+            TimeSpan.FromHours(5) + TimeSpan.FromMinutes(59),
+            TimeSpan.FromHours(23),
+            TimeSpan.FromDays(2),
+            TimeSpan.FromDays(6),
+            TimeSpan.FromDays(10),
+        ];
+
+        for (var i = 0; i < leads.Length; i++)
+        {
+            var time = new TimeOnly(11 + i, 0);
+            clock.UtcNow = Local(Tuesday, time.Hour, 0) - leads[i];
+
+            await ConsoleTestData.AddBookingAsync(
+                db, branch, Tuesday, ReservationStatus.Confirmed, tableIndex: i % 3, localTime: time);
+        }
+
+        var reports = SqlServerFixture.CreateReportQuery(db, TestActor.Manager(branch.ManagerId));
+
+        var lead = (await reports.GetReservationsAsync(new ReportRequest(branch.BranchId, Tuesday, Tuesday))).LeadTime;
+
+        Assert.Equal(
+            [(2, 1), (6, 2), (24, 1), (72, 1), (168, 1), (int.MaxValue, 1)],
+            lead.Select(b => (b.UpToHours, b.Bookings)));
     }
 
     // ------------------------------------------------------------ helpers

@@ -75,6 +75,8 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<StaffMember> StaffMembers => Set<StaffMember>();
 
+    public DbSet<StaffShift> StaffShifts => Set<StaffShift>();
+
     public DbSet<TableStateChange> TableStateChanges => Set<TableStateChange>();
 
     public DbSet<PlatformAuditLog> PlatformAuditLogs => Set<PlatformAuditLog>();

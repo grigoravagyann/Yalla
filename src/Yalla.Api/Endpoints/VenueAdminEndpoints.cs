@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
+using Yalla.Api.Filters;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Menus;
 using Yalla.Application.Overview;
@@ -43,6 +44,7 @@ public static class VenueAdminEndpoints
         MapBranchSettings(app);
         MapMenu(app);
         MapStaff(app);
+        MapShifts(app);
 
         return app;
     }
@@ -881,4 +883,134 @@ public static class VenueAdminEndpoints
     private static async Task<IResult> IssueSignInAsync(
         Guid venueId, Guid staffMemberId, IssueSignInRequest request, IStaffManagementService service, CancellationToken ct) =>
         Results.Ok(await service.IssueSignInAsync(venueId, staffMemberId, new IssueSignInCommand(request.Email), ct));
+
+    // ------------------------------------------------------------ shifts
+
+    private static void MapShifts(IEndpointRouteBuilder app)
+    {
+        // Addressed by branch, unlike the staff list: a shift is worked somewhere, and BranchScoped plus the
+        // service's guard confine a branch manager to their own.
+        var group = app.MapGroup("/api/branches/{branchId:guid}/shifts")
+            .WithTags(EndpointConventions.AdminTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .RequireAuthorization(YallaPolicies.BranchScoped);
+
+        group.MapGet("/", ListShiftsAsync)
+            .WithName("listBranchShifts")
+            .WithSummary("The branch's shifts over a window, and how many people are on shift today")
+            .WithDescription(
+                "The minimal shift model: one person, one branch, one `date` (the branch's local date it starts on) "
+                + "with `startsAt` and `endsAt`, or `dayOff` with no times. `endsNextDay` when the end is at or "
+                + "before the start - overnight, including an end at exactly 00:00.\n\n"
+                + "`serviceDate` is today at the branch, as on the Overview: its own date, or yesterday while last "
+                + "night's opening block still runs past midnight. `from` defaults to it and `to` to two weeks from "
+                + "`from`; at most 92 days (`to` `min` / `max` otherwise). `onShiftToday` counts the active people "
+                + "with a working shift here dated `serviceDate`. Only active people's shifts are listed, by date, "
+                + "then start (days off first).\n\n"
+                + "An owner or general manager at any branch of their venue, a branch manager at their own, a "
+                + "platform admin anywhere.")
+            .Produces<BranchShiftsView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "`to` before `from` (`min`), or more than 92 days (`max`).");
+
+        group.MapPost("/", CreateShiftAsync)
+            .WithName("createShift")
+            .WithSummary("Plan a shift, or a day off, for one person")
+            .WithDescription(
+                "`staffMemberId` must work at this branch (its own people, or an owner or general manager of the "
+                + "venue) and be active. The caller must be able to manage them - the staff edit's rank check: an "
+                + "owner anyone, a general manager branch managers, waiters and kitchen, a branch manager waiters and "
+                + "kitchen at their own branch - or be them.\n\n"
+                + "**Every refusal names its field**: `staffMemberId` `required`; `date` `required`, `min` (before "
+                + "the service date), `max` (more than 92 days after it) or `conflict` (a day off and anything else "
+                + "on one date for the person); `startsAt`/`endsAt` `required` for a working shift; `startsAt` "
+                + "`conflict` for times on a day off, or when it overlaps another of the person's shifts at any "
+                + "branch of the venue (touching is fine); `endsAt` `conflict` (no length) or `max` (longer than "
+                + "16 hours, `max` 960 minutes).\n\n"
+                + "Writes for one person queue on their staff row, so two overlapping shifts saved at once cannot "
+                + "both land.")
+            .Produces<StaffShiftView>(StatusCodes.Status201Created)
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The caller may not manage this person.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or the person does not work here.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conflicting-state`: the person is deactivated.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "A field breaks a rule; `context.fields` names each.");
+
+        group.MapPut("/{shiftId:guid}", UpdateShiftAsync)
+            .WithName("updateShift")
+            .WithSummary("Move or retime a shift")
+            .WithDescription(
+                "The whole shift again - `date`, and `startsAt` and `endsAt` or `dayOff` - with the same rules and "
+                + "refusals as planning one; the person does not change. Last write wins.")
+            .Produces<StaffShiftView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The caller may not manage this person.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such shift at this branch.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conflicting-state`: the person is deactivated.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "A field breaks a rule; `context.fields` names each.");
+
+        group.MapDelete("/{shiftId:guid}", DeleteShiftAsync)
+            .WithName("deleteShift")
+            .WithSummary("Remove a shift")
+            .WithDescription("Gone, not hidden. To undo, plan it again. A second delete of the same shift is 404.")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "The caller may not manage this person.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such shift at this branch.");
+    }
+
+    private static async Task<IResult> ListShiftsAsync(
+        Guid branchId, IStaffShiftService service, CancellationToken ct, DateOnly? from = null, DateOnly? to = null) =>
+        Results.Ok(await service.ListAsync(branchId, from, to, ct));
+
+    /// <summary>Body of <c>POST /api/branches/{branchId}/shifts</c>.</summary>
+    /// <param name="StaffMemberId">Whose shift. <b>Required.</b></param>
+    /// <param name="Date">The branch's local date it starts on. <b>Required.</b></param>
+    /// <param name="StartsAt">Wall clock, <c>HH:mm</c>. Required unless <paramref name="DayOff"/>.</param>
+    /// <param name="EndsAt">Wall clock; at or before <paramref name="StartsAt"/> means after midnight. Required unless <paramref name="DayOff"/>.</param>
+    /// <param name="DayOff">A day off on the date: send no times.</param>
+    public sealed record CreateShiftRequest(
+        // Nullable for the reason a booking's are: a missing Guid binds the all-zeros id and a missing DateOnly
+        // year one, so only null lets [Required] tell absent from meant.
+        [Required][NotEmpty] Guid? StaffMemberId,
+        [Required] DateOnly? Date,
+        TimeOnly? StartsAt = null,
+        TimeOnly? EndsAt = null,
+        bool DayOff = false);
+
+    private static async Task<IResult> CreateShiftAsync(
+        Guid branchId, CreateShiftRequest request, IStaffShiftService service, CancellationToken ct)
+    {
+        var created = await service.CreateAsync(
+            branchId,
+            new CreateShiftCommand(
+                request.StaffMemberId ?? Guid.Empty, request.Date, request.StartsAt, request.EndsAt, request.DayOff),
+            ct);
+
+        return Results.Created($"/api/branches/{branchId}/shifts/{created.Id}", created);
+    }
+
+    /// <summary>Body of <c>PUT /api/branches/{branchId}/shifts/{shiftId}</c>: the whole shift again.</summary>
+    /// <param name="Date">The branch's local date it starts on. <b>Required.</b></param>
+    /// <param name="StartsAt">Wall clock. Required unless <paramref name="DayOff"/>.</param>
+    /// <param name="EndsAt">Wall clock. Required unless <paramref name="DayOff"/>.</param>
+    /// <param name="DayOff">A day off on the date: send no times.</param>
+    public sealed record UpdateShiftRequest(
+        [Required] DateOnly? Date,
+        TimeOnly? StartsAt = null,
+        TimeOnly? EndsAt = null,
+        bool DayOff = false);
+
+    private static async Task<IResult> UpdateShiftAsync(
+        Guid branchId, Guid shiftId, UpdateShiftRequest request, IStaffShiftService service, CancellationToken ct) =>
+        Results.Ok(await service.UpdateAsync(
+            branchId, shiftId, new UpdateShiftCommand(request.Date, request.StartsAt, request.EndsAt, request.DayOff), ct));
+
+    private static async Task<IResult> DeleteShiftAsync(
+        Guid branchId, Guid shiftId, IStaffShiftService service, CancellationToken ct)
+    {
+        await service.DeleteAsync(branchId, shiftId, ct);
+
+        return Results.NoContent();
+    }
 }

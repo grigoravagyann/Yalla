@@ -137,6 +137,17 @@ public sealed record TurnTimeDistribution(
 /// <param name="SeatsAvailable">Seats the room has, times the days in the period.</param>
 /// <param name="WalkIns">Sittings with no booking behind them.</param>
 /// <param name="FromReservations">Sittings seated against a booking.</param>
+/// <param name="WalkInGuests">
+/// People at the sittings with no booking behind them - the walk-in half of the console's people split, which is
+/// about guests, not tables: a walk-in couple and a booked party of eight are one sitting each.
+/// </param>
+/// <param name="ReservationGuests">People at the sittings seated against a booking.</param>
+/// <param name="TurnsPerTable">
+/// Sittings per active table per day, to two decimals - the "table turnover" card. The previous period is divided
+/// by today's table count too: the tables a branch had last month are not kept, and the card compares use, not
+/// furniture.
+/// </param>
+/// <param name="ActiveTables">The active tables now, which <paramref name="TurnsPerTable"/> divides by.</param>
 public sealed record OccupancyReport(
     ReportScope Scope,
     Compared Sessions,
@@ -146,7 +157,11 @@ public sealed record OccupancyReport(
     Compared SeatsFilled,
     long SeatsAvailable,
     Compared WalkIns,
-    Compared FromReservations);
+    Compared FromReservations,
+    Compared WalkInGuests,
+    Compared ReservationGuests,
+    Compared TurnsPerTable,
+    int ActiveTables);
 
 // ------------------------------------------------------------------ reservations
 
@@ -214,12 +229,17 @@ public sealed record AdjustmentLine(
 /// <param name="ServiceChargeAmd">Of which service charge.</param>
 /// <param name="AverageTabAmd">Per tab.</param>
 /// <param name="AveragePerHeadAmd">Per person on a tab. A different question from per tab, and the one a menu is priced against.</param>
-/// <param name="ByDay">Day by day, in local dates.</param>
+/// <param name="ByDay">Day by day, in local dates: every date of the range, zero days included.</param>
 /// <param name="ByHour">Hour by hour, in local hours.</param>
 /// <param name="CashAmd">Taken in cash.</param>
 /// <param name="InAppAmd">Taken in the app. Zero until there is a wallet rail; the column is here so the day it exists nothing has to change.</param>
 /// <param name="Adjustments">Comps and discounts, with who authorised them.</param>
 /// <param name="AdjustmentsTotalAmd">What they came to altogether.</param>
+/// <param name="Tabs">Tabs closed - the "closed bills" card.</param>
+/// <param name="PreviousByDay">
+/// The previous equivalent period, day by day - the chart's dashed line. Like <paramref name="ByDay"/> it has one entry
+/// for every local date of its period, zero days included, so the two have the same length and pair by index.
+/// </param>
 public sealed record RevenueReport(
     ReportScope Scope,
     Compared TotalAmd,
@@ -231,7 +251,9 @@ public sealed record RevenueReport(
     Compared CashAmd,
     Compared InAppAmd,
     IReadOnlyList<AdjustmentLine> Adjustments,
-    Compared AdjustmentsTotalAmd);
+    Compared AdjustmentsTotalAmd,
+    Compared Tabs,
+    IReadOnlyList<DailyRevenue> PreviousByDay);
 
 // ------------------------------------------------------------------ menu
 

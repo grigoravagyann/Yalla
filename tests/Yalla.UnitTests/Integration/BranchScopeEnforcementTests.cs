@@ -153,7 +153,7 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
 
     /// <summary>
     /// The authorization matrix for the two kinds of manager, over the surfaces the console has:
-    /// floor plan, menu, staff and reports. A branch manager is refused (403) on the sibling branch
+    /// floor plan, menu, staff, shifts and reports. A branch manager is refused (403) on the sibling branch
     /// and admitted at home; a general manager is admitted on both.
     /// </summary>
     [SkippableFact]
@@ -185,6 +185,11 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
 
         var pins = new Queue<string>(["2468", "1357", "8642", "7531", "3690", "9630", "1470", "2580", "3691", "4826"]);
 
+        // A day of its own for every shift planned below, so the admitted calls never clash with each other.
+        var shiftDay = 1;
+        string NextShiftDate() =>
+            DateOnly.FromDateTime(factory.Clock.UtcNow.AddHours(4)).AddDays(++shiftDay).ToString("yyyy-MM-dd");
+
         async Task<List<(string Route, HttpStatusCode Status)>> SurfacesAsync(HttpClient client, Guid branchId, Guid waiterId)
         {
             var window = "from=2026-10-01&to=2026-10-02";
@@ -195,6 +200,13 @@ public sealed class BranchScopeEnforcementTests(SqlServerFixture fixture) : IDis
                 ("GET floor-plan", (await client.GetAsync($"/api/branches/{branchId}/floor-plan")).StatusCode),
                 ("GET menu/manage", (await client.GetAsync($"/api/branches/{branchId}/menu/manage")).StatusCode),
                 ("GET reports/revenue", (await client.GetAsync($"/api/branches/{branchId}/reports/revenue?{window}")).StatusCode),
+                ("POST shifts (a waiter there)", (await client.PostAsJsonAsync($"/api/branches/{branchId}/shifts", new
+                {
+                    staffMemberId = waiterId,
+                    date = NextShiftDate(),
+                    startsAt = "10:00",
+                    endsAt = "18:00",
+                })).StatusCode),
                 ("PATCH staff (a waiter there)", (await client.PatchAsJsonAsync($"{staff}/{waiterId}", new { fullName = "Renamed" })).StatusCode),
                 ("POST staff pin (a waiter there)", (await client.PostAsJsonAsync($"{staff}/{waiterId}/pin", new { pin = pins.Dequeue() })).StatusCode),
                 ("POST staff (a waiter for there)", (await client.PostAsJsonAsync(staff, new

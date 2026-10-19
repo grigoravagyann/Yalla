@@ -203,6 +203,7 @@ public static class DependencyInjection
         services.AddScoped<IServiceRequestService, ServiceRequestService>();
         services.AddScoped<ITabPaymentService, TabPaymentService>();
         services.AddScoped<IStaffManagementService, StaffManagementService>();
+        services.AddScoped<IStaffShiftService, StaffShiftService>();
 
         // The share-link template. Optional in configuration; the default points at the local
         // diner app, which is what a developer with no settings gets.

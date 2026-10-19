@@ -38,11 +38,18 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
     /// <summary>How many items a "top items" list returns. A menu screen, not a data dump.</summary>
     private const int TopItems = 20;
 
-    /// <summary>Turn-time buckets, in minutes. The last is open-ended.</summary>
-    private static readonly int[] TurnTimeBuckets = [30, 45, 60, 75, 90, 105, 120, 150, 180, 240, int.MaxValue];
+    /// <summary>
+    /// Turn-time buckets, in minutes, each "up to and including". The last is open-ended. Half-hour bars from an
+    /// hour to four, which is what the console draws: finer than that is noise at one branch's volume, and the
+    /// policy marker needs a bar edge near every turn time a venue actually sets.
+    /// </summary>
+    private static readonly int[] TurnTimeBuckets = [60, 90, 120, 150, 180, 210, 240, int.MaxValue];
 
-    /// <summary>Lead-time buckets, in hours before the sitting. The last is open-ended.</summary>
-    private static readonly int[] LeadTimeBuckets = [1, 3, 6, 12, 24, 48, 24 * 7, 24 * 30, int.MaxValue];
+    /// <summary>
+    /// Lead-time buckets, in hours before the sitting, each "strictly less than". The last is open-ended. The
+    /// console's: under two hours, six, a day, three days, a week, and a week or more.
+    /// </summary>
+    private static readonly int[] LeadTimeBuckets = [2, 6, 24, 24 * 3, 24 * 7, int.MaxValue];
 
     // ------------------------------------------------------------ occupancy
 
@@ -61,10 +68,15 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
             .Select(b => b.ReservationPolicy.TurnTimeMinutes)
             .FirstAsync(cancellationToken);
 
-        var seatCount = await db.DiningTables
+        var tables = await db.DiningTables
             .AsNoTracking()
             .Where(t => scope.BranchIds.Contains(t.BranchId) && t.IsActive)
-            .SumAsync(t => (long?)t.Seats, cancellationToken) ?? 0L;
+            .GroupBy(t => 1)
+            .Select(g => new { Count = g.Count(), Seats = g.Sum(t => (long)t.Seats) })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var tableCount = tables?.Count ?? 0;
+        var seatCount = tables?.Seats ?? 0L;
 
         return new OccupancyReport(
             scope.AsScope(),
@@ -79,7 +91,20 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
                 previous.Count(s => s.Source == TableSessionSource.WalkIn)),
             Compare(
                 current.Count(s => s.Source == TableSessionSource.Reservation),
-                previous.Count(s => s.Source == TableSessionSource.Reservation)));
+                previous.Count(s => s.Source == TableSessionSource.Reservation)),
+            Compare(Guests(current, TableSessionSource.WalkIn), Guests(previous, TableSessionSource.WalkIn)),
+            Compare(Guests(current, TableSessionSource.Reservation), Guests(previous, TableSessionSource.Reservation)),
+            Compare(Turns(current.Count), Turns(previous.Count)),
+            tableCount);
+
+        static long Guests(List<SessionRow> rows, TableSessionSource source) =>
+            rows.Where(s => s.Source == source).Sum(s => (long)s.PartySize);
+
+        // Per table per day, against today's tables for both periods: the card compares how hard the room worked,
+        // and the tables it had last month are not kept.
+        decimal Turns(int sittings) => tableCount == 0
+            ? 0m
+            : Math.Round((decimal)sittings / tableCount / scope.Range.Days, 2, MidpointRounding.AwayFromZero);
     }
 
     private sealed record SessionRow(
@@ -271,18 +296,24 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// How far ahead each booking was made, bucketed "strictly less than" each top: a booking made exactly two hours
+    /// ahead is not "under two hours". Measured in minutes so a booking at 1 h 59 is under two and one at 2 h 00 is
+    /// not, which whole hours could not tell apart.
+    /// </summary>
     private static IReadOnlyList<LeadTimeBucket> LeadTime(IReadOnlyList<ReservationRow> rows)
     {
-        var hours = rows
-            .Select(r => (int)Math.Max(0d, (r.StartUtc - r.CreatedAtUtc).TotalHours))
-            .ToList();
+        var counts = new int[LeadTimeBuckets.Length];
 
-        return
-        [
-            .. LeadTimeBuckets.Select((top, index) => new LeadTimeBucket(
-                top,
-                hours.Count(h => h <= top && (index == 0 || h > LeadTimeBuckets[index - 1])))),
-        ];
+        foreach (var row in rows)
+        {
+            var minutes = Math.Max(0d, (row.StartUtc - row.CreatedAtUtc).TotalMinutes);
+            var index = Array.FindIndex(LeadTimeBuckets, top => top == int.MaxValue || minutes < top * 60d);
+
+            counts[index]++;
+        }
+
+        return [.. LeadTimeBuckets.Select((top, index) => new LeadTimeBucket(top, counts[index]))];
     }
 
     // ------------------------------------------------------------ revenue
@@ -307,12 +338,14 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
             // Per head, not per tab. A table of six spending 30,000 and a couple spending 10,000 are
             // the same average tab and completely different rooms, and a menu is priced per head.
             Compare(PerHead(current), PerHead(previous)),
-            ByDay(current, scope.TimeZoneId),
+            ByDay(current, scope.Range, scope.TimeZoneId),
             ByHourRevenue(current, scope.TimeZoneId),
             Compare(current.Sum(t => t.CashAmd), previous.Sum(t => t.CashAmd)),
             Compare(current.Sum(t => t.InAppAmd), previous.Sum(t => t.InAppAmd)),
             adjustments,
-            Compare(adjustments.Sum(a => a.TotalAmd), previousAdjustments.Sum(a => a.TotalAmd)));
+            Compare(adjustments.Sum(a => a.TotalAmd), previousAdjustments.Sum(a => a.TotalAmd)),
+            Compare(current.Count, previous.Count),
+            ByDay(previous, scope.Range.Previous(), scope.TimeZoneId));
 
         static decimal Average(IEnumerable<long> values)
         {
@@ -373,13 +406,25 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
             .ToListAsync(cancellationToken);
     }
 
-    private static IReadOnlyList<DailyRevenue> ByDay(IReadOnlyList<TabRow> tabs, string timeZoneId) =>
-    [
-        .. tabs
+    /// <summary>
+    /// Every local date of <paramref name="range"/>, zero days included - a chart's line and a spreadsheet's rows
+    /// both need the day nothing was taken, and the previous period's series pairs with this one by index.
+    /// </summary>
+    private static IReadOnlyList<DailyRevenue> ByDay(IReadOnlyList<TabRow> tabs, ReportRange range, string timeZoneId)
+    {
+        var byDate = tabs
             .GroupBy(t => DateOnly.FromDateTime(BranchTime.ToLocal(t.ClosedAtUtc, timeZoneId)))
-            .OrderBy(g => g.Key)
-            .Select(g => new DailyRevenue(g.Key, g.Sum(t => t.TotalAmd), g.Count())),
-    ];
+            .ToDictionary(g => g.Key, g => (Total: g.Sum(t => t.TotalAmd), Count: g.Count()));
+
+        return
+        [
+            .. Enumerable.Range(0, range.Days)
+                .Select(offset => range.FromLocalDate.AddDays(offset))
+                .Select(date => byDate.TryGetValue(date, out var day)
+                    ? new DailyRevenue(date, day.Total, day.Count)
+                    : new DailyRevenue(date, 0L, 0)),
+        ];
+    }
 
     private static IReadOnlyList<HourlyRevenue> ByHourRevenue(IReadOnlyList<TabRow> tabs, string timeZoneId)
     {
