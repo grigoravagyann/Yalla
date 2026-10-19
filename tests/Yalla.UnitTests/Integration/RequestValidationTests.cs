@@ -306,14 +306,20 @@ public class RequestValidationTests(SqlServerFixture fixture)
                 .GetProperty("context").GetProperty("field").GetString());
 
         // And nothing was written. Before, this returned 200 and stored CancelledByVenue.
+        DateTime startUtc;
+
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             var row = await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == reservationId);
 
             Assert.Equal(ReservationStatus.Confirmed, row.Status);
+            startUtc = row.StartUtc;
         }
 
-        // Supplied properly, the same request records the outcome the waiter actually chose.
+        // Supplied properly, the same request records the outcome the waiter actually chose - once the
+        // booking has started, since a no-show before it is refused.
+        factory.Clock.UtcNow = startUtc;
+
         var noShow = await waiter.PostAsJsonAsync(
             $"/api/reservations/{reservationId}/release",
             new { outcome = ReleaseOutcome.NoShow, clientCommandId = Guid.CreateVersion7() });

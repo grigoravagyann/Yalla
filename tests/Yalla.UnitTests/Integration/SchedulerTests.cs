@@ -799,9 +799,19 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
                     branch.BranchId, tableId, Guid.CreateVersion7(), "held for a late booking"));
         }
 
-        await using var releaseDb = fixture.CreateContext(clock);
+        // Recorded at the booking's start - a no-show before it is refused - on a clock of its own, so the
+        // rest of the test stays the day before, where its next bookings are not short notice.
+        DateTime startUtc;
 
-        return await fixture.CreateReservationService(releaseDb, clock, TestActor.Waiter(branch.WaiterId))
+        await using (var startDb = fixture.CreateContext(clock))
+        {
+            startUtc = await startDb.Reservations.Where(r => r.Id == booking).Select(r => r.StartUtc).SingleAsync();
+        }
+
+        var atStart = new TestClock(startUtc);
+        await using var releaseDb = fixture.CreateContext(atStart);
+
+        return await fixture.CreateReservationService(releaseDb, atStart, TestActor.Waiter(branch.WaiterId))
             .ReleaseAsync(new ReleaseReservationCommand(booking, ReleaseOutcome.NoShow, Guid.CreateVersion7()));
     }
 

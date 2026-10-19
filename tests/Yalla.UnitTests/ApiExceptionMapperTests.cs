@@ -317,6 +317,28 @@ public class ApiExceptionMapperTests
     }
 
     /// <summary>
+    /// A no-show before the booking's start is its own 409 - not the generic conflicting-state its base
+    /// type would map to - with when the booking starts, so the tablet can say so.
+    /// </summary>
+    [Fact]
+    public void A_no_show_before_the_start_becomes_a_409_reservation_not_started()
+    {
+        var reservationId = Guid.CreateVersion7();
+        var startUtc = new DateTime(2026, 10, 21, 15, 0, 0, DateTimeKind.Utc);
+
+        var mapped = ApiExceptionMapper.Map(new ReservationNotStartedException(reservationId, "K7Q2LM", startUtc));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("reservation-not-started", mapped.Code);
+        Assert.Equal(ErrorCodes.ReservationNotStarted, mapped.Code);
+        Assert.Equal(reservationId, mapped.Context!["reservationId"]);
+        Assert.Equal(startUtc, mapped.Context["startUtc"]);
+        Assert.Contains("K7Q2LM", mapped.Message, StringComparison.Ordinal);
+        Assert.False(mapped.LogAsError);
+        Assert.Equal("Booking has not started yet", ErrorCodes.TitleFor(mapped.Code));
+    }
+
+    /// <summary>
     /// A yes or no that comes after the short-notice window is its own 409 - not the generic
     /// conflicting-state its base type would map to - so the tablet drops the request instead of the
     /// waiter tapping again.

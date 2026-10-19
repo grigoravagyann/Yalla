@@ -19,6 +19,12 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
     private static readonly DateOnly BookingDate = new(2026, 9, 13);
 
     /// <summary>
+    /// Half past eight in Yerevan: every evening booking these tests make has started, so a no-show may be
+    /// recorded against it. Before its start one is refused - nobody can have failed to come yet.
+    /// </summary>
+    private static readonly DateTime AfterTheLastStart = new(2026, 9, 13, 16, 30, 0, DateTimeKind.Utc);
+
+    /// <summary>
     /// Three days out: past the short-notice window, so a booking there is decided by the branch's
     /// rules and the diner's record alone - which is what the no-show tests below are about.
     /// </summary>
@@ -201,9 +207,13 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
             var booking = await BookAsync(branch, branch.TableIds[i], new TimeOnly(18 + i, 0), clock, diner);
             await HoldForAsync(branch, branch.TableIds[i], clock);
 
-            await using var releaseDb = fixture.CreateContext(clock);
+            // Recorded at the booking's start - a no-show before it is refused - on a clock of its own, so
+            // the next booking is still made at four in the afternoon.
+            var atStart = new TestClock(await StartOfAsync(booking, clock));
+
+            await using var releaseDb = fixture.CreateContext(atStart);
             var released = await fixture.CreateReservationService(
-                    releaseDb, clock, TestActor.Waiter(branch.WaiterId))
+                    releaseDb, atStart, TestActor.Waiter(branch.WaiterId))
                 .ReleaseAsync(new ReleaseReservationCommand(
                     booking, ReleaseOutcome.NoShow, Guid.CreateVersion7()));
 
@@ -295,6 +305,9 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
             await fixture.CreateService(seatDb, clock, TestActor.Waiter(branch.WaiterId))
                 .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, tableId, 2, Guid.CreateVersion7()));
         }
+
+        // 20:00 has come and the party has not.
+        clock.UtcNow = AfterTheLastStart;
 
         await using var releaseDb = fixture.CreateContext(clock);
         var released = await fixture.CreateReservationService(
@@ -502,6 +515,13 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
     }
 
     /// <summary>Holds the table, which records which booking the hold is for.</summary>
+    private async Task<DateTime> StartOfAsync(Guid reservationId, TestClock clock)
+    {
+        await using var db = fixture.CreateContext(clock);
+
+        return await db.Reservations.Where(r => r.Id == reservationId).Select(r => r.StartUtc).SingleAsync();
+    }
+
     private async Task HoldForAsync(TestBranch branch, Guid tableId, TestClock clock)
     {
         await using var db = fixture.CreateContext(clock);

@@ -227,14 +227,30 @@ public static class AuthEndpoints
 
         authenticated.MapGet("/staff/roster", GetStaffRosterAsync)
             .WithName("getStaffRoster")
-            .WithSummary("Who may sign in with a PIN on this device")
+            .WithSummary("Who may sign in with a PIN on this device, and who is on shift")
             .WithDescription(
                 "For the PIN screen, so a first sign-in is a name to tap rather than a staff "
                 + "member id to type. Exactly the people `POST /api/auth/staff/pin` would accept "
                 + "here: active, of this device's venue, and either at this device's branch or at "
                 + "no particular branch. Sorted by name.\n\n"
-                + "Three fields per person and nothing else - no phone, email or PIN state - "
-                + "because whoever holds the tablet can read it.\n\n"
+                + "Each person also says whether they are on shift, so the screen can list those "
+                + "people first - an order left to the client, as is re-reading it on a screen left "
+                + "open. The shift is the one at this device's branch: the one running now "
+                + "(`onShiftNow`; last night's still running past midnight included), else the next "
+                + "to start within 12 hours, across midnight too. Its `startsAt` / `endsAt` (branch "
+                + "wall clock), `endsNextDay` and `startsAtUtc` / `endsAtUtc` read as on "
+                + "`GET /api/branches/{branchId}/shifts`, and are absent when there is none to "
+                + "report: every shift is over or more than 12 hours off, at another branch, or a "
+                + "day off.\n\n"
+                + "`onShiftNow` is `startsAtUtc <= now < endsAtUtc` - decided on the instants, not the "
+                + "wall clock, so an hour a clock change repeats does not put an ended shift back on. "
+                + "Both instants are always present with a shift, so a screen can re-check it against "
+                + "its own clock and agree: a start in an hour the clocks skip is read on the clock "
+                + "from before the change (02:30 that night is 03:30 summer time), a time in a "
+                + "repeated hour as its first pass. Shifts never narrow the list: everybody the PIN "
+                + "exchange accepts is on it.\n\n"
+                + "Nothing else per person - no phone, email or PIN state - because whoever holds "
+                + "the tablet can read it.\n\n"
                 + "Authenticated by the device token, and refused exactly as "
                 + "`GET /api/auth/staff/device` refuses: no token, or a revoked device, is a 401.")
             .Produces<IReadOnlyList<StaffRosterEntry>>()

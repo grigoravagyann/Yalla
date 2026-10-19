@@ -44,11 +44,12 @@ public class StaffRosterTests(SqlServerFixture fixture)
             [(int)StaffRole.Waiter, (int)StaffRole.Manager, (int)StaffRole.Waiter],
             roster.Select(p => p.GetProperty("role").GetInt32()).ToArray());
 
-        // Exactly three fields. No phone, email or PIN state leaves on a counter tablet.
+        // A name, a role, an id and whether they are on shift - nobody here has a shift, so no times
+        // (StaffRosterShiftTests has them). No phone, email or PIN state leaves on a counter tablet.
         foreach (var person in roster)
         {
             Assert.Equal(
-                ["fullName", "role", "staffMemberId"],
+                ["endsNextDay", "fullName", "onShiftNow", "role", "staffMemberId"],
                 person.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
         }
     }

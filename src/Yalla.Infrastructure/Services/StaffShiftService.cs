@@ -377,7 +377,11 @@ internal sealed class StaffShiftService(
         _ => StaffRole.Manager,
     };
 
-    private static StaffShiftView ToView(StaffShift shift, BranchZone zone) => new(
+    /// <summary>
+    /// One shift as every read returns it, its instants read in its branch's <paramref name="zone"/>. Shared with the
+    /// tablet's PIN roster, which reports a person's shift in these same fields.
+    /// </summary>
+    internal static StaffShiftView ToView(StaffShift shift, BranchZone zone) => new(
         shift.Id,
         shift.StaffMemberId,
         shift.BranchId,

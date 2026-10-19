@@ -143,20 +143,53 @@ public sealed record EnrolledDeviceView(
     DateTime? LastSeenAtUtc);
 
 /// <summary>
-/// One person who may tap a PIN on this tablet, as its PIN screen lists them.
+/// One person who may tap a PIN on this tablet, as its PIN screen lists them - and whether they are on
+/// shift, so the screen can put those people first.
 /// </summary>
 /// <remarks>
-/// Deliberately three fields. The list is readable by anybody standing at a counter holding the
-/// tablet, so no phone, email or PIN state is on it - a name to tap and the id the PIN exchange
-/// needs.
+/// <para>
+/// The list is readable by anybody standing at a counter holding the tablet, so no phone, email or PIN
+/// state is on it - a name to tap, the id the PIN exchange needs, and the hours of the person's
+/// current or next shift here, nothing more.
+/// </para>
+/// <para>
+/// <b>The shift is the one at this tablet's branch:</b> the one running now - last night's still
+/// running past midnight included - else the next to start within twelve hours, across midnight
+/// too. None when every shift is over or further off, at another branch, or a day off. The fields
+/// are <c>StaffShiftView</c>'s, so the console and the tablet read a shift the same way.
+/// </para>
+/// <para>
+/// <b>Running is decided on the instants, and the instants reported are the ones decided on.</b>
+/// Across a clock change the wall clock repeats or skips an hour; the instants do not. Both are
+/// always present with a shift, so a screen left open can re-check <paramref name="OnShiftNow"/>
+/// against its own clock and agree.
+/// </para>
+/// <para>
+/// <b>It never narrows the list.</b> Everybody who may sign in here is on it, on shift or not.
+/// </para>
 /// </remarks>
 /// <param name="StaffMemberId">What <c>POST /api/auth/staff/pin</c> takes.</param>
 /// <param name="FullName">The name to tap.</param>
 /// <param name="Role">Their role, so the screen can group or badge people.</param>
+/// <param name="OnShiftNow">A shift at this branch runs now: <paramref name="StartsAtUtc"/> at or before now, <paramref name="EndsAtUtc"/> after it.</param>
+/// <param name="StartsAt">The shift's start, branch wall clock; absent with no shift to report.</param>
+/// <param name="EndsAt">Its end, branch wall clock, on the next date when <paramref name="EndsNextDay"/>; absent with no shift.</param>
+/// <param name="EndsNextDay">The shift ends after midnight - including at exactly 00:00. False with no shift.</param>
+/// <param name="StartsAtUtc">
+/// The start as an instant, so a screen left open can tell when it begins; absent with no shift. A start in an hour
+/// the clocks skip is read on the clock from before the change: 02:30 that night is 03:30 summer time.
+/// </param>
+/// <param name="EndsAtUtc">The end as an instant, so a screen left open can tell when it is over; absent with no shift.</param>
 public sealed record StaffRosterEntry(
     Guid StaffMemberId,
     string FullName,
-    Domain.Enums.StaffRole Role);
+    Domain.Enums.StaffRole Role,
+    bool OnShiftNow,
+    TimeOnly? StartsAt,
+    TimeOnly? EndsAt,
+    bool EndsNextDay,
+    DateTime? StartsAtUtc,
+    DateTime? EndsAtUtc);
 
 /// <summary>One enrolled tablet, as the admin panel lists it.</summary>
 /// <param name="Id">The device.</param>

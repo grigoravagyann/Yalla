@@ -518,11 +518,20 @@ public static class ReservationEndpoints
                 + "party is late or absent.\n\n"
                 + "Counts toward the diner's rolling no-show threshold. If they telephoned to say "
                 + "they could not come, use `release` with `outcome: 2` instead - a diner who let the "
-                + "venue know must not be punished for it.")
+                + "venue know must not be punished for it.\n\n"
+                + "**Only from the booking's start.** Before `startUtc` nobody can have failed to come, "
+                + "so the answer is `409 reservation-not-started` (`context.reservationId`, "
+                + "`context.startUtc`) and nothing changes - the hold stays, the booking stays "
+                + "confirmed. From the start itself there is no further wait: the branch's grace "
+                + "period times the late nudge, and whether a party past their time is late or absent "
+                + "is the waiter's call. To let a booking go earlier, use `release` with `outcome: 2`.")
             .Produces<ReservationReleaseResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "The booking cannot be released.");
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`reservation-not-started`: the booking has not started yet. Otherwise the booking cannot "
+                + "be released - it was already seated, completed or cancelled by the diner.");
 
         floor.MapPost("/{id:guid}/release", ReleaseAsync)
             .WithName("releaseReservation")
@@ -540,14 +549,19 @@ public static class ReservationEndpoints
                 + "The table is freed when it is **held for this booking**, through the state "
                 + "machine, so the audit row is written and the branch change sequence moves. A table "
                 + "somebody is **sitting at** is left alone - the booking is released either way, and "
-                + "a floor plan that shows an occupied table as free costs more than a stale hold.")
+                + "a floor plan that shows an occupied table as free costs more than a stale hold.\n\n"
+                + "**`outcome: 1` only from the booking's start.** Before `startUtc` a no-show is "
+                + "refused with `409 reservation-not-started` (`context.reservationId`, "
+                + "`context.startUtc`) and nothing changes. `outcome: 2` is allowed at any time, and so "
+                + "is the table's own `release-hold`.")
             .Produces<ReservationReleaseResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
-                "The booking is not in a state that can be released - it was already seated, "
-                + "completed or cancelled by the diner.");
+                "`reservation-not-started`: `outcome: 1` before the booking's start. Otherwise the booking "
+                + "is not in a state that can be released - it was already seated, completed or cancelled "
+                + "by the diner.");
 
         group.MapPost("/{id:guid}/reject", RejectAsync)
             .WithName("rejectReservation")

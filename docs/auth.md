@@ -441,14 +441,36 @@ refused exactly as `GET /api/auth/staff/device` refuses (401 with no token, 401 
 revoked tablet), returns the people who may tap a PIN on this tablet, sorted by name:
 
 ```json
-[{ "staffMemberId": "…", "fullName": "Anna Petrosyan", "role": 3 }]
+[{ "staffMemberId": "…", "fullName": "Anna Petrosyan", "role": 3,
+   "onShiftNow": true, "startsAt": "18:00:00", "endsAt": "02:00:00", "endsNextDay": true,
+   "startsAtUtc": "2026-10-19T14:00:00Z", "endsAtUtc": "2026-10-19T22:00:00Z" }]
 ```
 
 "May tap a PIN here" is one rule, `StaffAuthService.SignsInOn`, read by both the roster and the PIN
 exchange: **active, of the device's venue, and at the device's branch or at no particular branch.**
 A platform admin has no venue and so is on no tablet. Without this the first sign-in on a fresh
-tablet meant typing a staff member id by hand. The list carries those three fields and nothing
+tablet meant typing a staff member id by hand. The list carries an id, a name, a role and the
+person's current or next shift here, and nothing
 else - no phone, email or PIN state - because anybody holding the tablet can read it.
+
+**Who is on shift.** Each person carries their `StaffShift` at the device's branch, read in the
+branch's time zone: the one running now (`onShiftNow`, last night's overnight shift still running
+past midnight included), else the next to start **within 12 hours** - across midnight, so at 23:50
+tomorrow's 00:10 is reported; none when every shift is over or further off, at another branch, or a
+day off. The times read as on the console's shift endpoints. One query reads the branch's shifts
+dated yesterday to tomorrow for the whole roster; the read is three statements however many people
+and shifts there are (pinned by a command-count test). The PIN gate lists the people on shift first -
+ordering is the client's, the roster stays sorted by name - and **shifts never narrow who is listed
+or who may sign in**.
+
+**Across a clock change.** `onShiftNow` is `startsAtUtc <= now < endsAtUtc`, decided on the instants
+and not the wall clock: in the hour an autumn change repeats, a shift that ended at the first 02:30
+is not back on at the second 02:15, and one that started at the first 02:30 does not drop off. A
+time in the repeated hour is its first pass; a start in the hour a spring change skips is read on
+the clock from before the change (02:30 that night is 03:30 summer time). Both instants are always
+sent with a shift, and they are the ones decided on, so a tablet re-checking them against its own
+clock agrees. The console's `GET /api/branches/{branchId}/shifts` still leaves a skipped-hour instant
+out.
 
 **Per-person PIN.** Each `StaffMember` has a four-digit PIN, hashed, never logged. Tapping it
 exchanges the device token for a **staff session token** carrying `staffMemberId`, `role` and

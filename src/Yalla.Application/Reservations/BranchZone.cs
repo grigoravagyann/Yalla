@@ -96,6 +96,32 @@ public sealed class BranchZone
         return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Zone);
     }
 
+    /// <summary>
+    /// The instant a wall-clock time at this branch means, never refused: for a time the clocks skip,
+    /// the time read on the clock from before the change.
+    /// </summary>
+    /// <remarks>
+    /// For something that is happening rather than being booked - a shift already planned for 02:30
+    /// on the night the clocks go forward at 02:00 - there has to be an answer. It is the instant a
+    /// watch not yet moved reads 02:30: 03:30 summer time, the offset from before the gap applied to
+    /// the time as written. A repeated hour resolves as <see cref="ToUtc"/> does, to the earlier
+    /// instant.
+    /// </remarks>
+    public DateTime ToUtcLenient(DateOnly localDate, TimeOnly localTime)
+    {
+        var local = localDate.ToDateTime(localTime);
+
+        if (!Zone.IsInvalidTime(local))
+        {
+            return ToUtc(localDate, localTime);
+        }
+
+        // Three hours back is before any daylight-saving gap, so this is the offset in force before it.
+        var offsetBefore = Zone.GetUtcOffset(DateTime.SpecifyKind(local.AddHours(-3), DateTimeKind.Unspecified));
+
+        return DateTime.SpecifyKind(local - offsetBefore, DateTimeKind.Utc);
+    }
+
     /// <summary>Whether this local date and time exists at this branch at all.</summary>
     /// <remarks>
     /// The non-throwing form, for the availability read model: a table that cannot be offered
