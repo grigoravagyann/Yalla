@@ -828,27 +828,48 @@ show promises already made; every `ReservationView` carries `promisedFreeByUtc`.
 carries `nextReservationPromisedFreeByUtc` ("must free by 21:25" on the next-booking line) and
 `sittingPromisedFreeByUtc` for the party seated now.
 
-## 3f. The console's Overview: today, and a menu on every booking
+## 3f. The console's Overview: the service day, and a menu on every booking
 
 `GET /api/branches/{branchId}/overview` is the venue console's first screen (`ManagerOrAbove` +
 `BranchScoped`, then the stored-row branch guard): an owner or general manager at any branch of their
-venue, a branch manager at their own branch only, a platform admin anywhere. A waiter's or cook's tablet
-session is refused - the floor has its own reads. No parameters: **today is the branch's calendar day** in
-its own zone at `asOfUtc`, and a booking's `LocalDate` is on that calendar, so today's bookings are an
-equality rather than a UTC range.
+venue, a branch manager at their own branch only, a platform admin anywhere (an unknown branch is 404 for
+them). A waiter's or cook's tablet session is refused - the floor has its own reads. No parameters.
+
+**Today is the branch's service day** (`serviceDate`), not the calendar's (`localDate`). It is the calendar
+day at the branch, except while last night's block is still open past midnight: at 01:00 on Sunday a bar
+open 20:00-02:00 is still in Saturday's service, and the Overview at 01:00 says what it said at 22:00 - the
+same bookings, the same chart, the takings carried on. **A booking belongs to the service day it starts
+in**: 00:30 on Sunday, inside Saturday's block, is Saturday's; 00:30 on Saturday was Friday night's. The
+bookings are read for the service date and the day after and sorted by the weekly hours. A block closing at
+00:00 runs past nothing: it reads "until 00:00", and at 00:30 the next day is today.
 
 | Part | What it says |
 |---|---|
-| `hours` | `isOpen`; while open `closesAt` and `closesNextDay`; while shut the next `opensAt` today. The weekly hours read as `BranchOpenNow` reads them for the diner's listing - last night's block still running counts as open, closing today |
-| `bookings` | today's bookings by status: `total` (pending, confirmed, seated, completed, no-shows), `late` (confirmed, start passed), `cancelled` (declined requests included), `people` |
+| `graceMinutes` | the policy's grace: how long past its start a late party's table is held |
+| `hours` | `isOpen`; while open `closesAt` and `closesNextDay` (after midnight tonight - false for a 00:00 close and for last night's block, which closes today); while shut the next `opensAt` today. The weekly hours read as `BranchOpenNow` reads them for the diner's listing |
+| `bookings` | the service day's bookings by status: `total` (pending, confirmed, seated, completed, no-shows), `late` (confirmed, start passed), `cancelled` (declined requests included), `people`, and `pendingChanges` |
 | `inRoom` | party sizes at the open sittings, occupied tables of the active ones, out of service |
 | `openTabs` | tabs open or settling, and the sum of their server-computed `RemainingAmd` |
-| `revenue` | closed tabs' totals since local midnight against **the same weekday a week ago up to the same time of day** - 18:42 against last Saturday's 18:42, not its whole evening; the revenue report's own rule (a tab counts on the day it closed) |
-| `load` | `capacity` (seats at the active tables) and booked people per local hour - confirmed, seated and completed in `people`, unanswered requests apart in `pendingPeople` - counted in every hour a sitting touches, as the occupancy report counts; the hours run from the first opening (or booking) to the last open (or booked) hour of today |
-| `todayBookings` | every booking of today, any status, by local start; at most 200, while the counts and the chart read the whole day. Each carries `tableId`, `tableStatus` and `channel`, `declinedBecause` on a declined request, and `lateNudgeAtUtc` - when the app asks a confirmed guest with an account whether they are coming |
+| `revenue` | closed tabs' totals from `sinceUtc` - **the service date's first opening**, or its local midnight when it has no hours - until now, against the same weekday a week before from the same opening **for as long on the clock**: 18:42 against last Saturday's 18:42, 01:00 on Sunday against the Sunday before's 01:00. A tab counts at the moment it closed, so a bar's tab settled at 00:45 is in Saturday's service here, where the revenue report (calendar days) files it on Sunday |
+| `load` | `capacity` (seats at the active tables **in service**) and booked people per hour - confirmed, seated and completed in `people`, unanswered requests and the slots changes ask for in `pendingPeople` - counted in every hour a sitting touches, as the occupancy report counts. Hours are **numbered from the service date's midnight**: 0-23, then 24 for 00:00-01:00 of the next date, 25 for 01:00 (label `hour % 24`); they run from the first opening (or booking) to the last open (or booked) hour |
+| `todayBookings` | the service day's bookings by start, **without the cancelled and declined**, at most 200, `todayBookingsTruncated` when there were more (the counts and the chart read them all). Each carries `localDate` (the next date for a sitting after midnight), `tableId`, `tableStatus`, `channel`, `changeRequested`, and for a `Confirmed` booking only `holdExpiresAtUtc` and the late nudge |
 
-Four statements after the guard's two, however busy the day; `BranchOverviewTests` counts them. No guest
-phone number anywhere in it.
+**A change that is waiting counts where the booking is still promised.** A confirmed 19:00 moved to 21:00 at
+short notice is `PendingApproval` with its confirmed slot kept (§3c); until the floor answers, the diner
+still has the 19:00. So it is counted as confirmed (and in `pendingChanges`), charted at 19:00, and listed
+at 19:00 at its old table with `changeRequested` true - its `status` stays 1, because the floor's actions on
+it wait for the answer, which is in the approvals list. The 21:00 it asks for is in `pendingPeople`. A
+change that was declined leaves the booking `Confirmed` at its old slot with `DeclineReason` set; that is a
+live booking and lists like any other - which is why the list no longer carries a decline reason at all.
+
+**The late nudge is the one the outbox holds** (`reservation.late-nudge`, keyed by the booking):
+`lateNudgeAtUtc` is when it went (`lateNudgeSent` true) or when it is due. A booking moved since carries a
+nudge per start, and the latest stands. Absent when none is stored - a booking with no app account. There
+is no manual nudge.
+
+At most seven statements, however busy the day - the guard's two, the branch with its room and tabs, the
+hours, the bookings, the takings, and the nudges when a confirmed guest has the app; `BranchOverviewTests`
+counts them. No guest phone number anywhere in it.
 
 **The row menu uses the floor's own routes**, and the console's sign-in may already call them, because
 `WaiterOrAbove` admits an admin-panel identity of the three venue ranks as well as a PIN session, and the
@@ -860,6 +881,21 @@ nudge goes out on its own at `lateNudgeAtUtc`. `ConsoleBookingActionsTests` send
 kind of caller: the branch's waiter, its manager, the general manager and the owner act; a waiter or
 manager of the sibling branch, a cook, a diner and another venue's staff are refused and the booking does
 not move.
+
+**Finishing names the booking.** A plain `free` closes whatever sitting is open at the table, which is right
+for the tablet - the waiter is looking at the table - and wrong from a console row that may be stale: the
+waiter may already have freed the booking's table and seated a walk-in, and "finish" would end the walk-in's
+sitting, again on every retry. So the console sends `reservationId`, and the table is freed only while the
+sitting open at it is that booking's and the booking is `Seated`; otherwise `409 table-sitting-changed`
+(`context`: `tableId`, `tableLabel`, `reservationId`, `tableStatus`, and `currentSessionId` when somebody
+else is sitting there) and nothing changes. Without `reservationId` the route behaves as it always has.
+Pinned by `ConsoleBookingActionsTests.Finishing_a_booking_whose_table_has_moved_on_leaves_the_new_sitting_alone`.
+
+**`release` on a booking already let go answers its first outcome.** A booking already `NoShow` or
+`CancelledByVenue` is not released again: the answer is `200` with `wasReplay` true, `outcome` from the stored
+status (1 for `NoShow`, 2 for `CancelledByVenue` - whichever outcome the repeat asked for), `reservation.status`
+as stored, `tableFreed` false and `countsTowardNoShowThreshold` true only for a no-show. A tablet replaying its
+queue cannot put a second no-show on a diner's record, and the console can map the repeat to the row as it is.
 
 ## 4. The rules, and why none of them is a number in code
 
@@ -1096,9 +1132,9 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `POST /api/reservations/{id}/extend-hold` | `VerifiedDiner` | the booking must be theirs, **started**, and not yet extended - see [notifications.md](notifications.md) |
 | `POST /api/tabs/open-by-booking` | `VerifiedDiner` | "I'm at my table": the booking whose `code` was sent must be **theirs** - else 404 `booking-not-found`, identical to a code nobody holds - and its table theirs now: `Confirmed` from `StartUtc - walkInHoldbackMinutes` until `EndUtc`, or `Seated`. A free table is seated as the booking. See [tabs.md](tabs.md) |
 | `POST /api/reservations/{id}/approve` · `/reject` | `WaiterOrAbove` | a waiter or above at the booking's **branch** - an owner or general manager at any branch of their venue; too late is `409 reservation-approval-expired` - see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) |
-| `POST /api/reservations/{id}/no-show` · `/release` | `WaiterOrAbove` | a waiter or above at the booking's **branch** - an owner or general manager at any branch of their venue, with the console's sign-in too - see [3b](#3b-letting-a-booking-go) and [3f](#3f-the-consoles-overview-today-and-a-menu-on-every-booking) |
+| `POST /api/reservations/{id}/no-show` · `/release` | `WaiterOrAbove` | a waiter or above at the booking's **branch** - an owner or general manager at any branch of their venue, with the console's sign-in too - see [3b](#3b-letting-a-booking-go) and [3f](#3f-the-consoles-overview-the-service-day-and-a-menu-on-every-booking) |
 | `GET /api/branches/{branchId}/reservations` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only - the console's approval queue |
-| `GET /api/branches/{branchId}/overview` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only, from the stored row - the console's Overview, see [3f](#3f-the-consoles-overview-today-and-a-menu-on-every-booking) |
+| `GET /api/branches/{branchId}/overview` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only, from the stored row - the console's Overview, see [3f](#3f-the-consoles-overview-the-service-day-and-a-menu-on-every-booking) |
 | `GET /api/branches/{branchId}/reservations/awaiting` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch, from the stored row - the floor's list, see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) |
 
 Availability - one slot or one day - is the only anonymous endpoint outside the sign-in flows.

@@ -834,9 +834,9 @@ inside a handler is a check the next handler can forget, and the failure is sile
 | `TabParticipantCanOrder` | The above, plus the participant's `CanOrder` flag |
 | `TabParticipantMutating` | The above, and the tab is genuinely open - the receipt grace allows reading a closed tab, never adding to it |
 | `PlatformAdminOnly` | The platform operator, for venue creation, suspension and the audit log |
-| `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager, GeneralManager or Owner |
+| `WaiterOrAbove` | A staff session or admin-panel identity whose role is Waiter, Manager, GeneralManager, Owner or PlatformAdmin - a PIN session on a tablet and the console's email sign-in alike |
 | `KitchenOrAbove` | As `WaiterOrAbove`, and the Kitchen role too. Only the kitchen queue and the order rail carry it; on the rail the service then limits Kitchen to `InKitchen -> Ready`. The floor, tabs and service requests stay `WaiterOrAbove` |
-| `ManagerOrAbove` | Role is Manager (a branch manager), GeneralManager or Owner. Says nothing about which branch - always paired with a scope policy |
+| `ManagerOrAbove` | Role is Manager (a branch manager), GeneralManager, Owner or PlatformAdmin, on a staff session or an admin-panel identity. Says nothing about which branch - always paired with a scope policy, which passes the platform admin for every branch |
 | `BranchScoped` | The token's `branchId` claim matches the route's branch id |
 | `VenueScoped` | An owner, general manager or branch manager acting inside their own venue; the services narrow a branch manager to their branch |
 | `VenueStaffAccount` | An owner, general manager or branch manager signed in to the admin panel: principal type `VenueUser` and one of the three venue ranks. The venue console's own account (`/api/venue/me`); not a tablet session, not the platform admin |
@@ -851,9 +851,13 @@ Two of these are the real security of this system, and both have tests:
 
   Two booking routes are addressed by reservation id instead - `POST /api/reservations/{id}/approve`
   and `/reject` - so there is no `branchId` route value for the policy to compare against, and it
-  fails closed rather than passing. They carry `ManagerOrAbove`, and the reservation service
-  resolves the booking's own branch and checks it against the acting staff member's branch and
-  venue. `ReservationEndpointTests` proves a manager of another venue is refused.
+  fails closed rather than passing. They carry `WaiterOrAbove` - a short-notice request is the
+  floor's to decide, within fifteen minutes - and the reservation service resolves the booking's own
+  branch and checks it against the acting staff member's **stored** row: a waiter or branch manager
+  at their own branch, an owner or general manager at any branch of their venue, a platform admin
+  anywhere. `no-show` and `release` are addressed and checked the same way.
+  `ReservationEndpointTests` proves a manager of another venue is refused, and
+  `ConsoleBookingActionsTests` that a waiter or manager of the sibling branch is.
 
   The photo upload `POST /api/branches/{branchId}/photos` is addressed by branch and carries
   `BranchScoped` like the rest; it once carried only `ManagerOrAbove`, which let any manager put
@@ -864,10 +868,13 @@ Two of these are the real security of this system, and both have tests:
   the same answer a foreign category gets. `PhotoScopeTests` proves all of it.
 
   The approval queue those two act on, `GET /api/branches/{branchId}/reservations?status=1`, is
-  addressed by branch and carries `ManagerOrAbove` and `BranchScoped` - and then the same service
-  check as approve and reject, from the stored row. So a manager lists exactly the bookings they
-  may decide: a branch manager their own branch, an owner or general manager every branch of their
-  venue, a platform admin anything. Sorted by local date and start time, capped at 200 rows with no paging.
+  addressed by branch and carries `ManagerOrAbove` and `BranchScoped` - and then the manager-or-above
+  check from the stored row (`IStaffBranchGuard`), not the floor's. So **listing is narrower than
+  deciding**: the console's queue is read by a branch manager at their own branch, an owner or
+  general manager at every branch of their venue and a platform admin anywhere, while the branch's
+  waiters - who may approve and reject the same bookings - read the floor's own list,
+  `GET /api/branches/{branchId}/reservations/awaiting` (`WaiterOrAbove` + `BranchScoped`). Sorted by
+  local date and start time, capped at 200 rows with no paging.
   `BranchReservationListTests` proves a manager of a sibling branch, another venue's manager, a
   waiter and an anonymous caller are refused.
 

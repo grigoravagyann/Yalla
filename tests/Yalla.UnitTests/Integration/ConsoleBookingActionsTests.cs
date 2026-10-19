@@ -80,13 +80,14 @@ public sealed class ConsoleBookingActionsTests(SqlServerFixture fixture)
                 $"/api/reservations/{b.Id}/release",
                 new { outcome = (int)ReleaseOutcome.CancelledByVenue, clientCommandId = Guid.CreateVersion7() })),
 
-        // "Finish, free the table" on a seated row: the sitting closes and the booking completes.
+        // "Finish, free the table" on a seated row: the sitting closes and the booking completes. The console
+        // names the booking it means, so a stale row cannot end somebody else's sitting.
         ["free"] = new(
             ReservationStatus.Seated,
             ReservationStatus.Completed,
             (w, b, c) => c.PostAsJsonAsync(
                 $"/api/branches/{w.Branch.BranchId}/tables/{b.TableId}/free",
-                new { clientCommandId = Guid.CreateVersion7() }),
+                new { clientCommandId = Guid.CreateVersion7(), reservationId = b.Id }),
             Seated: true),
 
         ["approve"] = new(
@@ -178,6 +179,93 @@ public sealed class ConsoleBookingActionsTests(SqlServerFixture fixture)
                 client.Dispose();
             }
         }
+    }
+
+    /// <summary>
+    /// "Finish" from a stale Overview row: the waiter already freed the booking's table and seated a walk-in.
+    /// Naming the booking refuses to end the walk-in's sitting, however often it is sent; leaving it out frees
+    /// the table as the tablet always has.
+    /// </summary>
+    [SkippableFact]
+    public async Task Finishing_a_booking_whose_table_has_moved_on_leaves_the_new_sitting_alone()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+        var world = await ArrangeWorldAsync(factory);
+
+        try
+        {
+            var booking = await AddBookingAsync(world, Actions["free"], tableIndex: 0);
+            var owner = world.Clients[Caller.Owner];
+            var waiter = world.Clients[Caller.Waiter];
+            var table = $"/api/branches/{world.Branch.BranchId}/tables/{booking.TableId}";
+
+            // The floor moves on: the party leaves, a walk-in sits down.
+            Assert.Equal(
+                HttpStatusCode.OK,
+                (await waiter.PostAsJsonAsync($"{table}/free", new { clientCommandId = Guid.CreateVersion7() })).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.OK,
+                (await waiter.PostAsJsonAsync(
+                    $"{table}/seat-walk-in", new { partySize = 3, clientCommandId = Guid.CreateVersion7() })).StatusCode);
+
+            var walkIn = await OpenSessionAsync(world, booking.TableId);
+            Assert.NotNull(walkIn);
+
+            // The manager's stale "Finish", twice - a retry is a new tap.
+            foreach (var attempt in new[] { 1, 2 })
+            {
+                using var refused = await owner.PostAsJsonAsync(
+                    $"{table}/free", new { clientCommandId = Guid.CreateVersion7(), reservationId = booking.Id });
+
+                Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+
+                var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.Equal("table-sitting-changed", problem.GetProperty("code").GetString());
+
+                var context = problem.GetProperty("context");
+                Assert.Equal(booking.TableId, context.GetProperty("tableId").GetGuid());
+                Assert.Equal(booking.Id, context.GetProperty("reservationId").GetGuid());
+                Assert.Equal(walkIn, await OpenSessionAsync(world, booking.TableId));
+                _ = attempt;
+            }
+
+            Assert.Equal(ReservationStatus.Completed, await StatusOfAsync(world, booking.Id));
+
+            // Without a booking named it is the tablet's free, unchanged: whoever is at the table leaves.
+            Assert.Equal(
+                HttpStatusCode.OK,
+                (await owner.PostAsJsonAsync($"{table}/free", new { clientCommandId = Guid.CreateVersion7() })).StatusCode);
+            Assert.Null(await OpenSessionAsync(world, booking.TableId));
+
+            // And a booking named at a table nobody is sitting at is the same refusal: its sitting is over.
+            using var empty = await owner.PostAsJsonAsync(
+                $"{table}/free", new { clientCommandId = Guid.CreateVersion7(), reservationId = booking.Id });
+
+            Assert.Equal(HttpStatusCode.Conflict, empty.StatusCode);
+            Assert.Equal(
+                "table-sitting-changed",
+                (await empty.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        }
+        finally
+        {
+            foreach (var client in world.Clients.Values)
+            {
+                client.Dispose();
+            }
+        }
+    }
+
+    private async Task<Guid?> OpenSessionAsync(World w, Guid tableId)
+    {
+        await using var db = fixture.CreateContext(w.Factory.Clock);
+
+        return await db.TableSessions
+            .AsNoTracking()
+            .Where(s => s.DiningTableId == tableId && s.ClosedAtUtc == null)
+            .Select(s => (Guid?)s.Id)
+            .FirstOrDefaultAsync();
     }
 
     private static HttpStatusCode Expected(Caller caller) => caller switch

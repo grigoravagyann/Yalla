@@ -203,6 +203,13 @@ public static class ErrorCodes
     public const string PreconditionFailed = "precondition-failed";
 
     /// <summary>
+    /// A free that named a booking found another sitting - or none - open at the table. HTTP 409, with
+    /// <c>tableId</c>, <c>tableLabel</c>, <c>reservationId</c>, <c>tableStatus</c> and, when somebody is
+    /// sitting there, <c>currentSessionId</c> in <c>context</c>. The console's stale Overview row: refresh it.
+    /// </summary>
+    public const string TableSittingChanged = "table-sitting-changed";
+
+    /// <summary>
     /// The report range is longer than any report will run. HTTP 400, with the limit and the
     /// number of days asked for in <c>context</c>.
     /// </summary>

@@ -53,6 +53,18 @@ public interface ITableStateCommand
 }
 
 /// <summary>A transition that needs nothing beyond the table itself.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="TableId">The table.</param>
+/// <param name="ClientCommandId">Caller-generated id. A replay with the same value returns the original answer.</param>
+/// <param name="Reason">Free text for the audit log.</param>
+/// <param name="Queued">Came off the tablet's offline queue.</param>
+/// <param name="ExpectedFromStatus">The status the table had when the waiter tapped.</param>
+/// <param name="ExpectedRowVersion">The table's row version when the waiter tapped.</param>
+/// <param name="ExpectedReservationId">
+/// Freeing only: the booking whose sitting the caller means to finish. When set, the table is freed only
+/// while the sitting open at it is that booking's and the booking is seated - so a stale console row cannot
+/// end a walk-in's sitting that began since. Every other transition ignores it.
+/// </param>
 public sealed record TableStateCommand(
     Guid BranchId,
     Guid TableId,
@@ -60,7 +72,8 @@ public sealed record TableStateCommand(
     string? Reason = null,
     bool Queued = false,
     TableStatus? ExpectedFromStatus = null,
-    string? ExpectedRowVersion = null) : ITableStateCommand;
+    string? ExpectedRowVersion = null,
+    Guid? ExpectedReservationId = null) : ITableStateCommand;
 
 /// <summary>Seat a party with no booking. The common case in a cafe.</summary>
 public sealed record SeatWalkInCommand(

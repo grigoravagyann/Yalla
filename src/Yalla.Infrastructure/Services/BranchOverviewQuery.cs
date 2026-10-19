@@ -1,5 +1,7 @@
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Messaging;
 using Yalla.Application.Overview;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
@@ -9,29 +11,40 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// The venue console's Overview: one branch, today, in a fixed handful of statements.
+/// The venue console's Overview: one branch, its service day, in a fixed handful of statements.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Four reads after the guard, however busy the day.</b> The branch with its room and its open tabs
-/// (one statement: the table, sitting and tab aggregates are scalar subqueries beside the branch row), its
-/// opening hours, today's bookings, and the tabs closed today and on the same day last week. Everything
-/// else - the counts by status, the load per hour, the late ones - is worked out from those rows in memory,
-/// so a busy Saturday costs what a quiet Tuesday does.
+/// <b>At most five reads after the guard, however busy the day.</b> The branch with its room and its open
+/// tabs (one statement: the table, sitting and tab aggregates are scalar subqueries beside the branch row),
+/// its opening hours, the service day's bookings, the tabs closed in the two windows compared, and - only
+/// when a confirmed guest has the app - the late nudges the outbox holds for them. Everything else - the
+/// counts by status, the load per hour, the late ones - is worked out from those rows in memory, so a busy
+/// Saturday costs what a quiet Tuesday does.
 /// </para>
 /// <para>
-/// <b>Today is the branch's calendar day.</b> A booking's <c>LocalDate</c> is already on that calendar, so
-/// today's bookings are an equality on it. The money is counted as the revenue report counts it - a closed
-/// tab's total on the day it closed - from the branch's local midnight.
+/// <b>The service day, not the calendar's.</b> While last night's block is still open past midnight, the
+/// branch is still in last night's service; otherwise it is in today's. A booking belongs to the service day
+/// it starts in - 00:30 on Sunday inside Saturday's block is Saturday's - so the bookings are read for the
+/// service date and the day after, and sorted into service days by the weekly hours.
 /// </para>
 /// <para>
-/// <b>Today's bookings are read whole, the list is capped.</b> The counts and the chart are about every
-/// booking of the day; the list the screen shows is the first <see cref="BranchReservationList.MaxRows"/>,
-/// like every other booking list in the console. A branch's day is small enough to read whole.
+/// <b>A waiting change counts where it is still promised.</b> A confirmed booking moved at short notice is
+/// <c>PendingApproval</c> with its confirmed slot kept beside it (<c>Previous*</c>); until the floor answers,
+/// that slot is the diner's, so it is counted, charted and listed there, and the slot it asks for is charted
+/// as pending.
+/// </para>
+/// <para>
+/// <b>The list is capped, the counts are not.</b> The counts and the chart are about every booking of the
+/// day; the list leaves out the cancelled and declined and then carries the first
+/// <see cref="BranchReservationList.MaxRows"/>, saying when it was cut.
 /// </para>
 /// </remarks>
 internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaffBranchGuard branchGuard) : IBranchOverviewQuery
 {
+    /// <summary>The chart's hours stop two days from the service date's midnight, whatever a sitting claims.</summary>
+    private const int LastChartHour = 47;
+
     public async Task<BranchOverview> GetAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
         // From the stored row: an owner or general manager anywhere in their venue, a branch manager at
@@ -47,12 +60,16 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             .Select(b => new BranchRow
             {
                 TimeZoneId = b.TimeZoneId,
-                LateNudgeAfterMinutes = b.ReservationPolicy.LateNudgeAfterMinutes,
+                GraceMinutes = b.ReservationPolicy.GraceMinutes,
                 Tables = db.DiningTables.Count(t => t.BranchId == b.Id && t.IsActive),
                 OccupiedTables = db.DiningTables.Count(t => t.BranchId == b.Id && t.IsActive && t.Status == TableStatus.Occupied),
                 OutOfServiceTables = db.DiningTables.Count(
                     t => t.BranchId == b.Id && t.IsActive && t.Status == TableStatus.OutOfService),
-                Seats = db.DiningTables.Where(t => t.BranchId == b.Id && t.IsActive).Sum(t => (int?)t.Seats) ?? 0,
+
+                // A table out of service seats nobody tonight, so the room is full without it.
+                Seats = db.DiningTables
+                    .Where(t => t.BranchId == b.Id && t.IsActive && t.Status != TableStatus.OutOfService)
+                    .Sum(t => (int?)t.Seats) ?? 0,
                 PeopleInRoom = db.TableSessions
                     .Where(s => s.BranchId == b.Id && s.ClosedAtUtc == null)
                     .Sum(s => (int?)s.PartySize) ?? 0,
@@ -77,12 +94,16 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             .Select(h => new HoursRow(h.Day, h.OpensAt, h.ClosesAt, h.ClosesNextDay))
             .ToListAsync(cancellationToken);
 
-        var bookings = await db.Reservations
+        var serviceDate = ServiceDayOf(hours, today, timeNow);
+        var nextDate = serviceDate.AddDays(1);
+
+        var rows = await db.Reservations
             .AsNoTracking()
-            .Where(r => r.BranchId == branchId && r.LocalDate == today)
-            .OrderBy(r => r.LocalStartTime)
-            .ThenBy(r => r.StartUtc)
-            .ThenBy(r => r.Id)
+            .Where(r => r.BranchId == branchId
+                        && (r.LocalDate == serviceDate
+                            || r.LocalDate == nextDate
+                            || r.PreviousLocalDate == serviceDate
+                            || r.PreviousLocalDate == nextDate))
             .Select(r => new BookingRow
             {
                 Id = r.Id,
@@ -90,19 +111,42 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 Status = r.Status,
                 StartUtc = r.StartUtc,
                 EndUtc = r.EndUtc,
+                LocalDate = r.LocalDate,
                 LocalStartTime = r.LocalStartTime,
                 PartySize = r.PartySize,
                 GuestName = r.GuestName,
-                TableId = r.DiningTableId,
-                TableLabel = r.DiningTable.Label,
-                TableStatus = r.DiningTable.Status,
-                RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
+                Table = new TableFacts
+                {
+                    Id = r.DiningTableId,
+                    Label = r.DiningTable.Label,
+                    Status = r.DiningTable.Status,
+                    RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
+                },
                 Channel = r.Channel,
-                DeclinedBecause = r.DeclineReason,
                 HoldExpiresAtUtc = r.HoldExpiresAtUtc,
                 HasAccount = r.DinerUserId != null,
+                PreviousStartUtc = r.PreviousStartUtc,
+                PreviousEndUtc = r.PreviousEndUtc,
+                PreviousLocalDate = r.PreviousLocalDate,
+                PreviousLocalStartTime = r.PreviousLocalStartTime,
+                PreviousPartySize = r.PreviousPartySize,
+                PreviousTable = db.DiningTables
+                    .Where(t => t.Id == r.PreviousDiningTableId)
+                    .Select(t => new TableFacts
+                    {
+                        Id = t.Id,
+                        Label = t.Label,
+                        Status = t.Status,
+                        RoomName = t.FloorArea == null ? null : t.FloorArea.Name,
+                    })
+                    .FirstOrDefault(),
             })
             .ToListAsync(cancellationToken);
+
+        var (entries, askedFor) = ServiceDayBookings(rows, hours, serviceDate);
+        var nudges = await LateNudgesAsync(entries, cancellationToken);
+
+        var listed = entries.Where(e => !IsCancelled(e.Status)).ToList();
 
         return new BranchOverview(
             branchId,
@@ -110,56 +154,148 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             nowUtc,
             today,
             timeNow,
+            serviceDate,
+            branch.GraceMinutes,
             HoursNow(hours, localNow),
-            Counts(bookings, nowUtc),
+            Counts(entries, nowUtc),
             new OverviewRoom(branch.PeopleInRoom, branch.OccupiedTables, branch.Tables, branch.OutOfServiceTables),
             new OverviewOpenTabs(branch.OpenTabs, branch.UnpaidAmd),
-            await RevenueAsync(branchId, zone, today, timeNow, nowUtc, cancellationToken),
-            new OverviewLoad(branch.Seats, Load(bookings, hours, zone, today)),
-            [.. bookings
+            await RevenueAsync(branchId, zone, hours, serviceDate, localNow, nowUtc, cancellationToken),
+            new OverviewLoad(branch.Seats, Load(entries, askedFor, hours, zone, serviceDate)),
+            [.. listed
                 .Take(BranchReservationList.MaxRows)
-                .Select(b => new OverviewBooking(
-                    b.Id,
-                    b.Code,
-                    b.Status,
-                    b.StartUtc,
-                    b.EndUtc,
-                    b.LocalStartTime,
-                    b.PartySize,
-                    b.GuestName,
-                    b.TableId,
-                    b.TableLabel,
-                    b.TableStatus,
-                    b.RoomName,
-                    b.Channel,
-                    b.DeclinedBecause,
-                    b.HoldExpiresAtUtc,
+                .Select(e =>
+                {
+                    var confirmed = e.Status == ReservationStatus.Confirmed;
+                    var nudge = confirmed && nudges.TryGetValue(e.Id, out var n) ? n : null;
 
-                    // The nudge is a push to the app, so only somebody with an account gets one - and only
-                    // while the booking is confirmed: the handler drops it for anybody already seated.
-                    b.HasAccount && b.Status == ReservationStatus.Confirmed
-                        ? b.StartUtc.AddMinutes(branch.LateNudgeAfterMinutes)
-                        : null))]);
+                    return new OverviewBooking(
+                        e.Id,
+                        e.Code,
+                        e.Status,
+                        e.StartUtc,
+                        e.EndUtc,
+                        e.LocalDate,
+                        e.LocalStartTime,
+                        e.PartySize,
+                        e.GuestName,
+                        e.Table.Id,
+                        e.Table.Label,
+                        e.Table.Status,
+                        e.Table.RoomName,
+                        e.Channel,
+                        e.ChangeRequested,
+
+                        // A hold is the floor keeping a confirmed party's table; once they sit down, or the
+                        // booking is anything else, the column is history.
+                        confirmed ? e.HoldExpiresAtUtc : null,
+                        nudge?.AtUtc,
+                        nudge?.Sent);
+                })],
+            listed.Count > BranchReservationList.MaxRows);
+    }
+
+    // ---------------------------------------------------------------- the service day
+
+    /// <summary>
+    /// The service day a moment at the branch belongs to: the day before when it falls inside that day's
+    /// block running past midnight, else its own date. A block closing at 00:00 runs into nothing.
+    /// </summary>
+    private static DateOnly ServiceDayOf(List<HoursRow> hours, DateOnly date, TimeOnly time)
+    {
+        var dayBefore = date.AddDays(-1).DayOfWeek;
+
+        return hours.Any(h => h.Day == dayBefore && RunsPastMidnight(h) && time < h.ClosesAt)
+            ? date.AddDays(-1)
+            : date;
+    }
+
+    private static bool RunsPastMidnight(HoursRow block) => block.ClosesNextDay && block.ClosesAt != TimeOnly.MinValue;
+
+    /// <summary>
+    /// The service day's bookings as the screen counts them - each at the slot it holds - and the slots
+    /// that confirmed bookings are asking to move to, which only the chart's pending bars show.
+    /// </summary>
+    private static (List<Entry> Entries, List<Entry> AskedFor) ServiceDayBookings(
+        List<BookingRow> rows,
+        List<HoursRow> hours,
+        DateOnly serviceDate)
+    {
+        var entries = new List<Entry>();
+        var askedFor = new List<Entry>();
+
+        foreach (var row in rows)
+        {
+            var asked = ServiceDayOf(hours, row.LocalDate, row.LocalStartTime) == serviceDate;
+
+            if (row.Status == ReservationStatus.PendingApproval
+                && row.PreviousTable is { } previousTable
+                && row.PreviousStartUtc is { } previousStart
+                && row.PreviousEndUtc is { } previousEnd
+                && row.PreviousLocalDate is { } previousDate
+                && row.PreviousLocalStartTime is { } previousTime
+                && ServiceDayOf(hours, previousDate, previousTime) == serviceDate)
+            {
+                // Still promised at its confirmed slot today: counted there, with the change it asks for apart.
+                entries.Add(new Entry(
+                    row, previousStart, previousEnd, previousDate, previousTime, row.PreviousPartySize ?? row.PartySize,
+                    previousTable, ChangeRequested: true));
+
+                if (asked)
+                {
+                    askedFor.Add(Entry.AsBooked(row));
+                }
+
+                continue;
+            }
+
+            if (asked)
+            {
+                entries.Add(Entry.AsBooked(row));
+            }
+        }
+
+        entries.Sort((a, b) =>
+        {
+            var byDate = a.LocalDate.CompareTo(b.LocalDate);
+
+            if (byDate != 0)
+            {
+                return byDate;
+            }
+
+            var byTime = a.LocalStartTime.CompareTo(b.LocalStartTime);
+
+            if (byTime != 0)
+            {
+                return byTime;
+            }
+
+            return a.StartUtc != b.StartUtc ? a.StartUtc.CompareTo(b.StartUtc) : a.Id.CompareTo(b.Id);
+        });
+
+        return (entries, askedFor);
     }
 
     // ---------------------------------------------------------------- the pieces
 
-    private static OverviewBookingCounts Counts(List<BookingRow> bookings, DateTime nowUtc)
+    private static OverviewBookingCounts Counts(List<Entry> entries, DateTime nowUtc)
     {
-        int Of(ReservationStatus status) => bookings.Count(b => b.Status == status);
+        int Of(ReservationStatus status) => entries.Count(e => e.Counted == status);
 
         return new OverviewBookingCounts(
-            Total: bookings.Count(b => !IsCancelled(b.Status)),
+            Total: entries.Count(e => !IsCancelled(e.Status)),
             PendingApproval: Of(ReservationStatus.PendingApproval),
             Confirmed: Of(ReservationStatus.Confirmed),
-            Late: bookings.Count(b => b.Status == ReservationStatus.Confirmed && b.StartUtc < nowUtc),
+            Late: entries.Count(e => e.Counted == ReservationStatus.Confirmed && e.StartUtc < nowUtc),
             Seated: Of(ReservationStatus.Seated),
             Completed: Of(ReservationStatus.Completed),
             NoShow: Of(ReservationStatus.NoShow),
-            Cancelled: bookings.Count(b => IsCancelled(b.Status)),
-            People: bookings
-                .Where(b => IsBooked(b.Status) || b.Status == ReservationStatus.PendingApproval)
-                .Sum(b => b.PartySize));
+            Cancelled: entries.Count(e => IsCancelled(e.Status)),
+            People: entries
+                .Where(e => IsBooked(e.Counted) || e.Counted == ReservationStatus.PendingApproval)
+                .Sum(e => e.PartySize),
+            PendingChanges: entries.Count(e => e.ChangeRequested));
     }
 
     /// <summary>
@@ -178,11 +314,12 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
         if (todays is not null)
         {
-            return new OverviewHours(true, todays.ClosesAt, todays.ClosesNextDay, null);
+            // A midnight close is "until 00:00", not the next day.
+            return new OverviewHours(true, todays.ClosesAt, RunsPastMidnight(todays), null);
         }
 
         // Last night's block, still running: it closes today, so not "the next day".
-        var lastNight = hours.FirstOrDefault(h => h.Day == yesterday && h.ClosesNextDay && time < h.ClosesAt);
+        var lastNight = hours.FirstOrDefault(h => h.Day == yesterday && RunsPastMidnight(h) && time < h.ClosesAt);
 
         if (lastNight is not null)
         {
@@ -198,18 +335,19 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     }
 
     /// <summary>
-    /// Booked people in each local hour of today. A sitting counts in every hour it touches - "how full is
-    /// the room at eight" is about who is in it, not who arrives, as the occupancy report counts it.
+    /// Booked people in each hour of the service day, numbered from the service date's midnight - 24 is
+    /// 00:00 on the next date. A sitting counts in every hour it touches, as the occupancy report counts it.
     /// </summary>
     private static List<OverviewLoadHour> Load(
-        List<BookingRow> bookings,
+        List<Entry> entries,
+        List<Entry> askedFor,
         List<HoursRow> hours,
         BranchZone zone,
-        DateOnly today)
+        DateOnly serviceDate)
     {
-        var people = new int[24];
-        var pending = new int[24];
-        var midnight = today.ToDateTime(TimeOnly.MinValue);
+        var people = new int[LastChartHour + 1];
+        var pending = new int[LastChartHour + 1];
+        var midnight = serviceDate.ToDateTime(TimeOnly.MinValue);
         int? first = null;
         int? last = null;
 
@@ -219,35 +357,43 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             last = last is { } l ? Math.Max(l, hour) : hour;
         }
 
-        foreach (var booking in bookings)
+        void Chart(Entry entry, int[] bars)
         {
-            var booked = IsBooked(booking.Status);
+            var to = zone.ToLocal(entry.EndUtc);
+            var from = ((entry.LocalDate.DayNumber - serviceDate.DayNumber) * 24) + entry.LocalStartTime.Hour;
 
-            if (!booked && booking.Status != ReservationStatus.PendingApproval)
+            for (var hour = Math.Max(from, 0); hour <= LastChartHour && midnight.AddHours(hour) < to; hour++)
             {
-                continue;
-            }
-
-            var bars = booked ? people : pending;
-            var to = zone.ToLocal(booking.EndUtc);
-
-            // From the start's own hour while the sitting still runs, to the end of the day: the small
-            // hours of a sitting past midnight are tomorrow's.
-            for (var hour = booking.LocalStartTime.Hour; hour < 24 && midnight.AddHours(hour) < to; hour++)
-            {
-                bars[hour] += booking.PartySize;
+                bars[hour] += entry.PartySize;
                 Touch(hour);
             }
         }
 
-        // The hours the branch is open today: from each block's opening to its last hour - the end of the
-        // day for one that runs past midnight.
-        foreach (var block in hours.Where(h => h.Day == today.DayOfWeek))
+        foreach (var entry in entries)
+        {
+            if (IsBooked(entry.Counted))
+            {
+                Chart(entry, people);
+            }
+            else if (entry.Counted == ReservationStatus.PendingApproval)
+            {
+                Chart(entry, pending);
+            }
+        }
+
+        foreach (var entry in askedFor)
+        {
+            Chart(entry, pending);
+        }
+
+        // The hours the branch is open on the service date: from each block's opening to its last hour,
+        // past midnight for one that runs into the next day.
+        foreach (var block in hours.Where(h => h.Day == serviceDate.DayOfWeek))
         {
             var closesMinute = (block.ClosesAt.Hour * 60) + block.ClosesAt.Minute;
 
             Touch(block.OpensAt.Hour);
-            Touch(block.ClosesNextDay || closesMinute == 0 ? 23 : (closesMinute - 1) / 60);
+            Touch(!block.ClosesNextDay ? (closesMinute - 1) / 60 : closesMinute == 0 ? 23 : 24 + ((closesMinute - 1) / 60));
         }
 
         if (first is not { } start || last is not { } end)
@@ -259,37 +405,47 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     }
 
     /// <summary>
-    /// What closed today until now, and the same weekday a week ago until the same wall-clock time.
+    /// What closed in the service day so far - from its first opening, or local midnight of the service date
+    /// when it has no hours - and in the same service day a week before, for as long on the clock.
     /// </summary>
     private async Task<OverviewRevenue> RevenueAsync(
         Guid branchId,
         BranchZone zone,
-        DateOnly today,
-        TimeOnly timeNow,
+        List<HoursRow> hours,
+        DateOnly serviceDate,
+        DateTime localNow,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var lastWeek = today.AddDays(-7);
-        var (todayFromUtc, _) = BranchTime.RangeToUtc(today, today, zone.TimeZoneId);
-        var (lastWeekFromUtc, _) = BranchTime.RangeToUtc(lastWeek, lastWeek, zone.TimeZoneId);
+        var opens = hours
+            .Where(h => h.Day == serviceDate.DayOfWeek)
+            .Select(h => (TimeOnly?)h.OpensAt)
+            .Min() ?? TimeOnly.MinValue;
 
-        // The same time on the clock; across a clock change that skipped it, as long after midnight as now is.
-        var lastWeekToUtc = zone.TryToUtc(lastWeek, timeNow, out var sameTime)
+        var lastWeek = serviceDate.AddDays(-7);
+        var sinceUtc = StartOf(zone, serviceDate, opens);
+        var lastWeekFromUtc = StartOf(zone, lastWeek, opens);
+
+        // As long after the opening on the clock as now is; across a clock change that skipped that time, as
+        // long in real time.
+        var lastWeekToLocal = lastWeek.ToDateTime(opens) + (localNow - serviceDate.ToDateTime(opens));
+        var lastWeekToUtc = zone.TryToUtc(
+            DateOnly.FromDateTime(lastWeekToLocal), TimeOnly.FromDateTime(lastWeekToLocal), out var sameTime)
             ? sameTime
-            : lastWeekFromUtc + (nowUtc - todayFromUtc);
+            : lastWeekFromUtc + (nowUtc - sinceUtc);
 
         var closed = await db.Tabs
             .AsNoTracking()
             .Where(t => t.BranchId == branchId
                         && t.Status == TabStatus.Closed
                         && t.ClosedAtUtc != null
-                        && ((t.ClosedAtUtc >= todayFromUtc && t.ClosedAtUtc <= nowUtc)
+                        && ((t.ClosedAtUtc >= sinceUtc && t.ClosedAtUtc <= nowUtc)
                             || (t.ClosedAtUtc >= lastWeekFromUtc && t.ClosedAtUtc <= lastWeekToUtc)))
             .Select(t => new { ClosedAtUtc = t.ClosedAtUtc!.Value, t.TotalAmd })
             .ToListAsync(cancellationToken);
 
-        var todayAmd = closed.Where(t => t.ClosedAtUtc >= todayFromUtc).Sum(t => t.TotalAmd);
-        var lastWeekAmd = closed.Where(t => t.ClosedAtUtc < todayFromUtc).Sum(t => t.TotalAmd);
+        var todayAmd = closed.Where(t => t.ClosedAtUtc >= sinceUtc).Sum(t => t.TotalAmd);
+        var lastWeekAmd = closed.Where(t => t.ClosedAtUtc < sinceUtc).Sum(t => t.TotalAmd);
 
         return new OverviewRevenue(
             todayAmd,
@@ -297,7 +453,65 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             lastWeek,
             lastWeekAmd <= 0
                 ? null
-                : Math.Round((todayAmd - lastWeekAmd) * 100.0 / lastWeekAmd, 1, MidpointRounding.AwayFromZero));
+                : Math.Round((todayAmd - lastWeekAmd) * 100.0 / lastWeekAmd, 1, MidpointRounding.AwayFromZero),
+            sinceUtc);
+    }
+
+    /// <summary>The instant a service day's takings start; local midnight when the opening is skipped by a clock change.</summary>
+    private static DateTime StartOf(BranchZone zone, DateOnly date, TimeOnly opens) =>
+        zone.TryToUtc(date, opens, out var utc) ? utc : BranchTime.RangeToUtc(date, date, zone.TimeZoneId).FromUtc;
+
+    /// <summary>
+    /// The late nudge each confirmed guest with the app has in the outbox: its send time once sent, else when
+    /// it is due. A booking moved since carries its start in the key, so the latest one stands.
+    /// </summary>
+    private async Task<Dictionary<Guid, Nudge>> LateNudgesAsync(List<Entry> entries, CancellationToken cancellationToken)
+    {
+        var asked = entries.Where(e => e.Status == ReservationStatus.Confirmed && e.HasAccount).ToList();
+
+        if (asked.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = asked.Select(e => e.Id).ToHashSet();
+        var fromUtc = asked.Min(e => e.StartUtc);
+        var toUtc = asked.Max(e => e.StartUtc).AddDays(1);
+
+        // By type and due time; the key names the booking.
+        var messages = await db.OutboxMessages
+            .AsNoTracking()
+            .Where(m => m.Type == OutboxMessageTypes.ReservationLateNudge
+                        && m.DeadLetteredAtUtc == null
+                        && m.ScheduledForUtc >= fromUtc
+                        && m.ScheduledForUtc <= toUtc)
+            .Select(m => new { m.IdempotencyKey, m.ScheduledForUtc, m.SentAtUtc })
+            .ToListAsync(cancellationToken);
+
+        return messages
+            .Select(m => (Id: BookingOf(m.IdempotencyKey), m.ScheduledForUtc, m.SentAtUtc))
+            .Where(m => m.Id is { } id && ids.Contains(id))
+            .GroupBy(m => m.Id!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var latest = g.OrderByDescending(m => m.ScheduledForUtc).First();
+
+                    return new Nudge(latest.SentAtUtc ?? latest.ScheduledForUtc, latest.SentAtUtc is not null);
+                });
+    }
+
+    /// <summary>The booking a <c>reservation:{id}:…</c> key is about, or null for any other key.</summary>
+    private static Guid? BookingOf(string key)
+    {
+        var parts = key.Split(':');
+
+        return parts.Length >= 3
+               && parts[0] == "reservation"
+               && Guid.TryParse(parts[1], CultureInfo.InvariantCulture, out var id)
+            ? id
+            : null;
     }
 
     /// <summary>A booking the venue has promised a table to and that has not fallen through.</summary>
@@ -309,11 +523,53 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
     private sealed record HoursRow(DayOfWeek Day, TimeOnly OpensAt, TimeOnly ClosesAt, bool ClosesNextDay);
 
+    private sealed record Nudge(DateTime AtUtc, bool Sent);
+
+    /// <summary>A booking at the slot the service day counts it at.</summary>
+    /// <param name="Row">The booking as read.</param>
+    /// <param name="StartUtc">The slot's start.</param>
+    /// <param name="EndUtc">The slot's end.</param>
+    /// <param name="LocalDate">The slot's calendar date.</param>
+    /// <param name="LocalStartTime">The slot's start on the clock.</param>
+    /// <param name="PartySize">The party at that slot.</param>
+    /// <param name="Table">The slot's table.</param>
+    /// <param name="ChangeRequested">Counted at its confirmed slot while a change waits.</param>
+    private sealed record Entry(
+        BookingRow Row,
+        DateTime StartUtc,
+        DateTime EndUtc,
+        DateOnly LocalDate,
+        TimeOnly LocalStartTime,
+        int PartySize,
+        TableFacts Table,
+        bool ChangeRequested)
+    {
+        public Guid Id => Row.Id;
+
+        public string Code => Row.Code;
+
+        public ReservationStatus Status => Row.Status;
+
+        public string GuestName => Row.GuestName;
+
+        public ReservationChannel Channel => Row.Channel;
+
+        public DateTime? HoldExpiresAtUtc => Row.HoldExpiresAtUtc;
+
+        public bool HasAccount => Row.HasAccount;
+
+        /// <summary>How the counts see it: a waiting change of a confirmed booking is still confirmed.</summary>
+        public ReservationStatus Counted => ChangeRequested ? ReservationStatus.Confirmed : Status;
+
+        public static Entry AsBooked(BookingRow row) =>
+            new(row, row.StartUtc, row.EndUtc, row.LocalDate, row.LocalStartTime, row.PartySize, row.Table, ChangeRequested: false);
+    }
+
     private sealed class BranchRow
     {
         public string TimeZoneId { get; init; } = null!;
 
-        public int LateNudgeAfterMinutes { get; init; }
+        public int GraceMinutes { get; init; }
 
         public int Tables { get; init; }
 
@@ -330,6 +586,17 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         public long UnpaidAmd { get; init; }
     }
 
+    private sealed class TableFacts
+    {
+        public Guid Id { get; init; }
+
+        public string Label { get; init; } = null!;
+
+        public TableStatus Status { get; init; }
+
+        public string? RoomName { get; init; }
+    }
+
     private sealed class BookingRow
     {
         public Guid Id { get; init; }
@@ -342,26 +609,32 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
         public DateTime EndUtc { get; init; }
 
+        public DateOnly LocalDate { get; init; }
+
         public TimeOnly LocalStartTime { get; init; }
 
         public int PartySize { get; init; }
 
         public string GuestName { get; init; } = null!;
 
-        public Guid TableId { get; init; }
-
-        public string TableLabel { get; init; } = null!;
-
-        public TableStatus TableStatus { get; init; }
-
-        public string? RoomName { get; init; }
+        public TableFacts Table { get; init; } = null!;
 
         public ReservationChannel Channel { get; init; }
-
-        public DeclineReason? DeclinedBecause { get; init; }
 
         public DateTime? HoldExpiresAtUtc { get; init; }
 
         public bool HasAccount { get; init; }
+
+        public DateTime? PreviousStartUtc { get; init; }
+
+        public DateTime? PreviousEndUtc { get; init; }
+
+        public DateOnly? PreviousLocalDate { get; init; }
+
+        public TimeOnly? PreviousLocalStartTime { get; init; }
+
+        public int? PreviousPartySize { get; init; }
+
+        public TableFacts? PreviousTable { get; init; }
     }
 }

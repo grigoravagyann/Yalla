@@ -432,6 +432,16 @@ internal sealed class TableStateService(
         var session = await db.TableSessions
             .FirstOrDefaultAsync(s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, cancellationToken);
 
+        // The console finishes one booking's sitting, from a row that may be stale: the waiter may have
+        // freed the table since and seated somebody else. Free only that booking's sitting, still seated.
+        if (command.ExpectedReservationId is { } expected
+            && (session?.ReservationId != expected
+                || !await db.Reservations.AnyAsync(
+                    r => r.Id == expected && r.Status == ReservationStatus.Seated, cancellationToken)))
+        {
+            throw new TableSittingChangedException(table.Id, table.Label, expected, table.Status, session?.Id);
+        }
+
         // Throws InvalidTableTransitionException unless the table is Occupied, so an accidental
         // double-free is refused rather than silently writing a second audit row.
         table.Vacate();
