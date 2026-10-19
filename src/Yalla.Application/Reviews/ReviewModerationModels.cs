@@ -115,6 +115,41 @@ public sealed record ReviewReplyView(
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 }
 
+/// <summary>
+/// The venue's reply as the public reads it - the public reviews, the place's details and the author's own
+/// review in the app. The writer is shown as diners are: first name and surname initial.
+/// </summary>
+/// <param name="Text">The reply.</param>
+/// <param name="AuthorName">
+/// "Aram H." - <c>BranchReview.PublicReplyAuthorName</c> of the writer's name as written. Absent when that
+/// name looks like contact details and cannot be published; the role then signs the reply alone. The
+/// console reads the full name.
+/// </param>
+/// <param name="AuthorRole">1 Owner, 2 Manager (a branch manager), 6 GeneralManager.</param>
+/// <param name="CreatedAtUtc">First published.</param>
+/// <param name="UpdatedAtUtc">Last change of the text.</param>
+/// <param name="Edited">Changed after it was first published.</param>
+public sealed record PublicReviewReplyView(
+    string Text,
+    string? AuthorName,
+    StaffRole AuthorRole,
+    DateTime CreatedAtUtc,
+    DateTime UpdatedAtUtc,
+    bool Edited)
+{
+    /// <summary>The public form of a reply, or null when there is none.</summary>
+    public static PublicReviewReplyView? From(ReviewReplyView? reply) =>
+        reply is null
+            ? null
+            : new PublicReviewReplyView(
+                reply.Text,
+                BranchReview.PublicReplyAuthorName(reply.AuthorName),
+                reply.AuthorRole,
+                reply.CreatedAtUtc,
+                reply.UpdatedAtUtc,
+                reply.Edited);
+}
+
 /// <summary>One row of <see cref="ModeratedReviewSummary.Distribution"/>.</summary>
 /// <param name="Stars">5 down to 1.</param>
 /// <param name="Count">Shown reviews with that many stars.</param>
@@ -130,8 +165,8 @@ public sealed record ReviewStarCount(int Stars, int Count);
 /// <param name="Visible">Shown, and so counted in the rating.</param>
 /// <param name="Rating">The shown reviews' average to one decimal, as the public card shows it; null with none.</param>
 /// <param name="RatingChange30Days">
-/// <paramref name="Rating"/> minus the same average over the shown reviews written more than 30 days ago,
-/// to one decimal. Null when either side has no review.
+/// Today's rating of the shown reviews minus the same for the shown reviews older than 30 days, to one
+/// decimal - rounded once, from the unrounded averages. Null when either side has no review.
 /// </param>
 /// <param name="Distribution">Shown reviews per star, always five rows, 5 stars first.</param>
 public sealed record ModeratedReviewSummary(
@@ -234,6 +269,17 @@ public interface IReviewModerationService
     /// <exception cref="KeyNotFoundException">No such review at this branch.</exception>
     Task<ModeratedReviewView> RemoveReplyForVenueAsync(
         Guid branchId,
+        Guid reviewId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Takes a venue's reply down, as the platform - the platform never writes one. Idempotent; the
+    /// author's unread notice goes with it; audited as <c>review.remove-reply</c> with
+    /// <c>actorType: "platform"</c>, the one reply row the activity feed shows.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.Staff.StaffPermissionException">Not an active platform admin.</exception>
+    /// <exception cref="KeyNotFoundException">No such review.</exception>
+    Task<ModeratedReviewView> RemoveReplyForPlatformAsync(
         Guid reviewId,
         CancellationToken cancellationToken = default);
 

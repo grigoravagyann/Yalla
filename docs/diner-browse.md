@@ -377,7 +377,8 @@ undismissed report; most recently reported first - hiding a review answers its r
   "summary": {                                // the whole branch, whatever the filter and page
     "all": 7, "reported": 2, "hidden": 2, "visible": 5,
     "rating": 4.7,                            // shown reviews, one decimal; absent with none
-    "ratingChange30Days": 0.1,                // rating minus the rating of the shown reviews written > 30 days ago; absent when either has none
+    "ratingChange30Days": 0.1,                // today's rating of shown reviews minus the same for those older than 30 days,
+                                              // from the unrounded averages, rounded once; absent when either has none
     "distribution": [ { "stars": 5, "count": 3 }, { "stars": 4, "count": 1 }, { "stars": 3, "count": 1 },
                       { "stars": 2, "count": 0 }, { "stars": 1, "count": 0 } ]   // always five rows, 5 first
   }
@@ -404,13 +405,14 @@ hiding what is already hidden for the same reason, putting back what is publishe
 
 The venue's **one public reply** under a review (venue console phase 4). Body of the PUT
 `{ "text": "…" }`: required, trimmed, at most 500 characters (422 naming `text`, bound `required` or
-`max`). A second PUT replaces the text; the same text again writes nothing. DELETE takes it down and is
+`max`). Text that shows nothing - white space, zero-width and other invisible characters only - is blank
+(`required`). A second PUT replaces the text; the same text again writes nothing. DELETE takes it down and is
 a no-op when there is none. Both answer the review as the list shows it.
 
 ```json
 "reply": {
   "text": "Thank you, Arthur…",
-  "authorName": "Aram Hakobyan",   // the writer's full name as it was when they last saved it
+  "authorName": "Aram Hakobyan",   // console: the writer's full name as it was when they last saved it
   "authorRole": 1,                 // 1 Owner, 2 Manager (branch manager), 6 GeneralManager
   "createdAtUtc": "…",             // first published; a reply removed and written again starts over
   "updatedAtUtc": "…",             // last change of the text
@@ -418,6 +420,10 @@ a no-op when there is none. Both answer the review as the list shows it.
 }
 ```
 
+- **The public reads sign it short.** The public reviews, `recentReviews` and the author's own review
+  carry `PublicReviewReplyView`: the same fields, with `authorName` as `"Aram H."` - the rule diners'
+  names follow (`BranchReview.PublicReplyAuthorName`), absent when the name looks like contact details
+  (the role then signs alone). Only the consoles read the full name.
 - **Who.** The venue's own ranks only: the owner, a general manager, or this branch's manager - the
   same `ManagerOrAbove` + `BranchScoped` + K4 guard as the rest of these routes, then the stored role.
   **A platform admin is 403 `forbidden`**: the platform does not speak for a venue. **The last writer
@@ -426,14 +432,25 @@ a no-op when there is none. Both answer the review as the list shows it.
   `conflicting-state`; DELETE is always allowed. The reply follows the review's visibility: it is on
   the public reviews page and `recentReviews` only while the review is, and the venue (on this list)
   and the author (on `GET /api/diner/branches/{id}/review`) still see it while it is hidden. Written
-  under the same row lock as a takedown, so the two serialise.
+  under the same row lock as a takedown, so the two serialise. A change that writes into the author's
+  feed (a first reply, a removal, a takedown) takes the author's account lock first and the review's
+  second - the order account deletion takes them in - and writes no notice into an account that is not
+  live.
+- **`CK_BranchReviews_Reply`** holds the six reply columns all null or all set, with `ReplyAuthorRole`
+  1, 2 or 6.
 - **The author is told once.** The first reply on a review writes a `review-replied` feed entry
   (no push, like `review-hidden`); an edit writes none. Removing the reply deletes that entry if the
   author has not read it yet - the console's undo is a DELETE seconds later.
 - **Audited** in the same transaction: `review.reply`
   `{ actorType: "venue", branchId, edited, before }` (the previous text) and `review.remove-reply`
-  `{ actorType: "venue", branchId, before: { text, authorName } }`. A request that changes nothing
-  writes nothing. 404 `not-found` for a review that is not at this branch.
+  `{ actorType: "venue"|"platform", branchId, before: { text, authorName } }`. A request that changes
+  nothing writes nothing. 404 `not-found` for a review that is not at this branch. The platform's
+  activity feed leaves out `review.reply` and a venue's `review.remove-reply`.
+
+**The platform takes a reply down** with `DELETE /api/platform/reviews/{reviewId}/reply`
+(`PlatformAdminOnly`, re-checked from the stored row; 404 for an unknown review): the same removal, on a
+shown or hidden review, the author's unread notice taken back, audited `review.remove-reply` with
+`actorType: "platform"` - and that row is shown in the activity feed. The platform never writes a reply.
 
 ---
 
@@ -780,15 +797,16 @@ PUT, `POST /api/diner/reviews/{id}/report`, `POST /api/diner/me/photo` and `POST
 
 **Public review list.** `/reviews` and `recentReviews` are ordered by `createdAtUtc` descending (index
 `(BranchId, CreatedAtUtc)`); each item adds `edited: boolean` (`updatedAtUtc` differs from
-`createdAtUtc`) and `reply`, the venue's `ReviewReplyView` (absent until the venue answers; see the
-reply route above). Hidden reviews are left out of the list, `rating`, `reviewCount` and so the badges, on
+`createdAtUtc`) and `reply`, the venue's `PublicReviewReplyView` - signed `"Aram H."` (absent until the
+venue answers; see the reply route above). Hidden reviews are left out of the list, `rating`, `reviewCount` and so the badges, on
 the list, search and details routes alike.
 
 **`authorName`.** The rule under the reviews route above (`BranchReview.PublicAuthorName`). The
 moderation lists use the same name.
 
 **The diner's own review.** `DinerReviewView` adds `publicAuthorName: string`, `hidden: boolean` and
-`reply` (the venue's answer, absent until there is one - shown to the author even while hidden).
+`reply` (the venue's answer as `PublicReviewReplyView`, absent until there is one - shown to the author
+even while hidden).
 
 **Platform moderation** (`PlatformAdminOnly`; the service re-checks an active platform admin from the
 stored row; audited):

@@ -8,7 +8,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
     /// <summary>
     /// The venue's public reply to a review, as six nullable columns on <c>BranchReviews</c> - the text,
     /// the signature as written (name and role), who wrote it last, and when it was first published and
-    /// last changed - and the feed kind <c>review-replied</c> admitted by <c>CK_DinerNotifications_Kind</c>.
+    /// last changed - held whole or absent, and signed by an owner, branch manager or general manager, by
+    /// <c>CK_BranchReviews_Reply</c>; and the feed kind <c>review-replied</c> admitted by
+    /// <c>CK_DinerNotifications_Kind</c>.
     /// </summary>
     /// <remarks>
     /// Every existing review starts with no reply. Down drops the columns and deletes the
@@ -62,6 +64,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 nullable: true);
 
             migrationBuilder.AddCheckConstraint(
+                name: "CK_BranchReviews_Reply",
+                table: "BranchReviews",
+                sql: "([ReplyText] IS NULL AND [ReplyAuthorName] IS NULL AND [ReplyAuthorRole] IS NULL AND [ReplyByStaffMemberId] IS NULL AND [RepliedAtUtc] IS NULL AND [ReplyUpdatedAtUtc] IS NULL) OR ([ReplyText] IS NOT NULL AND [ReplyAuthorName] IS NOT NULL AND [ReplyAuthorRole] IN (1, 2, 6) AND [ReplyByStaffMemberId] IS NOT NULL AND [RepliedAtUtc] IS NOT NULL AND [ReplyUpdatedAtUtc] IS NOT NULL)");
+
+            migrationBuilder.AddCheckConstraint(
                 name: "CK_DinerNotifications_Kind",
                 table: "DinerNotifications",
                 sql: "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied')");
@@ -70,6 +77,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropCheckConstraint(
+                name: "CK_BranchReviews_Reply",
+                table: "BranchReviews");
+
             migrationBuilder.DropCheckConstraint(
                 name: "CK_DinerNotifications_Kind",
                 table: "DinerNotifications");

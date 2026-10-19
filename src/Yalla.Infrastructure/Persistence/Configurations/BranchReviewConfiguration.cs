@@ -1,18 +1,35 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Venues;
 
 namespace Yalla.Infrastructure.Persistence.Configurations;
 
 internal sealed class BranchReviewConfiguration : EntityConfiguration<BranchReview>
 {
+    private static readonly string ReplyRoles =
+        $"{(int)StaffRole.Owner}, {(int)StaffRole.Manager}, {(int)StaffRole.GeneralManager}";
+
+    /// <summary>The six reply columns all null, or all set with a venue rank's role.</summary>
+    private static readonly string ReplyCheck =
+        "([ReplyText] IS NULL AND [ReplyAuthorName] IS NULL AND [ReplyAuthorRole] IS NULL "
+        + "AND [ReplyByStaffMemberId] IS NULL AND [RepliedAtUtc] IS NULL AND [ReplyUpdatedAtUtc] IS NULL) OR "
+        + "([ReplyText] IS NOT NULL AND [ReplyAuthorName] IS NOT NULL AND [ReplyAuthorRole] IN (" + ReplyRoles + ") "
+        + "AND [ReplyByStaffMemberId] IS NOT NULL AND [RepliedAtUtc] IS NOT NULL AND [ReplyUpdatedAtUtc] IS NOT NULL)";
+
     protected override void ConfigureEntity(EntityTypeBuilder<BranchReview> builder)
     {
         builder.ToTable("BranchReviews", table =>
+        {
             table.HasCheckConstraint(
                 "CK_BranchReviews_Rating",
-                $"[Rating] BETWEEN {BranchReview.MinRating} AND {BranchReview.MaxRating}"));
+                $"[Rating] BETWEEN {BranchReview.MinRating} AND {BranchReview.MaxRating}");
+
+            // A reply is whole or absent - never a text with no signature, or a signature with no text -
+            // and signed by one of the venue's own ranks.
+            table.HasCheckConstraint("CK_BranchReviews_Reply", ReplyCheck);
+        });
 
         builder.Property(r => r.Rating).IsRequired();
 

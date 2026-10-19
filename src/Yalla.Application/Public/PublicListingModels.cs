@@ -113,8 +113,8 @@ public sealed record PublicBranchDetail(
 /// <param name="UpdatedAtUtc">When the rating or text last changed.</param>
 /// <param name="Edited">Whether it was changed after it was first written.</param>
 /// <param name="Reply">
-/// The venue's public reply under it, or null. Only shown reviews are listed, so a hidden review's
-/// reply is never public either.
+/// The venue's public reply under it, or null, signed with the writer's first name and surname initial.
+/// Only shown reviews are listed, so a hidden review's reply is never public either.
 /// </param>
 public sealed record PublicReviewView(
     Guid ReviewId,
@@ -124,7 +124,7 @@ public sealed record PublicReviewView(
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc,
     bool Edited,
-    Yalla.Application.Reviews.ReviewReplyView? Reply = null);
+    Yalla.Application.Reviews.PublicReviewReplyView? Reply = null);
 
 /// <summary>A page of a branch's published reviews, newest first by when each was written.</summary>
 public sealed record PublicReviewPage(

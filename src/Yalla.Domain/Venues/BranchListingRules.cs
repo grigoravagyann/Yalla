@@ -253,6 +253,19 @@ public static class BranchBadgeRules
         return badges;
     }
 
+    /// <summary>
+    /// Today's rating of the shown reviews minus the same for the reviews older than the window, to one
+    /// decimal - rounded once, from the unrounded averages, so two figures each rounded the other way do
+    /// not show a tenth that is not there. Null when either side has no review.
+    /// </summary>
+    public static double? RatingChange(int nowCount, long nowSum, int beforeCount, long beforeSum) =>
+        nowCount <= 0 || beforeCount <= 0
+            ? null
+            : Math.Round(
+                ((double)nowSum / nowCount) - ((double)beforeSum / beforeCount),
+                1,
+                MidpointRounding.AwayFromZero);
+
     /// <summary>Average to one decimal, or null when nobody has rated it - not zero, which reads as terrible.</summary>
     public static double? AverageRating(int reviewCount, long ratingSum) =>
         reviewCount <= 0 ? null : Math.Round((double)ratingSum / reviewCount, 1, MidpointRounding.AwayFromZero);

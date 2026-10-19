@@ -442,7 +442,8 @@ internal sealed class PublicListingQuery(
 
                 // The venue's answer under it. Only shown reviews reach this list, so a hidden one's
                 // reply never does either.
-                ReviewReplyView.From(r.ReplyText, r.ReplyAuthorName, r.ReplyAuthorRole, r.RepliedAtUtc, r.ReplyUpdatedAtUtc))),
+                PublicReviewReplyView.From(
+                    ReviewReplyView.From(r.ReplyText, r.ReplyAuthorName, r.ReplyAuthorRole, r.RepliedAtUtc, r.ReplyUpdatedAtUtc)))),
         ];
     }
 

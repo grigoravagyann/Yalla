@@ -300,5 +300,5 @@ internal sealed class BranchReviewService(
             review.UpdatedAtUtc,
             BranchReview.PublicAuthorName(displayName),
             review.IsHidden,
-            ReviewReplyView.From(review));
+            PublicReviewReplyView.From(ReviewReplyView.From(review)));
 }

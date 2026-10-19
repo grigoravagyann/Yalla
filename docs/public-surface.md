@@ -109,10 +109,12 @@ list, `recentReviews`, `rating`, `reviewCount`, and so the badges. A venue canno
 platform hid. Every change is audited as `review.hide` or `review.unhide`.
 
 **The venue's reply.** The owner, a general manager or the branch's manager may publish one reply under a
-shown review (`PUT /api/branches/{branchId}/reviews/{reviewId}/reply`, at most 500 characters, signed
-with the writer's name and role), edit it and take it down (`DELETE` on the same route). It appears as
-`reply` on each item of the public list and `recentReviews`, and leaves with the review when the review
-is hidden. Diners flag reviews with
+shown review (`PUT /api/branches/{branchId}/reviews/{reviewId}/reply`, at most 500 characters), edit it
+and take it down (`DELETE` on the same route); the platform can take it down too
+(`DELETE /api/platform/reviews/{reviewId}/reply`). It appears as `reply` on each item of the public
+list and `recentReviews`, signed with the writer's role and their first name and surname initial
+(`Aram H.`, the rule diners' names follow; the full name stays in the consoles), and leaves with the
+review when the review is hidden. Diners flag reviews with
 `POST /api/diner/reviews/{reviewId}/report`; a report takes nothing down on its own.
 
 The full contract for these routes - every shape, the app's field maps, the rate limits, the Orders

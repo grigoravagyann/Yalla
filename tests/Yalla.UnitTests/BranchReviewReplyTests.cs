@@ -75,6 +75,49 @@ public class BranchReviewReplyTests
         Assert.Equal(bound, Assert.Single(refused.Violations).Bound);
     }
 
+    [Theory]
+    [InlineData("\u200B")]
+    [InlineData("\u200B\u200C\u200D")]
+    [InlineData(" \uFEFF \u2060 ")]
+    [InlineData("\u3164\u2800")]
+    [InlineData("\u00AD\u180E")]
+    public void A_reply_of_invisible_characters_only_is_blank(string text)
+    {
+        var refused = Assert.Throws<FieldValidationException>(
+            () => Review().Reply(OwnerId, "Aram Hakobyan", StaffRole.Owner, text, Now));
+
+        Assert.Equal(FieldBounds.Required, Assert.Single(refused.Violations).Bound);
+    }
+
+    [Fact]
+    public void Invisible_characters_beside_words_are_kept_as_written()
+    {
+        var review = Review();
+
+        Assert.True(review.Reply(OwnerId, "Aram Hakobyan", StaffRole.Owner, "Thank\u200Byou", Now));
+        Assert.Equal("Thank\u200Byou", review.ReplyText);
+    }
+
+    [Theory]
+    [InlineData("Aram Hakobyan", "Aram H.")]
+    [InlineData("Լիլիթ Սարգսյան", "Լիլիթ Ս.")]
+    [InlineData("Founder", "Founder")]
+    [InlineData("General Manager", "General M.")]
+    public void The_public_signs_a_reply_with_a_first_name_and_an_initial(string fullName, string shown)
+    {
+        Assert.Equal(shown, BranchReview.PublicReplyAuthorName(fullName));
+    }
+
+    [Theory]
+    [InlineData("aram@example.am Hakobyan")]
+    [InlineData("+37491000000")]
+    [InlineData("   ")]
+    public void A_name_that_looks_like_contact_details_is_not_published_at_all(string fullName)
+    {
+        // Not "Yalla diner": that is a diner's stand-in, and a reply is the venue's. The role signs it alone.
+        Assert.Null(BranchReview.PublicReplyAuthorName(fullName));
+    }
+
     [Fact]
     public void A_reply_over_the_limit_is_refused_and_the_limit_itself_is_fine()
     {

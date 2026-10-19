@@ -523,6 +523,8 @@ ones they had then. `detail` is the row's JSON as written:
 | `review.hide`, `review.unhide` | venue or platform | `actorType`, `branchId`, `reason`, `before` |
 | `review.dismiss-reports` | platform | `actorType`, `branchId`, `dismissed`, `reasons` (count per report reason) |
 | `review.restore-reports` | platform | `actorType`, `branchId`, `restored`, `dismissedAtUtc` (the dismissal it undid) |
+| `review.remove-reply` | platform (`DELETE /api/platform/reviews/{id}/reply`) or venue | `actorType`, `branchId`, `before` (`text`, `authorName`); **only the platform's rows are in the feed** |
+| `review.reply` | owner, general or branch manager | `actorType`, `branchId`, `edited`, `before`; a venue answering its guests, **left out of the feed** |
 | `table.regenerate-qr` | manager or platform | `branchId`, `label`, `previousQrToken` (dead the moment it was replaced) |
 | `admin.rename` | platform | `before`, `after` |
 | `admin.password-change` | platform | `otherSignInsEnded`, `resetLinksEnded` - nothing about either password |

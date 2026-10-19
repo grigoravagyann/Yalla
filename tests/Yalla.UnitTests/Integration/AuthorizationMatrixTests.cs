@@ -139,6 +139,12 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/reservation-policy/defaults"),
             caller => Venue(caller, HttpStatusCode.OK)),
 
+        // The platform takes a venue's reply down (it never writes one). No reply in this world, so the
+        // admitted call is the no-op answer.
+        ["DELETE /api/platform/reviews/{reviewId}/reply"] = new(
+            (w, c) => c.DeleteAsync($"/api/platform/reviews/{w.ReviewId}/reply"),
+            Platform),
+
         ["GET /api/platform/branches/{branchId}/reviews"] = new(
             (w, c) => c.GetAsync($"/api/platform/branches/{w.Branch.BranchId}/reviews"),
             Platform),

@@ -87,7 +87,8 @@ out of every public read and every derived number below.
 **The venue's reply** is on the same row, all nullable: `ReplyText` (500), the signature as it was
 written - `ReplyAuthorName` (200) and `ReplyAuthorRole` (the writer's `StaffRole`) - `ReplyByStaffMemberId`
 (no foreign key, as above), `RepliedAtUtc` (first published) and `ReplyUpdatedAtUtc` (last change). One
-reply per review is the shape rather than a rule to hold. A hidden review's reply leaves the public reads
+reply per review is the shape rather than a rule to hold. `CK_BranchReviews_Reply` holds the six all null
+or all set, with `ReplyAuthorRole` 1, 2 or 6 (owner, branch manager, general manager). A hidden review's reply leaves the public reads
 with it.
 
 Rating, review count and the `popular`/`new` badges on the browse routes are **derived at read

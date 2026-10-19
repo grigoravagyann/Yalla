@@ -2,6 +2,7 @@ using System.Text;
 using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
+using Yalla.Domain.Staff;
 
 namespace Yalla.Domain.Venues;
 
@@ -188,6 +189,12 @@ public sealed class BranchReview : Entity
     {
         var checkedText = CheckReply(text);
 
+        if (!StaffRoleRules.ManagesAtVenue(authorRole))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(authorRole), authorRole, "A reply is signed by an owner, a general manager or a branch manager.");
+        }
+
         if (IsHidden)
         {
             throw new DomainStateException(
@@ -234,11 +241,14 @@ public sealed class BranchReview : Entity
         return true;
     }
 
-    /// <summary>A reply: required, trimmed, at most <see cref="MaxReplyLength"/> characters.</summary>
+    /// <summary>
+    /// A reply: required, trimmed, at most <see cref="MaxReplyLength"/> characters. Text a reader would see
+    /// as empty - white space, zero-width and other invisible characters only - is blank.
+    /// </summary>
     /// <exception cref="FieldValidationException">Naming <c>text</c>.</exception>
     public static string CheckReply(string? text)
     {
-        if (string.IsNullOrWhiteSpace(text))
+        if (IsVisiblyBlank(text))
         {
             throw new FieldValidationException(new FieldViolation(
                 "text", "Write the reply.", FieldBounds.Required));
@@ -254,6 +264,34 @@ public sealed class BranchReview : Entity
                 Max: MaxReplyLength,
                 Value: trimmed.Length))
             : trimmed;
+    }
+
+    /// <summary>
+    /// Whether nothing in the text shows: white space, control and format characters (zero-width space
+    /// and joiners, the byte-order mark, the word joiner, the soft hyphen) and the few letters and symbols
+    /// that render as nothing (the Hangul fillers, the blank Braille pattern).
+    /// </summary>
+    public static bool IsVisiblyBlank([System.Diagnostics.CodeAnalysis.NotNullWhen(false)] string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return true;
+        }
+
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var shows = !Rune.IsWhiteSpace(rune)
+                        && Rune.GetUnicodeCategory(rune) is not (System.Globalization.UnicodeCategory.Format
+                            or System.Globalization.UnicodeCategory.Control)
+                        && rune.Value is not (0x115F or 0x1160 or 0x3164 or 0xFFA0 or 0x2800);
+
+            if (shows)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>A takedown reason: required, trimmed, at most <see cref="FieldLengths.Reason"/> characters.</summary>
@@ -308,6 +346,15 @@ public sealed class BranchReview : Entity
     }
 
     /// <summary>
+    /// The name a reply is signed with where the public reads it - the public reviews, the place's
+    /// details and the author's own review: <see cref="PublicAuthorName"/>'s rule, "Aram H.", so a member
+    /// of staff is shown no more fully than a diner is. Null when that rule would not publish the name -
+    /// not "Yalla diner", which stands in for a diner; the role signs the reply alone. The console keeps
+    /// the full name.
+    /// </summary>
+    public static string? PublicReplyAuthorName(string? fullName) => ShortName(fullName);
+
+    /// <summary>
     /// The name a review is published under: "Anahit S.", "Narek", or "Yalla diner".
     /// </summary>
     /// <remarks>
@@ -324,13 +371,16 @@ public sealed class BranchReview : Entity
     /// <item>Add the second word's initial and a full stop, only when that word starts with a letter.</item>
     /// </list>
     /// </remarks>
-    public static string PublicAuthorName(string? displayName)
+    public static string PublicAuthorName(string? displayName) => ShortName(displayName) ?? AnonymousAuthorName;
+
+    /// <summary>The rule under <see cref="PublicAuthorName"/>, with null where the name cannot be shown.</summary>
+    private static string? ShortName(string? displayName)
     {
         var words = (displayName ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
         if (words.Length == 0)
         {
-            return AnonymousAuthorName;
+            return null;
         }
 
         var first = words[0];
@@ -340,7 +390,7 @@ public sealed class BranchReview : Entity
             || first.Contains("www.", StringComparison.OrdinalIgnoreCase)
             || first.Any(char.IsDigit))
         {
-            return AnonymousAuthorName;
+            return null;
         }
 
         var kept = new StringBuilder();
@@ -366,7 +416,7 @@ public sealed class BranchReview : Entity
 
         if (name.Length == 0)
         {
-            return AnonymousAuthorName;
+            return null;
         }
 
         return words.Length > 1
