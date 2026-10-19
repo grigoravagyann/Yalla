@@ -21,6 +21,14 @@ public sealed record VerificationCodeRequestResult(
     int MaxAttempts,
     string? DevelopmentCode);
 
+/// <summary>Which ways of proving a phone number this deployment offers.</summary>
+/// <param name="Sms">
+/// A one-time code by SMS can be sent: a provider is configured, or this is Development, where the
+/// code goes to the log. False means <c>request-code</c> answers <c>sms-unavailable</c>.
+/// </param>
+/// <param name="Telegram">The Telegram bot is on, so <c>/api/auth/diner/telegram</c> is mapped.</param>
+public sealed record PhoneProofChannels(bool Sms, bool Telegram);
+
 /// <summary>Tokens issued to a diner who verified their phone number.</summary>
 /// <param name="AccessToken">Bearer token for the diner surface. Short-lived.</param>
 /// <param name="RefreshToken">Rotating handle. Send it once; the response carries its successor.</param>

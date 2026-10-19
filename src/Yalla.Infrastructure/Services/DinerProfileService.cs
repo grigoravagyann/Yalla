@@ -288,9 +288,27 @@ internal sealed class DinerProfileService(
     public async Task DeleteAccountAsync(
         string? password,
         string? code,
+        DateTime? tokenPhoneProvedAtUtc = null,
+        int? tokenSessionGeneration = null,
         CancellationToken cancellationToken = default)
     {
         var diner = await RequireDinerAsync(cancellationToken);
+        var nowUtc = clock.UtcNow;
+
+        // A sign-in that proved the phone a moment ago - by Telegram or by a code - is the same proof
+        // a code here would be, and where codes by SMS are off it is the only one an account with no
+        // password can give (decided 2026-10-20: Telegram only). The rule is SetPasswordAsync's: ten
+        // minutes, not from the future, and from a session that is still live.
+        var provedRecently = !diner.HasPassword
+                             && string.IsNullOrWhiteSpace(code)
+                             && tokenPhoneProvedAtUtc is { } proved
+                             && proved <= nowUtc.AddMinutes(1)
+                             && nowUtc - proved <= PhoneProofWindow;
+
+        if (provedRecently && tokenSessionGeneration != diner.SessionGeneration)
+        {
+            throw SessionRevoked();
+        }
 
         // Which proof is needed is decided by the row, and asked for by name before any budget is
         // spent: a form that forgot the field is not a guess.
@@ -300,10 +318,12 @@ internal sealed class DinerProfileService(
                 "password", "Enter the account's password to delete it.", FieldBounds.Required));
         }
 
-        if (!diner.HasPassword && string.IsNullOrWhiteSpace(code))
+        if (!diner.HasPassword && string.IsNullOrWhiteSpace(code) && !provedRecently)
         {
             throw new FieldValidationException(new FieldViolation(
-                "code", "Enter the code sent to the account's number to delete it.", FieldBounds.Required));
+                "code",
+                "Enter the code sent to the account's number, or prove the number with Telegram again, to delete it.",
+                FieldBounds.Required));
         }
 
         // Per account, right or wrong, the same window as a password sign-in. Deletion cannot be
@@ -326,12 +346,16 @@ internal sealed class DinerProfileService(
                 throw ProofRejected();
             }
         }
-        else
+        else if (!provedRecently)
         {
             await ConsumeCodeAsync(diner.PhoneE164!, code!, cancellationToken);
         }
+        else
+        {
+            logger.LogInformation("Diner {DinerUserId} is deleting the account on a fresh phone proof.", diner.Id);
+        }
 
-        await DinerAccountDeletion.EraseAsync(db, photos, refreshTokens, diner, clock.UtcNow, cancellationToken);
+        await DinerAccountDeletion.EraseAsync(db, photos, refreshTokens, diner, nowUtc, cancellationToken);
 
         authority.InvalidateDiner(diner.Id);
 

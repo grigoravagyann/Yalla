@@ -18,7 +18,15 @@ namespace Yalla.Infrastructure.Identity;
 /// <param name="DeliversNothing">
 /// No provider is configured: requests are accepted and nothing is ever delivered.
 /// </param>
-public sealed record CredentialDeliveryReport(bool WritesCredentialsToLog, bool DeliversNothing);
+/// <param name="CodesDeliverNothing">
+/// The SMS half of <paramref name="DeliversNothing"/>: no code sender is configured outside
+/// Development, so a code request is refused (<c>sms-unavailable</c>) and phones are proved with
+/// Telegram only. Kept apart from the email half, which has its own reasons not to refuse.
+/// </param>
+public sealed record CredentialDeliveryReport(
+    bool WritesCredentialsToLog,
+    bool DeliversNothing,
+    bool CodesDeliverNothing = false);
 
 /// <summary>
 /// The senders registered outside Development, for as long as no real provider is wired up.

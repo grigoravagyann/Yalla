@@ -326,7 +326,8 @@ public static class DependencyInjection
         // Published so Program.cs can warn at startup without naming these internal types.
         services.AddSingleton(new CredentialDeliveryReport(
             WritesCredentialsToLog: standInUsed && allowDevelopmentSecretsInResponses,
-            DeliversNothing: standInUsed && !allowDevelopmentSecretsInResponses));
+            DeliversNothing: standInUsed && !allowDevelopmentSecretsInResponses,
+            CodesDeliverNothing: !realCodeSender && !allowDevelopmentSecretsInResponses));
 
         return services;
     }

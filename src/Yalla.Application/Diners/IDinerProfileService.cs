@@ -66,7 +66,8 @@ public interface IDinerProfileService
 
     /// <summary>
     /// Deletes the caller's account, after proving it is really them: the password when the account
-    /// has one, otherwise a one-time code sent to its number.
+    /// has one, otherwise a one-time code sent to its number or a phone proof on the session from the
+    /// last ten minutes - the only proof left where codes by SMS are off.
     /// </summary>
     /// <remarks>
     /// One transaction: the account becomes a tombstone with nothing identifying left on it, every
@@ -78,7 +79,20 @@ public interface IDinerProfileService
     /// <c>invalid-credentials</c> for a wrong password or code; <c>too-many-attempts</c> once the
     /// attempts on the account, or on the code, are spent.
     /// </exception>
-    Task DeleteAccountAsync(string? password, string? code, CancellationToken cancellationToken = default);
+    /// <param name="password">The account's password, when it has one.</param>
+    /// <param name="code">A one-time code for the account's number, when it has no password.</param>
+    /// <param name="tokenPhoneProvedAtUtc">
+    /// The <c>phone_proved_at</c> claim of the token the request carried, or null. Within ten minutes
+    /// it stands in for the code on an account with no password.
+    /// </param>
+    /// <param name="tokenSessionGeneration">The <c>sgen</c> claim: a phone proof from an ended session is refused.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task DeleteAccountAsync(
+        string? password,
+        string? code,
+        DateTime? tokenPhoneProvedAtUtc = null,
+        int? tokenSessionGeneration = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stores an image as the caller's profile picture, replacing whatever was there.
