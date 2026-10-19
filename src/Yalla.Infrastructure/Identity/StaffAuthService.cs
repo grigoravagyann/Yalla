@@ -3,9 +3,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
+using Yalla.Application.Reservations;
+using Yalla.Application.Staff;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.Infrastructure.Identity;
 
@@ -363,7 +366,7 @@ internal sealed class StaffAuthService(
         var device = await db.StaffDevices
             .AsNoTracking()
             .Where(d => d.Id == deviceId)
-            .Select(d => new { d.VenueId, d.BranchId, Revoked = d.RevokedAtUtc != null })
+            .Select(d => new { d.VenueId, d.BranchId, d.Branch.TimeZoneId, Revoked = d.RevokedAtUtc != null })
             .FirstOrDefaultAsync(cancellationToken);
 
         // Refused exactly as GetEnrolledDeviceAsync refuses: the PIN screen this feeds must not
@@ -373,12 +376,85 @@ internal sealed class StaffAuthService(
             throw DeviceNoLongerEnrolled();
         }
 
-        return await db.StaffMembers
+        var people = await db.StaffMembers
             .AsNoTracking()
             .Where(SignsInOn(device.VenueId, device.BranchId))
             .OrderBy(s => s.FullName)
-            .Select(s => new StaffRosterEntry(s.Id, s.FullName, s.Role))
+            .Select(s => new { s.Id, s.FullName, s.Role })
             .ToListAsync(cancellationToken);
+
+        var shifts = await ShiftsToShowAsync(device.BranchId, device.TimeZoneId, cancellationToken);
+
+        // The shifts only annotate the list. Who is on it is SignsInOn's alone, as for the PIN.
+        return
+        [
+            .. people.Select(p => shifts.TryGetValue(p.Id, out var shift)
+                ? new StaffRosterEntry(
+                    p.Id,
+                    p.FullName,
+                    p.Role,
+                    shift.OnNow,
+                    shift.View.StartsAt,
+                    shift.View.EndsAt,
+                    shift.View.EndsNextDay,
+                    shift.View.StartsAtUtc,
+                    shift.View.EndsAtUtc)
+                : new StaffRosterEntry(p.Id, p.FullName, p.Role, false, null, null, false, null, null)),
+        ];
+    }
+
+    /// <summary>
+    /// Each person's shift at this branch for the PIN screen, by the branch's wall clock: the one
+    /// running now, else the next to start later today. One read for the whole branch.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Yesterday's shifts are read as well as today's, because last night's 18:00-02:00 is still
+    /// running at 01:00; nothing older can be, a shift being at most sixteen hours. A person's
+    /// shifts never overlap, so of the ones not yet over the earliest is the running one when there
+    /// is one, and the next otherwise.
+    /// </para>
+    /// <para>
+    /// Every row at this branch is read, whoever it belongs to; the caller keeps only the people on
+    /// its roster. They all work here - this branch's own, or the whole venue's - which is the
+    /// rule the console's shift list counts shifts by too.
+    /// </para>
+    /// <para>
+    /// A branch whose zone this host cannot resolve gets no shifts rather than a 500: the roster is
+    /// how a tablet signs anybody in, and it is whole without them.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<Guid, (StaffShiftView View, bool OnNow)>> ShiftsToShowAsync(
+        Guid branchId,
+        string timeZoneId,
+        CancellationToken cancellationToken)
+    {
+        BranchZone zone;
+
+        try
+        {
+            zone = BranchZone.For(timeZoneId);
+        }
+        catch (BranchTimeZoneMisconfiguredException ex)
+        {
+            logger.LogWarning(ex, "Branch {BranchId} has a time zone this host cannot read; its roster shows no shifts.", branchId);
+            return new Dictionary<Guid, (StaffShiftView, bool)>();
+        }
+
+        var localNow = zone.ToLocal(clock.UtcNow);
+        var today = DateOnly.FromDateTime(localNow);
+        var yesterday = today.AddDays(-1);
+
+        var shifts = await db.StaffShifts
+            .AsNoTracking()
+            .Where(s => s.BranchId == branchId && s.Date >= yesterday && s.Date <= today && s.StartsAt != null)
+            .ToListAsync(cancellationToken);
+
+        return shifts
+            .Where(s => s.LocalEnd > localNow && (s.LocalStart <= localNow || s.Date == today))
+            .GroupBy(s => s.StaffMemberId)
+            .Select(g => g.OrderBy(s => s.LocalStart).First())
+            .ToDictionary(s => s.StaffMemberId, s => (StaffShiftService.ToView(s, zone), s.LocalStart <= localNow));
     }
 
     /// <summary>

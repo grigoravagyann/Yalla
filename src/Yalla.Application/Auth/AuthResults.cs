@@ -143,20 +143,44 @@ public sealed record EnrolledDeviceView(
     DateTime? LastSeenAtUtc);
 
 /// <summary>
-/// One person who may tap a PIN on this tablet, as its PIN screen lists them.
+/// One person who may tap a PIN on this tablet, as its PIN screen lists them - and whether they are on
+/// shift, so the screen can put those people first.
 /// </summary>
 /// <remarks>
-/// Deliberately three fields. The list is readable by anybody standing at a counter holding the
-/// tablet, so no phone, email or PIN state is on it - a name to tap and the id the PIN exchange
-/// needs.
+/// <para>
+/// The list is readable by anybody standing at a counter holding the tablet, so no phone, email or PIN
+/// state is on it - a name to tap, the id the PIN exchange needs, and the hours the person works
+/// here today, nothing more.
+/// </para>
+/// <para>
+/// <b>The shift is the one at this tablet's branch, by its wall clock:</b> the one running now - last
+/// night's still running past midnight included - else the next to start later today. None once
+/// today's are over, on another day, at another branch, or on a day off. The fields are
+/// <c>StaffShiftView</c>'s, so the console and the tablet read a shift the same way.
+/// </para>
+/// <para>
+/// <b>It never narrows the list.</b> Everybody who may sign in here is on it, on shift or not.
+/// </para>
 /// </remarks>
 /// <param name="StaffMemberId">What <c>POST /api/auth/staff/pin</c> takes.</param>
 /// <param name="FullName">The name to tap.</param>
 /// <param name="Role">Their role, so the screen can group or badge people.</param>
+/// <param name="OnShiftNow">A shift at this branch runs now: started, and not yet ended.</param>
+/// <param name="StartsAt">The shift's start, branch wall clock; absent with no shift to report.</param>
+/// <param name="EndsAt">Its end, branch wall clock, on the next date when <paramref name="EndsNextDay"/>; absent with no shift.</param>
+/// <param name="EndsNextDay">The shift ends after midnight - including at exactly 00:00. False with no shift.</param>
+/// <param name="StartsAtUtc">The start as an instant, so a screen left open can tell when it begins; absent with no shift.</param>
+/// <param name="EndsAtUtc">The end as an instant, so a screen left open can tell when it is over; absent with no shift.</param>
 public sealed record StaffRosterEntry(
     Guid StaffMemberId,
     string FullName,
-    Domain.Enums.StaffRole Role);
+    Domain.Enums.StaffRole Role,
+    bool OnShiftNow,
+    TimeOnly? StartsAt,
+    TimeOnly? EndsAt,
+    bool EndsNextDay,
+    DateTime? StartsAtUtc,
+    DateTime? EndsAtUtc);
 
 /// <summary>One enrolled tablet, as the admin panel lists it.</summary>
 /// <param name="Id">The device.</param>
