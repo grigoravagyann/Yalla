@@ -95,6 +95,28 @@ public sealed record RescheduleReservationCommand(
     DateTime? AcceptsFreeByUtc = null);
 
 /// <summary>
+/// Somebody holding a booking's manage link moving it: the same change as
+/// <see cref="RescheduleReservationCommand"/>, with the booking named by the link instead of by id.
+/// </summary>
+/// <remarks>
+/// No <c>ReservationId</c> on purpose. The token is the whole credential and it names exactly one
+/// booking, so there is no second id a caller could put here to reach another one.
+/// </remarks>
+/// <param name="TableId">The table to move to - the one it is on, or another at the same branch.</param>
+/// <param name="LocalDate">The new local calendar date at the branch.</param>
+/// <param name="LocalTime">The new local wall-clock start time at the branch.</param>
+/// <param name="PartySize">How many are coming now.</param>
+/// <param name="ClientCommandId">The caller's own id for this change, as on the diner's.</param>
+/// <param name="AcceptsFreeByUtc">As on <see cref="RescheduleReservationCommand"/>.</param>
+public sealed record RescheduleByManageTokenCommand(
+    Guid TableId,
+    DateOnly LocalDate,
+    TimeOnly LocalTime,
+    int PartySize,
+    Guid ClientCommandId,
+    DateTime? AcceptsFreeByUtc = null);
+
+/// <summary>
 /// The earlier guest answering a later guest's request for their table: "will you have left by 19:40?".
 /// </summary>
 /// <param name="ReservationId">The earlier guest's own booking - the one whose table is asked for.</param>

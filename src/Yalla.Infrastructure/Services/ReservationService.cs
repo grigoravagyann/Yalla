@@ -401,6 +401,84 @@ internal sealed class ReservationService(
             throw new KeyNotFoundException($"Reservation {command.ReservationId} was not found.");
         }
 
+        return await MoveAsync(reservation, command, dinerUserId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Moves a booking with its manage token: the diner's move, with the link as the proof.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One move, two ways in</b>, as cancelling is: the token finds the booking exactly as the
+    /// manage link's read and cancel find it - unknown, expired and gone answering identically - and
+    /// from there it is <see cref="MoveAsync"/>, the diner's move. The token is the credential and
+    /// names one booking; there is no id in the command to point it at another.
+    /// </para>
+    /// <para>
+    /// <b>The phone gate is the booking's account's.</b> It was never about who is asking: the moved
+    /// booking's reminder and no-show record land on the account's number, so that number must still
+    /// be a proved one, whoever holds the link. A booking whose account was deleted has no account to
+    /// land on - the deletion cut the link to it - and is refused the same way, as the gate refuses an
+    /// account row that is not there. Such a booking can still be read and cancelled from its link.
+    /// </para>
+    /// <para>
+    /// <b>The change is recorded as the diner's</b> - the booking's account is the actor in
+    /// <c>ProcessedCommands</c> - so a retry is recognised whichever way it arrives, and an id that
+    /// belongs to another booking, or to a different change of this one, is the same
+    /// <c>client-command-id-in-use</c> it is for the app.
+    /// </para>
+    /// <para>
+    /// <b>The one answer that is narrower than the diner's</b> is a clash with another of the diner's
+    /// bookings: <see cref="ManageLinkOverlapsOwnException"/> instead of
+    /// <see cref="ReservationOverlapsOwnException"/>, the same 409 and code with nothing about the other
+    /// booking. The link shows one booking, and its refusals must not show a second.
+    /// </para>
+    /// </remarks>
+    public async Task<ReservationView> RescheduleByManageTokenAsync(
+        string manageToken,
+        RescheduleByManageTokenCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var reservation = await FindByManageTokenAsync(manageToken, cancellationToken);
+
+        if (reservation.DinerUserId is not { } dinerUserId)
+        {
+            throw new Domain.Identity.PhoneNotVerifiedException(Guid.Empty, "Changing a booking");
+        }
+
+        await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, "Changing a booking", cancellationToken);
+
+        var move = new RescheduleReservationCommand(
+            reservation.Id,
+            command.TableId,
+            command.LocalDate,
+            command.LocalTime,
+            command.PartySize,
+            command.ClientCommandId,
+            command.AcceptsFreeByUtc);
+
+        try
+        {
+            return await MoveAsync(reservation, move, dinerUserId, cancellationToken);
+        }
+        catch (ReservationOverlapsOwnException)
+        {
+            throw new ManageLinkOverlapsOwnException();
+        }
+    }
+
+    /// <summary>
+    /// The move itself, for a caller already proved entitled to move <paramref name="reservation"/> and
+    /// whose phone gate has passed - the diner's own booking, or the booking behind a manage link.
+    /// </summary>
+    private async Task<ReservationView> MoveAsync(
+        Reservation reservation,
+        RescheduleReservationCommand command,
+        Guid dinerUserId,
+        CancellationToken cancellationToken)
+    {
         // The branch's zone first, because a replay is judged by where the change asked to go: the
         // start a retry names is a local time, and the record holds the instant it became.
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);

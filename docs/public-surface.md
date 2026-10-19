@@ -369,6 +369,7 @@ Notes for a mapper:
 
 `GET /api/public/bookings/{token}`
 `POST /api/public/bookings/{token}/cancel`
+`POST /api/public/bookings/{token}/reschedule`
 
 A visitor who books from the web has no app, so no push reminder and no one-tap cancel reach them.
 Without a way to cancel, this is a **no-show generator** — the whole reservation product rests on
@@ -404,7 +405,13 @@ asked in the app (only they answer) and false when the venue decides; a declined
 `declinedBecause` (1 the venue said no, 2 nobody at the venue answered in time, 3 the guest before said
 no, 4 they did not answer), so the page apologises for the right thing. See [reservations.md](reservations.md#3d-short-notice-tonight-is-the-floors-to-decide).
 
-**Nothing else.** No diner id, no phone number, no other bookings, no floor state, no table or
+Two ids, for changing the booking from the link: `reservationId`, which the change screen sends as
+`excludeReservationId` on the public availability and day-slot reads so the table the visitor already
+holds reads as free to them, and `tableId`, the booked table, which those reads already publish for
+every table. Neither opens anything: every route keyed by a booking id wants the booking's diner or the
+venue's staff, and the reads that take one say no more about it than that its table is free.
+
+**Nothing else.** No diner id, no guest name or phone number, no other bookings, no floor state, no
 branch id. `PublicBookingView` is its own record for the same reason `PublicReservationPolicy` is:
 a field added to the authenticated shape must not be able to leak onto an anonymous route by being
 added upstream.
@@ -442,6 +449,41 @@ outbox messages, the save — happens once, in one place. A second cancellation 
 cancel would eventually stop cancelling the reminder, and the diner would get a push about a table
 they had already given back.
 
+### Changing the booking
+
+`POST /api/public/bookings/{token}/reschedule` takes the app's body unchanged - `date`, `time`,
+`partySize`, `diningTableId` (required: `tableId` from the read, or another table at the branch),
+`clientCommandId`, and `acceptsFreeByUtc` when the new slot's table asks for it - and answers `200` with
+the booking as the read shows it, re-read through the same projection: the same `code` and link at the
+new date, time, party size, table and status.
+
+It is `IReservationService.RescheduleByManageTokenAsync`, which finds the booking exactly as the read
+and the cancel do (unknown, expired and gone answering identically) and then runs the app's move - see
+[reservations.md](reservations.md#3c-changing-a-booking). The same rules and the same `reservation-*`
+answers, the status decided again (a confirmed party keeping its table and start without growing stays
+confirmed; a move into tonight, a party grown past the threshold, a strict branch or a no-show history
+waits for the venue), the same table lock, the same replaced reminders - a web booking's carry the same
+manage link - and the same idempotency record. The only difference is the proof.
+
+Three decisions:
+
+- **No phone proof is asked of the visitor.** The link already proves possession of the booking, as it
+  does for cancelling. The phone gate that applies is the **booking's account's**: the moved booking's
+  reminder and no-show record land on that number, so it must still be a proved one, whoever holds the
+  link - `403 phone-not-verified` otherwise. A booking whose account was deleted (the deletion cuts
+  `DinerUserId`) has no account to land on and is refused the same way, as the gate refuses an account
+  row that is not there. Both can still be read and cancelled.
+- **The change is recorded as the diner's.** `ProcessedCommands` holds the booking's account as the
+  actor, so a retry is a retry whichever way it arrives, and the same id on another booking - another
+  link, the same diner's other booking, a stranger's - or on a different change is
+  `409 client-command-id-in-use`, revealing nothing. A link cannot reach a second booking: the token
+  names the booking, and the body has no id to point elsewhere.
+- **One refusal is narrower than the app's.** A move onto a sitting that overlaps another of the diner's
+  live bookings at the branch is `409 reservation-overlaps-own` as in the app, but with **no `context`**
+  and a message that names no time, table or code (`ManageLinkOverlapsOwnException`). The app may name
+  the other booking - the diner is signed in and it is theirs; the link shows one booking, and its
+  refusals do not show a second to whoever opened it from a group chat.
+
 ### Rate limits
 
 Chained, so a request passes every one that applies to it:
@@ -454,7 +496,7 @@ Chained, so a request passes every one that applies to it:
 | Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
 | Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
 | Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/rooms` - replaces the page budget there; the branch ceiling still applies | 120 / min |
-| Public booking | Manage token (digest) | 20 / min |
+| Public booking | Manage token (digest) - the read, the cancel and the change share it | 20 / min |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
 of phones behind one address, so the page budget was spent before dinner. The page budget exists to

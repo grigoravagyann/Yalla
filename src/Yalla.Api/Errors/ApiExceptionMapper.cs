@@ -694,6 +694,15 @@ internal static class ApiExceptionMapper
                 ["expiresAtUtc"] = e.ExpiresAtUtc,
             }),
 
+        // The same refusal on a manage link, which names nothing about the other booking: the link shows
+        // one booking, and whoever opened it from a group chat learns no second. No context on purpose.
+        // Must stay ABOVE DomainStateException.
+        ManageLinkOverlapsOwnException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationOverlapsOwn,
+            e.Message,
+            LogAsError: false),
+
         // A diner's second table at the same branch while their first booking runs. Its own code so the
         // app can name the booking they already have. Must stay ABOVE DomainStateException.
         ReservationOverlapsOwnException e => new MappedError(

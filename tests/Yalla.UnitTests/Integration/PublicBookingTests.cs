@@ -424,6 +424,11 @@ public class PublicBookingTests(SqlServerFixture fixture)
         // policy edit cannot move a deadline the diner has already been shown.
         Assert.True(view.GetProperty("cancellationDeadlineUtc").GetDateTime() < booking.StartUtc);
 
+        // The two ids changing the booking from the link needs: its own, for the availability reads'
+        // excludeReservationId, and its table's, which those reads publish for every table anyway.
+        Assert.Equal(booking.Id, view.GetProperty("reservationId").GetGuid());
+        Assert.Equal(world.Branch.FirstTableId, view.GetProperty("tableId").GetGuid());
+
         // And nothing else. Every one of these is a real field on the authenticated shape.
         foreach (var withheld in new[]
                  {
@@ -431,7 +436,6 @@ public class PublicBookingTests(SqlServerFixture fixture)
                      "guestName",
                      "dinerUserId",
                      "id",
-                     "tableId",
                      "branchId",
                      "clientCommandId",
                      "manageToken",

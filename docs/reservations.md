@@ -409,6 +409,10 @@ so it is the **fourth** no-show in the window that costs instant confirmation.
 ## 3c. Changing a booking
 
 `POST /api/reservations/{reservationId}/reschedule`, `VerifiedDiner`, idempotent on `clientCommandId`.
+The same move from a booking's manage link, for a web visitor with no app, is
+`POST /api/public/bookings/{token}/reschedule` - see
+[public-surface.md](public-surface.md#changing-the-booking): one code path
+(`ReservationService.MoveAsync`), two ways of proving you may use it.
 
 ```json
 { "date": "2026-09-13", "time": "20:00", "partySize": 3, "diningTableId": "guid", "clientCommandId": "guid" }
@@ -1174,6 +1178,7 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `GET /api/branches/{branchId}/availability/slots` | `AllowAnonymous` | — |
 | `POST /api/reservations` | `VerifiedDiner` | — |
 | `POST /api/reservations/{reservationId}/reschedule` | `VerifiedDiner` | the booking must be **theirs**, else 404 - see [3c](#3c-changing-a-booking) |
+| `POST /api/public/bookings/{token}/reschedule` | `AllowAnonymous` | the manage link names the booking; its account's phone must be proved - see [public-surface.md](public-surface.md#changing-the-booking) |
 | `POST /api/reservations/{reservationId}/table-requests/{requestId}/answer` | `VerifiedDiner` | the booking must be **theirs** and the request put to them, else 404 - see [3e](#3e-a-tables-evening-when-one-booking-may-follow-another) |
 | `GET /api/reservations/mine` | `VerifiedDiner` | filtered to the caller's own `DinerUserId` |
 | `POST /api/reservations/{id}/cancel` | `VerifiedDiner` | the booking must be **theirs**, else 403 |
@@ -1185,9 +1190,9 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `GET /api/branches/{branchId}/overview` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only, from the stored row - the console's Overview, see [3f](#3f-the-consoles-overview-the-service-day-and-a-menu-on-every-booking) |
 | `GET /api/branches/{branchId}/reservations/awaiting` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch, from the stored row - the floor's list, see [3d](#3d-short-notice-tonight-is-the-floors-to-decide) |
 
-Availability - one slot or one day - is the only anonymous endpoint outside the sign-in flows.
-Browsing needs no account: somebody deciding whether to eat here has to see the room before they are
-asked who they are.
+Availability - one slot or one day - is the only anonymous endpoint here outside the sign-in flows
+and the manage link, whose token is its credential. Browsing needs no account: somebody deciding
+whether to eat here has to see the room before they are asked who they are.
 
 **Every booking read names its room.** `ReservationView` carries `roomId` and `roomName` - the
 `FloorArea` the table is in - on the create and change responses, `GET /api/reservations/mine` and the

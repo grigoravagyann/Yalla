@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Public;
+using Yalla.Application.Reservations;
 using Yalla.Domain.Occupancy;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
@@ -8,7 +9,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// Reading and cancelling one booking with nothing but the manage link.
+/// Reading, cancelling and moving one booking with nothing but the manage link.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,6 +23,12 @@ namespace Yalla.Infrastructure.Services;
 /// own. The deadline rule, the lateness record and cancelling the reminder are the same code the
 /// app's cancel runs; a second path here is how a web cancel would eventually stop cancelling the
 /// reminder, and the diner would get a push about a table they had already given back.
+/// </para>
+/// <para>
+/// Moving is <c>IReservationService.RescheduleByManageTokenAsync</c> for the same reason: the rules,
+/// the status decided again, the table's lock, the replaced reminders and the idempotency record are
+/// the app's move. Both writes answer by re-reading through the one projection below, so no write can
+/// come to show more than the read does.
 /// </para>
 /// </remarks>
 internal sealed class PublicBookingService(
@@ -57,6 +64,8 @@ internal sealed class PublicBookingService(
                 r.PartySize,
                 r.Status,
                 r.Code,
+                r.Id,
+                r.DiningTableId,
                 r.StartUtc,
                 r.EndUtc,
                 r.CancelledAfterDeadline,
@@ -97,6 +106,20 @@ internal sealed class PublicBookingService(
         return await GetAsync(manageToken, cancellationToken);
     }
 
+    public async Task<PublicBookingView> RescheduleAsync(
+        string manageToken,
+        RescheduleByManageTokenCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        // The one move, shared with the app's. Everything this route adds is how the caller proved
+        // they may: they are holding the token.
+        await reservations.RescheduleByManageTokenAsync(manageToken, command, cancellationToken);
+
+        // Re-read through the projection the GET uses - a replay included, which answers with the
+        // booking as it stands - so the page renders the answer exactly as it renders the link.
+        return await GetAsync(manageToken, cancellationToken);
+    }
+
     private static PublicBookingView Project(Row row) => new(
         row.VenueName,
         row.BranchName,
@@ -108,6 +131,11 @@ internal sealed class PublicBookingService(
         row.PartySize,
         row.Status,
         row.Code,
+
+        // The two ids changing the booking from the link needs: its own, to leave it out of the
+        // availability reads, and its table's, which those reads publish for every table anyway.
+        ReservationId: row.ReservationId,
+        TableId: row.TableId,
 
         // Absolute, computed from the interval the diner booked and the deadline in force. The page
         // does not reimplement this arithmetic and a later policy edit cannot move a deadline the
@@ -147,6 +175,8 @@ internal sealed class PublicBookingService(
         int PartySize,
         Domain.Enums.ReservationStatus Status,
         string Code,
+        Guid ReservationId,
+        Guid TableId,
         DateTime StartUtc,
         DateTime EndUtc,
         bool CancelledAfterDeadline,
