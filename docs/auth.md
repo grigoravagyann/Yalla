@@ -711,7 +711,30 @@ read again under it). Whichever side comes second waits for the other's commit: 
 its token revoked and is refused; a revocation that waited finds the successor and ends it too. Every
 rotation and revocation therefore runs in a transaction - the refresh, sign-out, reset, password-change and
 sign-out-elsewhere paths open one, and the store refuses without one. `RefreshRevocationRaceTests` holds
-each side open while the other runs, in both orders, for a staff member and a diner.
+each side open while the other runs, in both orders, for a staff member and a diner, and checks the
+second side really waited.
+
+**What a change decides, it decides under the lock.** Taking the lock only around the revocation is not
+enough when the change was decided from a read taken before it. So the password reset reads its link, takes
+the account's lock and reads the link and the staff row again before it checks the link is still usable -
+a link a password change spent meanwhile, or a second use of the same link, is refused, and the generation
+it moves is the one that stands. The phone proof that displaces a registrant locks and re-reads the diner
+before it clears the password and moves the generation, so a password the registrant set while it waited
+- and the token minted with it - is displaced too. Issuing a new sign-in link takes the person's lock
+before it retires their unused links, so an old link being redeemed at that moment either reset the
+password first or waits and finds itself retired. The password change takes the lock before it counts the
+wrong guesses. The slow part, hashing a new password, is done before the lock is taken; checking the current
+password stays after the lockout count, under it. `AccountLockRaceTests` forces each interleaving.
+
+A rotation is handed the caller's transaction (`RefreshTokenStore.RotateAsync(..., transaction, ...)`) and
+commits it only when the reuse alarm fires, because the caller then throws; any other transaction on the
+context is refused rather than committed early.
+
+**Reuse detection is strict, and clients single-flight their refresh.** Two refreshes sent with the same
+token - two tabs, or a retry racing the first attempt - are indistinguishable from a thief replaying a
+stolen copy: the second finds the token already rotated and revokes the whole chain, so both sign in again.
+This is deliberate and stays. The clients therefore send one refresh at a time per sign-in; the console
+coordinates across its tabs with the Web Locks API, so one tab refreshes and the others take its result.
 
 A revocation ends only the tokens that could still be exchanged - unrevoked, unrotated, unexpired, one per
 live sign-in. Rotated rows are refused already and are **never pruned**, so a long-lived account

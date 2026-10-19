@@ -96,6 +96,14 @@ internal sealed class OwnAccountChanges(
         OwnAccountAudit audit,
         CancellationToken cancellationToken)
     {
+        // The new hash is the slow part and depends on nothing the lock guards, so it is made before the
+        // lock is taken - only for a password that could be accepted. Checking the current one is not
+        // moved: it comes after the lockout count, under the lock, or a locked account would still be
+        // answering guesses.
+        var newHash = newPassword is { Length: > 0 } candidate && candidate.Length >= _options.MinimumPasswordLength
+            ? hasher.Hash(candidate)
+            : null;
+
         // One account, one change at a time: the account's lock, held to the commit, is taken before
         // the wrong guesses are counted - so eight sent at once cannot all find nine and all be heard -
         // and it is the lock every refresh of the account's tokens takes, so none can mint a successor
@@ -170,7 +178,7 @@ internal sealed class OwnAccountChanges(
             throw new FieldValidationException(violations);
         }
 
-        account.SetPasswordHash(hasher.Hash(newPassword!));
+        account.SetPasswordHash(newHash!);
 
         // Every sign-in ends, now: the generation ends every access token the account holds - this
         // request's too - and every refresh token is revoked. The usual reason to change a password is

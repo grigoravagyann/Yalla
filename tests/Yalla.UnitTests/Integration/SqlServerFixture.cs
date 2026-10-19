@@ -390,6 +390,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             clock,
             actor,
             new SecretHasher(),
+            new RefreshTokenStore(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
             logger ?? NullLogger<StaffManagementService>.Instance);
 

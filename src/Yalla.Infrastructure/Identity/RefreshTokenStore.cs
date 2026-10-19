@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
@@ -64,13 +65,31 @@ internal sealed class RefreshTokenStore(YallaDbContext db, IClock clock)
     /// account's lock is held, so a revocation that committed while this waited is what it sees.
     /// </para>
     /// </remarks>
+    /// <param name="presentedToken">The refresh token the client sent.</param>
+    /// <param name="expectedSubjectType">Whose door it came in at: a diner's token is refused at the venue's.</param>
+    /// <param name="transaction">
+    /// The caller's transaction, open on this context and begun for this rotation: it holds the account's
+    /// lock, the caller commits it after saving the successor - and the reuse alarm commits it itself,
+    /// because the caller's next act is to throw. Passed in so that ownership is stated, not assumed: a
+    /// transaction opened further out for some larger unit of work must not be committed from in here.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="AuthenticationFailedException">The token is unknown, expired, revoked or reused.</exception>
-    /// <exception cref="InvalidOperationException">No transaction is open.</exception>
+    /// <exception cref="InvalidOperationException"><paramref name="transaction"/> is not the context's open transaction.</exception>
     public async Task<(RefreshToken Entity, string PlainToken, Guid SubjectId)> RotateAsync(
         string presentedToken,
         RefreshTokenSubject expectedSubjectType,
+        IDbContextTransaction transaction,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        if (!ReferenceEquals(db.Database.CurrentTransaction, transaction))
+        {
+            throw new InvalidOperationException(
+                "A rotation commits its own transaction when the reuse alarm fires, so it is given the one open on this context.");
+        }
+
         var hash = Secrets.Hash(presentedToken ?? string.Empty);
 
         var existing = await db.RefreshTokens
@@ -95,7 +114,7 @@ internal sealed class RefreshTokenStore(YallaDbContext db, IClock clock)
             // so an uncommitted revocation would be silently discarded and the chain would stay
             // live. This is the one path in this class that saves, and it is the one that must.
             await db.SaveChangesAsync(cancellationToken);
-            await db.Database.CurrentTransaction!.CommitAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
 
             throw new AuthenticationFailedException(
                 "refresh-token-reused",

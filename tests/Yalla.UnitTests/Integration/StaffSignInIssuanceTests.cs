@@ -412,7 +412,7 @@ public sealed class StaffSignInIssuanceTests(SqlServerFixture fixture)
     private static string Address(string part) => $"{part}-{Guid.NewGuid():N}@example.test";
 
     /// <summary>The handle out of the link, the way the console's reset page reads it.</summary>
-    private static string TokenFrom(string resetLink)
+    internal static string TokenFrom(string resetLink)
     {
         const string marker = "#token=";
         var at = resetLink.IndexOf(marker, StringComparison.Ordinal);

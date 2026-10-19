@@ -26,7 +26,7 @@ internal sealed class TokenRefreshService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         var (successorEntity, successor, dinerUserId) =
-            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, cancellationToken);
+            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.Diner, transaction, cancellationToken);
 
         var diner = await db.DinerUsers.FirstOrDefaultAsync(d => d.Id == dinerUserId, cancellationToken);
 
@@ -54,7 +54,7 @@ internal sealed class TokenRefreshService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         var (successorEntity, successor, staffMemberId) =
-            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.VenueUser, cancellationToken);
+            await refreshTokens.RotateAsync(refreshToken, RefreshTokenSubject.VenueUser, transaction, cancellationToken);
 
         var staff = await db.StaffMembers.FirstOrDefaultAsync(s => s.Id == staffMemberId, cancellationToken);
 

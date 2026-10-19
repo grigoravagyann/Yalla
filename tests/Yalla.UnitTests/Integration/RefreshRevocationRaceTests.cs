@@ -47,6 +47,7 @@ public sealed class RefreshRevocationRaceTests(SqlServerFixture fixture)
         await using var refreshing = fixture.CreateContext(clock);
         var refresh = Task.Run(() => RefreshAsync(refreshing, clock, subject, presented));
         await Task.WhenAny(refresh, Task.Delay(LockWait));
+        Assert.False(refresh.IsCompleted, "The refresh did not wait for the account's lock.");
 
         await revoking.SaveChangesAsync();
         await transaction.CommitAsync();
@@ -69,7 +70,7 @@ public sealed class RefreshRevocationRaceTests(SqlServerFixture fixture)
         // The rotation has written the successor, and has not committed yet.
         await using var refreshing = fixture.CreateContext(clock);
         await using var transaction = await refreshing.Database.BeginTransactionAsync();
-        await new RefreshTokenStore(refreshing, clock).RotateAsync(presented, subject, CancellationToken.None);
+        await new RefreshTokenStore(refreshing, clock).RotateAsync(presented, subject, transaction, CancellationToken.None);
         await refreshing.SaveChangesAsync();
 
         // The revocation comes in now.
@@ -82,6 +83,7 @@ public sealed class RefreshRevocationRaceTests(SqlServerFixture fixture)
             await own.CommitAsync();
         });
         await Task.WhenAny(revoke, Task.Delay(LockWait));
+        Assert.False(revoke.IsCompleted, "The revocation did not wait for the account's lock.");
 
         await transaction.CommitAsync();
         await revoke;

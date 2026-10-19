@@ -27,6 +27,7 @@ internal sealed class StaffManagementService(
     IClock clock,
     ICurrentActor actor,
     SecretHasher hasher,
+    RefreshTokenStore accountLock,
     IOptions<AuthOptions> authOptions,
     ILogger<StaffManagementService> logger) : IStaffManagementService
 {
@@ -294,6 +295,14 @@ internal sealed class StaffManagementService(
         var acting = await RequireActorInVenueAsync("Issue a sign-in", venueId, cancellationToken);
         var staff = await LoadStaffAsync(venueId, staffMemberId, cancellationToken);
 
+        // Under the person's account lock, held to the commit - the lock a reset from a link takes before
+        // it reads the link. So a reset of the old link either committed first, and there is nothing of
+        // it left to retire, or waits and finds it retired: the old link cannot set a password once the
+        // new one exists. The row, and the links below, are read again under it.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await accountLock.LockSubjectAsync(RefreshTokenSubject.VenueUser, staff.Id, cancellationToken);
+        await db.Entry(staff).ReloadAsync(cancellationToken);
+
         if (staff.Id == acting.Id)
         {
             throw new StaffPermissionException("Issuing your own sign-in", acting.Role, StaffRole.PlatformAdmin);
@@ -354,6 +363,7 @@ internal sealed class StaffManagementService(
             cancellationToken);
 
         await SaveAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation("Sign-in issued for staff member {StaffMemberId} by {ActorId}.", staff.Id, acting.Id);
 
