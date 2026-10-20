@@ -199,6 +199,33 @@ public sealed class Reservation : Entity
     public CancellationCause? CancelledBecause { get; private set; }
 
     /// <summary>
+    /// Whether this guest's cancellation counts against them in their guest record: they cancelled after the
+    /// deadline a booking that was <b>confirmed</b> and had been <b>made before</b> that deadline (review S2). A
+    /// same-evening booking, or one still waiting for the venue, never does. Decided when it is cancelled, as
+    /// <see cref="CancelledAfterDeadline"/> is.
+    /// </summary>
+    public bool LateCancellationCounts { get; private set; }
+
+    /// <summary>Who marked it a no-show (review B1e); null for any other booking.</summary>
+    public Guid? NoShowMarkedByStaffId { get; private set; }
+
+    /// <summary>
+    /// Whether this no-show counts toward a no-show block: it was marked after the guest's grace - the start plus
+    /// the branch's grace period, or the extended hold when later (review B1a). One marked inside it is a waiter
+    /// being quick, not a guest who did not come.
+    /// </summary>
+    public bool NoShowCountsTowardBlock { get; private set; }
+
+    /// <summary>When staff withdrew a no-show they marked by mistake (review B1c); null otherwise.</summary>
+    public DateTime? NoShowUndoneAtUtc { get; private set; }
+
+    /// <summary>Who withdrew it.</summary>
+    public Guid? NoShowUndoneByStaffId { get; private set; }
+
+    /// <summary>Why, as they said.</summary>
+    public string? NoShowUndoReason { get; private set; }
+
+    /// <summary>
     /// The caller's own id for the command that created this booking. Unique across the table.
     /// </summary>
     /// <remarks>
@@ -1213,8 +1240,14 @@ public sealed class Reservation : Entity
     /// cancellation converts it into a no-show, which costs the venue the same slot and also the
     /// chance to resell it.
     /// </remarks>
-    public void CancelByDiner(DateTime atUtc, string? reason, bool afterDeadline) =>
+    public void CancelByDiner(DateTime atUtc, string? reason, bool afterDeadline, bool countsAgainstGuest = false)
+    {
+        // Read before the status moves: only a confirmed booking's late cancellation counts against the guest.
+        var counts = countsAgainstGuest && afterDeadline && Status == ReservationStatus.Confirmed;
+
         Cancel(ReservationStatus.CancelledByDiner, atUtc, reason, afterDeadline);
+        LateCancellationCounts = counts;
+    }
 
     /// <summary>The venue cancelled a booking it had already accepted.</summary>
     public void CancelByVenue(DateTime atUtc, string? reason) =>
@@ -1279,7 +1312,10 @@ public sealed class Reservation : Entity
     /// late is too late after it is the waiter's call, not the grace period's.
     /// </remarks>
     /// <exception cref="ReservationNotStartedException">The booking has not started yet.</exception>
-    public void MarkNoShow(DateTime atUtc)
+    /// <param name="atUtc">Now.</param>
+    /// <param name="byStaffId">Who marked it.</param>
+    /// <param name="countsTowardBlock">Whether it was marked after the guest's grace - see <see cref="NoShowCountsTowardBlock"/>.</param>
+    public void MarkNoShow(DateTime atUtc, Guid? byStaffId = null, bool countsTowardBlock = false)
     {
         if (Status != ReservationStatus.Confirmed)
         {
@@ -1295,6 +1331,32 @@ public sealed class Reservation : Entity
         Status = ReservationStatus.NoShow;
         CancelledAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         HoldExpiresAtUtc = null;
+        NoShowMarkedByStaffId = byStaffId;
+        NoShowCountsTowardBlock = countsTowardBlock;
+        NoShowUndoneAtUtc = null;
+        NoShowUndoneByStaffId = null;
+        NoShowUndoReason = null;
+    }
+
+    /// <summary>
+    /// Staff withdraw a no-show they marked by mistake (review B1c): the booking is confirmed again, as it was before
+    /// the mark, and the withdrawal is recorded - who, when, why. Whether it is still allowed - the same service day -
+    /// is the caller's to decide; so is the guest's block.
+    /// </summary>
+    /// <exception cref="DomainStateException">It is not a no-show.</exception>
+    public void UndoNoShow(DateTime atUtc, Guid byStaffId, string? reason)
+    {
+        if (Status != ReservationStatus.NoShow)
+        {
+            throw new DomainStateException($"Only a no-show can be withdrawn; {Code} is {Status}.");
+        }
+
+        Status = ReservationStatus.Confirmed;
+        CancelledAtUtc = null;
+        NoShowCountsTowardBlock = false;
+        NoShowUndoneAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        NoShowUndoneByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
+        NoShowUndoReason = Guard.OptionalText(reason, nameof(reason), FieldLengths.Reason);
     }
 
     private void Cancel(ReservationStatus to, DateTime atUtc, string? reason, bool afterDeadline)

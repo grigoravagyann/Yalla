@@ -2,8 +2,7 @@ namespace Yalla.Domain.Occupancy;
 
 /// <summary>
 /// The booker's proved phone number cannot take this booking: it already holds
-/// <see cref="BookingLimits.MaxActiveBookingsPerNumber"/> active bookings, or - rarely - another account holding
-/// the same number has a booking too close to this one. 409 <c>phone-has-active-booking</c>.
+/// <see cref="BookingLimits.MaxActiveBookingsPerNumber"/> active bookings. 409 <c>phone-has-active-booking</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,7 +13,6 @@ namespace Yalla.Domain.Occupancy;
 /// <para>
 /// The other booking is named only to the account that holds it: <see cref="Existing"/> is the caller's own
 /// earliest active booking, so the app can say "the next is Café Aram on 22 October at 19:30" and link to it.
-/// A booking of anybody else's is never described - only that the number has one.
 /// </para>
 /// <para>
 /// Moving a booking the number already holds is never refused by this rule; cancelling one frees a place at once.
@@ -37,17 +35,11 @@ public sealed class PhoneHasActiveBookingException : DomainStateException
         MaxActiveBookings = maxActiveBookings;
     }
 
-    /// <summary>Another account holding the same proved number has a booking too close to this one; nothing about it is said.</summary>
-    public PhoneHasActiveBookingException()
-        : base("This phone number already has a booking at about that time. Change or cancel that one first.")
-    {
-    }
-
     /// <summary>The caller's own earliest active booking, when the refusal is the limit and one is theirs; otherwise null.</summary>
     public ActiveBookingFacts? Existing { get; }
 
-    /// <summary>The limit that refused it; null when the refusal is somebody else's booking at about that time.</summary>
-    public int? MaxActiveBookings { get; }
+    /// <summary>The limit that refused it.</summary>
+    public int MaxActiveBookings { get; }
 }
 
 /// <summary>What a caller is told about their own active booking when the number's limit refuses another.</summary>

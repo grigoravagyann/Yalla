@@ -133,9 +133,9 @@ internal sealed class ReservationWriter(
             var (verdict, sitting) = await TableEvening.JudgeAsync(
                 db, table.Id, startUtc, policy, excludingReservationId: Guid.Empty, cancellationToken);
 
-            // The number's lock, after the account's: two bookings for one proved number - on two tables, at
-            // two venues - are judged one after the other by both rules below.
-            await TakeNumberLockAsync(booker.PhoneE164, table.Id, table.Label, cancellationToken);
+            // No lock of the number's own: a proved number belongs to one live account and never moves to another
+            // (DinerUser), so the account's lock above already judges two bookings for one number one after the
+            // other - on two tables, at two venues (review N6).
 
             // One table at a time for one diner, anywhere, over the sitting this booking would have - cut to
             // the time to leave by when the next booking needs one. Before the table's own refusals, so the
@@ -252,17 +252,17 @@ internal sealed class ReservationWriter(
             // account's deletion would put the deleted person's reminder back in the outbox.
             await DinerAccountLock.RequireLiveAsync(db, booker.DinerUserId, cancellationToken);
 
-            // Nor a blocked guest's move (there is nothing left to move after a block, but one rule everywhere).
-            await GuestRecords.RequireNotBlockedAsync(
-                db, booker.DinerUserId, booker.PhoneE164, clock.UtcNow, cancellationToken);
-
             // Replay first, for the same reason as an insert: a retry that waited here while the
             // original committed must be answered as a retry, not judged again against a table the
-            // original has since taken.
+            // original has since taken - nor refused by a block that came after it (review N7).
             if (await db.ProcessedCommands.AnyAsync(c => c.ClientCommandId == clientCommandId, cancellationToken))
             {
                 return MoveOutcome.Replayed;
             }
+
+            // Nor a blocked guest's move (there is nothing left to move after a block, but one rule everywhere).
+            await GuestRecords.RequireNotBlockedAsync(
+                db, booker.DinerUserId, booker.PhoneE164, clock.UtcNow, cancellationToken);
 
             await ReadTableStatusUnderLockAsync(table, cancellationToken);
 
@@ -291,8 +291,6 @@ internal sealed class ReservationWriter(
 
             if (!sameSitting)
             {
-                await TakeNumberLockAsync(booker.PhoneE164, table.Id, table.Label, cancellationToken);
-
                 await RefuseOverlapWithOwnAsync(
                     booker,
                     table.BranchId,
@@ -413,7 +411,7 @@ internal sealed class ReservationWriter(
                                db, tableId, slot.StartUtc, policy, excludingReservationId: reservation.Id, cancellationToken))
                            .Verdict,
                            slot.EndUtc)
-                       && !await HoldsAnotherTableThenAsync(reservation, slot, tableId, tableLabel, cancellationToken);
+                       && !await HoldsAnotherTableThenAsync(reservation, slot, cancellationToken);
 
             await applyAsync(free, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
@@ -491,19 +489,17 @@ internal sealed class ReservationWriter(
     /// them to get from one to the other: with a 90-minute sitting, starts less than two hours apart.
     /// </para>
     /// <para>
-    /// The diner's bookings are their account's and any other proved booking holding their number - an account
-    /// that had the number before cannot keep a table at the same hour. Such a booking is never described to
-    /// this caller: it is <see cref="PhoneHasActiveBookingException"/> with nothing about it.
+    /// The diner's bookings are their account's: a proved number belongs to one live account and never moves, so the
+    /// account is the number (review N6).
     /// </para>
     /// <para>
-    /// Called inside the table's lock, after the account's lock, the replay check and the number's lock - so a
+    /// Called inside the table's lock, after the account's lock and the replay check - so a
     /// retry of the same booking is answered as a replay, never refused as overlapping itself, and two bookings
     /// sent at once on two tables queue rather than both getting through. A move that keeps its table, start and
     /// end - a change of party size - is not judged: it makes no overlap that was not already there.
     /// </para>
     /// </remarks>
     /// <exception cref="ReservationOverlapsOwnException">The diner already has a booking then, named.</exception>
-    /// <exception cref="PhoneHasActiveBookingException">Another account holding the number has one then.</exception>
     private async Task RefuseOverlapWithOwnAsync(
         BookerKey booker,
         Guid branchId,
@@ -517,25 +513,18 @@ internal sealed class ReservationWriter(
             return;
         }
 
-        if (own.DinerUserId != booker.DinerUserId)
-        {
-            throw new PhoneHasActiveBookingException();
-        }
-
         throw new ReservationOverlapsOwnException(
             own.Id, own.Code, own.LocalDate, own.LocalStartTime, own.TableLabel, own.VenueName, own.BranchName);
     }
 
     /// <summary>
     /// Whether the diner of a booking going back to the slot it had holds another table then, anywhere - see
-    /// <see cref="ReturnUnderTableLockAsync"/>. Taken under the account's lock and the number's; a booking whose
-    /// account has gone has nobody to hold anything.
+    /// <see cref="ReturnUnderTableLockAsync"/>. Taken under the account's lock; a booking whose account has gone has
+    /// nobody to hold anything.
     /// </summary>
     private async Task<bool> HoldsAnotherTableThenAsync(
         Reservation reservation,
         BookedInterval slot,
-        Guid tableId,
-        string tableLabel,
         CancellationToken cancellationToken)
     {
         if (reservation.DinerUserId is not { } dinerUserId)
@@ -544,7 +533,6 @@ internal sealed class ReservationWriter(
         }
 
         await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
-        await TakeNumberLockAsync(reservation.BookerPhoneE164, tableId, tableLabel, cancellationToken);
 
         return await OwnBookingOverlappingAsync(
                 new BookerKey(dinerUserId, reservation.BookerPhoneE164), reservation.BranchId, slot, reservation.Id, cancellationToken)
@@ -553,7 +541,7 @@ internal sealed class ReservationWriter(
 
     /// <summary>
     /// The diner's live booking whose sitting overlaps this one - at the same branch as it is, at another venue
-    /// with the travel gap - or null. The diner's own account's first, then the earliest.
+    /// with the travel gap - or null. The earliest.
     /// </summary>
     private Task<OwnBooking?> OwnBookingOverlappingAsync(
         BookerKey booker,
@@ -566,29 +554,25 @@ internal sealed class ReservationWriter(
         var awayStartUtc = startUtc.AddMinutes(-BookingLimits.OtherVenueGapMinutes);
         var awayEndUtc = endUtc.AddMinutes(BookingLimits.OtherVenueGapMinutes);
         var dinerUserId = booker.DinerUserId;
-        var phone = booker.PhoneE164;
 
         return db.Reservations
             .AsNoTracking()
-            .Where(r => (r.DinerUserId == dinerUserId
-                         || (phone != null && r.BookerPhoneE164 == phone && !r.PhoneUnverified))
+            .Where(r => r.DinerUserId == dinerUserId
                         && r.Id != excludingReservationId
                         && (r.Status == ReservationStatus.PendingApproval
                             || r.Status == ReservationStatus.Confirmed
                             || r.Status == ReservationStatus.Seated)
                         && ((r.BranchId == branchId && r.StartUtc < endUtc && r.EndUtc > startUtc)
                             || (r.BranchId != branchId && r.StartUtc < awayEndUtc && r.EndUtc > awayStartUtc)))
-            .OrderBy(r => r.DinerUserId == dinerUserId ? 0 : 1)
-            .ThenBy(r => r.StartUtc)
+            .OrderBy(r => r.StartUtc)
             .Select(r => new OwnBooking(
-                r.Id, r.DinerUserId, r.Code, r.LocalDate, r.LocalStartTime, r.DiningTable.Label, r.Branch.Venue.Name, r.Branch.Name))
+                r.Id, r.Code, r.LocalDate, r.LocalStartTime, r.DiningTable.Label, r.Branch.Venue.Name, r.Branch.Name))
             .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>One of the diner's own bookings, as an overlap names it.</summary>
     private sealed record OwnBooking(
         Guid Id,
-        Guid? DinerUserId,
         string Code,
         DateOnly LocalDate,
         TimeOnly LocalStartTime,
@@ -616,22 +600,6 @@ internal sealed class ReservationWriter(
                 cancellationToken);
 
     /// <summary>
-    /// Takes the number's application lock, <c>booking-phone:{E164}</c> - nothing for a booking held by no number.
-    /// </summary>
-    /// <remarks>
-    /// <b>Why an application lock and not a unique index.</b> Neither rule on a number is a uniqueness an index
-    /// can hold: "active" is "not over yet", which is about the clock, and "overlapping" is about two intervals.
-    /// So every check takes <c>sp_getapplock</c> on the number, exclusive and owned by the table lock's
-    /// transaction, before it reads: two bookings for one number on two tables - or at two venues - meet on it,
-    /// and the second reads the first's committed row. The order is table, account, number for every insert and
-    /// move; nothing else takes it, so there is no cycle.
-    /// </remarks>
-    private Task TakeNumberLockAsync(string? phone, Guid tableId, string tableLabel, CancellationToken cancellationToken) =>
-        phone is null
-            ? Task.CompletedTask
-            : TakeApplicationLockAsync("booking-phone:" + phone, tableId, tableLabel, cancellationToken);
-
-    /// <summary>
     /// Refuses a booking for a proved number that already holds <see cref="BookingLimits.MaxActiveBookingsPerNumber"/>
     /// active bookings, at any venue.
     /// </summary>
@@ -640,7 +608,7 @@ internal sealed class ReservationWriter(
     /// <b>Active</b> is pending or confirmed and not over yet (<c>EndUtc</c> after now). Seated, finished,
     /// cancelled, declined and missed bookings hold nothing. The number's bookings are the proved ones made with
     /// it and the caller's own account's: a booking made without proof while Yalla#54 allowed it never counts
-    /// against the number's owner. Taken under the number's lock (<see cref="TakeNumberLockAsync"/>).
+    /// against the number's owner. Taken under the account's lock, which is the number's (review N6).
     /// </para>
     /// <para>
     /// Replaced "one active booking per number" (Yalla#54) on 2026-10-20: a booking ten days ahead no longer
@@ -681,27 +649,39 @@ internal sealed class ReservationWriter(
     }
 
     /// <summary>
-    /// Takes an exclusive application lock owned by the open transaction, waiting no longer than the table
-    /// lock does. A wait that runs out is the table lock's timeout - retryable, the question never asked.
+    /// Opens the transaction a no-show (or its withdrawal) is recorded in: the booking's table's lock, then the
+    /// guest's account's - the order every booking takes them in. Two no-shows of one guest marked at once at two
+    /// venues are then judged one after the other, and the wait for the account is bounded by the table lock's
+    /// timeout like any other (review N9).
     /// </summary>
-    private async Task TakeApplicationLockAsync(string resource, Guid tableId, string tableLabel, CancellationToken cancellationToken)
+    /// <exception cref="TableLockTimeoutException">Either lock could not be had in time. Nothing was written.</exception>
+    public async Task<TableLockScope> LockForNoShowAsync(
+        Guid tableId,
+        string tableLabel,
+        Guid? account,
+        CancellationToken cancellationToken)
     {
-        var timeoutMs = tableLock.TimeoutMilliseconds;
+        var scope = await tableLock.AcquireAsync(tableId, tableLabel, cancellationToken);
 
-        var granted = await db.Database
-            .SqlQuery<int>(
-                $"""
-                 DECLARE @result int;
-                 EXEC @result = sp_getapplock @Resource = {resource}, @LockMode = 'Exclusive',
-                      @LockOwner = 'Transaction', @LockTimeout = {timeoutMs};
-                 SELECT @result AS [Value];
-                 """)
-            .ToListAsync(cancellationToken);
-
-        // 0 granted, 1 granted after waiting; negative is a timeout, a deadlock victim or a refusal.
-        if (granted is not [>= 0])
+        try
         {
-            throw new TableLockTimeoutException(tableId, tableLabel, timeoutMs);
+            if (account is { } dinerUserId)
+            {
+                await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
+            }
+
+            return scope;
+        }
+        catch (Exception ex) when (TableLock.IsTimeout(ex))
+        {
+            await scope.DisposeAsync();
+
+            throw new TableLockTimeoutException(tableId, tableLabel, tableLock.TimeoutMilliseconds);
+        }
+        catch
+        {
+            await scope.DisposeAsync();
+            throw;
         }
     }
 

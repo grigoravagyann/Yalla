@@ -673,8 +673,8 @@ live bookings (pending, confirmed, seated): their account's, and any proved book
   restaurant turn that is "starts less than two hours apart" - the "about ±2 h" the user agreed; a longer sitting
   blocks what it really overlaps.
 - The context names the booking: `reservationId, code, localDate, localStartTime, tableLabel` and now
-  **`venueName`, `branchName`**. If the clashing booking is another account's that holds the same proved number
-  (a number re-assigned), it is `409 phone-has-active-booking` with **no context**.
+  **`venueName`, `branchName`**. The diner's bookings are their account's: a proved number belongs to one live
+  account and never moves to another (`DinerUser`), so the account is the number.
 - On create and on every move (unless the move keeps table, start and end); and when a waiting change goes back
   to its confirmed slot.
 
@@ -693,21 +693,22 @@ naming the caller's **own earliest** active booking (absent members when none is
 (they add no booking); cancelling one frees a place at once.
 
 **Order and locks.** Inside the table's lock: the account's row lock (`DinerAccountLock`), the replay, the
-no-show block, the table's status, the evening's verdict, **the number's lock** (`sp_getapplock`
-`booking-phone:{E164}`, exclusive, owned by the transaction), the overlap, the table's own refusal, the
-three-booking limit. Moves take table → account → number too. A unique index cannot hold either rule ("not over
-yet" is about the clock, "overlapping" about two intervals), so the applock serialises two bookings for one
-number - on two tables, at two venues - and the second reads the first's committed row
-(`BookingPerNumberTests.Two_bookings_for_the_last_place_at_the_same_moment_write_exactly_one`). A wait past the
-table lock's bound is `503 reservation-lock-timeout`, retryable.
+no-show block, the table's status, the evening's verdict, the overlap, the table's own refusal, the three-booking
+limit. A unique index cannot hold either rule ("not over yet" is about the clock, "overlapping" about two
+intervals); the **account's lock** serialises two bookings for one number - on two tables, at two venues - and the
+second reads the first's committed row
+(`BookingPerNumberTests.Two_bookings_for_the_last_place_at_the_same_moment_write_exactly_one`). 0091c49 also took an
+application lock on the number; it was redundant - two accounts cannot hold one proved number, so a race between
+them cannot be set up - and was removed (review N6). A wait past the table lock's bound is
+`503 reservation-lock-timeout`, retryable.
 
 ### Guest record
 
 What a venue sees beside a booking - `guestRecord` - and the guest sees of themselves:
 
 ```json
-"guestRecord": { "booked": 7, "came": 6, "noShows": 1, "lateCancellations": 0, "isNewGuest": false,
-                 "blockedUntilUtc": "…" }
+"guestRecord": { "booked": 9, "came": 6, "noShows": 1, "lateCancellations": 0, "unmarked": 2,
+                 "isNewGuest": false, "blockedUntilUtc": "…" }
 ```
 
 Over the guest's **account**'s bookings made with a proved number whose **start is in the last 365 days and has
@@ -715,10 +716,11 @@ passed** (`GuestRecordRules.WindowDays`), at **every venue**:
 
 | Field | Counts |
 | --- | --- |
-| `came` | seated or completed |
-| `noShows` | `NoShow` |
-| `lateCancellations` | cancelled by the guest with `CancelledAfterDeadline` - the branch's deadline when it was cancelled, stored on the row, so a deadline edited since rewrites nothing |
-| `booked` | `came + noShows + lateCancellations` + confirmed bookings nobody marked - the bookings whose time came |
+| `came` | seated or completed **and vouched for by the venue** (review S1): a waiter seated the party (`TableSessions.SeatedByStaffId`), or the sitting's tab had an order sent to the kitchen (InKitchen, Ready, Served) or a successful payment. Opening a tab from the booking code alone - which anybody can do from the sofa - never counts |
+| `noShows` | `NoShow` (a withdrawn one is `Confirmed` again and is not) |
+| `lateCancellations` | cancelled by the guest after the deadline **when the booking was confirmed and had been made before that deadline** (review S2) - `LateCancellationCounts`, decided and stored when it is cancelled. A same-evening booking (inside its deadline from the start), one still waiting for the venue, or one confirmed inside its deadline never counts. Older rows were backfilled from `CancelledAfterDeadline`, `ConfirmedAtUtc` and the creation time |
+| `unmarked` | the bookings whose time came and went with nobody on the floor settling them (review S5): confirmed and past their **end** with nobody seating or marking them, or seated/completed with nothing vouching for it (above). Neither a visit nor a no-show - most often a venue that does not seat guests in Yalla |
+| `booked` | exactly `came + noShows + lateCancellations + unmarked` - the bookings whose time came |
 | `isNewGuest` | `booked == 0`: a neutral "new guest", never a warning |
 | `blockedUntilUtc` | while a no-show block is in force (below); absent otherwise |
 
@@ -728,14 +730,16 @@ anything a stranger could create:** only the account's own bookings count - not 
 `guestPhone` is the guest's number, not a booking made without proof with it - so nobody can spoil another
 person's record. No venue names, no dates, nothing per booking.
 
-**Where.** Staff reads only, on `ReservationView.guestRecord` - absent when no proved account is behind the
-booking: the console list (`GET /api/branches/{id}/reservations`), the floor's awaiting cards
-(`GET .../reservations/awaiting` → `reservation.guestRecord`), the answers to approve, reject, no-show and
-release, and the console overview (`GET /api/branches/{id}/overview` → `todayBookings[].guestRecord`). Never on
-a diner or public read of a booking. The guest's own: `GET /api/reservations/mine` → top-level `guestRecord`.
+**Where.** Staff reads only, on `ReservationView.guestRecord`, and **only beside a booking that is pending or
+confirmed and today or still to come** (branch calendar) with a proved account behind it (review S3): the console
+list (`GET /api/branches/{id}/reservations`), the floor's awaiting cards (`GET .../reservations/awaiting` →
+`reservation.guestRecord`), the answer to approve, and the console overview (`GET /api/branches/{id}/overview` →
+`todayBookings[].guestRecord`). Never beside a past, finished or cancelled booking - the reject, no-show and
+release answers included - so a booking a venue once served is no window on the guest's evenings since. Never on a
+diner or public read of a booking. The guest's own: `GET /api/reservations/mine` → top-level `guestRecord`.
 
-**Cost.** One `GROUP BY DinerUserId` with conditional counts over `IX_Reservations_DinerUserId_StartUtc` for every
-account on a list, and one read of the blocks in force - never a query per booking (`GuestRecords`; pinned by
+**Cost.** One statement for every account on a list - per account, its counts and its block, each a correlated
+seek on `IX_Reservations_DinerUserId_StartUtc` / the blocks' index - never a query per booking (`GuestRecords`; pinned by
 `GuestRecordTests.The_console_list_reads_every_guests_record_without_a_query_per_booking`). A maintained aggregate
 was rejected: every status change and two sweeps would have to keep it, and the window slides daily.
 
@@ -743,6 +747,14 @@ was rejected: every status change and two sweeps would have to keep it, and the 
 or when. That is a disclosure the guest must be told about before booking - the terms, and a line near the Book
 button in the app and on the public page ("Venues you book with see how many of your bookings in the last 12
 months you kept, missed or cancelled late - never where"). The guest sees exactly what venues see, on `/mine`.
+
+- **Deleting the account resets the record** - the price of erasure, accepted (review S6): the bookings it leaves
+  to the venues lose the link to the person, so a new account on the same number starts as a "new guest" (neutral;
+  auto-confirm needs three visits). **A block in force survives it**, through the number on the block row, until
+  it ends; an ended block's number is cleared by the daily sweep (review S7).
+- **The record follows the account that holds the number** (review N10): a number given up and taken by someone
+  else who proves it takes over that account, its record and any block with it - as for every account feature.
+  Say so in the terms.
 
 ### Auto-confirm guests with a good record
 
@@ -760,41 +772,66 @@ floor question), `EarlierGuestConsent` (5 - another guest's answer), `LargeParty
 ### No-show block
 
 Three no-shows in three days block a guest from booking for a week (the user's rule, 2026-10-20;
-`NoShowBlockRules`: `Threshold` 3, `WindowHours` 72, `BlockDays` 7).
+`NoShowBlockRules`: `Threshold` 3, `WindowHours` 72, `BlockDays` 7, `UndoUntilLocalHourNextDay` 5). Hardened after
+review (B1) so that one venue, or one careless waiter, cannot block anybody.
 
-- **Trigger.** Marking a no-show (`ReservationService.ReleaseAsync` with outcome NoShow - the floor's
-  `POST /api/reservations/{id}/no-show` and `/release`; nothing else writes `NoShow`) leaves the guest's
-  **account** with three no-shows on bookings **that started in the last 72 hours**. The window is over start
-  times, ending now - the start is when the guest failed to come; when a floor marked it is the venue's
-  business. Marking last week's no-shows together at closing time blocks nobody; marking late does not let the
-  third slip. Only the account's own bookings made with a proved number count.
-- **Concurrency.** The no-show is saved in a transaction under the **account's row lock** - the lock every
-  booking of that account takes. Two no-shows marked at once at two venues are judged one after the other, the
-  second sees the first committed, so the third is never missed and the block never written twice
-  (`GuestRecordTests.Two_no_shows_marked_at_the_same_moment_write_exactly_one_block`). A block already in force
-  is left alone. A replayed release (already NoShow) returns before any of it.
+- **What a no-show is, when it is marked.** `POST /api/reservations/{id}/no-show` (or `/release` outcome 1;
+  `ReservationService.ReleaseAsync` is the only writer of `NoShow`) records **who marked it**
+  (`NoShowMarkedByStaffId`) and **tells the guest** - push `reservation.no-show`, feed entry `booking-no-show`
+  ("Marked as a no-show at {venue}… if this is wrong, contact the venue"), so a mistake is put right before it
+  counts. It **counts toward a block** (`NoShowCountsTowardBlock`) only when marked **after the guest's grace**: the
+  start plus the branch's `GraceMinutes`, or the extended hold when later. Marked sooner, it is recorded, counts in
+  the record, and never toward a block.
+- **What counts toward a block** (`GuestRecords.BlockingNoShowDaysAsync`): the account's own bookings made with a
+  proved number, marked no-show after the grace and not withdrawn, **at most one per venue per service day**
+  (the booking's `LocalDate`), whose **start** is within the 72 hours before now - **and after the account's last
+  block ended or was lifted** (review S4: a lifted block's no-shows never block again). The window is over start
+  times: the start is when the guest failed to come, the marking time is the venue's business (a batch marked at
+  closing blocks nobody; marking late does not let the third slip). Three such venue-days → blocked. One venue can
+  therefore never block a guest in one evening, however many of their bookings it holds.
+- **Concurrency.** The no-show is recorded under the booking's **table lock** and then the guest's **account
+  lock** - the order every booking takes them in - with the lock timeout bounding both (review N9). Two no-shows
+  marked at once at two venues are judged one after the other, the second sees the first committed: the third is
+  never missed and the block never written twice
+  (`GuestRecordTests.Two_no_shows_marked_at_the_same_moment_write_exactly_one_block`). A block already in force is
+  left alone. A replayed release (already NoShow) returns before any of it.
 - **Effect, in the same transaction.** A `BookingBlocks` row (`DinerUserId`, the account's proved `PhoneE164`,
-  `BlockedAtUtc`, `BlockedUntilUtc` = now + 7 days, `Reason` 1, `LiftedAtUtc` null). Every booking of the guest's
-  **not yet started** (pending or confirmed, start after now; their account's and proved bookings holding their
-  number), at every venue, is cancelled: status `CancelledByVenue` (not the guest's own cancel - it never counts
-  in a record; the no-shows do) with **`CancelledBecause` 1 `NoShowBlock`** (`cancelledBecause` on reads) and
-  the reason "Cancelled automatically: the guest missed three bookings in three days.". As for any cancellation,
-  its open table questions are withdrawn and its unsent reminders and feed entries dropped; after the commit a
-  table held for one of them is released through the table state machine, which moves the change stream. The
-  guest gets **one** push (`diner.bookings-blocked`) and **one** feed entry (`bookings-blocked-no-shows`,
-  params `blockedUntilUtc`, `cancelledCount`).
+  `BlockedAtUtc`, `BlockedUntilUtc` = now + 7 days, `Reason` 1). Every booking of the guest's **not yet started**
+  (pending or confirmed, start after now), at every venue, read with an update lock (so a guest cancelling one that
+  moment waits rather than failing the no-show, review N8), is cancelled: status `CancelledByVenue` with
+  **`CancelledBecause` 1 `NoShowBlock`** (`cancelledBecause` on reads) and the reason "Cancelled automatically: the
+  guest missed three bookings in three days.". As for any cancellation, its open table questions are withdrawn and
+  its unsent reminders and feed entries dropped. **Each venue is told** (review S8): a row on its branch change
+  stream - the booking's table, same status, `reservationId`, **`signal` 4 `BookingCancelledByBlock`** - and, after
+  the commit, a table held for the booking is released through the state machine. Reports count these as
+  `systemCancelled`, not as the venue's cancellations; the overview counts them in `cancelledBySystem`. The guest
+  gets **one** push (`diner.bookings-blocked`) and **one** feed entry (`bookings-blocked-no-shows`, params
+  `blockedUntilUtc`, `blockedUntilLocalDate` - the end on the triggering venue's calendar, review N3 -
+  `cancelledCount`).
 - **Refusal.** While a block is in force for the account **or its number**, `POST /api/reservations` and every
   move (the app's reschedule, the manage link's) answer **`403 booking-blocked-no-shows`**,
-  `context.blockedUntilUtc` - asked early, and again under the account's lock in the writer, so a booking racing
-  the third no-show is refused rather than slipped in beside the block. Keyed on the number too, so deleting the
-  account and proving the number on a new one does not escape it.
-- **Visible** as `guestRecord.blockedUntilUtc` on every read that carries the record.
-- **Lifting.** No endpoint yet. A platform admin lifts a block on the database:
-  `UPDATE dbo.BookingBlocks SET LiftedAtUtc = SYSUTCDATETIME() WHERE DinerUserId = @account AND LiftedAtUtc IS NULL;`
-  The cancelled bookings are not restored. A console action is a follow-up.
-- **Retention.** The block row is the record of why bookings were cancelled and is kept. Deleting the account
-  clears the number from blocks no longer in force; a block still in force keeps it until it ends (so deleting
-  and re-registering does not escape it) - the number on such a row is then dead data nothing reads.
+  `context.blockedUntilUtc` - asked early (after the replay check, so a retry of a booking made just before the
+  block answers as the booking, review N7) and again under the account's lock in the writer, so a booking racing
+  the third no-show is refused or cancelled with the rest, never left standing. Keyed on the number too, so
+  deleting the account and proving the number on a new one does not escape it.
+- **Visible** as `guestRecord.blockedUntilUtc` on every read that carries the record - also when the block holds
+  through the number only (a re-registered account, review N1).
+- **Withdrawing a no-show** (review B1c). `POST /api/reservations/{id}/undo-no-show` `{ clientCommandId, reason? }`,
+  waiter or above at the branch - the tablet and the console - **until 05:00 the morning after the booking's
+  date**, branch time (`409 no-show-undo-window-closed`, `context.undoableUntilUtc`, after). The booking is
+  `Confirmed` again; who, when and why are recorded (`NoShowUndoneByStaffId`, `NoShowUndoneAtUtc`,
+  `NoShowUndoReason`). Under the same two locks, the guest's block in force is judged again as of when it began; if
+  fewer than three venue-days are left, it is **lifted** (`LiftedBecause` 2) - nothing it cancelled comes back -
+  and the guest is told (push `diner.bookings-unblocked`, feed `bookings-unblocked`). Already withdrawn: answered
+  as it stands. Not a no-show: `409 conflicting-state`.
+- **Lifting by a platform admin** (review B1f). `GET /api/platform/booking-blocks` lists the blocks in force;
+  `POST /api/platform/booking-blocks/{blockId}/lift` `{ reason }` (required, 3-500) lifts one (`LiftedBecause` 1,
+  `LiftedByStaffId`, `LiftReason`), **audited** as `booking-block.lift`, the guest told, under the guest's account
+  lock. Nothing it cancelled comes back; already lifted answers as it stands; already ended is `409`.
+- **Retention.** The block row is the record of why bookings were cancelled and is kept. The number on it outlives
+  an account deletion only while the block is in force; the daily feed sweep then clears it
+  (`DinerNotificationRetention.ForgetEndedBlockNumbersAsync`, review S7), as deletion does at once for blocks
+  already over.
 
 ## 3e. A table's evening: when one booking may follow another
 

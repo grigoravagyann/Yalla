@@ -102,6 +102,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             // The older check knows no block notices; they go before it comes back.
             migrationBuilder.Sql("DELETE FROM dbo.DinerNotifications WHERE [Kind] = 'bookings-blocked-no-shows';");
 
+            // Nor does it have a handler for the block's push (review N5).
+            migrationBuilder.Sql("DELETE FROM dbo.OutboxMessages WHERE [Type] = 'diner.bookings-blocked';");
+
             migrationBuilder.DropColumn(
                 name: "CancelledBecause",
                 table: "Reservations");

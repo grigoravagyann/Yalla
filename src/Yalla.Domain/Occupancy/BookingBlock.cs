@@ -52,11 +52,66 @@ public sealed class BookingBlock : Entity
     /// <summary>Why.</summary>
     public BookingBlockReason Reason { get; private set; }
 
-    /// <summary>When a platform admin lifted it early, or null.</summary>
+    /// <summary>When it was lifted early, or null.</summary>
     public DateTime? LiftedAtUtc { get; private set; }
+
+    /// <summary>Why it was lifted early, or null.</summary>
+    public BookingBlockLiftCause? LiftedBecause { get; private set; }
+
+    /// <summary>Who lifted it: the platform admin, or the staff member who withdrew a no-show.</summary>
+    public Guid? LiftedByStaffId { get; private set; }
+
+    /// <summary>What they gave as the reason.</summary>
+    public string? LiftReason { get; private set; }
+
+    /// <summary>When it stopped refusing anything: lifted, or ended.</summary>
+    public DateTime EndedAtUtc => LiftedAtUtc ?? BlockedUntilUtc;
+
+    /// <summary>
+    /// Lifts it now. Nothing it cancelled comes back. Lifting a block already lifted changes nothing.
+    /// </summary>
+    /// <returns>Whether this call lifted it.</returns>
+    public bool Lift(DateTime atUtc, BookingBlockLiftCause because, Guid byStaffId, string? reason)
+    {
+        if (LiftedAtUtc is not null)
+        {
+            return false;
+        }
+
+        LiftedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        LiftedBecause = Guard.Defined(because, nameof(because));
+        LiftedByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
+        LiftReason = Guard.OptionalText(reason, nameof(reason), FieldLengths.Reason);
+
+        return true;
+    }
 
     /// <summary>Whether it refuses a booking at <paramref name="nowUtc"/>.</summary>
     public bool IsInForceAt(DateTime nowUtc) => LiftedAtUtc is null && BlockedUntilUtc > nowUtc;
+}
+
+/// <summary>Why a block was lifted before it ended. Persisted as its number.</summary>
+public enum BookingBlockLiftCause
+{
+    /// <summary>A platform admin lifted it, with a reason (audited <c>booking-block.lift</c>).</summary>
+    PlatformAdmin = 1,
+
+    /// <summary>Staff withdrew a no-show, and fewer than three were left to hold it.</summary>
+    NoShowUndone = 2,
+}
+
+/// <summary>
+/// The no-show cannot be withdrawn any more: its service day ended (05:00 the next morning, branch time).
+/// 409 <c>no-show-undo-window-closed</c>, <c>context.undoableUntilUtc</c>.
+/// </summary>
+public sealed class NoShowUndoWindowClosedException(DateTime undoableUntilUtc)
+    : DomainStateException(
+        "This no-show can no longer be withdrawn: that service day is over. Ask Yalla support if it was a mistake.")
+{
+    public const string ErrorCode = "no-show-undo-window-closed";
+
+    /// <summary>When the window closed.</summary>
+    public DateTime UndoableUntilUtc { get; } = undoableUntilUtc;
 }
 
 /// <summary>Why a guest is blocked from booking. Persisted as its number.</summary>

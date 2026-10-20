@@ -166,6 +166,7 @@ public static class ReportEndpoints
                     Row("noShow", report.NoShow),
                     Row("lateCancellations", report.LateCancellations),
                     Row("webBookingsWithoutAnApp", report.WebBookingsWithoutAnApp),
+                    Row("systemCancelled", report.SystemCancelled ?? new Compared(0, 0)),
                 })
             : Results.Ok(report);
     }

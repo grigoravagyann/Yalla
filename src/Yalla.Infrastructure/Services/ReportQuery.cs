@@ -240,13 +240,18 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
             Compare(Rate(Cancelled(current), current.Count), Rate(Cancelled(previous), previous.Count)),
             Compare(LateCancellations(current, cancellationDeadline), LateCancellations(previous, cancellationDeadline)),
             LeadTime(current),
-            Compare(Unreachable(current), Unreachable(previous)));
+            Compare(Unreachable(current), Unreachable(previous)),
+            Compare(SystemCancelled(current), SystemCancelled(previous)));
 
         static int Seated(List<ReservationRow> rows) => rows.Count(r => r.Status == ReservationStatus.Seated
                                                                         || r.Status == ReservationStatus.Completed);
 
+        // The guest's or the venue's - not the platform's: a booking a no-show block cancelled is neither's doing
+        // (review S8), and is counted apart.
         static int Cancelled(List<ReservationRow> rows) => rows.Count(r =>
-            r.Status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue);
+            r.Status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue && !r.CancelledBySystem);
+
+        static int SystemCancelled(List<ReservationRow> rows) => rows.Count(r => r.CancelledBySystem);
 
         static int NoShows(List<ReservationRow> rows) => rows.Count(r => r.Status == ReservationStatus.NoShow);
 
@@ -254,6 +259,7 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         // up at 19:50 for a 20:00 sitting is not, and lumping the two together hides which is which.
         static int LateCancellations(List<ReservationRow> rows, int deadlineMinutes) => rows.Count(r =>
             r.Status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue
+            && !r.CancelledBySystem
             && r.CancelledAtUtc is { } cancelled
             && (r.StartUtc - cancelled).TotalMinutes < deadlineMinutes);
 
@@ -269,7 +275,8 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         DateTime? CancelledAtUtc,
         ReservationStatus Status,
         ReservationChannel Channel,
-        bool HasLiveDevice);
+        bool HasLiveDevice,
+        bool CancelledBySystem = false);
 
     private async Task<List<ReservationRow>> ReservationsAsync(
         Scope scope,
@@ -292,7 +299,8 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
                 // booking time, so somebody who installs the app later stops being counted as
                 // unreachable - which is the behaviour change the number exists to detect.
                 r.DinerUserId != null
-                && db.DinerDevices.Any(d => d.DinerUserId == r.DinerUserId && d.RevokedAtUtc == null)))
+                && db.DinerDevices.Any(d => d.DinerUserId == r.DinerUserId && d.RevokedAtUtc == null),
+                r.CancelledBecause != null))
             .ToListAsync(cancellationToken);
     }
 

@@ -478,11 +478,18 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
             Assert.True(await verify.TableStateChanges.AnyAsync(
                 c => c.DiningTableId == branch.TableIds[2] && c.ToStatus == TableStatus.Free));
 
-            // And nothing is still queued to ask this party whether they are on their way.
+            // And nothing is still queued to ask this party whether they are on their way - only the notice that
+            // they were marked a no-show, which goes to every guest it happens to (2026-10-20, review B1d).
             Assert.Equal(
                 0,
                 await verify.OutboxMessages.CountAsync(m => m.IdempotencyKey.StartsWith(
-                    OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))));
+                                                                OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))
+                                                            && m.Type != OutboxMessageTypes.ReservationNoShow));
+            Assert.Equal(
+                1,
+                await verify.OutboxMessages.CountAsync(m => m.IdempotencyKey.StartsWith(
+                                                                OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))
+                                                            && m.Type == OutboxMessageTypes.ReservationNoShow));
         }
 
         // The next one waits for a person - and says so, rather than being refused.

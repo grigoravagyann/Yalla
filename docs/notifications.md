@@ -44,6 +44,8 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 | `reservation.changed-by-link` | Somebody holding a booking's manage link changes it (not a retry, and never the diner's own change in the app) | Immediately | The booking's account |
 | `reservation.cancelled-by-link` | Somebody holding a booking's manage link cancels it (not an already-cancelled one, never the app's cancel) | Immediately | The booking's account |
 | `diner.bookings-blocked` | A no-show is marked that makes three in three days for the guest (see [reservations.md](reservations.md#no-show-block)) | Immediately | The blocked account |
+| `reservation.no-show` | A venue marks one of the guest's bookings a no-show (every time) | Immediately | The booking's account |
+| `diner.bookings-unblocked` | The guest's no-show block is lifted early - a no-show withdrawn, or a platform admin | Immediately | The blocked account |
 | `reservation.table-request` | A booking asks the booking before it on the same table to free the table in time, and that guest is asked in the app | Immediately | The earlier guest |
 | `reservation.table-request-decided` | The earlier guest's yes - theirs, or the floor's for them - takes effect | Immediately | The earlier guest |
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
@@ -134,10 +136,18 @@ it - and neither does the clock running out: their booking is unchanged.
 
 Sent once when a guest is blocked for three no-shows in three days: "Booking paused for a week" - how many
 upcoming bookings were cancelled and the day they can book again (Armenian, Russian or English, by the account's
-device). Data `kind` `bookings-blocked-no-shows` and `blockedUntilUtc`. Keyed `booking-block:{blockId}:notice`,
+device; the day is the triggering venue's calendar date). Data `kind` `bookings-blocked-no-shows` and `blockedUntilUtc`. Keyed `booking-block:{blockId}:notice`,
 written in the same transaction as the block, with one feed entry `bookings-blocked-no-shows` (params
-`blockedUntilUtc`, `cancelledCount`). The cancelled bookings' own unsent reminders are dropped; no per-booking push
+`blockedUntilUtc`, `blockedUntilLocalDate`, `cancelledCount`). The cancelled bookings' own unsent reminders are dropped; no per-booking push
 is sent for them.
+
+### Marked as a no-show: `reservation.no-show`; booking open again: `diner.bookings-unblocked`
+
+`reservation.no-show` goes every time a venue marks one of the guest's bookings a no-show - "Marked as a no-show at
+{venue}, {date} at {time}. If this is wrong, contact the venue." - keyed `reservation:{id}:no-show:{instant}`, with
+the feed entry `booking-no-show` (the booking's params). `diner.bookings-unblocked` ("You can book again") goes when
+a block is lifted early, keyed `booking-block:{blockId}:lifted`, with the feed entry `bookings-unblocked`
+(`liftedBecause` 1 platform admin, 2 a no-show withdrawn). Neither restores a cancelled booking.
 
 ### Done from the manage link: `reservation.changed-by-link`, `reservation.cancelled-by-link`
 

@@ -314,7 +314,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked')");
                         });
                 });
 
@@ -932,8 +932,18 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("DinerUserId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("LiftReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
                     b.Property<DateTime?>("LiftedAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int?>("LiftedBecause")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("LiftedByStaffId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("PhoneE164")
                         .HasMaxLength(32)
@@ -1030,6 +1040,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("HoldExpiresAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<bool>("LateCancellationCounts")
+                        .HasColumnType("bit");
+
                     b.Property<DateOnly>("LocalDate")
                         .HasColumnType("date");
 
@@ -1039,6 +1052,22 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<string>("ManageTokenHash")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("NoShowCountsTowardBlock")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid?>("NoShowMarkedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("NoShowUndoReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("NoShowUndoneAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("NoShowUndoneByStaffId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("Note")
                         .HasMaxLength(500)

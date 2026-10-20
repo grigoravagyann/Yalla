@@ -432,12 +432,11 @@ public sealed record PhoneHasActiveBookingContext(
 /// <c>phone-has-active-booking</c>, 409: the booker's proved number already holds three pending or confirmed
 /// bookings that are not over, at any venue - the most it holds (decided 2026-10-20, replacing one per number).
 /// <c>context.maxActiveBookings</c> is the limit; the booking members name the caller's own earliest active
-/// booking, absent when none is theirs. With no context at all: another account holding the same number has a
-/// booking at about that time.
+/// booking (absent only for a booking made without proof while Yalla#54 allowed it).
 /// </summary>
 public sealed record PhoneHasActiveBookingProblem : ProblemShape
 {
-    public PhoneHasActiveBookingContext? Context { get; init; }
+    public required PhoneHasActiveBookingContext Context { get; init; }
 }
 
 /// <summary>The tab waiting for a waiter.</summary>

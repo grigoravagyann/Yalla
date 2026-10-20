@@ -90,3 +90,9 @@ public sealed record ReservationReleaseResult(
     Domain.Enums.TableStatus TableStatus,
     bool CountsTowardNoShowThreshold,
     bool WasReplay);
+
+/// <summary>Withdraw a no-show marked by mistake.</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="ClientCommandId">The tablet's or console's id for the tap.</param>
+/// <param name="Reason">Why, at most 500 characters - kept on the booking.</param>
+public sealed record UndoNoShowCommand(Guid ReservationId, Guid ClientCommandId, string? Reason = null);

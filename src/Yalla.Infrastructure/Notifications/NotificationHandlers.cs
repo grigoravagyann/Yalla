@@ -350,8 +350,10 @@ internal sealed class DinerBookingsBlockedHandler(YallaDbContext db, INotificati
     {
         var notice = Payload.Read<BookingsBlockedNotice>(payloadJson);
         var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+
+        // The day on the venue's wall clock, not UTC's (review N3); a payload from before it falls back to UTC.
         var (title, body) = NotificationText.BookingsBlocked(
-            locale, DateOnly.FromDateTime(notice.BlockedUntilUtc), notice.CancelledCount);
+            locale, notice.BlockedUntilLocalDate ?? DateOnly.FromDateTime(notice.BlockedUntilUtc), notice.CancelledCount);
 
         await channel.SendAsync(
             new NotificationMessage(
@@ -367,7 +369,43 @@ internal sealed class DinerBookingsBlockedHandler(YallaDbContext db, INotificati
     }
 
     /// <summary>The push's payload.</summary>
-    private sealed record BookingsBlockedNotice(Guid DinerUserId, DateTime BlockedUntilUtc, int CancelledCount);
+    private sealed record BookingsBlockedNotice(
+        Guid DinerUserId, DateTime BlockedUntilUtc, int CancelledCount, DateOnly? BlockedUntilLocalDate = null);
+}
+
+/// <summary>"You can book again" - to a guest whose no-show block was lifted early.</summary>
+internal sealed class DinerBookingsUnblockedHandler(YallaDbContext db, INotificationChannel channel) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.DinerBookingsUnblocked;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<UnblockedNotice>(payloadJson);
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+        var (title, body) = NotificationText.BookingsUnblocked(locale);
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string> { ["kind"] = "bookings-unblocked" }),
+            cancellationToken);
+    }
+
+    private sealed record UnblockedNotice(Guid DinerUserId);
+}
+
+/// <summary>"Marked as a no-show at {venue}" - to the booking's account, every time (review B1d).</summary>
+internal sealed class ReservationNoShowHandler(YallaDbContext db, INotificationChannel channel)
+    : ManageLinkActionHandler(db, channel)
+{
+    public override string MessageType => OutboxMessageTypes.ReservationNoShow;
+
+    protected override string Kind => "booking-no-show";
+
+    protected override (string Title, string Body) Text(string locale, ReservationNotice notice) =>
+        NotificationText.NoShowMarked(locale, notice.VenueName, DateOf(notice), notice.LocalStartTime);
 }
 
 /// <summary>

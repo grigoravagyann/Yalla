@@ -218,6 +218,30 @@ public static class NotificationText
     /// "You can't book for a week" - to a guest who missed three bookings in three days. Says what happened to the
     /// bookings they had, and the day they can book again.
     /// </summary>
+    /// <summary>"Marked as a no-show" - to the guest, every time, with what to do if it is wrong.</summary>
+    public static (string Title, string Body) NoShowMarked(string locale, string venue, DateOnly date, TimeOnly at) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Отмечено: вы не пришли",
+                     $"{venue}, {Date(date)} в {Time(at)}. Если это ошибка, свяжитесь с заведением."),
+            "en" => ("Marked as a no-show",
+                     $"{venue}, {Date(date)} at {Time(at)}. If this is wrong, contact the venue."),
+            _ => ("Նշվել է՝ չեք եկել",
+                  $"{venue}, {Date(date)} {Time(at)}։ Եթե սա սխալ է, կապվեք վայրի հետ։"),
+        };
+
+    /// <summary>"You can book again" - to a guest whose block was lifted early. What it cancelled stays cancelled.</summary>
+    public static (string Title, string Body) BookingsUnblocked(string locale) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронирование снова доступно",
+                     "Ограничение снято. Отменённые брони не восстановлены — забронируйте заново."),
+            "en" => ("You can book again",
+                     "Your booking pause was lifted. Bookings it cancelled were not restored - book them again."),
+            _ => ("Կրկին կարող եք ամրագրել",
+                  "Սահմանափակումը հանված է։ Չեղարկված ամրագրումները չեն վերականգնվել — ամրագրեք կրկին։"),
+        };
+
     public static (string Title, string Body) BookingsBlocked(string locale, DateOnly until, int cancelledCount) =>
         Normalise(locale) switch
         {

@@ -16,6 +16,8 @@ internal sealed class BookingBlockConfiguration : EntityConfiguration<BookingBlo
         builder.Property(b => b.BlockedAtUtc).IsRequired();
         builder.Property(b => b.BlockedUntilUtc).IsRequired();
         builder.Property(b => b.Reason).IsRequired();
+        builder.Property(b => b.LiftReason).HasMaxLength(FieldLengths.Reason);
+        builder.Ignore(b => b.EndedAtUtc);
 
         // The account is a tombstone when deleted, never removed, so the block outlives it for its few days.
         builder.HasOne<DinerUser>()

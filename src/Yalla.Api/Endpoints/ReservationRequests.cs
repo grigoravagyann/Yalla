@@ -19,6 +19,13 @@ public sealed record MarkNoShowRequest(
     [Required] Guid ClientCommandId,
     string? Reason = null) : IClientCommandRequest;
 
+/// <summary>Body of <c>POST /api/reservations/{id}/undo-no-show</c>.</summary>
+/// <param name="ClientCommandId">The tap's id.</param>
+/// <param name="Reason">Why it was a mistake - kept on the booking.</param>
+public sealed record UndoNoShowRequest(
+    [Required] Guid ClientCommandId,
+    [MaxLength(500)] string? Reason = null) : IClientCommandRequest;
+
 /// <summary>Body of <c>POST /api/reservations/{id}/release</c>.</summary>
 /// <param name="Outcome">
 /// <b>1 NoShow</b> - nobody came and nobody called; counts toward the diner's rolling no-show

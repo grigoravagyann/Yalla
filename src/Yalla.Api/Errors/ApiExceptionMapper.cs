@@ -863,6 +863,14 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: PhoneHasActiveBookingContextOf(e)),
 
+        // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.
+        NoShowUndoWindowClosedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.NoShowUndoWindowClosed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["undoableUntilUtc"] = e.UndoableUntilUtc }),
+
         // Blocked for three no-shows in three days, until the block ends.
         BookingBlockedForNoShowsException e => new MappedError(
             StatusCodes.Status403Forbidden,
@@ -1025,16 +1033,11 @@ internal static class ApiExceptionMapper
 
     /// <summary>
     /// <c>phone-has-active-booking</c>'s context: the limit, and the caller's own earliest active booking when
-    /// there is one. None at all for the rare refusal about another account's booking at the same hour.
+    /// there is one.
     /// </summary>
-    private static Dictionary<string, object?>? PhoneHasActiveBookingContextOf(PhoneHasActiveBookingException e)
+    private static Dictionary<string, object?> PhoneHasActiveBookingContextOf(PhoneHasActiveBookingException e)
     {
-        if (e.MaxActiveBookings is not { } limit)
-        {
-            return null;
-        }
-
-        var context = new Dictionary<string, object?> { ["maxActiveBookings"] = limit };
+        var context = new Dictionary<string, object?> { ["maxActiveBookings"] = e.MaxActiveBookings };
 
         if (e.Existing is { } held)
         {

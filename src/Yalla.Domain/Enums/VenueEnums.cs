@@ -120,4 +120,10 @@ public enum TableChangeSignal
 
     /// <summary>A tab that was waiting was turned away.</summary>
     TabAdmissionRejected = 3,
+
+    /// <summary>
+    /// A booking on this table was cancelled by the platform: its guest was blocked for three no-shows in three
+    /// days. A same-status row naming the booking (<c>ReservationId</c>) - refetch the bookings.
+    /// </summary>
+    BookingCancelledByBlock = 4,
 }

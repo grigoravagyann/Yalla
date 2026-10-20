@@ -116,6 +116,13 @@ a leading `'` on a text cell that starts with `=`, `+`, `-`, `@`, a tab or a car
 and void reasons are typed by staff. No new endpoint: the file always matches the screen, previous-period columns included, and
 "export everything" costs no round trips. `?format=csv` stays for anybody using the API directly.
 
+### Cancellations the platform made
+
+A booking cancelled because its guest was blocked for three no-shows in three days elsewhere
+(`CancelledBecause` 1, see [reservations.md](reservations.md#no-show-block)) is neither the guest's doing nor the
+venue's: the reservation report counts it in **`systemCancelled`** and leaves it out of `cancelled`, the
+cancellation rate and `lateCancellations` (2026-10-20, review S8). The CSV has the same row.
+
 ## 5. What is not built, and why
 
 ### No per-waiter leaderboard

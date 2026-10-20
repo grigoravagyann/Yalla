@@ -383,7 +383,9 @@ ceiling, and the three `policy` members that described it. See
 
 **Tell the visitor before they book** that venues they book with see their record - how many of their bookings
 in the last 12 months they kept, missed or cancelled late, never where - and that three no-shows in three days
-pause booking for a week.
+pause booking for a week. Deleting the account resets the record, but a pause in force stays with the number until
+it ends; a number taken over by someone else who proves it takes the account - and its record - with it. See
+[reservations.md](reservations.md#guest-record).
 
 ## Managing a booking without an account
 

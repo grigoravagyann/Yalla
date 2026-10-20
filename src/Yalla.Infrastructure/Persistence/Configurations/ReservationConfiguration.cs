@@ -134,6 +134,12 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         // Set only when the platform cancelled the booking (a guest's no-show block); null otherwise.
         builder.Property(r => r.CancelledBecause);
 
+        // The review round (2026-10-20): whether a late cancel counts against the guest, and who marked - or
+        // withdrew - a no-show, and whether it counts toward a block.
+        builder.Property(r => r.LateCancellationCounts).IsRequired();
+        builder.Property(r => r.NoShowCountsTowardBlock).IsRequired();
+        builder.Property(r => r.NoShowUndoReason).HasMaxLength(FieldLengths.Reason);
+
         // The confirmed slot a waiting change can fall back to, all null when none is waiting. Wall
         // clock beside the instants, as for the booking's own slot. No foreign key on the table: it is
         // the table the booking was on, kept to go back to, and the booking's own key covers the one it

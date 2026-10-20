@@ -524,6 +524,26 @@ public static class ReservationEndpoints
 
         floor.AddEndpointFilter<ClientCommandIdFilter>();
 
+        floor.MapPost("/{id:guid}/undo-no-show", UndoNoShowAsync)
+            .WithName("undoReservationNoShow")
+            .WithSummary("Withdraw a no-show marked by mistake")
+            .WithDescription(
+                "For the tablet and the console, waiter or above at the booking's branch, **until 05:00 the "
+                + "morning after the booking's date**, branch time. The booking is `Confirmed` again (seat it, or "
+                + "mark it again), and the withdrawal is recorded with who did it and `reason`. If the guest was "
+                + "blocked for no-shows and fewer than three are left to hold the block, it is **lifted** - nothing "
+                + "it cancelled comes back - and the guest is told (`bookings-unblocked`).\n\n"
+                + "Already withdrawn: `200` with the booking as it stands. **Online only** - not for the offline "
+                + "queue.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`no-show-undo-window-closed` (`context.undoableUntilUtc`): its service day is over. "
+                + "`conflicting-state`: the booking is not a no-show.")
+            .ProducesProblem<LockTimeoutProblem>(StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
         floor.MapPost("/{id:guid}/no-show", MarkNoShowAsync)
             .WithName("markReservationNoShow")
             .WithSummary("Mark a booking as a no-show, and free the table")
@@ -541,7 +561,12 @@ public static class ReservationEndpoints
                 + "`context.startUtc`) and nothing changes - the hold stays, the booking stays "
                 + "confirmed. From the start itself there is no further wait: the branch's grace "
                 + "period times the late nudge, and whether a party past their time is late or absent "
-                + "is the waiter's call. To let a booking go earlier, use `release` with `outcome: 2`.")
+                + "is the waiter's call. To let a booking go earlier, use `release` with `outcome: 2`.\n\n"
+                + "**The guest is told** every time (push `reservation.no-show`, feed `booking-no-show`), and who "
+                + "marked it is recorded. It counts toward a **no-show block** (three in three days, see "
+                + "`docs/reservations.md`) only when marked after the start plus the branch's grace (or the extended "
+                + "hold), and at most one per venue per service day counts. Marked by mistake? "
+                + "`POST /api/reservations/{id}/undo-no-show` until 05:00 the next morning.")
             .Produces<ReservationReleaseResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
@@ -599,6 +624,19 @@ public static class ReservationEndpoints
                 StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, DecisionExpiredDescription);
+    }
+
+    private static async Task<IResult> UndoNoShowAsync(
+        Guid id,
+        UndoNoShowRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await reservations.UndoNoShowAsync(
+            new UndoNoShowCommand(id, request.ClientCommandId, request.Reason),
+            cancellationToken));
     }
 
     private static async Task<IResult> MarkNoShowAsync(

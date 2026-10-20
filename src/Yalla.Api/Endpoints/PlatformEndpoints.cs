@@ -4,6 +4,7 @@ using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.Auth;
 using Yalla.Application.Platform;
+using Yalla.Application.Reservations;
 using Yalla.Application.Reviews;
 
 namespace Yalla.Api.Endpoints;
@@ -260,6 +261,29 @@ public static class PlatformEndpoints
                 StatusCodes.Status422UnprocessableEntity,
                 "`hidden` missing, or `reason` missing (bound `required`) or over 500 characters (bound `max`) when hiding.");
 
+        group.MapGet("/booking-blocks", ListBookingBlocksAsync)
+            .WithName("listPlatformBookingBlocks")
+            .WithSummary("Guests blocked from booking for no-shows, now")
+            .WithDescription(
+                "The no-show blocks in force (three no-shows in three days blocks a guest for a week - "
+                + "`docs/reservations.md`), newest first. `phoneE164` is the proved number the block also holds, "
+                + "while it holds one.")
+            .Produces<IReadOnlyList<BookingBlockView>>();
+
+        group.MapPost("/booking-blocks/{blockId:guid}/lift", LiftBookingBlockAsync)
+            .WithName("liftPlatformBookingBlock")
+            .WithSummary("Lift a guest's no-show block early, with a reason")
+            .WithDescription(
+                "The guest can book again at once and is told (`bookings-unblocked`). **Nothing the block cancelled "
+                + "comes back.** `reason` is required (3-500 characters). **Audited** as `booking-block.lift`. A "
+                + "block already lifted answers as it stands; one that already ended is `409 conflicting-state`. "
+                + "The no-shows behind it never count toward another block.")
+            .Produces<BookingBlockView>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such block.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conflicting-state`: the block already ended.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "No reason, or a reason too short or too long.");
+
         group.MapPost("/reviews/{reviewId:guid}/dismiss-reports", DismissReviewReportsAsync)
             .WithName("dismissPlatformReviewReports")
             .WithSummary("Leave a reported review up, and set its reports aside")
@@ -374,6 +398,18 @@ public static class PlatformEndpoints
         CancellationToken cancellationToken,
         int days = VenueBookingsSummaryWindows.Default) =>
         Results.Ok(await overview.GetVenueBookingsSummaryAsync(venueId, days, cancellationToken));
+
+    private static async Task<IResult> ListBookingBlocksAsync(
+        IBookingBlockService blocks,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await blocks.ListInForceAsync(cancellationToken));
+
+    private static async Task<IResult> LiftBookingBlockAsync(
+        Guid blockId,
+        LiftBookingBlockRequest request,
+        IBookingBlockService blocks,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await blocks.LiftAsync(blockId, new LiftBookingBlockCommand(request?.Reason), cancellationToken));
 
     private static async Task<IResult> DismissReviewReportsAsync(
         Guid reviewId,
@@ -497,3 +533,7 @@ public static class PlatformEndpoints
         CancellationToken cancellationToken) =>
         Results.Ok(await service.UpdateBranchAsync(branchId, command, cancellationToken));
 }
+
+/// <summary>Body of <c>POST /api/platform/booking-blocks/{blockId}/lift</c>.</summary>
+/// <param name="Reason">Why - required, 3 to 500 characters, kept in the audit.</param>
+public sealed record LiftBookingBlockRequest([MaxLength(500)] string? Reason);

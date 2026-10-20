@@ -96,6 +96,10 @@ public sealed record OverviewHours(
 /// <param name="Cancelled">Called off by the diner or the venue, declined requests included.</param>
 /// <param name="People">The party sizes of the pending, confirmed, seated and completed.</param>
 /// <param name="PendingChanges">Of <see cref="Confirmed"/>, those with a change waiting for an answer.</param>
+/// <param name="CancelledBySystem">
+/// Of <see cref="Cancelled"/>, those the platform cancelled - their guest was blocked for no-shows - and not the
+/// venue or the guest.
+/// </param>
 public sealed record OverviewBookingCounts(
     int Total,
     int PendingApproval,
@@ -106,7 +110,8 @@ public sealed record OverviewBookingCounts(
     int NoShow,
     int Cancelled,
     int People,
-    int PendingChanges);
+    int PendingChanges,
+    int CancelledBySystem = 0);
 
 /// <summary>The room now.</summary>
 /// <param name="People">The party sizes of the sittings still open.</param>

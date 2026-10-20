@@ -238,6 +238,18 @@ public interface IReservationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Withdraws a no-show marked by mistake (review B1c): waiter or above at the booking's branch, until 05:00 the
+    /// morning after its date, branch time. The booking is confirmed again; if the guest was blocked and fewer than
+    /// three no-shows are left to hold the block, it is lifted - nothing it cancelled comes back - and the guest told.
+    /// Withdrawing one already withdrawn answers with the booking as it stands.
+    /// </summary>
+    /// <exception cref="Domain.Occupancy.NoShowUndoWindowClosedException">Its service day is over.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">It is not a no-show.</exception>
+    Task<ReservationView> UndoNoShowAsync(
+        UndoNoShowCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The diner extends their own hold, once, from the late nudge.
     /// </summary>
     /// <remarks>

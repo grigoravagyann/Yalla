@@ -163,6 +163,17 @@ public static class OutboxMessageTypes
     /// </summary>
     public const string DinerBookingsBlocked = "diner.bookings-blocked";
 
+    /// <summary>
+    /// To the booking's account: a venue marked it a no-show - so a mistake is put right with the venue before it
+    /// counts (review B1d). Keyed <c>reservation:{id}:no-show:{instant}</c>.
+    /// </summary>
+    public const string ReservationNoShow = "reservation.no-show";
+
+    /// <summary>
+    /// To a guest whose no-show block was lifted early. Keyed <c>booking-block:{blockId}:lifted</c>.
+    /// </summary>
+    public const string DinerBookingsUnblocked = "diner.bookings-unblocked";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

@@ -65,6 +65,12 @@ public static class NoShowBlockRules
     /// <summary>How long the block lasts.</summary>
     public const int BlockDays = 7;
 
+    /// <summary>
+    /// A no-show may be withdrawn until this hour, branch time, the morning after the booking's date - the end of its
+    /// service day, late openings included.
+    /// </summary>
+    public const int UndoUntilLocalHourNextDay = 5;
+
     /// <summary>What a booking cancelled by a block says, for the venue reading it.</summary>
     public const string CancellationReason = "Cancelled automatically: the guest missed three bookings in three days.";
 }

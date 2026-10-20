@@ -20,7 +20,9 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// Counted only from bookings the account made with a proved number (<c>PhoneUnverified</c> false): a phone number
 /// typed on somebody else's booking, a web booking with no account, or a booking made without proof never counts -
-/// so nobody can spoil another person's record.
+/// so nobody can spoil another person's record. What each count means - "came" only what the venue vouched for,
+/// late cancellations only of confirmed bookings made before the deadline, the rest of the bookings whose time came
+/// "unmarked" - is on <see cref="GuestRecord"/>.
 /// </para>
 /// </remarks>
 internal static class GuestRecords
@@ -53,7 +55,21 @@ internal static class GuestRecords
                                                   && r.StartUtc > fromUtc
                                                   && r.StartUtc <= nowUtc
                                                   && (r.Status == ReservationStatus.Seated
-                                                      || r.Status == ReservationStatus.Completed)),
+                                                      || r.Status == ReservationStatus.Completed)
+                                                  && db.TableSessions.Any(s => s.ReservationId == r.Id
+                                                                               && (s.SeatedByStaffId != null
+                                                                                   || db.TabOrders.Any(o => o.TabId == s.TabId
+                                                                                       && (o.Status == TabOrderStatus.InKitchen
+                                                                                           || o.Status == TabOrderStatus.Ready
+                                                                                           || o.Status == TabOrderStatus.Served))
+                                                                                   || db.Payments.Any(pay => pay.TabId == s.TabId
+                                                                                       && pay.Status == PaymentStatus.Succeeded)))),
+                Seated = db.Reservations.Count(r => r.DinerUserId == d.Id
+                                                    && !r.PhoneUnverified
+                                                    && r.StartUtc > fromUtc
+                                                    && r.StartUtc <= nowUtc
+                                                    && (r.Status == ReservationStatus.Seated
+                                                        || r.Status == ReservationStatus.Completed)),
                 NoShows = db.Reservations.Count(r => r.DinerUserId == d.Id
                                                      && !r.PhoneUnverified
                                                      && r.StartUtc > fromUtc
@@ -64,14 +80,18 @@ internal static class GuestRecords
                                                   && r.StartUtc > fromUtc
                                                   && r.StartUtc <= nowUtc
                                                   && r.Status == ReservationStatus.CancelledByDiner
-                                                  && r.CancelledAfterDeadline),
-                Unmarked = db.Reservations.Count(r => r.DinerUserId == d.Id
-                                                      && !r.PhoneUnverified
-                                                      && r.StartUtc > fromUtc
-                                                      && r.StartUtc <= nowUtc
-                                                      && r.Status == ReservationStatus.Confirmed),
+                                                  && r.LateCancellationCounts),
+                Lapsed = db.Reservations.Count(r => r.DinerUserId == d.Id
+                                                    && !r.PhoneUnverified
+                                                    && r.StartUtc > fromUtc
+                                                    && r.EndUtc <= nowUtc
+                                                    && r.Status == ReservationStatus.Confirmed),
+
+                // The account's block, or one holding its number - a re-registered account still sees it (N1).
                 BlockedUntil = db.BookingBlocks
-                    .Where(b => b.DinerUserId == d.Id && b.LiftedAtUtc == null && b.BlockedUntilUtc > nowUtc)
+                    .Where(b => (b.DinerUserId == d.Id || (d.PhoneE164 != null && b.PhoneE164 == d.PhoneE164))
+                                && b.LiftedAtUtc == null
+                                && b.BlockedUntilUtc > nowUtc)
                     .Max(b => (DateTime?)b.BlockedUntilUtc),
             })
             .ToListAsync(cancellationToken);
@@ -80,10 +100,12 @@ internal static class GuestRecords
 
         foreach (var row in rows)
         {
-            var booked = row.Came + row.NoShows + row.Late + row.Unmarked;
+            // Seated or completed without the venue vouching for it - opened from the code alone - is unmarked (S1).
+            var unmarked = row.Lapsed + (row.Seated - row.Came);
+            var booked = row.Came + row.NoShows + row.Late + unmarked;
 
             records[row.Account] = new GuestRecord(
-                booked, row.Came, row.NoShows, row.Late, booked == 0, row.BlockedUntil);
+                booked, row.Came, row.NoShows, row.Late, unmarked, booked == 0, row.BlockedUntil);
         }
 
         // An id with no account row (none in practice) is a new guest.
@@ -102,6 +124,44 @@ internal static class GuestRecords
         DateTime nowUtc,
         CancellationToken cancellationToken) =>
         (await ForAccountsAsync(db, [account], nowUtc, cancellationToken))[account];
+
+    /// <summary>
+    /// The no-shows of an account that count toward a block as of <paramref name="referenceUtc"/>, as the distinct
+    /// (venue, service day) pairs they fall on - at most one per venue per day counts (review B1b).
+    /// </summary>
+    /// <remarks>
+    /// Counted: the account's own bookings made with a proved number, marked no-show after the guest's grace
+    /// (<c>NoShowCountsTowardBlock</c>, review B1a), not withdrawn, whose start is in the
+    /// <see cref="NoShowBlockRules.WindowHours"/> hours before the reference - and after the account's last block
+    /// ended or was lifted (review S4), so no-shows a lifted block was made of never block again.
+    /// </remarks>
+    public static async Task<int> BlockingNoShowDaysAsync(
+        YallaDbContext db,
+        Guid account,
+        DateTime referenceUtc,
+        CancellationToken cancellationToken)
+    {
+        var windowStartUtc = referenceUtc.AddHours(-NoShowBlockRules.WindowHours);
+
+        var lastEndedUtc = await db.BookingBlocks
+            .AsNoTracking()
+            .Where(b => b.DinerUserId == account && (b.LiftedAtUtc ?? b.BlockedUntilUtc) <= referenceUtc)
+            .MaxAsync(b => (DateTime?)(b.LiftedAtUtc ?? b.BlockedUntilUtc), cancellationToken);
+
+        var sinceUtc = lastEndedUtc is { } ended && ended > windowStartUtc ? ended : windowStartUtc;
+
+        return await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.DinerUserId == account
+                        && !r.PhoneUnverified
+                        && r.Status == ReservationStatus.NoShow
+                        && r.NoShowCountsTowardBlock
+                        && r.StartUtc > sinceUtc
+                        && r.StartUtc <= referenceUtc)
+            .Select(r => new { r.Branch.VenueId, r.LocalDate })
+            .Distinct()
+            .CountAsync(cancellationToken);
+    }
 
     /// <summary>
     /// When the block on this account - or on its proved number - ends, if one is in force at

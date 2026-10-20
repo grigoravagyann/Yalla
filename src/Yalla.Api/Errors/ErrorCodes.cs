@@ -307,8 +307,7 @@ public static class ErrorCodes
     /// <summary>
     /// The booker's proved number already holds three active bookings (pending or confirmed, not over) at
     /// any venue - the most one number holds. HTTP 409, <c>context.maxActiveBookings</c> and the caller's own
-    /// earliest active booking. Also, with no context, another account holding the same number has a booking
-    /// at about that time. Minted by <c>PhoneHasActiveBookingException</c>.
+    /// earliest active booking. Minted by <c>PhoneHasActiveBookingException</c>.
     /// </summary>
     public const string PhoneHasActiveBooking = "phone-has-active-booking";
 
@@ -317,6 +316,12 @@ public static class ErrorCodes
     /// HTTP 403. Minted by <c>BookingBlockedForNoShowsException</c>.
     /// </summary>
     public const string BookingBlockedNoShows = "booking-blocked-no-shows";
+
+    /// <summary>
+    /// A no-show can no longer be withdrawn: its service day ended (05:00 the next morning, branch time). HTTP 409,
+    /// <c>context.undoableUntilUtc</c>. Minted by <c>NoShowUndoWindowClosedException</c>.
+    /// </summary>
+    public const string NoShowUndoWindowClosed = "no-show-undo-window-closed";
 
     /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
@@ -528,6 +533,7 @@ public static class ErrorCodes
         PhoneNotVerified => "Phone number not verified",
         PhoneHasActiveBooking => "This number holds as many bookings as it can",
         BookingBlockedNoShows => "Booking paused after missed bookings",
+        NoShowUndoWindowClosed => "Too late to withdraw this no-show",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
         ScanTurnedAway => "Ask a waiter",

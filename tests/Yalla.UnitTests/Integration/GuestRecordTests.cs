@@ -18,7 +18,7 @@ namespace Yalla.UnitTests.Integration;
 /// record at once.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
-public class GuestRecordTests(SqlServerFixture fixture)
+public partial class GuestRecordTests(SqlServerFixture fixture)
 {
     // ---------------------------------------------------------------- what counts
 
@@ -82,7 +82,8 @@ public class GuestRecordTests(SqlServerFixture fixture)
 
         using var manager = factory.CreateClientWithToken(await SignInManagerAsync(factory, here));
 
-        var expected = new Expected(Booked: 6, Came: 3, NoShows: 1, LateCancellations: 1, IsNewGuest: false);
+        // The confirmed booking five days ago that nobody marked is "unmarked"; booked is the four together.
+        var expected = new Expected(Booked: 6, Came: 3, NoShows: 1, LateCancellations: 1, Unmarked: 1, IsNewGuest: false);
 
         var list = await ReadAsync(manager, $"/api/branches/{here.BranchId}/reservations?status=1");
         AssertRecord(expected, list.EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == id).GetProperty("guestRecord"));
@@ -121,14 +122,15 @@ public class GuestRecordTests(SqlServerFixture fixture)
         var id = created.GetProperty("id").GetGuid();
 
         using var manager = factory.CreateClientWithToken(await SignInManagerAsync(factory, here));
-        var newGuest = new Expected(0, 0, 0, 0, IsNewGuest: true);
+        var newGuest = new Expected(0, 0, 0, 0, 0, IsNewGuest: true);
 
         var list = await ReadAsync(manager, $"/api/branches/{here.BranchId}/reservations?status=1");
         AssertRecord(newGuest, list.EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == id).GetProperty("guestRecord"));
 
+        // A declined booking is finished: its answer carries no record (review S3).
         var rejected = await manager.PostAsJsonAsync($"/api/reservations/{id}/reject", new { });
         Assert.Equal(HttpStatusCode.OK, rejected.StatusCode);
-        AssertRecord(newGuest, (await rejected.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("guestRecord"));
+        Assert.False((await rejected.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("guestRecord", out _));
 
         // A decline is the venue's, never the guest's: still new.
         AssertRecord(newGuest, (await ReadAsync(diner, "/api/reservations/mine")).GetProperty("guestRecord"));
@@ -210,7 +212,8 @@ public class GuestRecordTests(SqlServerFixture fixture)
 
         var record = overview.TodayBookings.Single(b => b.Id == booked.Id).GuestRecord!;
 
-        Assert.Equal(new GuestRecord(Booked: 2, Came: 1, NoShows: 1, LateCancellations: 0, IsNewGuest: false), record);
+        Assert.Equal(
+            new GuestRecord(Booked: 2, Came: 1, NoShows: 1, LateCancellations: 0, Unmarked: 0, IsNewGuest: false), record);
     }
 
     // ---------------------------------------------------------------- auto-confirm a good record
@@ -332,10 +335,10 @@ public class GuestRecordTests(SqlServerFixture fixture)
             Assert.Equal(0, await db.BookingBlocks.CountAsync(b => b.DinerUserId == me));
         }
 
-        var third = await MarkNoShowAsync(factory, z, missed[2]);
+        await MarkNoShowAsync(factory, z, missed[2]);
 
-        // The floor that marked it sees the block on the guest's record at once.
-        var blockedUntil = third.GetProperty("reservation").GetProperty("guestRecord").GetProperty("blockedUntilUtc").GetDateTime();
+        var blockedUntil = (await ReadAsync(diner, "/api/reservations/mine"))
+            .GetProperty("guestRecord").GetProperty("blockedUntilUtc").GetDateTime();
         Assert.Equal(now.AddDays(NoShowBlockRules.BlockDays), blockedUntil, TimeSpan.FromSeconds(1));
 
         await using (var db = fixture.CreateContext(factory.Clock))
@@ -395,11 +398,14 @@ public class GuestRecordTests(SqlServerFixture fixture)
         var upcoming = (await CreatedAsync(diner, AppBooking(factory, x, daysAhead: 3))).GetProperty("id").GetGuid();
         var now = factory.Clock.UtcNow;
 
-        // Spread: 100 h, 50 h and 1 h ago - every pair of neighbours inside 72 h, all three not.
-        foreach (var hoursAgo in new[] { 100, 50, 1 })
+        // Spread: 100 h, 50 h and 1 h ago at three venues - every pair of neighbours inside 72 h, all three not.
+        var y = await ArrangeAsync(factory, autoConfirm: true);
+        var z = await ArrangeAsync(factory, autoConfirm: true);
+
+        foreach (var (venue, hoursAgo) in new[] { (x, 100), (y, 50), (z, 1) })
         {
-            var id = await SeedIdAsync(factory, x, x.TableIds[1], me, phone, now.AddHours(-hoursAgo), ReservationStatus.Confirmed);
-            await MarkNoShowAsync(factory, x, id);
+            var id = await SeedIdAsync(factory, venue, venue.TableIds[1], me, phone, now.AddHours(-hoursAgo), ReservationStatus.Confirmed);
+            await MarkNoShowAsync(factory, venue, id);
         }
 
         await using var db = fixture.CreateContext(factory.Clock);
@@ -423,18 +429,20 @@ public class GuestRecordTests(SqlServerFixture fixture)
 
         await using var factory = NewFactory();
         var x = await ArrangeAsync(factory, autoConfirm: true);
+        var y = await ArrangeAsync(factory, autoConfirm: true);
+        var z = await ArrangeAsync(factory, autoConfirm: true);
         var (_, phone) = await SignInVerifiedDinerAsync(factory);
         var (_, strangerPhone) = await SignInVerifiedDinerAsync(factory);
         var me = await AccountOfAsync(factory, phone);
         var stranger = await AccountOfAsync(factory, strangerPhone);
         var now = factory.Clock.UtcNow;
 
-        // The stranger's own account, typing my number as the guest's, three times.
-        foreach (var hoursAgo in new[] { 5, 4, 3 })
+        // The stranger's own account, typing my number as the guest's, three times at three venues.
+        foreach (var (venue, hoursAgo) in new[] { (x, 5), (y, 4), (z, 3) })
         {
             var id = await SeedIdAsync(
-                factory, x, x.TableIds[1], stranger, strangerPhone, now.AddHours(-hoursAgo), ReservationStatus.Confirmed, guestPhone: phone);
-            await MarkNoShowAsync(factory, x, id);
+                factory, venue, venue.TableIds[1], stranger, strangerPhone, now.AddHours(-hoursAgo), ReservationStatus.Confirmed, guestPhone: phone);
+            await MarkNoShowAsync(factory, venue, id);
         }
 
         // Two made with my number and no proof (Yalla#54's web door), and one of mine.
@@ -460,6 +468,7 @@ public class GuestRecordTests(SqlServerFixture fixture)
         await using var factory = NewFactory();
         var x = await ArrangeAsync(factory, autoConfirm: true);
         var y = await ArrangeAsync(factory, autoConfirm: true);
+        var w = await ArrangeAsync(factory, autoConfirm: true);
         var (token, phone) = await SignInVerifiedDinerAsync(factory);
         var me = await AccountOfAsync(factory, phone);
         using var diner = factory.CreateClientWithToken(token);
@@ -467,7 +476,7 @@ public class GuestRecordTests(SqlServerFixture fixture)
         var upcoming = (await CreatedAsync(diner, AppBooking(factory, x, daysAhead: 3))).GetProperty("id").GetGuid();
         var now = factory.Clock.UtcNow;
 
-        await SeedAsync(factory, x, x.TableIds[2], me, phone, now.AddHours(-20), ReservationStatus.NoShow);
+        await SeedAsync(factory, w, w.TableIds[2], me, phone, now.AddHours(-20), ReservationStatus.NoShow);
         var atX = await SeedIdAsync(factory, x, x.TableIds[1], me, phone, now.AddHours(-2), ReservationStatus.Confirmed);
         var atY = await SeedIdAsync(factory, y, y.FirstTableId, me, phone, now.AddHours(-1), ReservationStatus.Confirmed);
 
@@ -510,9 +519,10 @@ public class GuestRecordTests(SqlServerFixture fixture)
         string? bookerPhone,
         DateTime startUtc,
         ReservationStatus status,
-        string? guestPhone = null)
+        string? guestPhone = null,
+        DateOnly? localDate = null)
     {
-        await SeedAsync(factory, branch, tableId, dinerUserId, bookerPhone, startUtc, status, guestPhone: guestPhone);
+        await SeedAsync(factory, branch, tableId, dinerUserId, bookerPhone, startUtc, status, guestPhone: guestPhone, localDate: localDate);
 
         await using var db = fixture.CreateContext(factory.Clock);
 
@@ -531,7 +541,7 @@ public class GuestRecordTests(SqlServerFixture fixture)
 
     private static readonly DateOnly Sunday = new(2026, 9, 13);
 
-    private sealed record Expected(int Booked, int Came, int NoShows, int LateCancellations, bool IsNewGuest);
+    private sealed record Expected(int Booked, int Came, int NoShows, int LateCancellations, int Unmarked, bool IsNewGuest);
 
     private static void AssertRecord(Expected expected, JsonElement record) =>
         Assert.Equal(
@@ -541,6 +551,7 @@ public class GuestRecordTests(SqlServerFixture fixture)
                 record.GetProperty("came").GetInt32(),
                 record.GetProperty("noShows").GetInt32(),
                 record.GetProperty("lateCancellations").GetInt32(),
+                record.GetProperty("unmarked").GetInt32(),
                 record.GetProperty("isNewGuest").GetBoolean()));
 
     private static void AssertWaiting(JsonElement booking, ApprovalTrigger because)
@@ -580,10 +591,22 @@ public class GuestRecordTests(SqlServerFixture fixture)
         bool lateCancel = false,
         bool declined = false,
         bool phoneUnverified = false,
-        string? guestPhone = null) =>
+        string? guestPhone = null,
+        DateOnly? localDate = null,
+        Seating seating = Seating.ByStaff) =>
         SeedAsync(
             factory.Clock, branch.BranchId, tableId, dinerUserId, bookerPhone, startUtc, status, lateCancel, declined,
-            phoneUnverified, guestPhone);
+            phoneUnverified, guestPhone, localDate, seating);
+
+    /// <summary>How a seated or completed booking in the past was seated - what "came" is judged by (review S1).</summary>
+    private enum Seating
+    {
+        /// <summary>A waiter seated the party.</summary>
+        ByStaff,
+
+        /// <summary>Opened from the booking code alone; nothing ordered, nothing paid.</summary>
+        ByCodeOnly,
+    }
 
     /// <summary>
     /// A booking in the guest's past (or future) as the venue's floor left it - written straight to the row, as
@@ -600,7 +623,9 @@ public class GuestRecordTests(SqlServerFixture fixture)
         bool lateCancel = false,
         bool declined = false,
         bool phoneUnverified = false,
-        string? guestPhone = null)
+        string? guestPhone = null,
+        DateOnly? localDate = null,
+        Seating seating = Seating.ByStaff)
     {
         await using var db = fixture.CreateContext(clock);
 
@@ -610,7 +635,7 @@ public class GuestRecordTests(SqlServerFixture fixture)
             branchId: branchId,
             diningTableId: tableId,
             startUtc: startUtc,
-            localDate: DateOnly.FromDateTime(startUtc),
+            localDate: localDate ?? DateOnly.FromDateTime(startUtc),
             localStartTime: TimeOnly.FromDateTime(startUtc),
             partySize: 2,
             guestName: "History",
@@ -632,9 +657,29 @@ public class GuestRecordTests(SqlServerFixture fixture)
         await db.Database.ExecuteSqlAsync(
             $"""
              UPDATE dbo.Reservations
-             SET Status = {(int)status}, CancelledAfterDeadline = {lateCancel}, CancelledAtUtc = {cancelled}, DeclineReason = {decline}
+             SET Status = {(int)status}, CancelledAfterDeadline = {lateCancel}, LateCancellationCounts = {lateCancel},
+                 CancelledAtUtc = {cancelled}, DeclineReason = {decline},
+                 NoShowCountsTowardBlock = {status == ReservationStatus.NoShow}
              WHERE Id = {reservation.Id}
              """);
+
+        if (status is ReservationStatus.Seated or ReservationStatus.Completed)
+        {
+            // The sitting behind it: a waiter's (staff id on it), or the booking code's (none).
+            var waiter = seating == Seating.ByStaff
+                ? await db.StaffMembers.Where(m => m.BranchId == branchId).Select(m => (Guid?)m.Id).FirstAsync()
+                : null;
+
+            var sitting = TableSession.SeatReservation(branchId, tableId, reservation.Id, 2, startUtc, waiter);
+
+            if (status == ReservationStatus.Completed)
+            {
+                sitting.Close(startUtc.AddHours(1));
+            }
+
+            db.TableSessions.Add(sitting);
+            await db.SaveChangesAsync();
+        }
     }
 
     private static async Task SetGoodRecordSettingAsync(HttpClient manager, AuthBranch branch, bool on, int? approvalAbove = null)
