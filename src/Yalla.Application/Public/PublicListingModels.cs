@@ -80,6 +80,11 @@ public sealed record PublicBranchListing(
 /// saved by somebody at the venue (K9). False means hide the booking button.
 /// </param>
 /// <param name="RecentReviews">The newest three published reviews, by when they were first written. The rest are paged on the reviews route.</param>
+/// <param name="RatingCounts">
+/// How many shown reviews gave each star, <b>one star first</b>: always five numbers, <c>[1★, 2★, 3★, 4★,
+/// 5★]</c>, zeros included. Over the same reviews as <c>listing.rating</c> and <c>listing.reviewCount</c>,
+/// read live with them, so the five add up to the count. For the distribution bars.
+/// </param>
 /// <param name="Rooms">
 /// The rooms a diner picks from, each with its photos and the live pins on them - the same payload as
 /// <c>GET /api/public/branches/{id}/rooms</c>.
@@ -98,6 +103,7 @@ public sealed record PublicBranchDetail(
     bool AcceptsWebBookings,
     bool AcceptsAppBookings,
     IReadOnlyList<PublicReviewView> RecentReviews,
+    IReadOnlyList<int> RatingCounts,
     IReadOnlyList<PublicRoom> Rooms,
     DateTime AsOfUtc);
 
@@ -127,10 +133,22 @@ public sealed record PublicReviewView(
     Yalla.Application.Reviews.PublicReviewReplyView? Reply = null);
 
 /// <summary>A page of a branch's published reviews, newest first by when each was written.</summary>
+/// <param name="BranchId">The branch.</param>
+/// <param name="Rating">The average of the shown reviews, or absent with none.</param>
+/// <param name="ReviewCount">How many reviews are shown.</param>
+/// <param name="RatingCounts">
+/// How many shown reviews gave each star, <b>one star first</b>: always five numbers, <c>[1★, 2★, 3★, 4★,
+/// 5★]</c>, zeros included - the whole branch's, not this page's. Over the same reviews as
+/// <paramref name="Rating"/> and <paramref name="ReviewCount"/>, so the five add up to the count.
+/// </param>
+/// <param name="Page">This page, from 1.</param>
+/// <param name="PageSize">Reviews a page.</param>
+/// <param name="Reviews">This page's reviews.</param>
 public sealed record PublicReviewPage(
     Guid BranchId,
     double? Rating,
     int ReviewCount,
+    IReadOnlyList<int> RatingCounts,
     int Page,
     int PageSize,
     IReadOnlyList<PublicReviewView> Reviews);

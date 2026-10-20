@@ -11,8 +11,9 @@ namespace Yalla.Application.Public;
 /// no session and no identity - a URL is the whole credential, and that URL will be pasted into
 /// WhatsApp, left in browser history and read by whoever picks up the phone. So this record carries
 /// exactly what the confirmation screen renders and refuses to carry anything a person could be
-/// harmed by: no diner id, no phone number, no other bookings, no floor state, no table id, no
-/// venue internals.
+/// harmed by: no diner id, no phone number, no guest name, no other bookings, no floor state, no
+/// venue internals. The two ids it does carry - the booking's and its table's - are what changing the
+/// booking from the link needs, and neither opens anything to an anonymous caller.
 /// </para>
 /// <para>
 /// It is its own record rather than a trimmed <c>ReservationView</c> for the same reason
@@ -29,6 +30,12 @@ namespace Yalla.Application.Public;
 /// </remarks>
 /// <param name="VenueName">The venue, as the confirmation names it.</param>
 /// <param name="BranchName">Which location.</param>
+/// <param name="VenueSlug">
+/// The venue's half of the branch's public address, <c>/{venueSlug}/{branchSlug}</c>. The link a reminder
+/// carries is <c>/booking/{token}</c>, with no branch in it, so the page needs these to link back to
+/// the branch's page and open the booking card there. Public already: the address is the page's.
+/// </param>
+/// <param name="BranchSlug">The branch's half of that address.</param>
 /// <param name="BranchAddress">Where to go.</param>
 /// <param name="TimeZoneId">
 /// The branch's IANA zone. Every time here is wall-clock in it, and a diner reading this on a
@@ -40,6 +47,20 @@ namespace Yalla.Application.Public;
 /// <param name="PartySize">How many people.</param>
 /// <param name="Status">Where the booking stands now.</param>
 /// <param name="Code">The short code quoted at the door.</param>
+/// <param name="ReservationId">
+/// The booking's id - for one thing: the page that changes the booking sends it as
+/// <c>excludeReservationId</c> on the branch's public availability and day-slot reads, so the table
+/// the visitor already holds reads as free to them, as the app's change screen does. It opens nothing:
+/// every route keyed by a booking id wants the booking's diner or the venue's staff, and the reads that
+/// take it say no more about it than that its table is free.
+/// </param>
+/// <param name="TableId">
+/// The booked table's id - so the change screen can start from the table the booking holds, and send it
+/// back as <c>diningTableId</c> when only the time or the party changes. Table ids are no secret: the
+/// branch's public availability and room photos publish them for every pinned table. The booked one is
+/// named even if it has since been unpinned or taken out, which those reads do not list; a move to it is
+/// then refused as for any table that cannot be booked.
+/// </param>
 /// <param name="CancellationDeadlineUtc">
 /// The instant past which cancelling is recorded as late. Absolute rather than a number of minutes
 /// so the page does not have to reimplement the arithmetic, and so a policy edit cannot silently
@@ -78,6 +99,8 @@ namespace Yalla.Application.Public;
 public sealed record PublicBookingView(
     string VenueName,
     string BranchName,
+    string VenueSlug,
+    string BranchSlug,
     string BranchAddress,
     string TimeZoneId,
     string TableLabel,
@@ -86,6 +109,8 @@ public sealed record PublicBookingView(
     int PartySize,
     ReservationStatus Status,
     string Code,
+    Guid ReservationId,
+    Guid TableId,
     DateTime CancellationDeadlineUtc,
     bool CanCancel,
     bool CancelledAfterDeadline,
@@ -122,7 +147,7 @@ public static class ManageBookingFailure
 }
 
 /// <summary>
-/// Reading and cancelling one booking with nothing but its manage link.
+/// Reading, cancelling and changing one booking with nothing but its manage link.
 /// </summary>
 /// <remarks>
 /// A visitor who booked from the public page has no app, so no push reminder and no one-tap cancel
@@ -150,5 +175,20 @@ public interface IPublicBookingService
     Task<PublicBookingView> CancelAsync(
         string manageToken,
         string? reason = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves the booking behind a manage token - another date, time, table or party size - and answers
+    /// with it as the link now shows it.
+    /// </summary>
+    /// <remarks>
+    /// The diner's move, by the reservation service's code: the same rules, the same status decided
+    /// again, the same lock, reminders and idempotency. A retry of the same change answers with the
+    /// booking as it stands. See <c>IReservationService.RescheduleByManageTokenAsync</c>.
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">As <see cref="GetAsync"/>; or no such table.</exception>
+    Task<PublicBookingView> RescheduleAsync(
+        string manageToken,
+        Reservations.RescheduleByManageTokenCommand command,
         CancellationToken cancellationToken = default);
 }

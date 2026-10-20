@@ -73,6 +73,45 @@ public interface IReservationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Moves a booking with the manage token from its link, for a caller with no account - the same
+    /// move as <see cref="RescheduleAsync"/>, by the same code.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <b>only</b> thing this does not share with <see cref="RescheduleAsync"/> is how the caller
+    /// proved they may: a signed-in diner is checked against <c>DinerUserId</c>, a link holder by
+    /// holding an unguessable token. The phone gate, the rules, the status decided again, the lock,
+    /// the replaced reminders and the record of the command are the diner's move, once; the change is
+    /// recorded as the booking's diner's, so a retry is a retry whichever way it arrives.
+    /// </para>
+    /// <para>
+    /// One answer is narrower than the diner's: a clash with another of the diner's bookings is
+    /// <c>ManageLinkOverlapsOwnException</c>, which names nothing about that other booking - no time,
+    /// table or code. Its code still says one exists. A deactivated, deleted or unproved account is
+    /// <c>ManageLinkAccountUnavailableException</c>, never the session's 401. A change that is not a
+    /// retry tells the booking's account, in the same save.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="KeyNotFoundException">
+    /// The token is unknown, expired, or its booking is gone - see <c>ManageBookingFailure</c>; or no
+    /// such table.
+    /// </exception>
+    /// <exception cref="Domain.Occupancy.ManageLinkAccountUnavailableException">
+    /// The booking's account is deactivated, deleted or without a proved number - at the gate, or found
+    /// not live by the move's own lock.
+    /// </exception>
+    /// <exception cref="ClientCommandIdAlreadyUsedException">As <see cref="RescheduleAsync"/>.</exception>
+    /// <exception cref="Domain.Occupancy.ReservationNotChangeableException">As <see cref="RescheduleAsync"/>.</exception>
+    /// <exception cref="Domain.Occupancy.ReservationRejectedException">As <see cref="RescheduleAsync"/>.</exception>
+    /// <exception cref="TableAlreadyBookedException">As <see cref="RescheduleAsync"/>.</exception>
+    /// <exception cref="TableCurrentlyOccupiedException">As <see cref="RescheduleAsync"/>.</exception>
+    /// <exception cref="ReservationLockTimeoutException">As <see cref="RescheduleAsync"/>.</exception>
+    Task<ReservationView> RescheduleByManageTokenAsync(
+        string manageToken,
+        RescheduleByManageTokenCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The earlier guest's answer to a later guest's request for their table. Yes: the later booking is
     /// confirmed, and this booking promises to free the table by the time asked - its end is cut to it.
     /// No: the later booking is declined. Both diners are told.
@@ -109,7 +148,8 @@ public interface IReservationService
     /// </para>
     /// <para>
     /// A booking that is already cancelled or finished is returned as it stands rather than
-    /// refused.
+    /// refused. One that this cancels is told to its account - a push and a feed entry, in the same
+    /// save - because whoever holds the link may not be the diner.
     /// </para>
     /// </remarks>
     /// <exception cref="KeyNotFoundException">

@@ -140,6 +140,15 @@ public static class OutboxMessageTypes
     public const string ReservationDecided = "reservation.decided";
 
     /// <summary>
+    /// To the booking's account: it was changed from its manage link, by whoever holds the link. Keyed
+    /// <c>reservation:{id}:changed-by-link:{instant}</c>; a later change replaces one still unsent.
+    /// </summary>
+    public const string ReservationChangedByLink = "reservation.changed-by-link";
+
+    /// <summary>To the booking's account: it was cancelled from its manage link. Keyed <c>reservation:{id}:cancelled-by-link</c>.</summary>
+    public const string ReservationCancelledByLink = "reservation.cancelled-by-link";
+
+    /// <summary>
     /// To the guest with a table first: somebody would like it after them - will they have left in time?
     /// Keyed on their booking, <c>reservation:{id}:table-request:{requestId}</c>.
     /// </summary>

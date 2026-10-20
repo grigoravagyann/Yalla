@@ -91,6 +91,9 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 "specialDays",
                 "tableCount",
                 "timeZoneId",
+
+                // How many branches the venue's chooser lists, for "All N branches" without fetching it.
+                "venueBranchCount",
                 "venueName",
                 "venueSlug",
                 "venueType",

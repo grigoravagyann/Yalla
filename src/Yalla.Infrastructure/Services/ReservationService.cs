@@ -401,6 +401,132 @@ internal sealed class ReservationService(
             throw new KeyNotFoundException($"Reservation {command.ReservationId} was not found.");
         }
 
+        return await MoveAsync(reservation, command, dinerUserId, viaManageLink: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Moves a booking with its manage token: the diner's move, with the link as the proof.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One move, two ways in</b>, as cancelling is: the token finds the booking exactly as the
+    /// manage link's read and cancel find it - unknown, expired and gone answering identically - and
+    /// from there it is <see cref="MoveAsync"/>, the diner's move. The token is the credential and
+    /// names one booking; there is no id in the command to point it at another.
+    /// </para>
+    /// <para>
+    /// <b>The phone gate is the booking's account's.</b> It was never about who is asking: the moved
+    /// booking's reminder and no-show record land on the account's number, so that number must still
+    /// be a proved one, whoever holds the link. A booking whose account was deleted has no account to
+    /// land on - the deletion cut the link to it - and is refused the same way, as the gate refuses an
+    /// account row that is not there. Such a booking can still be read and cancelled from its link.
+    /// </para>
+    /// <para>
+    /// <b>The change is recorded as the diner's</b> - the booking's account is the actor in
+    /// <c>ProcessedCommands</c> - so a retry is recognised whichever way it arrives, and an id that
+    /// belongs to another booking, or to a different change of this one, is the same
+    /// <c>client-command-id-in-use</c> it is for the app.
+    /// </para>
+    /// <para>
+    /// <b>The one answer that is narrower than the diner's</b> is a clash with another of the diner's
+    /// bookings: <see cref="ManageLinkOverlapsOwnException"/> instead of
+    /// <see cref="ReservationOverlapsOwnException"/>, the same 409 and code with nothing about the other
+    /// booking - no time, table or code. The code still tells that such a booking exists: the writer
+    /// checks the diner's own bookings before the table's, for the app as for the link, and reordering
+    /// that shared check for one caller is not worth what it would hide from somebody already holding
+    /// the diner's link to the same venue.
+    /// </para>
+    /// <para>
+    /// <b>The account's liveness is the gate's answer here too.</b> The account's lock inside the move
+    /// refuses an account deactivated or deleted since the gate as a session ending (401); there is no
+    /// session on a link, so it is <see cref="ManageLinkAccountUnavailableException"/>, the gate's 403.
+    /// </para>
+    /// <para>
+    /// <b>The booking's account is told</b> when the move is not a retry: a push and a feed entry in the
+    /// same save (see <c>TellDinerDoneFromLink</c>), because whoever holds the link may not be the diner,
+    /// and a booking moved without their knowing becomes their no-show.
+    /// </para>
+    /// </remarks>
+    public async Task<ReservationView> RescheduleByManageTokenAsync(
+        string manageToken,
+        RescheduleByManageTokenCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var reservation = await FindByManageTokenAsync(manageToken, cancellationToken);
+
+        // The account the move would land on: none left (deleted), not live, or without a proved number -
+        // the app's 403, in words the link holder can act on (they have no account to verify).
+        if (reservation.DinerUserId is not { } dinerUserId)
+        {
+            throw new ManageLinkAccountUnavailableException();
+        }
+
+        try
+        {
+            await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, "Changing a booking", cancellationToken);
+        }
+        catch (Domain.Identity.PhoneNotVerifiedException)
+        {
+            throw new ManageLinkAccountUnavailableException();
+        }
+
+        var move = new RescheduleReservationCommand(
+            reservation.Id,
+            command.TableId,
+            command.LocalDate,
+            command.LocalTime,
+            command.PartySize,
+            command.ClientCommandId,
+            command.AcceptsFreeByUtc);
+
+        ReservationView moved;
+
+        try
+        {
+            moved = await MoveAsync(reservation, move, dinerUserId, viaManageLink: true, cancellationToken);
+        }
+        catch (ReservationOverlapsOwnException)
+        {
+            throw new ManageLinkOverlapsOwnException();
+        }
+        catch (Domain.Identity.AuthenticationFailedException)
+        {
+            // The account stopped being live between the gate and its lock inside the move. On the app that
+            // is the diner's session ending; an anonymous link has no session, so it is the gate's answer.
+            throw new ManageLinkAccountUnavailableException();
+        }
+
+        if (!moved.WasReplay)
+        {
+            // Which way in, for the venue answering "I never moved it" - the move's own line says where to.
+            logger.LogInformation(
+                "Booking {Code} was changed from its manage link, not the app; its account was told.", moved.Code);
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// The move itself, for a caller already proved entitled to move <paramref name="reservation"/> and
+    /// whose phone gate has passed - the diner's own booking, or the booking behind a manage link.
+    /// </summary>
+    /// <param name="reservation">The booking, tracked.</param>
+    /// <param name="command">The change.</param>
+    /// <param name="dinerUserId">The booking's account: the actor recorded, and whose bookings and history count.</param>
+    /// <param name="viaManageLink">
+    /// Whether whoever holds the booking's link made the change, rather than the diner in the app: the
+    /// account holder is then told, in the same save - see <see cref="TellDinerDoneFromLink"/>.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    private async Task<ReservationView> MoveAsync(
+        Reservation reservation,
+        RescheduleReservationCommand command,
+        Guid dinerUserId,
+        bool viaManageLink,
+        CancellationToken cancellationToken)
+    {
         // The branch's zone first, because a replay is judged by where the change asked to go: the
         // start a retry names is a local time, and the record holds the instant it became.
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
@@ -512,7 +638,7 @@ internal sealed class ReservationService(
                 }
 
                 decided = await StageMoveAsync(
-                    reservation, command, table, branch, startUtc, decision, ask, verdict, dinerUserId, nowUtc, ct);
+                    reservation, command, table, branch, startUtc, decision, ask, verdict, dinerUserId, viaManageLink, nowUtc, ct);
             },
             cancellationToken);
 
@@ -584,6 +710,7 @@ internal sealed class ReservationService(
         ShareAsk? ask,
         TableSequencingVerdict verdict,
         Guid dinerUserId,
+        bool viaManageLink,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
@@ -651,6 +778,14 @@ internal sealed class ReservationService(
 
         // The account is live: the writer took its lock, inside this transaction, before calling here.
         await ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
+
+        // Moved by whoever holds the link: the account holder is told where it stands now. After the
+        // reminders, whose replacing cancels this booking's unsent messages - an earlier change's push among
+        // them, so only the latest goes.
+        if (viaManageLink)
+        {
+            TellDinerDoneFromLink(db, outbox, reservation, branch, changed: true, nowUtc);
+        }
 
         db.ProcessedCommands.Add(new ProcessedCommand(
             command.ClientCommandId,
@@ -1086,7 +1221,12 @@ internal sealed class ReservationService(
                 reservation, settled, table: null, wasReplay: false, trigger: null, cancellationToken);
         }
 
-        return await CancelCoreAsync(reservation, reason, cancellationToken);
+        var cancelled = await CancelCoreAsync(reservation, reason, cancellationToken, viaManageLink: true);
+
+        logger.LogInformation(
+            "Booking {Code} was cancelled from its manage link, not the app; its account was told.", cancelled.Code);
+
+        return cancelled;
     }
 
     /// <summary>Whether cancelling would still do anything.</summary>
@@ -1182,7 +1322,8 @@ internal sealed class ReservationService(
     private async Task<ReservationView> CancelCoreAsync(
         Reservation reservation,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool viaManageLink = false)
     {
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
         var nowUtc = clock.UtcNow;
@@ -1206,6 +1347,13 @@ internal sealed class ReservationService(
 
         // And its feed entry that has not appeared yet - the reminder - with it (K12).
         await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+        // Cancelled by whoever holds the link: the account holder is told, in this save. After the
+        // cancelling above, which would otherwise take this message with the reminder.
+        if (viaManageLink)
+        {
+            TellDinerDoneFromLink(db, outbox, reservation, branch, changed: false, nowUtc);
+        }
 
         await db.SaveChangesAsync(cancellationToken);
 
@@ -1979,6 +2127,72 @@ internal sealed class ReservationService(
         // The same fact into the diner's feed, beside its push and in the same save (K12).
         DinerNotices.BookingDecided(
             db, reservation, venueName, branch.Name, approved, expired, nowUtc, change, approved ? null : because);
+    }
+
+    /// <summary>
+    /// Tells a booking's account that it was changed, or cancelled, from its manage link - the push and the
+    /// feed entry beside it - in the caller's unit of work.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why.</b> The link is a bearer capability that goes round group chats and into a calendar file, so
+    /// whoever acted may not be the diner. A booking moved without their knowing is a no-show on their
+    /// account; one cancelled without their knowing is an evening out that is not there. The app's own
+    /// change and cancel, made by the account holder, tell nobody anything new and write nothing.
+    /// </para>
+    /// <para>
+    /// The push is keyed under the booking (<c>reservation:{id}:changed-by-link:{instant}</c>,
+    /// <c>…:cancelled-by-link</c>), so the next change or cancel - which cancels the booking's unsent
+    /// messages - replaces one not yet sent: the diner hears where it stands, once. The feed keeps each.
+    /// A booking whose account is gone has nobody to tell, and nothing is written.
+    /// </para>
+    /// </remarks>
+    private static void TellDinerDoneFromLink(
+        YallaDbContext db,
+        IOutbox outbox,
+        Reservation reservation,
+        Branch branch,
+        bool changed,
+        DateTime nowUtc)
+    {
+        if (reservation.DinerUserId is not { } dinerUserId)
+        {
+            return;
+        }
+
+        var venueName = branch.Venue?.Name ?? branch.Name;
+
+        outbox.Enqueue(
+            changed ? OutboxMessageTypes.ReservationChangedByLink : OutboxMessageTypes.ReservationCancelledByLink,
+            new
+            {
+                reservationId = reservation.Id,
+                dinerUserId,
+                venueName,
+                branchName = branch.Name,
+                tableLabel = string.Empty,
+                localStartTime = reservation.LocalStartTime,
+                reservationCode = reservation.Code,
+                localDate = reservation.LocalDate,
+                partySize = reservation.PartySize,
+                status = reservation.Status,
+            },
+            nowUtc,
+            OutboxMessageTypes.KeyFor(
+                "reservation",
+                reservation.Id,
+                changed
+                    ? "changed-by-link:" + nowUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture)
+                    : "cancelled-by-link"));
+
+        if (changed)
+        {
+            DinerNotices.BookingChangedByLink(db, reservation, venueName, branch.Name, nowUtc);
+        }
+        else
+        {
+            DinerNotices.BookingCancelledByLink(db, reservation, venueName, branch.Name, nowUtc);
+        }
     }
 
     // ---------------------------------------------------------------- what the diner gets told

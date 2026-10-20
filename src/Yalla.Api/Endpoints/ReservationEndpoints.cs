@@ -42,19 +42,19 @@ namespace Yalla.Api.Endpoints;
 /// </remarks>
 public static class ReservationEndpoints
 {
-    private const string ConflictDescription =
+    internal const string ConflictDescription =
         "Someone else took that table between the diner seeing it free and confirming. The body's "
         + "`context` carries the clashing window and a fresh availability snapshot, so the app can "
         + "redraw the floor and show what changed rather than only saying no. Never retried "
         + "automatically: this answer will not change on a repeat.";
 
-    private const string RejectedDescription =
+    internal const string RejectedDescription =
         "A branch rule refused the booking. Each rule has its own `code` - "
         + "`reservation-party-exceeds-capacity`, `reservation-outside-opening-hours` and so on - "
         + "with the numbers behind it in `context`, so the app can say which table to pick instead "
         + "rather than showing a generic failure.";
 
-    private const string LockTimeoutDescription =
+    internal const string LockTimeoutDescription =
         "The table's booking lock could not be had in time. `context.retryable` is true: unlike the "
         + "409, this one is worth retrying - with the same `clientCommandId`, so a retry that "
         + "crosses with a late-committing original is recognised as a replay.";

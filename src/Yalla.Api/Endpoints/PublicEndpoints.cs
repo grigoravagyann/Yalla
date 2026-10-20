@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.RateLimiting;
 using Yalla.Api.ApplicationExtensions;
+using Yalla.Api.Errors;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Menus;
 using Yalla.Application.Public;
@@ -77,6 +78,9 @@ public static class PublicEndpoints
             .WithDescription(
                 "Address, coordinates, opening hours, whether it is open **now** in its own time "
                 + "zone, the live free-table count, and the floor plan in diner shape.\n\n"
+                + "`venueBranchCount`: how many of the venue's branches `GET /api/public/venues` lists - the "
+                + "ones switched on, this one included; a branch switched off is neither listed nor counted "
+                + "- read live with the booking switch, for the page's \"All N branches\" link.\n\n"
                 + "The floor plan here is not the editor's: it carries no QR tokens and no table "
                 + "status beyond whether somebody is sitting there. A QR token is the credential "
                 + "that opens a tab.\n\n"
@@ -132,6 +136,12 @@ public static class PublicEndpoints
                 + "`approvalExpiresAtUtc` to count down to and `awaitsEarlierGuestAnswer`: true while the "
                 + "guest with the table before it is asked in the app whether they will have left in time "
                 + "(only they answer), false when the venue decides it.\n\n"
+                + "For the page around it: `venueSlug` and `branchSlug`, the branch page's public address "
+                + "(`/{venueSlug}/{branchSlug}`) - the link a reminder carries is the web's token-only "
+                + "`/booking/{token}`, which names no branch - and, for changing the booking, "
+                + "`reservationId` (send it as `excludeReservationId` on the public availability and "
+                + "day-slot reads, so the table already held reads as free) and `tableId`, the booked "
+                + "table.\n\n"
                 + "**Nothing else.** No diner id, no phone number, no other bookings, no floor "
                 + "state. The token is the whole credential and it will be pasted into WhatsApp, "
                 + "left in browser history and read by whoever picks the phone up, so this response "
@@ -159,13 +169,101 @@ public static class PublicEndpoints
                 + "never blocked.** A late cancellation is far better than a no-show: the venue at "
                 + "least knows. `cancellationDeadlineUtc` on the read above is that deadline.\n\n"
                 + "The same cancellation the app performs, not a second one - the booking's "
-                + "reminder is cancelled in the same transaction either way.\n\n"
+                + "reminder is cancelled in the same transaction either way. One addition on the link: the "
+                + "booking's account is told it was cancelled from there - a push and a feed entry "
+                + "(`reservation.cancelled-by-link`, kind `booking-cancelled-by-link`) - because whoever "
+                + "holds the link may not be the diner.\n\n"
                 + "**Cancelling an already-cancelled or finished booking is not an error**: the "
-                + "booking comes back as it stands, untouched.")
+                + "booking comes back as it stands, untouched, and nobody is told again.")
             .Produces<PublicBookingView>()
             .ProducesProblemDetails(
                 StatusCodes.Status404NotFound,
                 "The link is not valid. Deliberately indistinguishable from an expired one.");
+
+        group.MapPost("/bookings/{token}/reschedule", RescheduleBookingAsync)
+            .WithName("reschedulePublicBooking")
+            .WithSummary("Change a booking's date, time, party size or table from its manage link")
+            .WithDescription(
+                "The app's change (`rescheduleReservation`) for somebody holding nothing but the link - "
+                + "the **same move, by the same code**: only how the caller proved they may differs. Send "
+                + "the whole new slot - `date`, `time`, `partySize`, `diningTableId` (required: the "
+                + "current table, `tableId` on the read above, or another at the branch) and a "
+                + "`clientCommandId` - exactly as the app does. Answers `200` with the booking as the read "
+                + "above shows it: the **same `code`** and link, at the new `localDate`/`localStartTime`, "
+                + "`partySize`, `tableLabel`/`roomName` and `status`.\n\n"
+                + "**The status is decided again, as for the app.** A `Confirmed` booking that keeps its "
+                + "table and start and does not grow stays `Confirmed`. A confirmed party that does not "
+                + "grow keeps its confirmation against the party-size threshold. Anything else is judged as "
+                + "a new booking: a move into the short-notice window (today, or under six hours away) "
+                + "waits for the floor with a fifteen-minute `approvalExpiresAtUtc` - and if that change "
+                + "is declined or unanswered the booking goes back to the slot it had, `Confirmed`, when "
+                + "it is still free; a party that grows past the threshold, a branch that approves every "
+                + "booking, or a no-show history waits for the venue (`PendingApproval`); a table whose "
+                + "guest before must agree first waits on them. A booking already waiting keeps its "
+                + "deadline through a move.\n\n"
+                + "**Only a booking still to come**: `PendingApproval` or `Confirmed` and not yet started; "
+                + "anything else - cancelled, declined, seated, finished, a no-show, past its start - is "
+                + "`409 reservation-not-changeable`. Judged as a new booking would be, with the same "
+                + "`reservation-*` 422s: lead time, booking window, opening hours and special days, the "
+                + "table pinned on its room and fitting the party. The booking being moved never stands "
+                + "in its own way; read the floor with `excludeReservationId` = `reservationId` on the "
+                + "public availability and day-slot reads to see it that way.\n\n"
+                + "**The phone gate is the booking's account's**: its reminders and no-show record land on "
+                + "that account, so it must still be live with a proved number - `403 phone-not-verified` "
+                + "otherwise (deactivated, deleted, or found not live by the move's own lock), with a message "
+                + "a link holder can act on: call the venue, or cancel and book again. Reading and cancelling "
+                + "stay open.\n\n"
+                + "**One diner, one table at a time** at the branch: a move onto a sitting that overlaps "
+                + "another of the booking's diner's live bookings there is `409 reservation-overlaps-own` - "
+                + "with **no `context`** and a message that names no time, table or code. It does not hide "
+                + "that such a booking exists: this check runs before the table's own clash check, so the "
+                + "code itself says the diner holds another table around then.\n\n"
+                + "**The booking's account is told** - a push and a feed entry, in the same save "
+                + "(`reservation.changed-by-link`, kind `booking-changed-by-link`): the link goes round group "
+                + "chats, and whoever moved it may not be the diner. A retry tells nobody twice.\n\n"
+                + "The reminder and late nudge are replaced with ones for the new time, carrying the same "
+                + "manage link. Idempotent on `clientCommandId`, shared with the app's change: a retry of "
+                + "the same change answers `200` with the booking **as it stands now**, moving nothing; the "
+                + "same id on another command, another booking or a different change (another table, "
+                + "start or party size) is `409 client-command-id-in-use` - mint a fresh id per change.\n\n"
+                + "**An unknown, expired or gone link answers exactly as the read does** - the same 404, "
+                + "code and sentence. Rate limited per link with the read and the cancel.")
+            .Produces<PublicBookingView>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`diningTableId` names a table at another branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "`phone-not-verified`: the booking's account cannot take a move - deactivated, deleted, "
+                + "without a proved number, or found not live mid-move. The message is for the link holder "
+                + "(\"This booking can no longer be changed online. Call the venue, or cancel it and book "
+                + "again.\"); never a 401, since there is no session. The booking can still be read and "
+                + "cancelled from the link.")
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound,
+                "The link is not valid - deliberately indistinguishable from an expired one, as on the read. "
+                + "Also `not-found` for a `diningTableId` that is no active table: read the link again to "
+                + "tell the two apart.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`reservation-not-changeable`: the booking is finished with or has started. "
+                + "`reservation-approval-expired`: a short-notice request nobody answered in time. "
+                + "`table-already-booked` / `table-currently-occupied`: the new slot is taken - "
+                + ReservationEndpoints.ConflictDescription
+                + " `reservation-overlaps-own`: another of the diner's bookings at the branch runs then "
+                + "(no context). `concurrent-update`: the booking was cancelled, approved or seated while "
+                + "this was in flight; read it again. `bookings-not-accepted`, `web-bookings-not-accepted`, "
+                + "`branch-unavailable`: the branch stopped taking bookings. `client-command-id-in-use`: "
+                + "the id belongs to another command or to a different change.")
+            .ProducesProblemDetails(
+                StatusCodes.Status422UnprocessableEntity,
+                ReservationEndpoints.RejectedDescription
+                + " `validation-failed` names a missing or malformed field; `reservation-free-by-required` "
+                + "asks for `acceptsFreeByUtc`.")
+            .ProducesProblem<LockTimeoutProblem>(
+                StatusCodes.Status503ServiceUnavailable, ReservationEndpoints.LockTimeoutDescription)
+
+            // The one write here that carries an idempotency key, refused without one exactly as on
+            // the app's routes.
+            .AddEndpointFilter<ClientCommandIdFilter>();
 
         group.MapGet("/branches/{branchId:guid}/meta", GetMetaAsync)
             .WithName("getPublicBranchMeta")
@@ -227,7 +325,9 @@ public static class PublicEndpoints
                 "`listing` is the card exactly as the list serves it. Beside it: `about`, `websiteUrl`, "
                 + "`phoneE164`, `amenities`, `openingHours` (`day` 0 = Sunday, wall-clock `opensAt`/"
                 + "`closesAt` as `HH:mm:ss`, `closesNextDay`), `gallery` (pictures beyond the cover, in "
-                + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three) and "
+                + "order), `tableCount`, `acceptsWebBookings`, `recentReviews` (newest three), "
+                + "`ratingCounts` (shown reviews per star, **one star first**: always five numbers, adding up "
+                + "to `listing.reviewCount`) and "
                 + "`rooms` - the rooms with their photos and the live pins on them, exactly as "
                 + "`GET /api/public/branches/{branchId}/rooms` serves them.\n\n"
                 + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
@@ -244,8 +344,12 @@ public static class PublicEndpoints
             .WithName("getPublicBranchReviews")
             .WithSummary("A page of a branch's reviews, newest first")
             .WithDescription(
-                "Twenty a page from `page=1`. `rating` and `reviewCount` are read live. Each review "
-                + "carries `authorName` as a first name and last initial, never the account or its id.")
+                "Twenty a page from `page=1`. `rating`, `reviewCount` and `ratingCounts` are read live, "
+                + "over the shown reviews only (one taken down by moderation counts nowhere). "
+                + "`ratingCounts` is the whole branch's star distribution, the same on every page: five "
+                + "numbers, **one star first** (`[1★, 2★, 3★, 4★, 5★]`), zeros included, adding up to "
+                + "`reviewCount`. Each review carries `authorName` as a first name and last initial, never "
+                + "the account or its id.")
             .Produces<PublicReviewPage>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`page` below 1, or past the last page that can exist.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, or it is not published.")
@@ -320,6 +424,33 @@ public static class PublicEndpoints
         CancellationToken ct,
         CancelBookingRequest? request = null) =>
         Results.Ok(await bookings.CancelAsync(token, request?.Reason, ct));
+
+    /// <summary>
+    /// Moves a booking from its manage link.
+    /// </summary>
+    /// <remarks>
+    /// The app's body, unchanged, so the page and the app send one shape. The validation filter has
+    /// already refused a null date, time or table by the time this runs.
+    /// </remarks>
+    private static async Task<IResult> RescheduleBookingAsync(
+        string token,
+        RescheduleReservationRequest request,
+        IPublicBookingService bookings,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await bookings.RescheduleAsync(
+            token,
+            new RescheduleByManageTokenCommand(
+                request.DiningTableId!.Value,
+                request.Date!.Value,
+                request.Time!.Value,
+                request.PartySize,
+                request.ClientCommandId,
+                request.AcceptsFreeByUtc),
+            ct));
+    }
 
     private static async Task<IResult> GetMetaAsync(
         Guid branchId, IPublicVenueQuery venues, CancellationToken ct) =>
