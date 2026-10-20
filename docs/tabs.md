@@ -429,6 +429,13 @@ total sees those lines on `myLines` (the ones they were there for, flagged `isTa
 and over HTTP by `ownItemsAmd = myItemsSubtotalAmd - the comps on their own lines` and
 `sharedItemsAmd = half the bottle + half the table's khachapuri after its comp`.
 
+**A waiter's order goes straight to the kitchen (2026-10-20).** Decided by the user: an order keyed
+in by staff is placed and moved to `InKitchen` in the same commit, with `OrderPlaced` followed by
+`OrderStatusChanged` on the stream. The waiter who took it at the table is already the check a
+phone's order waits at `New` for; a second "send" tap on the tablet could only be forgotten. A
+phone's order still starts at `New` and a waiter sends it on. Pinned by
+`KitchenQueueEndpointTests.A_waiters_order_goes_straight_to_the_kitchen_and_a_phones_order_waits_for_a_waiter`.
+
 **Who, per line (2026-10-19).** The floor tablet assigns each line of a spoken round to the table
 (shared) or a named guest and sends the round once. `OrderItemRequest.participantId` is that line's
 guest, stored on `TabOrderLines.OnBehalfOfParticipantId`, and it overrides the order's

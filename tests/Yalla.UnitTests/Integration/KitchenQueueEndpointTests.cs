@@ -213,8 +213,9 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
         // table's bottle nobody - absent, not null.
         AssertLineOwners(spoken);
 
-        // The answer to a move is the same ticket, sender and line owners included.
-        var moved = await MoveAsync(waiter, spokenId, TabOrderStatus.InKitchen);
+        // The answer to a move is the same ticket, sender and line owners included. A waiter's order
+        // is already in the kitchen, so the move that is left is the cook's.
+        var moved = await MoveAsync(waiter, spokenId, TabOrderStatus.Ready);
         Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
 
         var movedTicket = await moved.Content.ReadFromJsonAsync<JsonElement>();
@@ -234,6 +235,64 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
                     .TryGetProperty("onBehalfOfParticipantId", out _),
                 "The table's bottle came back in somebody's name.");
         }
+    }
+
+    /// <summary>
+    /// What a waiter keys in is in the kitchen the moment it is sent; what a phone sends waits for a waiter.
+    /// </summary>
+    /// <remarks>
+    /// Decided by the user on 2026-10-20. The waiter who took the order at the table is already the
+    /// check a phone's order needs, so a second "send to the kitchen" tap on the tablet was a step
+    /// that could only be forgotten. A phone's order still stops at New, because nobody has looked at
+    /// it yet: a wrong table, a joke, a dish the guest did not mean.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_waiters_order_goes_straight_to_the_kitchen_and_a_phones_order_waits_for_a_waiter()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var kitchen = await ArrangeAsync(factory);
+
+        using var waiter = factory.CreateClientWithToken(
+            await StaffAuthTests.SignInWaiterAsync(factory, kitchen.Branch));
+
+        var placed = await waiter.PostAsJsonAsync(
+            $"/api/tabs/{kitchen.TabId}/staff-orders",
+            new
+            {
+                items = new object[] { new { menuItemId = kitchen.Menu.Khachapuri, quantity = 1 } },
+                clientCommandId = Guid.CreateVersion7(),
+            });
+        Assert.Equal(HttpStatusCode.Created, placed.StatusCode);
+
+        var answer = await placed.Content.ReadFromJsonAsync<JsonElement>();
+        var spokenId = answer.GetProperty("orderId").GetGuid();
+        Assert.Equal(TabOrderStatus.InKitchen, EnumOf<TabOrderStatus>(answer.GetProperty("status")));
+
+        using var cook = factory.CreateClientWithToken(await SignInCookAsync(factory, kitchen.Branch));
+        var queue = (await ReadAsync(cook, $"/api/branches/{kitchen.Branch.BranchId}/orders")).EnumerateArray().ToList();
+
+        Assert.Equal(
+            TabOrderStatus.InKitchen,
+            EnumOf<TabOrderStatus>(queue.Single(o => o.GetProperty("orderId").GetGuid() == spokenId).GetProperty("status")));
+        Assert.Equal(
+            TabOrderStatus.New,
+            EnumOf<TabOrderStatus>(queue.Single(o => o.GetProperty("orderId").GetGuid() == kitchen.OrderId).GetProperty("status")));
+
+        // The cook can finish it with no send in between.
+        Assert.Equal(HttpStatusCode.OK, (await MoveAsync(cook, spokenId, TabOrderStatus.Ready)).StatusCode);
+
+        // Phones on the tab learn both facts from the stream they already read: placed, then in the kitchen.
+        await using var db = fixture.CreateContext(factory.Clock);
+        var types = await db.TabEvents
+            .Where(e => e.TabId == kitchen.TabId)
+            .OrderBy(e => e.Sequence)
+            .Select(e => e.Type)
+            .ToListAsync();
+        var placedAt = types.LastIndexOf(TabEventType.OrderPlaced);
+        Assert.True(placedAt >= 0, "The waiter's order appended no OrderPlaced event.");
+        Assert.Equal(TabEventType.OrderStatusChanged, types[placedAt + 1]);
     }
 
     // ------------------------------------------------------------ helpers
