@@ -234,8 +234,7 @@ public sealed class LineAttributionEndpointTests(SqlServerFixture fixture)
         Assert.Equal(orderId, his.GetProperty("orderId").GetGuid());
         Assert.Equal(3, his.GetProperty("items").GetArrayLength());
 
-        // Ready: each of them is told.
-        Assert.Equal(HttpStatusCode.OK, (await waiter.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = 2 })).StatusCode);
+        // Ready: each of them is told. A waiter's round is in the kitchen from the moment it was sent.
         Assert.Equal(HttpStatusCode.OK, (await waiter.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = 3 })).StatusCode);
 
         foreach (var client in new[] { aniClient, bobClient })
@@ -363,9 +362,9 @@ public sealed class LineAttributionEndpointTests(SqlServerFixture fixture)
                 $"/api/tabs/{tab.TabId}/lines/{anisCoffee}/void",
                 new { reason = "sent back", clientCommandId = Guid.CreateVersion7() })).StatusCode);
 
+        // Both rounds are a waiter's, so both are in the kitchen already.
         foreach (var orderId in new[] { a, b })
         {
-            Assert.Equal(HttpStatusCode.OK, (await waiter.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = 2 })).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await waiter.PostAsJsonAsync($"/api/orders/{orderId}/status", new { status = 3 })).StatusCode);
         }
 
