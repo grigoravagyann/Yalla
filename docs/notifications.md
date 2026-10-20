@@ -34,13 +34,15 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 
 ---
 
-## 2. The eight message types
+## 2. The ten message types
 
 | Type | Written when | Due at | Sent to |
 |---|---|---|---|
 | `reservation.reminder` | A booking is created | `StartUtc − ReminderHoursBefore` (default 3h) | The diner |
 | `reservation.late-nudge` | A booking is created | `StartUtc + LateNudgeAfterMinutes` (default 10m) | The diner |
 | `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, the guest before it on the table says yes or no, or the approval sweep declines one nobody answered | Immediately | The diner |
+| `reservation.changed-by-link` | Somebody holding a booking's manage link changes it (not a retry, and never the diner's own change in the app) | Immediately | The booking's account |
+| `reservation.cancelled-by-link` | Somebody holding a booking's manage link cancels it (not an already-cancelled one, never the app's cancel) | Immediately | The booking's account |
 | `reservation.table-request` | A booking asks the booking before it on the same table to free the table in time, and that guest is asked in the app | Immediately | The earlier guest |
 | `reservation.table-request-decided` | The earlier guest's yes - theirs, or the floor's for them - takes effect | Immediately | The earlier guest |
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
@@ -127,11 +129,28 @@ the next guests are coming after you." (`TableRequestAccepted`). Data: `kind` =
 category. Sent while the booking still holds its table. A no has no push to the earlier guest - they gave
 it - and neither does the clock running out: their booking is unchanged.
 
+### Done from the manage link: `reservation.changed-by-link`, `reservation.cancelled-by-link`
+
+The manage link is a bearer capability: it goes round group chats and into the calendar file, so
+whoever changes or cancels a booking from it may not be the diner - and a booking moved without their
+knowing becomes a no-show on their account. So the booking's account is told, in the same save as the
+change: a push ("Your booking was changed" - where it stands now, waiting for the venue when it is, and
+that it was done with the booking link; "Your booking was cancelled") in Armenian, Russian or English by
+the account's device, data `kind` `reservation-changed-by-link` / `reservation-cancelled-by-link` and
+`reservationId`, and a feed entry beside it. The app's own change and cancel are the account holder's
+and write neither.
+
+Keyed under the booking - `reservation:{id}:changed-by-link:{instant}`, `reservation:{id}:cancelled-by-link`
+- so the next change or cancel, which cancels the booking's unsent messages, replaces one not yet sent:
+the diner hears where the booking stands, once. A retry of the same change writes nothing. A booking
+whose account was deleted has nobody to tell.
+
 ### The feed beside the pushes
 
 A push is gone once it is read or swiped away, so the diner app also lists what it was told
 (K12, [diner-browse.md](diner-browse.md#k12-notifications-feed---implemented-b6)). Where
-`reservation.reminder`, `reservation.decided` and `tab.order-ready` are enqueued, a `DinerNotifications`
+`reservation.reminder`, `reservation.decided`, `reservation.changed-by-link`,
+`reservation.cancelled-by-link` and `tab.order-ready` are enqueued, a `DinerNotifications`
 row is added to the same unit of work - whether or not the diner has a device, because the feed is what
 a diner without push reads. It carries a `kind` and string `params`, never rendered text: the app writes
 the words in the diner's language. A reminder's row carries its due time and does not show before then,

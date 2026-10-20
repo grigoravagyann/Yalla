@@ -158,10 +158,10 @@ internal sealed class PublicListingQuery(
 
         // The aggregate live, not from the cached stats: recentReviews above is live, and the two
         // side by side must agree - this is the screen a diner comes back to right after reviewing.
-        var aggregate = await ReviewAggregateAsync(branchId, cancellationToken);
+        var summary = await ReviewSummaryAsync(branchId, cancellationToken);
 
         return new PublicBranchDetail(
-            ToListing(row, stats, latitude, longitude, aggregate),
+            ToListing(row, stats, latitude, longitude, (summary.Count, summary.Sum)),
             extra.About,
             extra.WebsiteUrl,
             extra.PhoneE164,
@@ -173,6 +173,7 @@ internal sealed class PublicListingQuery(
             extra.AcceptsWebBookings,
             extra.AcceptsAppBookings,
             recent,
+            summary.RatingCounts,
             rooms,
             clock.UtcNow);
     }
@@ -194,12 +195,13 @@ internal sealed class PublicListingQuery(
         await RequirePublishedAsync(branchId, cancellationToken);
 
         // Live, not the cached aggregate: this is the screen somebody opens right after reviewing.
-        var (count, sum) = await ReviewAggregateAsync(branchId, cancellationToken);
+        var summary = await ReviewSummaryAsync(branchId, cancellationToken);
 
         return new PublicReviewPage(
             branchId,
-            BranchBadgeRules.AverageRating(count, sum),
-            count,
+            BranchBadgeRules.AverageRating(summary.Count, summary.Sum),
+            summary.Count,
+            summary.RatingCounts,
             page,
             ReviewPageSize,
             await ReviewsAsync(branchId, (page - 1) * ReviewPageSize, ReviewPageSize, cancellationToken));
@@ -312,17 +314,38 @@ internal sealed class PublicListingQuery(
             })
         ?? throw new InvalidOperationException("The listing statistics could not be read.");
 
-    /// <summary>One branch's published review count and rating sum, read live.</summary>
-    private async Task<(int Count, long Sum)> ReviewAggregateAsync(Guid branchId, CancellationToken cancellationToken)
+    /// <summary>
+    /// One branch's published reviews summed up, read live: the count, the rating sum and how many of
+    /// each star - one grouped query, five rows at most.
+    /// </summary>
+    /// <remarks>
+    /// The count and sum are added up from the per-star rows rather than read separately, so the bars a
+    /// page draws from <c>ratingCounts</c> always add up to the <c>reviewCount</c> beside them, and the
+    /// average is over the same reviews.
+    /// </remarks>
+    private async Task<ReviewSummary> ReviewSummaryAsync(Guid branchId, CancellationToken cancellationToken)
     {
-        var aggregate = await PublishedReviews()
+        var perStar = await PublishedReviews()
             .Where(r => r.BranchId == branchId)
-            .GroupBy(r => r.BranchId)
-            .Select(g => new { Count = g.Count(), Sum = g.Sum(r => (long)r.Rating) })
-            .FirstOrDefaultAsync(cancellationToken);
+            .GroupBy(r => r.Rating)
+            .Select(g => new { Stars = g.Key, Count = g.Count() })
+            .ToListAsync(cancellationToken);
 
-        return (aggregate?.Count ?? 0, aggregate?.Sum ?? 0L);
+        var counts = new int[BranchReview.MaxRating - BranchReview.MinRating + 1];
+
+        foreach (var star in perStar)
+        {
+            counts[star.Stars - BranchReview.MinRating] = star.Count;
+        }
+
+        return new ReviewSummary(
+            perStar.Sum(s => s.Count),
+            perStar.Sum(s => (long)s.Stars * s.Count),
+            counts);
     }
+
+    /// <summary>A branch's shown reviews: how many, their stars added up, and how many of each star, one first.</summary>
+    private sealed record ReviewSummary(int Count, long Sum, IReadOnlyList<int> RatingCounts);
 
     /// <param name="row">The branch.</param>
     /// <param name="stats">The cached live numbers.</param>

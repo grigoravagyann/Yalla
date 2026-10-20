@@ -129,8 +129,13 @@ tab, the Development seed and the contract changes in progress - is
 
 Two halves, and the split matters. The **stable** half — address, coordinates, hours, the room,
 the policy, `bookingWindowDays` — is cached for minutes. The **live** half — `freeTableCount`,
-`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings` and `phoneE164` — is
-read per request and stamped with `asOfUtc`.
+`isOpenNow`, each table's `isFree`, `acceptsWebBookings`, `acceptsAppBookings`, `phoneE164` and
+`venueBranchCount` — is read per request and stamped with `asOfUtc`.
+
+`venueBranchCount` is how many of the venue's branches the chooser (`GET /api/public/venues`) lists:
+the ones switched on, this one included. A branch switched off is neither listed there nor counted
+here. It is for the page's "All N branches" link, so the page does not download every venue to count
+one venue's branches; it rides on the live published-check query as a correlated count.
 
 `acceptsAppBookings` (K9) is `acceptsWebBookings` **and** a reservation policy somebody at the venue has
 saved: the diner app books only where both hold, and `POST /api/reservations` from the app channel is
@@ -326,6 +331,7 @@ else is elided.
   },
   "phoneE164": "+37411223344",
   "acceptsWebBookings": true,
+  "venueBranchCount": 3,
   "bookingWindowDays": 14,
   "policy": {
     "turnTimeMinutes": 90,
@@ -369,6 +375,7 @@ Notes for a mapper:
 
 `GET /api/public/bookings/{token}`
 `POST /api/public/bookings/{token}/cancel`
+`POST /api/public/bookings/{token}/reschedule`
 
 A visitor who books from the web has no app, so no push reminder and no one-tap cancel reach them.
 Without a way to cancel, this is a **no-show generator** — the whole reservation product rests on
@@ -404,7 +411,18 @@ asked in the app (only they answer) and false when the venue decides; a declined
 `declinedBecause` (1 the venue said no, 2 nobody at the venue answered in time, 3 the guest before said
 no, 4 they did not answer), so the page apologises for the right thing. See [reservations.md](reservations.md#3d-short-notice-tonight-is-the-floors-to-decide).
 
-**Nothing else.** No diner id, no phone number, no other bookings, no floor state, no table or
+The branch page's public address, `venueSlug` and `branchSlug`: the link a reminder carries is
+`/booking/{token}` (below), which names no branch, so the page needs them to link back to the branch
+and open its booking card there. They are the page's own address, public already.
+
+Two ids, for changing the booking from the link: `reservationId`, which the change screen sends as
+`excludeReservationId` on the public availability and day-slot reads so the table the visitor already
+holds reads as free to them, and `tableId`, the booked table - table ids are no secret, those reads
+publish every pinned table's; the booked one is named even if it has since been unpinned or taken out,
+and a move to it is then refused like any unbookable table. Neither opens anything: every route keyed by a booking id wants the booking's diner or the
+venue's staff, and the reads that take one say no more about it than that its table is free.
+
+**Nothing else.** No diner id, no guest name or phone number, no other bookings, no floor state, no
 branch id. `PublicBookingView` is its own record for the same reason `PublicReservationPolicy` is:
 a field added to the authenticated shape must not be able to leak onto an anonymous route by being
 added upstream.
@@ -440,7 +458,59 @@ may: a signed-in diner is checked against `DinerUserId`, a link holder by holdin
 token. Everything after that — the deadline rule, the lateness record, cancelling the booking's
 outbox messages, the save — happens once, in one place. A second cancellation path is how a web
 cancel would eventually stop cancelling the reminder, and the diner would get a push about a table
-they had already given back.
+they had already given back. The link's cancel adds one thing the app's does not: the booking's
+account is told it was cancelled from the link (see "Changing the booking" below).
+
+### Changing the booking
+
+`POST /api/public/bookings/{token}/reschedule` takes the app's body unchanged - `date`, `time`,
+`partySize`, `diningTableId` (required: `tableId` from the read, or another table at the branch),
+`clientCommandId`, and `acceptsFreeByUtc` when the new slot's table asks for it - and answers `200` with
+the booking as the read shows it, re-read through the same projection: the same `code` and link at the
+new date, time, party size, table and status.
+
+It is `IReservationService.RescheduleByManageTokenAsync`, which finds the booking exactly as the read
+and the cancel do (unknown, expired and gone answering identically) and then runs the app's move - see
+[reservations.md](reservations.md#3c-changing-a-booking). The same rules and the same `reservation-*`
+answers, the status decided again (a confirmed party keeping its table and start without growing stays
+confirmed; a move into tonight, a party grown past the threshold, a strict branch or a no-show history
+waits for the venue), the same table lock, the same replaced reminders - a web booking's carry the same
+manage link - and the same idempotency record. The only difference is the proof.
+
+The decisions:
+
+- **No phone proof is asked of the visitor.** The link already proves possession of the booking, as it
+  does for cancelling. The phone gate that applies is the **booking's account's**: the moved booking's
+  reminder and no-show record land on that account, so it must still be live with a proved number,
+  whoever holds the link - `403 phone-not-verified` otherwise. In practice that is an account the
+  platform **deactivated**, or one the diner **deleted** (the deletion cuts `DinerUserId`, so there is no
+  account to land on). An account that stops being live between the gate and the move's own lock is the
+  same 403, never the lock's `401 session-revoked` - there is no session on a link. The message is for
+  the link holder, who has no account to verify: "This booking can no longer be changed online. Call the
+  venue, or cancel it and book again." (`ManageLinkAccountUnavailableException`). Reading and cancelling
+  stay open.
+- **The booking's account is told.** The link goes round group chats and into the calendar file, so
+  whoever changes or cancels the booking from it may not be the diner - and a booking moved without
+  their knowing becomes a no-show on their account. A change from the link (not a retry) and a cancel
+  from the link (not of an already-cancelled booking) each write, in the same save, a push to the
+  account (`reservation.changed-by-link` / `reservation.cancelled-by-link`, Armenian, Russian or English
+  by the account's device) and a feed entry (`booking-changed-by-link` / `booking-cancelled-by-link`) -
+  see [notifications.md](notifications.md). The app's own change and cancel write neither. The log says
+  which way in: "changed from its manage link, not the app".
+- **The change is recorded as the diner's.** `ProcessedCommands` holds the booking's account as the
+  actor, so a retry is a retry whichever way it arrives, and the same id on another booking - another
+  link, the same diner's other booking, a stranger's - or on a different change is
+  `409 client-command-id-in-use`, revealing nothing. A link cannot reach a second booking: the token
+  names the booking, and the body has no id to point elsewhere.
+- **One refusal is narrower than the app's.** A move onto a sitting that overlaps another of the diner's
+  live bookings at the branch is `409 reservation-overlaps-own` as in the app, but with **no `context`**
+  and a message that names no time, table or code (`ManageLinkOverlapsOwnException`). The app may name
+  the other booking - the diner is signed in and it is theirs; the link's refusal does not name it to
+  whoever opened the link from a group chat. **It does not hide that it exists**: the writer checks the
+  diner's own bookings before the table's clash, so aiming at a taken table answers
+  `reservation-overlaps-own` when the diner holds another table around then and `table-already-booked`
+  when not, and nothing moves either way. The order is shared with the app and was left as it is: the
+  link holder is already in the diner's circle, at the same venue.
 
 ### Rate limits
 
@@ -454,7 +524,7 @@ Chained, so a request passes every one that applies to it:
 | Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
 | Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
 | Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/rooms` - replaces the page budget there; the branch ceiling still applies | 120 / min |
-| Public booking | Manage token (digest) | 20 / min |
+| Public booking | Manage token (digest) - the read, the cancel and the change share it | 20 / min |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
 of phones behind one address, so the page budget was spent before dinner. The page budget exists to
@@ -484,7 +554,17 @@ second `RequireRateLimiting` replaces the first rather than composing with it.
 ## The manage URL in the reminder
 
 `ScheduleRemindersAsync` writes `manageUrl` into the reminder and late-nudge payloads for
-`ReservationChannel.Web` bookings, built from `PublicWeb:ManageBookingUrlTemplate`.
+`ReservationChannel.Web` bookings, built from `PublicWeb:ManageBookingUrlTemplate` with the token
+URL-escaped into `{token}`. A change of the booking - from the app or the link - reads that URL back
+off the old reminder (`ManageUrlIn`) and writes it into the new one unchanged.
+
+**The template points at the web's token-only page, `https://{host}/booking/{token}`** - in
+`deploy/.env.example`, in `appsettings.Development.json` (`http://localhost:5173/booking/{token}`) and
+as the `PublicWebOptions` default; `DeployEnvExampleTests` pins all three to that path. The web serves
+`/booking/:token` and reads the branch from the answer's `venueSlug`/`branchSlug`. `booking` is a
+reserved slug (`SlugText`) so no venue can take the address. The web's older
+`/{venueSlug}/{branchSlug}/booking/{token}` route is the page's own link after booking and is not
+what the reminder carries.
 
 Written now, before any channel exists that could send it, because **the token is knowable only at
 creation**. It is stored as a hash and returned once; a dispatcher added later that needed to build

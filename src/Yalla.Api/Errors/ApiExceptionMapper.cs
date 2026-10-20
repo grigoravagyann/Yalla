@@ -694,6 +694,15 @@ internal static class ApiExceptionMapper
                 ["expiresAtUtc"] = e.ExpiresAtUtc,
             }),
 
+        // The same refusal on a manage link, which names nothing about the other booking: the link shows
+        // one booking, and whoever opened it from a group chat learns no second. No context on purpose.
+        // Must stay ABOVE DomainStateException.
+        ManageLinkOverlapsOwnException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationOverlapsOwn,
+            e.Message,
+            LogAsError: false),
+
         // A diner's second table at the same branch while their first booking runs. Its own code so the
         // app can name the booking they already have. Must stay ABOVE DomainStateException.
         ReservationOverlapsOwnException e => new MappedError(
@@ -842,6 +851,11 @@ internal static class ApiExceptionMapper
                 ["operation"] = e.Operation,
                 ["requirement"] = e.Requirement,
             }),
+
+        // A move from a manage link whose booking's account cannot take it - the app's 403 and code, in
+        // words the link holder can act on, and never the account lock's 401: there is no session.
+        ManageLinkAccountUnavailableException e => new MappedError(
+            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
 
         // A diner whose number was typed at sign-up and never proved, trying to book or open a tab
         // on it. Its own code, not the generic 403, because the app has something to offer - the

@@ -134,12 +134,23 @@ public static class DinerNotificationKinds
     /// <summary>The diner's answer to a request for their table took effect: they promised a time to leave by, or said no.</summary>
     public const string TableRequestDecided = "table-request-decided";
 
+    /// <summary>
+    /// The booking was changed from its manage link - by whoever holds the link, which goes round group
+    /// chats - and now stands at <c>date</c>/<c>time</c> for <c>partySize</c>, with <c>status</c> (the
+    /// <c>ReservationStatus</c> number: 1 waiting for the venue, 2 confirmed). Never written for the
+    /// diner's own change in the app.
+    /// </summary>
+    public const string BookingChangedByLink = "booking-changed-by-link";
+
+    /// <summary>The booking was cancelled from its manage link. Never written for the diner's own cancel in the app.</summary>
+    public const string BookingCancelledByLink = "booking-cancelled-by-link";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
     public static readonly IReadOnlyList<string> All =
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
-        TableRequest, TableRequestDecided, ReviewReplied,
+        TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
     ];
 }
