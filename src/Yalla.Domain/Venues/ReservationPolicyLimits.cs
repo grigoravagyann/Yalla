@@ -49,6 +49,15 @@ public static class ReservationPolicyLimits
     public const int MinApprovalRequiredAbovePartySize = 1;
 
     /// <summary>
+    /// Zero is a setting: the branch takes no bookings without a verified number at all
+    /// (<c>branch-requires-verified-phone</c>). Without it a branch had no way to switch the door off.
+    /// </summary>
+    public const int MinUnverifiedMaxPartySize = 0;
+
+    /// <summary>The same ceiling a booking's party size has on the wire.</summary>
+    public const int MaxUnverifiedMaxPartySize = 100;
+
+    /// <summary>
     /// The wire names of the policy's fields, as the OpenAPI schema spells them.
     /// </summary>
     /// <remarks>
@@ -71,6 +80,7 @@ public static class ReservationPolicyLimits
         public const string MaxSeatOverhang = "maxSeatOverhang";
         public const string ApprovalRequiredAbovePartySize = "approvalRequiredAbovePartySize";
         public const string WalkInHoldbackMinutes = "walkInHoldbackMinutes";
+        public const string UnverifiedMaxPartySize = "unverifiedMaxPartySize";
     }
 
     /// <summary>
@@ -93,7 +103,8 @@ public static class ReservationPolicyLimits
         decimal serviceChargePercent,
         int? maxSeatOverhang,
         int? approvalRequiredAbovePartySize,
-        int walkInHoldbackMinutes)
+        int walkInHoldbackMinutes,
+        int unverifiedMaxPartySize = ReservationPolicy.DefaultUnverifiedMaxPartySize)
     {
         var violations = new List<FieldViolation>();
 
@@ -106,6 +117,7 @@ public static class ReservationPolicyLimits
         Between(violations, Fields.BookingWindowDays, bookingWindowDays, MinBookingWindowDays, MaxBookingWindowDays, "Booking window", "days");
         Between(violations, Fields.CancellationDeadlineMinutes, cancellationDeadlineMinutes, 0, MaxCancellationDeadlineMinutes, "Cancellation deadline", "minutes");
         Between(violations, Fields.WalkInHoldbackMinutes, walkInHoldbackMinutes, 0, MaxWalkInHoldbackMinutes, "Walk-in holdback", "minutes");
+        Between(violations, Fields.UnverifiedMaxPartySize, unverifiedMaxPartySize, MinUnverifiedMaxPartySize, MaxUnverifiedMaxPartySize, "Largest party without a verified number", "guests");
 
         // Checked here rather than left to the policy constructor, so it lands in the same list as
         // everything else instead of being the one field that answers in a different shape.
@@ -157,12 +169,13 @@ public static class ReservationPolicyLimits
         decimal serviceChargePercent,
         int? maxSeatOverhang,
         int? approvalRequiredAbovePartySize,
-        int walkInHoldbackMinutes)
+        int walkInHoldbackMinutes,
+        int unverifiedMaxPartySize = ReservationPolicy.DefaultUnverifiedMaxPartySize)
     {
         var violations = Check(
             turnTimeMinutes, bufferMinutes, graceMinutes, lateNudgeAfterMinutes, graceExtensionMinutes,
             minLeadMinutes, bookingWindowDays, cancellationDeadlineMinutes, serviceChargePercent,
-            maxSeatOverhang, approvalRequiredAbovePartySize, walkInHoldbackMinutes);
+            maxSeatOverhang, approvalRequiredAbovePartySize, walkInHoldbackMinutes, unverifiedMaxPartySize);
 
         if (violations.Count > 0)
         {
@@ -188,7 +201,8 @@ public static class ReservationPolicyLimits
             policy.ServiceChargePercent,
             policy.MaxSeatOverhang,
             policy.ApprovalRequiredAbovePartySize,
-            policy.WalkInHoldbackMinutes);
+            policy.WalkInHoldbackMinutes,
+            policy.UnverifiedMaxPartySize);
     }
 
     private static void Between(

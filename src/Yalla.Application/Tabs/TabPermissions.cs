@@ -61,6 +61,18 @@ public static class TabPermissions
         && canPay
         && tabStatus is TabStatus.Open or TabStatus.Closing;
 
+    /// <summary>
+    /// Whether the tab takes orders as far as admission goes: only once admitted. A tab opened by a scan
+    /// whose host has no proved number waits for a waiter (see <c>TabAdmission</c>).
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="MayOrder"/> on purpose. That one is about the participant and is what the
+    /// <c>TabParticipantCanOrder</c> policy enforces as a 403; this one is about the table and is refused
+    /// by the ordering service as 409 <c>tab-awaiting-admission</c> - "wait for the waiter" is an answer
+    /// the phone shows, not a forbidden. The projection applies both to <c>canOrderNow</c>.
+    /// </remarks>
+    public static bool TakesOrders(TabAdmission admission) => admission == TabAdmission.Admitted;
+
     /// <summary>Whether anyone new may be put on the tab. Only while it is open.</summary>
     public static bool AcceptsNewParticipants(TabStatus tabStatus) => tabStatus == TabStatus.Open;
 }

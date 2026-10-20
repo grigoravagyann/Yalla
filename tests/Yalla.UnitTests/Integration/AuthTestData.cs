@@ -312,7 +312,8 @@ internal static class AuthTestData
             diningTableId: tableId,
             tableSessionId: session.Id,
             openedAtUtc: nowUtc,
-            serviceChargePercentSnapshot: 10m);
+            serviceChargePercentSnapshot: 10m,
+            admittedBecause: TabAdmissionReason.OpenedByStaff);
 
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);

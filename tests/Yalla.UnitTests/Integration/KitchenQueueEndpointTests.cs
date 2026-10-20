@@ -329,6 +329,9 @@ public class KitchenQueueEndpointTests(SqlServerFixture fixture)
         var body = await opened.Content.ReadFromJsonAsync<JsonElement>();
         var tabId = body.GetProperty("tab").GetProperty("tabId").GetGuid();
 
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); these tests are the kitchen's.
+        await fixture.AdmitTabAsync(factory.Clock, tabId);
+
         using var host = factory.CreateClientWithToken(
             body.GetProperty("token").GetProperty("accessToken").GetString()!);
 

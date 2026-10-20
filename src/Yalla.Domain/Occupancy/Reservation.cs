@@ -245,6 +245,37 @@ public sealed class Reservation : Entity
     /// </remarks>
     public string? Note { get; private set; }
 
+    /// <summary>
+    /// True when nobody proved the booker's phone number: a web visitor who booked without verifying,
+    /// or an app account whose number was never proved. Staff see it beside the booking.
+    /// </summary>
+    /// <remarks>
+    /// Set at creation and never cleared - it records how the booking was made. Such a booking is never
+    /// moved (cancelled and booked again instead), is capped at
+    /// <see cref="ReservationPolicy.UnverifiedMaxPartySize"/>, and waits for approval when the branch says
+    /// so (<see cref="ReservationPolicy.UnverifiedBookingsNeedApproval"/>).
+    /// </remarks>
+    public bool PhoneUnverified { get; private set; }
+
+    /// <summary>
+    /// The number the one-active-booking-per-number rule keys on, E.164: the booking account's own number,
+    /// or - for a web booking with no account - the guest number as typed, normalised. Null for a booking
+    /// from before the rule with no account, and for any booking staff take for a guest: those are the
+    /// venue's choice and neither count nor are refused.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="GuestPhone"/> on an account's booking: a diner may book for a friend, and keying on
+    /// what they typed would let anybody hold ten bookings by typing ten numbers.
+    /// </remarks>
+    public string? BookerPhoneE164 { get; private set; }
+
+    /// <summary>
+    /// Hex SHA-256 of the web page's device id, for a booking made with no account; null otherwise. Scopes
+    /// the booking's replay to the browser that made it, and limits one browser to one active booking
+    /// without a proved number. A hash so the column is not a tracking id.
+    /// </summary>
+    public string? BookerDeviceHash { get; private set; }
+
     /// <summary>A booking note as it is stored: trimmed, blank as null.</summary>
     /// <exception cref="FieldValidationException">Longer than <see cref="FieldLengths.Reason"/>, naming <c>note</c>.</exception>
     public static string? NormaliseNote(string? note)
@@ -422,7 +453,10 @@ public sealed class Reservation : Entity
         string? note = null,
         ApprovalTrigger? approvalTrigger = null,
         DateTime? approvalExpiresAtUtc = null,
-        DateTime? promisedFreeByUtc = null)
+        DateTime? promisedFreeByUtc = null,
+        bool phoneUnverified = false,
+        string? bookerPhoneE164 = null,
+        string? bookerDeviceHash = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -475,6 +509,9 @@ public sealed class Reservation : Entity
 
         reservation.Note = checkedNote;
         reservation.PromisedFreeByUtc = promisedFreeByUtc;
+        reservation.PhoneUnverified = phoneUnverified;
+        reservation.BookerPhoneE164 = Guard.OptionalText(bookerPhoneE164, nameof(bookerPhoneE164), FieldLengths.Phone);
+        reservation.BookerDeviceHash = Guard.OptionalText(bookerDeviceHash, nameof(bookerDeviceHash), FieldLengths.TokenHash);
         reservation.AwaitDecision(initialStatus, approvalTrigger, approvalExpiresAtUtc);
 
         return reservation;

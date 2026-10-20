@@ -180,4 +180,21 @@ public interface ITabService
     /// </summary>
     /// <exception cref="Domain.Staff.StaffPermissionException">The caller is not staff.</exception>
     Task<TabStaffView> BeginClosingAsync(Guid tabId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// A waiter admits a tab opened by a scan whose host has no proved number, so it may order.
+    /// Naturally idempotent: an admitted tab answers as it is. A tab already turned away is refused.
+    /// </summary>
+    Task<TabStaffView> AdmitAsync(AdmitTabCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// A waiter turns such a tab away: it closes, and the table is freed when the scan was what seated
+    /// it. A tab already turned away answers as it is; an admitted one is refused.
+    /// </summary>
+    Task<TabStaffView> RejectAdmissionAsync(RejectTabCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>The branch's tabs waiting for a waiter, oldest first - the tablet's rail.</summary>
+    Task<IReadOnlyList<TabAwaitingAdmissionView>> ListAwaitingAdmissionAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default);
 }

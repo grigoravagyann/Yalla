@@ -847,7 +847,7 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
         table.Occupy(session.Id);
         await db.SaveChangesAsync();
 
-        var tab = new Tab(branch.BranchId, table.Id, session.Id, seatedAtUtc, 0m);
+        var tab = new Tab(branch.BranchId, table.Id, session.Id, seatedAtUtc, 0m, TabAdmissionReason.OpenedByStaff);
         tab.ApplyComputedTotals(remainingAmd + 5_000, 0L, 5_000);
 
         if (closing)
@@ -870,7 +870,7 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
         db.TableSessions.Add(session);
         await db.SaveChangesAsync();
 
-        var tab = new Tab(branch.BranchId, tableId, session.Id, closedAtUtc.AddHours(-1), 0m);
+        var tab = new Tab(branch.BranchId, tableId, session.Id, closedAtUtc.AddHours(-1), 0m, TabAdmissionReason.OpenedByStaff);
         tab.ApplyComputedTotals(totalAmd, 0L, totalAmd);
         tab.Close(closedAtUtc);
 

@@ -22,6 +22,15 @@ internal sealed class TabConfiguration : EntityConfiguration<Tab>
 
         builder.Property(t => t.ClientCommandId).IsRequired();
 
+        // Admission (2026-10-20). Every tab from before it could order, so existing rows are Admitted.
+        builder.Property(t => t.Admission)
+            .IsRequired()
+            .HasDefaultValue(Domain.Enums.TabAdmission.Admitted);
+        builder.Property(t => t.AdmittedBecause);
+        builder.Property(t => t.AdmissionDecidedAtUtc);
+        builder.Property(t => t.AdmissionDecidedByStaffId);
+        builder.Ignore(t => t.IsAdmitted);
+
         builder.Property(t => t.ServiceChargePercentSnapshot)
             .HasPrecision(5, 2)
             .IsRequired();
@@ -73,9 +82,23 @@ internal sealed class TabConfiguration : EntityConfiguration<Tab>
         // but no tab yet both try to attach one; the first wins and the second is caught and
         // turned into "join the existing tab". Without this a service-level check would let both
         // through, and the party would have two bills.
+        //
+        // Rejected tabs are left out: a waiter turning away a phantom scan on a table a waiter or a
+        // booking seated gives the sitting its one tab slot back, so the party really there can scan.
         builder.HasIndex(t => t.TableSessionId)
             .IsUnique()
+            .HasFilter("[Admission] <> 3")
             .HasDatabaseName(DatabaseIndexNames.TabPerSession);
+
+        // The scan cool-down's reads: a branch's tabs turned away lately, by when.
+        builder.HasIndex(t => new { t.BranchId, t.AdmissionDecidedAtUtc })
+            .HasFilter("[Admission] = 3")
+            .HasDatabaseName("IX_Tabs_BranchId_Rejected");
+
+        // The rail's list of tabs waiting for a waiter: a handful per branch at most.
+        builder.HasIndex(t => new { t.BranchId, t.OpenedAtUtc })
+            .HasFilter("[Admission] = 1")
+            .HasDatabaseName("IX_Tabs_BranchId_AwaitingAdmission");
 
         // The idempotency guarantee for opening a tab: a double scan or a retry on flaky wifi
         // returns the tab the first attempt opened. Same mechanism, and the same argument, as on

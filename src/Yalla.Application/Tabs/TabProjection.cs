@@ -19,6 +19,9 @@ namespace Yalla.Application.Tabs;
 /// </remarks>
 public static class TabProjection
 {
+    /// <summary>What a tab from before admission existed reads as: admitted, for no recorded reason.</summary>
+    public static readonly TabAdmissionView LegacyAdmitted = new(TabAdmission.Admitted, null, null, null, null);
+
     /// <summary>
     /// The tab as <paramref name="viewerParticipantId"/> may see it, or null when they are not on
     /// this tab at all.
@@ -142,7 +145,7 @@ public static class TabProjection
             tab.OpenedAtUtc,
             tab.ClosedAtUtc,
             MaxSequence: tab.MaxEventSequence,
-            Me: ToParticipantView(me, tab.Status),
+            Me: ToParticipantView(me, tab.Status, tab.AdmissionOrAdmitted.Status),
             Participants: participants,
             MyLines: myLines,
             MyItemsSubtotalAmd: myItemsSubtotalAmd,
@@ -150,7 +153,8 @@ public static class TabProjection
             TableTotalVisible: tableTotalVisible,
             TableTotal: tableTotal,
             TableLines: tableLines,
-            TipsAmd: tipsAmd);
+            TipsAmd: tipsAmd,
+            Admission: tab.AdmissionOrAdmitted);
     }
 
     /// <summary>
@@ -219,17 +223,21 @@ public static class TabProjection
             Participants: tab.Participants
                 .Where(p => p.Status != ParticipantStatus.Removed)
                 .OrderBy(p => p.JoinedAtUtc)
-                .Select(p => ToParticipantView(p, tab.Status))
+                .Select(p => ToParticipantView(p, tab.Status, tab.AdmissionOrAdmitted.Status))
                 .ToList(),
             Lines: [.. tab.Lines.Select(l => ToView(l, names))],
             Adjustments: [.. tab.Adjustments.Select(ToView)],
             Totals: new TabTotalsView(
                 tab.SubtotalAmd, tab.ServiceChargeAmd, tab.TotalAmd, tab.PaidAmd, tab.RemainingAmd),
-            TipsAmd: tab.TipsAmd);
+            TipsAmd: tab.TipsAmd,
+            Admission: tab.AdmissionOrAdmitted);
     }
 
-    /// <summary>One participant with their flags applied to the moment.</summary>
-    public static TabParticipantView ToParticipantView(TabParticipantSnapshot p, TabStatus tabStatus)
+    /// <summary>
+    /// One participant with their flags applied to the moment - and to the tab's admission: nobody on a
+    /// tab still waiting for a waiter may order now, whatever their flags.
+    /// </summary>
+    public static TabParticipantView ToParticipantView(TabParticipantSnapshot p, TabStatus tabStatus, TabAdmission admission)
     {
         ArgumentNullException.ThrowIfNull(p);
 
@@ -241,7 +249,8 @@ public static class TabProjection
             p.CanOrder,
             p.CanSeeTableTotal,
             p.CanPay,
-            CanOrderNow: TabPermissions.MayOrder(p.Status, p.CanOrder, tabStatus),
+            CanOrderNow: TabPermissions.MayOrder(p.Status, p.CanOrder, tabStatus)
+                         && TabPermissions.TakesOrders(admission),
             p.JoinedAtUtc,
             p.Photo);
     }

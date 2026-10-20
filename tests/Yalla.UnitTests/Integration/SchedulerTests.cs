@@ -363,6 +363,9 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         var diner = TestActor.Diner();
 
         var atOffersNone = await BookAsync(offersNone, offersNone.FirstTableId, Dinner, clock, diner);
+
+        // One number holds one active booking (2026-10-20); this test's two are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, atOffersNone);
         var atOffersOne = await BookAsync(offersOne, offersOne.FirstTableId, Dinner, clock, diner);
 
         // Dinner time, and the party is not here yet.

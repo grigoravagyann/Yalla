@@ -309,6 +309,13 @@ public static class ReservationEndpoints
                 + "unanswered it is declined with `declinedBecause` 4 EarlierGuestNoAnswer. When it is false "
                 + "the floor calls them and decides, by the same deadline - unanswered it is declined with "
                 + "`declinedBecause` 2 NoAnswer.\n\n"
+                + "**An account whose number was never proved** books without a verified number "
+                + "(`phoneUnverified: true`), as the public page's door does: at most "
+                + "`policy.unverifiedMaxPartySize` people (`422 reservation-unverified-party-too-large`), and "
+                + "**none at a branch whose cap is 0** (`422 branch-requires-verified-phone` - send the diner to "
+                + "verify their number), one active booking per number (`409 phone-has-active-booking`), at "
+                + "most 20 waiting per branch (`409 branch-unverified-queue-full`), and the network's budget "
+                + "shared with the web (`429 rate-limited`).\n\n"
                 + OverlapsOwnDescription)
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
@@ -415,7 +422,12 @@ public static class ReservationEndpoints
             .WithDescription(
                 "Upcoming means still going to happen: not finished, and not already called off. A "
                 + "booking cancelled for tomorrow belongs in the history, not at the top of the "
-                + "screen.")
+                + "screen.\n\n"
+                + "**Made with your number, not by you.** For an account that proved its number, the list "
+                + "also carries the bookings somebody else made with that number and no proof of it - on the "
+                + "public page, or from an account that never proved it - with `madeWithYourNumber` true. "
+                + "They never stop this account booking; show them apart, with a cancel button "
+                + "(`POST /api/reservations/{id}/cancel`).")
             .Produces<MyReservations>();
 
         group.MapPost("/{id:guid}/extend-hold", ExtendHoldAsync)
@@ -449,7 +461,8 @@ public static class ReservationEndpoints
             .WithName("cancelReservation")
             .WithSummary("Cancel a booking")
             .WithDescription(
-                "A diner may only cancel their own; anyone else's is 403. Free until the branch's "
+                "A diner may only cancel their own - and one made with their proved number and no proof by "
+                + "somebody else (`madeWithYourNumber` on their list); anyone else's is 403. Free until the branch's "
                 + "cancellation deadline and still allowed after it - a late cancellation is far "
                 + "better than a no-show - with `cancelledAfterDeadline` recording which it was.")
             .Produces<ReservationView>()

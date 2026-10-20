@@ -81,6 +81,20 @@ internal sealed class TabOrderService(
         var nowUtc = clock.UtcNow;
         var order = await BuildOrderAsync(tab, command, nowUtc, cancellationToken);
 
+        // A tab a scan opened with no proved number behind it takes no PHONE order until a waiter has seen
+        // the table and admitted it (decided 2026-10-20). After BuildOrderAsync, so who may order at all is
+        // answered first - a pending guest is still the 403 it always was. The phone is told to wait: 409,
+        // not 403 - its flags are fine, the table is not let in yet.
+        //
+        // Staff may always order, on any tab, and a staff order never admits one: it is not a phone order,
+        // and admitting on it would hand a real party's sitting to whoever scanned a photographed code from
+        // home before the party did - host of the only tab, approving the party's own joins. Admission is
+        // the Admit tap, a booking, a proved scanner, or the booker arriving; nothing else.
+        if (!tab.IsAdmitted && order.PlacedByStaffId is null)
+        {
+            throw new TabAwaitingAdmissionException(tab.Id);
+        }
+
         db.TabOrders.Add(order);
 
         ledger.Append(tab.Id, TabEventType.OrderPlaced, new

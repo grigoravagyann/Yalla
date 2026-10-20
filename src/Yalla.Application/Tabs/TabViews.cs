@@ -135,6 +135,10 @@ public sealed record TabJoinTokenResult(
 /// <paramref name="TableTotal"/>. Absent with the table total, because a tip is money the table
 /// paid.
 /// </param>
+/// <param name="Admission">
+/// Whether the tab may order yet. While it waits for a waiter (status 1) nobody's <c>canOrderNow</c> is
+/// true: show "a waiter will be with you", keep "call a waiter". See <c>docs/tabs.md</c> section 2b.
+/// </param>
 public sealed record TabView(
     Guid TabId,
     Guid BranchId,
@@ -159,7 +163,8 @@ public sealed record TabView(
     bool TableTotalVisible,
     TabTotalsView? TableTotal,
     IReadOnlyList<TabLineView>? TableLines,
-    long? TipsAmd);
+    long? TipsAmd,
+    TabAdmissionView Admission);
 
 /// <summary>One person on a tab, with their flags. Not an account - see <c>docs/auth.md</c>.</summary>
 /// <param name="ParticipantId">The participant row.</param>
@@ -170,8 +175,8 @@ public sealed record TabView(
 /// <param name="CanSeeTableTotal">Whether they may see the table aggregate and other people's items.</param>
 /// <param name="CanPay">Whether they may settle against the tab. Implies <paramref name="CanSeeTableTotal"/>.</param>
 /// <param name="CanOrderNow">
-/// The flag applied to the moment: approved, allowed to order, and the tab still open. This is
-/// what the ordering endpoints will enforce, computed by the same rule.
+/// The flag applied to the moment: approved, allowed to order, the tab still open - and admitted: false for
+/// everybody while the tab waits for a waiter. This is what the ordering endpoints enforce.
 /// </param>
 /// <param name="JoinedAtUtc">When they scanned or joined.</param>
 /// <param name="Photo">
@@ -331,7 +336,51 @@ public sealed record TabStaffView(
     IReadOnlyList<TabLineView> Lines,
     IReadOnlyList<TabAdjustmentView> Adjustments,
     TabTotalsView Totals,
-    long TipsAmd);
+    long TipsAmd,
+    TabAdmissionView Admission);
+
+/// <summary>
+/// Whether a tab may order yet: waiting for a waiter, admitted, or turned away. See <c>docs/tabs.md</c>.
+/// </summary>
+/// <param name="Status">1 AwaitingAdmission, 2 Admitted, 3 Rejected.</param>
+/// <param name="AdmittedBecause">
+/// 1 a waiter admitted it, 2 the host's number is proved, 3 staff opened it, 4 the booker opened or joined it,
+/// 5 not required - the branch lets unverified scans order at once. Absent while waiting, once rejected, and
+/// on tabs from before admission.
+/// </param>
+/// <param name="DecidedAtUtc">When it was admitted or turned away; absent while waiting.</param>
+/// <param name="DecidedByStaffId">The waiter who did, when one did.</param>
+/// <param name="TableFreed">On a rejected tab: whether turning it away freed the table (the scan had seated it).</param>
+public sealed record TabAdmissionView(
+    TabAdmission Status,
+    TabAdmissionReason? AdmittedBecause,
+    DateTime? DecidedAtUtc,
+    Guid? DecidedByStaffId,
+    bool? TableFreed);
+
+/// <summary>
+/// One tab waiting for a waiter, as the tablet's rail draws it.
+/// </summary>
+/// <param name="TabId">The tab - admit or reject it.</param>
+/// <param name="TableId">Its table.</param>
+/// <param name="TableLabel">The table's label.</param>
+/// <param name="RoomName">The table's room, absent for a table in none.</param>
+/// <param name="OpenedAtUtc">When the scan opened it.</param>
+/// <param name="HostDisplayName">What the host called themself, or the roster's placeholder.</param>
+/// <param name="ParticipantCount">Phones on the tab, the host included; removed ones not.</param>
+/// <param name="SittingSeatedByScan">
+/// True when the scan itself seated the table: rejecting then frees it. False when a waiter or a booking
+/// seated the party - rejecting then closes only the tab, and the party can scan again.
+/// </param>
+public sealed record TabAwaitingAdmissionView(
+    Guid TabId,
+    Guid TableId,
+    string TableLabel,
+    string? RoomName,
+    DateTime OpenedAtUtc,
+    string? HostDisplayName,
+    int ParticipantCount,
+    bool SittingSeatedByScan);
 
 /// <summary>Reads a tab for whoever is looking at it.</summary>
 public interface ITabQuery

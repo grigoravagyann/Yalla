@@ -17,6 +17,12 @@ namespace Yalla.Application.Floor;
 /// <param name="AtUtc">When it happened.</param>
 /// <param name="TableSessionId">The seating opened or closed by this change, when there was one.</param>
 /// <param name="ReservationId">The booking involved, when there was one.</param>
+/// <param name="TabId">The tab involved, when there was one - always on a <paramref name="Signal"/> entry.</param>
+/// <param name="Signal">
+/// Set when the entry is about the table's tab rather than the table: 1 a scan's tab is waiting to be let in,
+/// 2 it was admitted, 3 it was turned away (on the Occupied-to-Free row when that freed the table). Absent
+/// on every ordinary change. A tablet refetches its awaiting-admission list on any of them.
+/// </param>
 public sealed record BranchChange(
     long Sequence,
     Guid TableStateChangeId,
@@ -29,7 +35,9 @@ public sealed record BranchChange(
     Guid? ActorId,
     DateTime AtUtc,
     Guid? TableSessionId,
-    Guid? ReservationId);
+    Guid? ReservationId,
+    Guid? TabId = null,
+    TableChangeSignal? Signal = null);
 
 /// <summary>
 /// A page of a branch's change stream, and where the stream currently ends.

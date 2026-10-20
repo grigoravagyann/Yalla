@@ -142,6 +142,22 @@ public sealed class TableSession : Entity
         TabId = Guard.NotEmpty(tabId, nameof(tabId));
     }
 
+    /// <summary>
+    /// Lets go of a tab a waiter turned away, so the party really sitting here can open their own.
+    /// </summary>
+    /// <remarks>
+    /// Only the tab this sitting names: a sitting whose tab is another one has nothing to let go of.
+    /// The tab row stays - it is the record of the scan - and the filtered unique index on
+    /// <c>Tabs.TableSessionId</c> leaves rejected tabs out, so the sitting's one tab slot is free again.
+    /// </remarks>
+    public void DetachRejectedTab(Guid tabId)
+    {
+        if (TabId == tabId)
+        {
+            TabId = null;
+        }
+    }
+
     /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>
     public void Close(DateTime closedAtUtc)
     {

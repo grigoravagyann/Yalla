@@ -87,6 +87,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     RowVersion = Convert.ToBase64String(t.RowVersion),
                     CurrentSessionId = t.OpenSessionId,
                     OpenTabId = t.OpenTabId,
+                    OpenTabAwaitingAdmission = t.OpenTabAwaitingAdmission,
                     SeatedAtUtc = t.SeatedAtUtc,
                     PartySize = t.PartySize,
                     OccupancySource = t.OccupancySource,
@@ -95,6 +96,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     FreeUntilUtc = TableStateProjection.FreeUntil(
                         t.NextReservationStartUtc, row.BufferMinutes),
                     NextReservationPromisedFreeByUtc = t.NextReservationPromisedFreeByUtc,
+                    NextReservationPhoneUnverified = t.NextReservationPhoneUnverified,
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
                 })
                 // Ordered here rather than in SQL: the client draws by area then label, and
@@ -144,7 +146,9 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 c.ActorId,
                 c.AtUtc,
                 c.TableSessionId,
-                c.ReservationId))
+                c.ReservationId,
+                c.TabId,
+                c.Signal))
             .ToListAsync(cancellationToken);
 
         var hasMore = rows.Count > capped;
@@ -222,6 +226,12 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
                             .Select(s => s.TabId)
                             .FirstOrDefault(),
+                        // A scan's tab on this table still waiting for a waiter to let it order.
+                        OpenTabAwaitingAdmission = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Any(s => db.Tabs.Any(tab => tab.Id == s.TabId
+                                                         && tab.Admission == TabAdmission.AwaitingAdmission
+                                                         && tab.Status == TabStatus.Open)),
                         SeatedAtUtc = db.TableSessions
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
                             .Select(s => (DateTime?)s.SeatedAtUtc)
@@ -263,6 +273,17 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                                             || r.Status == ReservationStatus.PendingApproval))
                             .OrderBy(r => r.StartUtc)
                             .Select(r => r.PromisedFreeByUtc)
+                            .FirstOrDefault(),
+
+                        // Whether that next booking was made without a proved phone number.
+                        NextReservationPhoneUnverified = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.PhoneUnverified
+                                         && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null))
                             .FirstOrDefault(),
 
                         // And the party sitting here now, when they came on a booking that promised one.
@@ -323,6 +344,10 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public Guid? OpenSessionId { get; init; }
 
         public Guid? OpenTabId { get; init; }
+
+        public bool OpenTabAwaitingAdmission { get; init; }
+
+        public bool NextReservationPhoneUnverified { get; init; }
 
         public DateTime? SeatedAtUtc { get; init; }
 

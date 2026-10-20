@@ -85,6 +85,19 @@ public sealed record ReservationView
     public required string GuestPhone { get; init; }
 
     /// <summary>
+    /// True when the booking was made without a proved phone number - a web visitor who did not verify,
+    /// or an app account whose number was never proved. Staff show "number not verified" beside it.
+    /// </summary>
+    public bool PhoneUnverified { get; init; }
+
+    /// <summary>
+    /// On the reader's own list only: true for a booking somebody else made with the reader's (proved) phone
+    /// number and no proof of it. Show it as "made with your number, not by you"; the reader may cancel it
+    /// with the usual cancel. False for the reader's own bookings and on every other read.
+    /// </summary>
+    public bool MadeWithYourNumber { get; init; }
+
+    /// <summary>
     /// The diner's note to the venue - "window table", "a high chair" - or absent (K9).
     /// </summary>
     public string? Note { get; init; }

@@ -104,6 +104,17 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
 
             tabId = scanned.Tab.TabId;
             hostId = scanned.Tab.Me.ParticipantId;
+
+            // Nobody at the table proved a number, so the tab waits for the waiter, who can see them.
+            Assert.Equal(TabAdmission.AwaitingAdmission, scanned.Tab.Admission.Status);
+        }
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            var admitted = await fixture.CreateTabService(db, clock, TestActor.Waiter(branch.WaiterId))
+                .AdmitAsync(new AdmitTabCommand(tabId, Guid.CreateVersion7()));
+
+            Assert.Equal(TabAdmission.Admitted, admitted.Admission.Status);
         }
 
         // ---------------------------------------------------------- 4. two friends, one approved
@@ -335,9 +346,18 @@ public sealed class WholeEveningScenarioTests(SqlServerFixture fixture)
         Assert.Contains(TabEventType.ServiceRequestAcknowledged, events.Select(e => e.Type));
 
         // Every state change has its audit row: the seating, the free, and the tab's own log.
+        // The branch stream's admission signals - the scan waiting, the waiter letting it in - are beside them,
+        // not transitions.
+        var signals = await verify.TableStateChanges
+            .AsNoTracking()
+            .Where(c => c.DiningTableId == tableThree && c.Signal != null)
+            .Select(c => c.Signal!.Value)
+            .ToListAsync();
+        Assert.Equal([TableChangeSignal.TabAwaitingAdmission, TableChangeSignal.TabAdmitted], signals.Order());
+
         var stateChanges = await verify.TableStateChanges
             .AsNoTracking()
-            .Where(c => c.DiningTableId == tableThree)
+            .Where(c => c.DiningTableId == tableThree && c.Signal == null)
             .ToListAsync();
 
         Assert.True(

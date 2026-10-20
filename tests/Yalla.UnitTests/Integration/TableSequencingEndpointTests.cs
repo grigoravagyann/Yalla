@@ -52,6 +52,9 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         var annas = await BookAsync(anna, branch, branch.TableIds[0], day, "18:00");
         Assert.Equal(HttpStatusCode.Created, annas.StatusCode);
         var annasId = (await annas.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        // One number holds one active booking (2026-10-20); Anna's two here are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, annasId);
         Assert.Equal(HttpStatusCode.Created, (await BookAsync(anna, branch, branch.TableIds[1], day, "21:30")).StatusCode);
 
         // The day, every quarter hour: 19:30 on table 1 can be asked for; 20:45 on table 2 must be left by 21:25.
@@ -96,7 +99,8 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         Assert.Equal(mustFreeBy, gors.GetProperty("promisedFreeByUtc").GetDateTime());
 
         // Table 1 at 19:45 as well would be Gor's second table that evening at once: refused, naming the
-        // booking he already has, so the app can say "You already have a booking at 20:45 (table 2)".
+        // booking he already has, so the app can say "You already have a booking at 20:45 (table 2)". The
+        // own-overlap rule answers before the one-booking-per-number rule, which would refuse it too.
         var twice = await BookAsync(gor, branch, branch.TableIds[0], day, "19:45");
         Assert.Equal(HttpStatusCode.Conflict, twice.StatusCode);
 

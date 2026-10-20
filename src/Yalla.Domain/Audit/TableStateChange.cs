@@ -105,6 +105,23 @@ public sealed class TableStateChange : Entity
     /// </remarks>
     public long Sequence { get; private set; }
 
+    /// <summary>
+    /// What this entry signals about the tab on the table, or null for an ordinary table change. See
+    /// <see cref="TableChangeSignal"/>.
+    /// </summary>
+    public TableChangeSignal? Signal { get; private set; }
+
+    /// <summary>
+    /// Marks this entry as a signal about the table's tab, naming the tab when the entry does not already.
+    /// </summary>
+    public TableStateChange WithSignal(TableChangeSignal signal, Guid? tabId = null)
+    {
+        Signal = Guard.Defined(signal, nameof(signal));
+        TabId ??= tabId;
+
+        return this;
+    }
+
     private TableStateChange()
     {
     }

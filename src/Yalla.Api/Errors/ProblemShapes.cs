@@ -406,6 +406,62 @@ public sealed record BookingTabRefusedProblem : ProblemShape
     public BookingTabRefusedContext? Context { get; init; }
 }
 
+/// <summary>
+/// The booking a number already holds, named to the account that holds it - and only to it.
+/// </summary>
+/// <param name="ReservationId">That booking.</param>
+/// <param name="Code">Its door code.</param>
+/// <param name="StartUtc">When it starts.</param>
+/// <param name="LocalDate">Its date on the branch's calendar, e.g. <c>2026-10-22</c>.</param>
+/// <param name="LocalStartTime">Its start on the branch's wall clock, e.g. <c>19:30:00</c>.</param>
+/// <param name="VenueName">Where.</param>
+/// <param name="BranchName">Which branch.</param>
+public sealed record PhoneHasActiveBookingContext(
+    Guid ReservationId,
+    string Code,
+    DateTime StartUtc,
+    DateOnly LocalDate,
+    TimeOnly LocalStartTime,
+    string VenueName,
+    string BranchName);
+
+/// <summary>
+/// <c>phone-has-active-booking</c>, 409: the booker's number already holds a pending or confirmed booking
+/// that is not over, at any venue. <c>context</c> is present only when that booking is the calling
+/// account's own; a web visitor, or an account booking under a number another account holds, gets no
+/// context - say "this number already has an active booking". <c>device-has-active-booking</c> (the web
+/// route: this browser already holds an unverified booking) arrives on the same status with no context.
+/// </summary>
+public sealed record PhoneHasActiveBookingProblem : ProblemShape
+{
+    public PhoneHasActiveBookingContext? Context { get; init; }
+}
+
+/// <summary>The tab waiting for a waiter.</summary>
+/// <param name="TabId">The tab.</param>
+public sealed record TabAwaitingAdmissionContext(Guid TabId);
+
+/// <summary>
+/// <c>tab-awaiting-admission</c>, 409: a scan with no proved number opened this tab, and a waiter has not
+/// let it order yet. Show "a waiter will be with you", not an error; read the tab again on its
+/// <c>TabAdmitted</c> event.
+/// </summary>
+public sealed record TabAwaitingAdmissionProblem : ProblemShape
+{
+    public required TabAwaitingAdmissionContext Context { get; init; }
+}
+
+/// <summary>A tab whose admission was already decided the other way.</summary>
+/// <param name="TabId">The tab.</param>
+/// <param name="Admission">2 admitted, 3 turned away.</param>
+public sealed record TabAdmissionDecidedContext(Guid TabId, TabAdmission Admission);
+
+/// <summary><c>tab-admission-decided</c>, 409: admitting a tab already turned away, or the other way round.</summary>
+public sealed record TabAdmissionDecidedProblem : ProblemShape
+{
+    public required TabAdmissionDecidedContext Context { get; init; }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reviews
 // ---------------------------------------------------------------------------------------------

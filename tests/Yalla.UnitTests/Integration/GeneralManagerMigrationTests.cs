@@ -54,7 +54,9 @@ public sealed class GeneralManagerMigrationTests(SqlServerFixture fixture)
                     + "ALTER TABLE dbo.Branches ADD District nvarchar(60) NULL; "
                     + "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
                     + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
-                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;");
+                    + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;"
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedBookingsNeedApproval bit NOT NULL CONSTRAINT DF_Test_UnverifiedApproval DEFAULT 1; "
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedMaxPartySize int NOT NULL CONSTRAINT DF_Test_UnverifiedMaxParty DEFAULT 6; ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedScansNeedAdmission bit NOT NULL CONSTRAINT DF_Test_UnverifiedScans DEFAULT 1;");
 
                 // The fixture branch's manager names the branch. A second person is made a branchless
                 // manager the only way today's entity allows - as somebody else, then rewritten - which

@@ -475,6 +475,35 @@ public class ReportTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A phantom scan the waiter cleared by freeing the table - closed, never let in, nothing on it - was never
+    /// a tab the venue served (review N2): the closed-bills count and the day's tabs leave it out.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_scan_never_let_in_is_not_counted_as_a_tab()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: Yerevan);
+
+        await CloseTabAsync(db, branch, Local(Tuesday, 20, 0), totalAmd: 12_000L);
+
+        var phantom = await OpenTabAsync(db, branch, Local(Tuesday, 20, 30), tableIndex: 1, admittedBecause: null);
+        Assert.False(phantom.IsAdmitted);
+        phantom.Close(Local(Tuesday, 21, 0));
+        await db.SaveChangesAsync();
+
+        var reports = SqlServerFixture.CreateReportQuery(db, TestActor.Manager(branch.ManagerId));
+
+        var report = await reports.GetRevenueAsync(new ReportRequest(branch.BranchId, Tuesday, Tuesday));
+
+        Assert.Equal(1m, report.Tabs.Value);
+        Assert.Equal(1, Assert.Single(report.ByDay).Tabs);
+        Assert.Equal(12_000m, report.AverageTabAmd.Value);
+    }
+
+    /// <summary>
     /// The people split - walk-ins against bookings counted in guests, not sittings - and the table-turnover card:
     /// sittings per active table per day.
     /// </summary>
@@ -672,7 +701,8 @@ public class ReportTests(SqlServerFixture fixture)
         YallaDbContext db,
         TestBranch branch,
         DateTime openedAtUtc,
-        int tableIndex)
+        int tableIndex,
+        TabAdmissionReason? admittedBecause = TabAdmissionReason.OpenedByStaff)
     {
         var tableId = branch.TableIds[tableIndex];
 
@@ -682,7 +712,7 @@ public class ReportTests(SqlServerFixture fixture)
         db.TableSessions.Add(session);
         await db.SaveChangesAsync();
 
-        var tab = new Tab(branch.BranchId, tableId, session.Id, openedAtUtc, 0m);
+        var tab = new Tab(branch.BranchId, tableId, session.Id, openedAtUtc, 0m, admittedBecause);
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);
 

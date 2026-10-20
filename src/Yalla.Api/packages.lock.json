@@ -123,6 +123,11 @@
         "resolved": "2.14.1",
         "contentHash": "lQKvtaTDOXnoVJ20ibTuSIOf2i0uO0MPbDhd1jm238I+U/2ZnRENj0cktKZhtchBMtCUSRQ5v4xBCUbKNmyVMw=="
       },
+      "libphonenumber-csharp": {
+        "type": "Transitive",
+        "resolved": "9.0.40",
+        "contentHash": "ywU5vgr+Q7bX+MSU2oxXfYDQDsrUCDfpkSae8PEd1t2L6e+nNIQtmsk/FHV9IIoMGEuuoxOZNQetFJTvTPcyOA=="
+      },
       "Microsoft.AspNetCore.Cryptography.Internal": {
         "type": "Transitive",
         "resolved": "9.0.6",
@@ -915,7 +920,10 @@
         }
       },
       "yalla.domain": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "libphonenumber-csharp": "[9.0.40, )"
+        }
       },
       "yalla.infrastructure": {
         "type": "Project",

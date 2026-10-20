@@ -97,3 +97,16 @@ public sealed record SetParticipantPermissionsCommand(
     bool CanOrder,
     bool CanSeeTableTotal,
     bool CanPay);
+
+/// <summary>A waiter letting a tab that waits for admission order.</summary>
+/// <param name="TabId">The tab.</param>
+/// <param name="ClientCommandId">The tablet's id for this tap; a retry answers with the tab as it stands.</param>
+public sealed record AdmitTabCommand(Guid TabId, Guid ClientCommandId);
+
+/// <summary>
+/// A waiter turning away a tab that waits for admission - nobody they can see is sitting there.
+/// </summary>
+/// <param name="TabId">The tab.</param>
+/// <param name="ClientCommandId">The tablet's id for this tap.</param>
+/// <param name="Reason">Optional, at most 500 characters; recorded on the table's audit row when the table is freed.</param>
+public sealed record RejectTabCommand(Guid TabId, Guid ClientCommandId, string? Reason = null);

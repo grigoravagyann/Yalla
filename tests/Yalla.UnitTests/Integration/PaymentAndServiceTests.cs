@@ -781,6 +781,9 @@ public sealed class PaymentAndServiceTests(SqlServerFixture fixture)
             guestId = joined.Tab.Me.ParticipantId;
         }
 
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); this test is about what follows.
+        await fixture.AdmitTabAsync(clock, tabId);
+
         if (coffees > 0)
         {
             await using var orderDb = fixture.CreateContext(clock);

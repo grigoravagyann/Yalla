@@ -86,6 +86,16 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 t.TotalAmd,
                 t.PaidAmd,
                 t.RemainingAmd,
+                t.Admission,
+                t.AdmittedBecause,
+                t.AdmissionDecidedAtUtc,
+                t.AdmissionDecidedByStaffId,
+
+                // Whether turning it away freed the table: the reject's own audit row went to Free.
+                RejectFreedTable = t.Admission == TabAdmission.Rejected
+                                   && db.TableStateChanges.Any(c => c.TabId == t.Id
+                                                                    && c.Signal == TableChangeSignal.TabAdmissionRejected
+                                                                    && c.ToStatus == TableStatus.Free),
 
                 // Outside the balance and so outside the cached totals; summed here, in the same
                 // statement, from the payments that actually went through. A hold that is still
@@ -285,7 +295,13 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     a.CreatedAtUtc,
                     IsVoided: a.VoidedAtUtc is not null)),
             ],
-            tab.TipsAmd);
+            tab.TipsAmd,
+            new TabAdmissionView(
+                tab.Admission,
+                tab.AdmittedBecause,
+                tab.AdmissionDecidedAtUtc,
+                tab.AdmissionDecidedByStaffId,
+                tab.Admission == TabAdmission.Rejected ? tab.RejectFreedTable : null));
     }
 
     /// <summary>

@@ -116,6 +116,12 @@ public sealed record TableFloorState
     /// </remarks>
     public Guid? OpenTabId { get; init; }
 
+    /// <summary>
+    /// True when <see cref="OpenTabId"/> was opened by a scan with no proved number and waits for a waiter
+    /// to admit it before anybody on it can order. The tablet's table panel offers Admit / Reject.
+    /// </summary>
+    public bool OpenTabAwaitingAdmission { get; init; }
+
     public DateTime? SeatedAtUtc { get; init; }
 
     public int? PartySize { get; init; }
@@ -142,6 +148,12 @@ public sealed record TableFloorState
     /// booking), or they said yes to a later guest's request for the table.
     /// </remarks>
     public DateTime? NextReservationPromisedFreeByUtc { get; init; }
+
+    /// <summary>
+    /// True when the next booking was made without a proved phone number - "number not verified" beside
+    /// it. False when there is no next booking.
+    /// </summary>
+    public bool NextReservationPhoneUnverified { get; init; }
 
     /// <summary>
     /// The time the party sitting here now promised to free the table by, when they were seated against

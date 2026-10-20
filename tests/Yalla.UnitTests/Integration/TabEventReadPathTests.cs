@@ -183,6 +183,9 @@ public sealed class TabEventReadPathTests(SqlServerFixture fixture)
             guestId = joined.Tab.Me.ParticipantId;
         }
 
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); this test is about what follows.
+        await fixture.AdmitTabAsync(clock, tabId);
+
         foreach (var (who, item) in new[] { (hostId, menu.Coffee), (guestId, menu.Khachapuri) })
         {
             await using var orderDb = fixture.CreateContext(clock);

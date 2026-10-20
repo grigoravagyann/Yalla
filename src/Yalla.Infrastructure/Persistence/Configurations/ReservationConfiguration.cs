@@ -30,6 +30,18 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.Note)
             .HasMaxLength(FieldLengths.Reason);
 
+        // How the booking was made: without a proved number (2026-10-20). Existing rows were all made
+        // by an account whose number was proved, or by nobody at all, so false.
+        builder.Property(r => r.PhoneUnverified)
+            .IsRequired()
+            .HasDefaultValue(false);
+
+        // The one-active-booking-per-number key and the web browser's hash. See the entity.
+        builder.Property(r => r.BookerPhoneE164)
+            .HasMaxLength(FieldLengths.Phone);
+        builder.Property(r => r.BookerDeviceHash)
+            .HasMaxLength(FieldLengths.TokenHash);
+
         builder.Property(r => r.PartySize).IsRequired();
         builder.Property(r => r.Status).IsRequired();
         builder.Property(r => r.GraceExtensionsUsed).IsRequired();
@@ -135,5 +147,19 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.HasIndex(r => r.ApprovalExpiresAtUtc)
             .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL")
             .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc");
+
+        // "Does this number already hold an active booking?" - asked inside every new booking's locks.
+        // Filtered to the two statuses that can be active, so it holds the city's live bookings and
+        // nothing of their history. Not unique: "active" also means "not over yet", which an index
+        // cannot express (a confirmed booking nobody seated would hold the number for ever) - the
+        // application lock in ReservationWriter is what makes the check safe.
+        builder.HasIndex(r => new { r.BookerPhoneE164, r.EndUtc })
+            .HasFilter("[BookerPhoneE164] IS NOT NULL AND [Status] IN (1, 2)")
+            .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active");
+
+        // The same question for one browser booking without an account.
+        builder.HasIndex(r => new { r.BookerDeviceHash, r.EndUtc })
+            .HasFilter("[BookerDeviceHash] IS NOT NULL AND [Status] IN (1, 2)")
+            .HasDatabaseName("IX_Reservations_BookerDeviceHash_Active");
     }
 }

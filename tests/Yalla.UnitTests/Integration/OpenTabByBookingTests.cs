@@ -332,7 +332,10 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
         var early = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, early.Id);
         var onTime = await BookAsync(diner, factory, branch, branch.TableIds[1], new TimeOnly(20, 0));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, onTime.Id);
 
         // One minute before the branch starts holding the table back for the party...
         var earlyStart = now.AddMinutes(HoldbackMinutes + 1);
@@ -373,7 +376,10 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
         var over = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, over.Id);
         var late = await BookAsync(diner, factory, branch, branch.TableIds[1], new TimeOnly(20, 0));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, late.Id);
 
         // Ended at exactly this instant.
         await MoveAsync(factory, over.Id, now.AddMinutes(-90), endUtc: now);
@@ -534,7 +540,10 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
         var broken = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, broken.Id);
         var removed = await BookAsync(diner, factory, branch, branch.TableIds[1], new TimeOnly(20, 0));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, removed.Id);
         await MoveAsync(factory, broken.Id, factory.Clock.UtcNow.AddMinutes(10));
         await MoveAsync(factory, removed.Id, factory.Clock.UtcNow.AddMinutes(10));
 
@@ -603,7 +612,10 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
         var first = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, first.Id);
         var second = await BookAsync(diner, factory, branch, branch.TableIds[1], new TimeOnly(20, 0));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, second.Id);
         await MoveAsync(factory, first.Id, factory.Clock.UtcNow.AddMinutes(10));
         await MoveAsync(factory, second.Id, factory.Clock.UtcNow.AddMinutes(10));
 

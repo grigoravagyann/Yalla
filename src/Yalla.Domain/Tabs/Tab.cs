@@ -121,6 +121,28 @@ public sealed class Tab : Entity
     /// </summary>
     public byte[] RowVersion { get; private set; } = [];
 
+    /// <summary>
+    /// Whether the people on this tab may order yet - see <see cref="TabAdmission"/>.
+    /// </summary>
+    /// <remarks>
+    /// A photographed QR code lets somebody open a tab from home, so a scan whose host has no proved
+    /// phone number waits for a waiter who can see the table. Only ordering waits: the tab can be read,
+    /// joiners approved and a waiter called.
+    /// </remarks>
+    public TabAdmission Admission { get; private set; }
+
+    /// <summary>Why it was admitted; null while waiting, once turned away, and on tabs from before admission.</summary>
+    public TabAdmissionReason? AdmittedBecause { get; private set; }
+
+    /// <summary>When it was admitted or turned away - for an automatic admission, when it opened.</summary>
+    public DateTime? AdmissionDecidedAtUtc { get; private set; }
+
+    /// <summary>The waiter who admitted it, turned it away, opened it, or keyed in the order that admitted it.</summary>
+    public Guid? AdmissionDecidedByStaffId { get; private set; }
+
+    /// <summary>Whether the tab takes orders as far as admission goes. The participants' own flags still apply.</summary>
+    public bool IsAdmitted => Admission == TabAdmission.Admitted;
+
     public IReadOnlyCollection<TabParticipant> Participants => _participants;
 
     public IReadOnlyCollection<TabOrder> Orders => _orders;
@@ -149,9 +171,11 @@ public sealed class Tab : Entity
         Guid tableSessionId,
         DateTime openedAtUtc,
         decimal serviceChargePercentSnapshot,
+        TabAdmissionReason? admittedBecause,
         SettlementMode settlementMode = SettlementMode.AnyonePaysAnyAmount,
         bool hideTotalFromGuests = false,
-        Guid? clientCommandId = null)
+        Guid? clientCommandId = null,
+        Guid? admittedByStaffId = null)
         : base(Guid.CreateVersion7())
     {
         BranchId = Guard.NotEmpty(branchId, nameof(branchId));
@@ -177,6 +201,89 @@ public sealed class Tab : Entity
         }
 
         ServiceChargePercentSnapshot = decimal.Round(serviceChargePercentSnapshot, 2);
+
+        // Required, with no default, on purpose: whoever opens a tab says whether it may order. Null is
+        // a scan by somebody with no proved number - it waits for a waiter.
+        if (admittedBecause is { } because)
+        {
+            Admission = TabAdmission.Admitted;
+            AdmittedBecause = Guard.Defined(because, nameof(admittedBecause));
+            AdmissionDecidedAtUtc = OpenedAtUtc;
+            AdmissionDecidedByStaffId = admittedByStaffId;
+        }
+        else
+        {
+            Admission = TabAdmission.AwaitingAdmission;
+        }
+    }
+
+    /// <summary>
+    /// Lets a tab that was waiting order. Answers false, changing nothing, when it is already admitted.
+    /// </summary>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="because">A waiter's tap or the booker arriving.</param>
+    /// <param name="byStaffId">The waiter, when it was one.</param>
+    /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
+    public bool Admit(DateTime atUtc, TabAdmissionReason because, Guid? byStaffId)
+    {
+        if (Admission == TabAdmission.Admitted)
+        {
+            return false;
+        }
+
+        if (Admission == TabAdmission.Rejected)
+        {
+            throw new TabAdmissionDecidedException(Id, Admission);
+        }
+
+        Admission = TabAdmission.Admitted;
+        AdmittedBecause = Guard.Defined(because, nameof(because));
+        AdmissionDecidedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        AdmissionDecidedByStaffId = byStaffId;
+
+        return true;
+    }
+
+    /// <summary>
+    /// A waiter turns away a tab that was waiting: nobody they can see is sitting there. The tab closes.
+    /// Answers false, changing nothing, when it was already turned away.
+    /// </summary>
+    /// <remarks>
+    /// Nothing can be on it - no phone order is accepted before admission, and the caller refuses a tab a
+    /// waiter has keyed orders on - so closing it settles nothing. What happens to the table is the caller's:
+    /// freed (or held again) when the scan seated it, left as it is when a waiter or a booking did.
+    /// </remarks>
+    /// <exception cref="TabAdmissionDecidedException">It was already admitted.</exception>
+    /// <exception cref="DomainStateException">There is money on it, which cannot happen through this API.</exception>
+    public bool RejectAdmission(DateTime atUtc, Guid byStaffId)
+    {
+        if (Admission == TabAdmission.Rejected)
+        {
+            return false;
+        }
+
+        if (Admission == TabAdmission.Admitted)
+        {
+            throw new TabAdmissionDecidedException(Id, Admission);
+        }
+
+        if (TotalAmd > 0L || PaidAmd > 0L)
+        {
+            throw new DomainStateException("This tab has items on it and cannot be turned away. Close it as usual.");
+        }
+
+        Admission = TabAdmission.Rejected;
+        AdmittedBecause = null;
+        AdmissionDecidedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        AdmissionDecidedByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
+
+        if (Status is TabStatus.Open or TabStatus.Closing)
+        {
+            Status = TabStatus.Closed;
+            ClosedAtUtc = AdmissionDecidedAtUtc;
+        }
+
+        return true;
     }
 
     /// <summary>

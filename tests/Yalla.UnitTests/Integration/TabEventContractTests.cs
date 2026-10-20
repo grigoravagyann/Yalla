@@ -461,6 +461,9 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
             hostId = opened.Tab.Me.ParticipantId;
         }
 
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); this test is about what follows.
+        await fixture.AdmitTabAsync(clock, tabId);
+
         await using (var orderDb = fixture.CreateContext(clock))
         {
             await fixture.CreateOrderService(orderDb, clock, TestActor.Participant(hostId))

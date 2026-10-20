@@ -90,6 +90,28 @@ public class TabProjectionTests
         Assert.False(view.Me.CanOrderNow);
     }
 
+    /// <summary>
+    /// A tab waiting for a waiter's admission: nobody may order now, the host included, whatever their flags
+    /// - and the view says where admission stands.
+    /// </summary>
+    [Fact]
+    public void Nobody_may_order_on_a_tab_still_waiting_for_admission()
+    {
+        var waiting = Tab() with { Admission = new TabAdmissionView(TabAdmission.AwaitingAdmission, null, null, null, null) };
+
+        var host = TabProjection.Project(waiting, HostId)!;
+        var ani = TabProjection.Project(waiting, AniId)!;
+
+        Assert.False(host.Me.CanOrderNow);
+        Assert.False(ani.Me.CanOrderNow);
+        Assert.Equal(TabAdmission.AwaitingAdmission, host.Admission.Status);
+        Assert.All(TabProjection.ProjectForStaff(waiting).Participants, p => Assert.False(p.CanOrderNow));
+
+        // Admitted, the same people order again; a snapshot with no admission reads as admitted.
+        Assert.True(TabProjection.Project(Tab(), HostId)!.Me.CanOrderNow);
+        Assert.Equal(TabAdmission.Admitted, TabProjection.Project(Tab(), HostId)!.Admission.Status);
+    }
+
     [Fact]
     public void Someone_not_on_the_tab_gets_nothing()
     {

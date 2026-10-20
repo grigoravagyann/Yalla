@@ -91,6 +91,11 @@
           "System.Threading.Tasks.Extensions": "4.5.4"
         }
       },
+      "libphonenumber-csharp": {
+        "type": "Transitive",
+        "resolved": "9.0.40",
+        "contentHash": "ywU5vgr+Q7bX+MSU2oxXfYDQDsrUCDfpkSae8PEd1t2L6e+nNIQtmsk/FHV9IIoMGEuuoxOZNQetFJTvTPcyOA=="
+      },
       "Microsoft.AspNetCore.Authentication.JwtBearer": {
         "type": "Transitive",
         "resolved": "9.0.9",
@@ -1053,7 +1058,10 @@
         }
       },
       "yalla.domain": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "libphonenumber-csharp": "[9.0.40, )"
+        }
       },
       "yalla.infrastructure": {
         "type": "Project",

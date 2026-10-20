@@ -81,7 +81,10 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         // 16:25 + 90 = 17:55, plus 5 minutes of clearing time = 18:00: back to back, a full sitting,
         // and nothing to promise.
         await service.CreateAsync(Booking(branch, branch.FirstTableId));
-        var before = await service.CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(16, 25)));
+
+        // Another diner's, the one before: one number holds one active booking (2026-10-20).
+        var before = await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.FirstTableId, new TimeOnly(16, 25)));
 
         Assert.Equal(ReservationStatus.Confirmed, before.Status);
         Assert.Null(before.PromisedFreeByUtc);

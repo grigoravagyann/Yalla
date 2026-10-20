@@ -84,6 +84,44 @@ public sealed class ReservationPolicy
     /// </remarks>
     public int WalkInHoldbackMinutes { get; private set; }
 
+    /// <summary>
+    /// Whether a booking whose booker never proved their phone number waits for staff approval
+    /// (<c>ApprovalTrigger.UnverifiedPhone</c>). On by default.
+    /// </summary>
+    /// <remarks>
+    /// Booking without a proved number is allowed (decided 2026-10-20) - Telegram is the only proof, and
+    /// not everybody has it - but such a number is worth nothing to a reminder or a no-show record, so
+    /// by default the venue looks at the booking before promising the table. A venue happy to take them
+    /// on trust switches this off; the booking is then flagged and nothing more.
+    /// </remarks>
+    public bool UnverifiedBookingsNeedApproval { get; private set; } = true;
+
+    /// <summary>
+    /// The largest party a booking with an unproved number may be for. Six by default: a family table,
+    /// where a phantom booking for twelve would empty a room. <b>Zero</b>: the branch takes no booking
+    /// without a verified number (<see cref="AcceptsUnverifiedBookings"/>).
+    /// </summary>
+    public int UnverifiedMaxPartySize { get; private set; } = DefaultUnverifiedMaxPartySize;
+
+    /// <summary>A new branch lets an unproved number book for at most this many.</summary>
+    public const int DefaultUnverifiedMaxPartySize = 6;
+
+    /// <summary>Whether a booker with no proved number may book here at all: the cap above zero.</summary>
+    public bool AcceptsUnverifiedBookings => UnverifiedMaxPartySize > 0;
+
+    /// <summary>
+    /// Whether a tab opened by a QR scan with no proved phone number behind it waits for a waiter to admit it
+    /// before anybody on it can order (<c>TabAdmission</c>). On by default - the user's decision of 2026-10-20:
+    /// a photographed code can be scanned from anywhere, and the waiter can see who is sitting there.
+    /// </summary>
+    /// <remarks>
+    /// Off, a scan opens a tab that orders at once, as every scan did before admission
+    /// (<c>TabAdmissionReason.NotRequired</c>). A switch per branch because admission needs a tablet that
+    /// can admit: a branch whose floor runs an older tablet build turns it off until the new one is on its
+    /// devices.
+    /// </remarks>
+    public bool UnverifiedScansNeedAdmission { get; private set; } = true;
+
     private ReservationPolicy()
     {
     }
@@ -103,8 +141,15 @@ public sealed class ReservationPolicy
         int? maxSeatOverhang,
         int? approvalRequiredAbovePartySize,
         int walkInHoldbackMinutes = 30,
-        int reminderHoursBefore = 3)
+        int reminderHoursBefore = 3,
+        bool unverifiedBookingsNeedApproval = true,
+        int unverifiedMaxPartySize = DefaultUnverifiedMaxPartySize,
+        bool unverifiedScansNeedAdmission = true)
     {
+        UnverifiedBookingsNeedApproval = unverifiedBookingsNeedApproval;
+        UnverifiedScansNeedAdmission = unverifiedScansNeedAdmission;
+        UnverifiedMaxPartySize = NotNegative(unverifiedMaxPartySize, nameof(unverifiedMaxPartySize));
+
         WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));
 
         TurnTimeMinutes = Positive(turnTimeMinutes, nameof(turnTimeMinutes));

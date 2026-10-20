@@ -245,6 +245,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             Microsoft.Extensions.Options.Options.Create(new TabOptions()),
             CreateLedger(db, clock, actor),
             CreateOutbox(db, clock),
+            CreateBranchGuard(db, actor),
             NullLogger<TabService>.Instance);
     }
 
@@ -463,13 +464,16 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new AuthorizationQueries(db),
             CreateBranchGuard(db, actor),
             noShowPolicy ?? new NoShowPolicy(),
-            CreateReservationWriter(db, lockOptions),
+            CreateReservationWriter(db, clock, lockOptions),
             CreateService(db, clock, actor),
             CreateOutbox(db, clock),
 
             // The manage-link template. Its default is the local dev page, which is all a test
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.
             Options.Create(new PublicWebOptions()),
+
+            // The per-network budget is the HTTP layer's; a service-level test has no network.
+            new UnlimitedUnverifiedBookingBudget(),
             NullLogger<ReservationService>.Instance);
     }
 
@@ -510,6 +514,55 @@ public sealed class SqlServerFixture : IAsyncLifetime
                 INSERT INTO dbo.DinerUsers (Id, CreatedAtUtc, IsActive, LocaleCode, PhoneE164, PhoneVerifiedAtUtc, LastSignInAtUtc)
                 VALUES ({dinerUserId}, {nowUtc}, 1, 'en', {phone}, {nowUtc}, {nowUtc});
             """);
+    }
+
+    /// <summary>
+    /// Lets a tab a scan opened order, as a waiter's admission would - for the tests about everything after
+    /// it (ordering, paying, the stream). Admission itself is <see cref="TabAdmissionTests"/>'s subject.
+    /// </summary>
+    /// <summary>
+    /// Makes bookings what a booking from before the one-active-booking-per-number rule (2026-10-20) is:
+    /// held by no number. For the tests of rules about one diner's several live bookings - overlaps, a link
+    /// reaching only its own booking - which can only be arranged that way now.
+    /// </summary>
+    internal async Task MakeBookingsFromBeforeTheNumberRuleAsync(IClock clock, params Guid[] reservationIds)
+    {
+        await using var db = CreateContext(clock);
+
+        foreach (var id in reservationIds)
+        {
+            await db.Database.ExecuteSqlAsync($"UPDATE dbo.Reservations SET BookerPhoneE164 = NULL WHERE Id = {id}");
+        }
+    }
+
+    /// <summary>
+    /// The same, through the test's own context, reloading the bookings it tracks so the next write through
+    /// it carries their new row versions.
+    /// </summary>
+    internal async Task MakeBookingsFromBeforeTheNumberRuleAsync(YallaDbContext db, params Guid[] reservationIds)
+    {
+        foreach (var id in reservationIds)
+        {
+            await db.Database.ExecuteSqlAsync($"UPDATE dbo.Reservations SET BookerPhoneE164 = NULL WHERE Id = {id}");
+        }
+
+        foreach (var entry in db.ChangeTracker.Entries<Domain.Occupancy.Reservation>()
+                     .Where(e => reservationIds.Contains(e.Entity.Id))
+                     .ToList())
+        {
+            await entry.ReloadAsync();
+        }
+    }
+
+    internal Task AdmitTabAsync(Guid tabId) => AdmitTabAsync(new TestClock(DateTime.UtcNow), tabId);
+
+    /// <inheritdoc cref="AdmitTabAsync(Guid)"/>
+    internal async Task AdmitTabAsync(IClock clock, Guid tabId)
+    {
+        await using var db = CreateContext(clock);
+
+        await db.Database.ExecuteSqlAsync(
+            $"UPDATE dbo.Tabs SET Admission = 2, AdmittedBecause = 1, AdmissionDecidedAtUtc = {clock.UtcNow} WHERE Id = {tabId} AND Admission = 1");
     }
 
     /// <summary>The outbox over one context. Writes only - dispatching is its own thing.</summary>
@@ -553,14 +606,15 @@ public sealed class SqlServerFixture : IAsyncLifetime
             db,
             clock,
             CreateOutbox(db, clock),
-            CreateReservationWriter(db),
+            CreateReservationWriter(db, clock),
             logger ?? NullLogger<ApprovalExpirySweep>.Instance);
 
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
     internal ReservationWriter CreateReservationWriter(
         YallaDbContext db,
+        IClock clock,
         BookingLockOptions? lockOptions = null) =>
-        new(db, CreateTableLock(db, lockOptions), NullLogger<ReservationWriter>.Instance);
+        new(db, CreateTableLock(db, lockOptions), clock, NullLogger<ReservationWriter>.Instance);
 
     /// <summary>
     /// The per-table write lock. Tests that want to <i>hold</i> it - to prove another writer waits

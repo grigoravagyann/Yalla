@@ -101,3 +101,23 @@ public enum DerivedTableState
     /// <summary>Withdrawn from service.</summary>
     OutOfService = 5,
 }
+
+/// <summary>
+/// What a branch change-stream entry signals beyond the table's status, when it is about the tab on the
+/// table rather than the table itself. Persisted as its number on <c>TableStateChanges.Signal</c>.
+/// </summary>
+/// <remarks>
+/// Written on a same-status row (Occupied to Occupied) - the precedent is the hold-extended row - or on
+/// the reject's own Occupied to Free row, so every tablet following the branch stream learns of it.
+/// </remarks>
+public enum TableChangeSignal
+{
+    /// <summary>A scan opened a tab that waits for a waiter's admission.</summary>
+    TabAwaitingAdmission = 1,
+
+    /// <summary>A tab that was waiting was admitted.</summary>
+    TabAdmitted = 2,
+
+    /// <summary>A tab that was waiting was turned away.</summary>
+    TabAdmissionRejected = 3,
+}

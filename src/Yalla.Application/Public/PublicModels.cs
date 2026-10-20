@@ -188,10 +188,30 @@ public sealed record PublicBranchPage(
 /// How long before the start a diner may still cancel freely. On the page because a deadline
 /// nobody was told about is a deadline that produces no-shows rather than cancellations.
 /// </param>
+/// <param name="UnverifiedMaxPartySize">
+/// The largest party the page may book without a verified phone number. Published because the page must
+/// say "for more, verify your number" before the visitor commits; it is a refusal, not an approval
+/// threshold, so it opens no loophole. <b>0</b>: the branch takes no bookings without a verified number -
+/// see <see cref="AcceptsUnverifiedBookings"/>.
+/// </param>
+/// <param name="UnverifiedBookingsNeedApproval">
+/// Whether a booking without a verified number waits for the venue to confirm it - so the page can say so
+/// before the visitor books, rather than after.
+/// </param>
 public sealed record PublicReservationPolicy(
     int TurnTimeMinutes,
     int MinLeadMinutes,
-    int CancellationDeadlineMinutes);
+    int CancellationDeadlineMinutes,
+    int UnverifiedMaxPartySize = Domain.Venues.ReservationPolicy.DefaultUnverifiedMaxPartySize,
+    bool UnverifiedBookingsNeedApproval = true)
+{
+    /// <summary>
+    /// Whether the page offers booking without a verified number at all: false when the branch's cap is 0,
+    /// and then the only door is verifying the number (a booking without it is
+    /// <c>422 branch-requires-verified-phone</c>).
+    /// </summary>
+    public bool AcceptsUnverifiedBookings => UnverifiedMaxPartySize > 0;
+}
 
 /// <summary>The rooms as a diner sees them: each with its photos, and every table with its pin.</summary>
 /// <param name="Areas">The rooms, lowest <c>displayOrder</c> first, each with its photos in order.</param>

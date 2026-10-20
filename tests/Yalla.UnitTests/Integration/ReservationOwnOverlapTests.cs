@@ -16,6 +16,12 @@ namespace Yalla.UnitTests.Integration;
 /// Found in QA: one diner held table 1 at 19:45 and table 2 at 19:30 the same evening. The branch is in
 /// <c>Asia/Yerevan</c> (UTC+4) on the shipped restaurant policy - a 90-minute turn; "now" is noon on
 /// Thursday 10 September 2026 there and the evening booked is Sunday the 13th's.
+/// <para>
+/// Since 2026-10-20 one phone number holds one active booking (<see cref="UnverifiedBookingTests"/>), so a
+/// second booking of the same diner's is refused by that rule first. These tests are about the overlap rule
+/// itself, which still decides a pair from before the number rule - and a diner's seated booking - so they
+/// mark the earlier bookings as such (<c>MakeBookingsFromBeforeTheNumberRuleAsync</c>).
+/// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
 public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
@@ -39,6 +45,7 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
 
         var first = await bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 30)));
 
+        // The overlap answers first - it says more than the number rule would: which table, at once.
         var refused = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
             () => bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(19, 45))));
 
@@ -59,6 +66,12 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(Sunday, mapped.Context["localDate"]);
         Assert.Equal("2", mapped.Context["tableLabel"]);
 
+        // A booking that does not overlap is then the number rule's: one active booking per number, named to
+        // her because it is hers.
+        var held = await Assert.ThrowsAsync<PhoneHasActiveBookingException>(
+            () => bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(12, 0))));
+        Assert.Equal(first.Id, held.Existing!.ReservationId);
+
         // Nothing was written: one booking, the first.
         await using var check = fixture.CreateContext(clock);
         Assert.Equal(1, await check.Reservations.CountAsync(r => r.BranchId == branch.BranchId));
@@ -77,13 +90,16 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         var bella = fixture.CreateReservationService(db, clock, diner);
 
         var first = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(18, 0)));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, first.Id);
 
         // 19:30 is when the 18:00 sitting ends: one after the other, never both at once.
         var after = await bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 30)));
         Assert.Equal(ReservationStatus.Confirmed, after.Status);
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, after.Id);
 
         // Another branch is another evening out, and another diner is somebody else.
-        await bella.CreateAsync(Booking(elsewhere, elsewhere.TableIds[0], new TimeOnly(18, 30)));
+        var away = await bella.CreateAsync(Booking(elsewhere, elsewhere.TableIds[0], new TimeOnly(18, 30)));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, away.Id);
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.TableIds[2], new TimeOnly(18, 30)));
 
@@ -113,6 +129,8 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.True(replay.WasReplay);
         Assert.Equal(waiting.Id, replay.Id);
 
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, waiting.Id);
+
         var refused = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
             () => bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(20, 0))));
         Assert.Equal(waiting.Id, refused.ReservationId);
@@ -129,6 +147,7 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         var bella = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var lunch = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(13, 0)));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, lunch.Id);
         var dinner = await bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 30)));
 
         // Half an hour later on its own table: the booking being moved is not in its own way.
@@ -167,7 +186,8 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         // The new booking: Bella holds table 2 at 14:00, then books table 1 at 13:00 promising to leave
         // by 13:55. Its sitting is 13:00-13:55, not the full turn, so it does not run into her 14:00.
         var bella = fixture.CreateReservationService(db, clock, TestActor.Diner());
-        await bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(14, 0)));
+        var held = await bella.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(14, 0)));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, held.Id);
 
         // Not promising, the table asks for the time - not "you already have a booking".
         await Assert.ThrowsAsync<FreeByNotAcceptedException>(
@@ -183,9 +203,11 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         var first = await carla.CreateAsync(
             Booking(branch, branch.TableIds[3], new TimeOnly(15, 0), acceptsFreeByUtc: SundayAt(15, 55)));
         Assert.Equal(SundayAt(15, 55), first.EndUtc);
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, first.Id);
 
         var after = await carla.CreateAsync(Booking(branch, branch.TableIds[2], new TimeOnly(16, 0)));
         Assert.Equal(ReservationStatus.Confirmed, after.Status);
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, after.Id);
 
         // A minute into the cut sitting is still refused.
         var refused = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
@@ -295,6 +317,9 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
             new RescheduleReservationCommand(original.Id, branch.TableIds[1], Today, new TimeOnly(21, 0), 2, Guid.CreateVersion7()));
         Assert.Equal(ReservationStatus.PendingApproval, moved.Status);
         Assert.Equal(ApprovalTrigger.ShortNotice, moved.AwaitingApprovalBecause);
+
+        // The waiting change holds the number; only a pair from before that rule gets this far.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, original.Id);
 
         var other = await bella.CreateAsync(Booking(branch, branch.TableIds[2], new TimeOnly(20, 0), date: tomorrow));
         Assert.Equal(ReservationStatus.Confirmed, other.Status);
