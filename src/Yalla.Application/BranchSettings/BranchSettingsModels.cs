@@ -62,7 +62,8 @@ public sealed record ReservationPolicyView(
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes,
     bool UnverifiedBookingsNeedApproval,
-    int UnverifiedMaxPartySize)
+    int UnverifiedMaxPartySize,
+    bool UnverifiedScansNeedAdmission)
 {
     public static ReservationPolicyView From(ReservationPolicy p) => new(
         p.TurnTimeMinutes,
@@ -80,13 +81,15 @@ public sealed record ReservationPolicyView(
         p.ApprovalRequiredAbovePartySize,
         p.WalkInHoldbackMinutes,
         p.UnverifiedBookingsNeedApproval,
-        p.UnverifiedMaxPartySize);
+        p.UnverifiedMaxPartySize,
+        p.UnverifiedScansNeedAdmission);
 }
 
 /// <summary>Every field of the policy, as written. The whole form is replaced at once.</summary>
 /// <remarks>
-/// <c>UnverifiedBookingsNeedApproval</c> and <c>UnverifiedMaxPartySize</c> (2026-10-20) are the exception:
-/// left out, they keep what the branch has - a console from before them must not reset an owner's choice.
+/// <c>UnverifiedBookingsNeedApproval</c>, <c>UnverifiedMaxPartySize</c> and <c>UnverifiedScansNeedAdmission</c>
+/// (2026-10-20) are the exception: left out, they keep what the branch has - a console from before them must
+/// not reset an owner's choice.
 /// </remarks>
 public sealed record ReservationPolicyCommand(
     int TurnTimeMinutes,
@@ -104,7 +107,8 @@ public sealed record ReservationPolicyCommand(
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes = 30,
     bool? UnverifiedBookingsNeedApproval = null,
-    int? UnverifiedMaxPartySize = null)
+    int? UnverifiedMaxPartySize = null,
+    bool? UnverifiedScansNeedAdmission = null)
 {
     /// <summary>
     /// Builds the policy, applying the editing bounds first.
@@ -123,6 +127,7 @@ public sealed record ReservationPolicyCommand(
     public ReservationPolicy ToPolicy(ReservationPolicy? current = null)
     {
         var unverifiedNeedApproval = UnverifiedBookingsNeedApproval ?? current?.UnverifiedBookingsNeedApproval ?? true;
+        var unverifiedScansNeedAdmission = UnverifiedScansNeedAdmission ?? current?.UnverifiedScansNeedAdmission ?? true;
         var unverifiedMaxPartySize = UnverifiedMaxPartySize
                                      ?? current?.UnverifiedMaxPartySize
                                      ?? ReservationPolicy.DefaultUnverifiedMaxPartySize;
@@ -158,7 +163,8 @@ public sealed record ReservationPolicyCommand(
             ApprovalRequiredAbovePartySize,
             WalkInHoldbackMinutes,
             unverifiedBookingsNeedApproval: unverifiedNeedApproval,
-            unverifiedMaxPartySize: unverifiedMaxPartySize);
+            unverifiedMaxPartySize: unverifiedMaxPartySize,
+            unverifiedScansNeedAdmission: unverifiedScansNeedAdmission);
     }
 }
 

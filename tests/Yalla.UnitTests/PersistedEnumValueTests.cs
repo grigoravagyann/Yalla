@@ -434,7 +434,7 @@ public class PersistedEnumValueTests
         Assert.Equal(2, (int)TabAdmissionReason.VerifiedHost);
         Assert.Equal(3, (int)TabAdmissionReason.OpenedByStaff);
         Assert.Equal(4, (int)TabAdmissionReason.Booker);
-        Assert.Equal(5, (int)TabAdmissionReason.WaiterOrder);
+        Assert.Equal(5, (int)TabAdmissionReason.NotRequired);
 
         Assert.Equal(1, (int)TableChangeSignal.TabAwaitingAdmission);
         Assert.Equal(2, (int)TableChangeSignal.TabAdmitted);

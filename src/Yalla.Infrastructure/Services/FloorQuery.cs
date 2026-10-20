@@ -282,7 +282,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                                         && (r.Status == ReservationStatus.Confirmed
                                             || r.Status == ReservationStatus.PendingApproval))
                             .OrderBy(r => r.StartUtc)
-                            .Select(r => r.PhoneUnverified)
+                            .Select(r => r.PhoneUnverified
+                                         && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null))
                             .FirstOrDefault(),
 
                         // And the party sitting here now, when they came on a booking that promised one.

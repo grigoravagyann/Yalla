@@ -195,3 +195,32 @@ public sealed class TabAdmissionDecidedException(Guid tabId, TabAdmission admiss
 
     public TabAdmission Admission { get; } = admission;
 }
+
+/// <summary>
+/// A scan refused for a while after a waiter turned a tab away: from a phone that was on the turned-away tab,
+/// or of the table it was at. 409 <c>scan-turned-away</c>, <c>context.retryAfterUtc</c>.
+/// </summary>
+/// <remarks>
+/// Turning a phantom away frees the table; without this the same photographed code opens the next phantom at
+/// once and the rail floods anyway, one waiter tap per phantom. A scanner with a proved number is never refused
+/// by it. The device id is the phone's own choice, so that half is friction; the table's pause is the wall.
+/// </remarks>
+public sealed class ScanTurnedAwayException(DateTime retryAfterUtc)
+    : DomainStateException(
+        "A member of staff has just closed a tab here. If you are at the table, ask a waiter to open one for you.")
+{
+    public DateTime RetryAfterUtc { get; } = retryAfterUtc;
+}
+
+/// <summary>How long a turned-away scan keeps its phone, and its table, from opening another tab.</summary>
+public static class ScanCooldown
+{
+    /// <summary>A phone that opened a turned-away tab opens or joins no tab at the branch for this long.</summary>
+    public static readonly TimeSpan Device = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// The table opens no tab by an unverified scan for this long after one there was turned away. Short: the
+    /// waiter has just looked and seen nobody, and somebody who sits down meanwhile asks that waiter.
+    /// </summary>
+    public static readonly TimeSpan Table = TimeSpan.FromMinutes(2);
+}

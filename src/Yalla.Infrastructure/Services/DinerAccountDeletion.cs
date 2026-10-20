@@ -187,8 +187,14 @@ internal static class DinerAccountDeletion
 
             // The booking is the venue's; the guest name and number on it are what the venue was
             // given for it and stay. Orders hang off tabs and participants and need nothing.
+            // The booking stays the venue's record; the number it was held under goes with the person - kept,
+            // it would hold the number against whoever re-registers it until the booking ended.
             ["reservations"] = await db.Reservations
                 .Where(r => r.DinerUserId == dinerUserId)
-                .ExecuteUpdateAsync(set => set.SetProperty(r => r.DinerUserId, (Guid?)null), cancellationToken),
+                .ExecuteUpdateAsync(
+                    set => set
+                        .SetProperty(r => r.DinerUserId, (Guid?)null)
+                        .SetProperty(r => r.BookerPhoneE164, (string?)null),
+                    cancellationToken),
         };
 }

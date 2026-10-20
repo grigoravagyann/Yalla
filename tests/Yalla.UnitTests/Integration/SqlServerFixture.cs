@@ -471,6 +471,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
             // The manage-link template. Its default is the local dev page, which is all a test
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.
             Options.Create(new PublicWebOptions()),
+
+            // The per-network budget is the HTTP layer's; a service-level test has no network.
+            new UnlimitedUnverifiedBookingBudget(),
             NullLogger<ReservationService>.Instance);
     }
 

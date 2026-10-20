@@ -209,18 +209,28 @@ Decided 2026-10-20. A QR code can be photographed and scanned from home; an anon
 flood the rail and order on a table nobody sits at. The waiter physically sees who is seated, so the gate is
 **at the tab, not per order** - no per-order approval beyond the existing send-to-kitchen.
 
+**A branch setting** (after review, 2026-10-20): `ReservationPolicy.UnverifiedScansNeedAdmission` - "unverified
+scans wait for a waiter", read and written with the rest of the policy (`unverifiedScansNeedAdmission`; a body
+that leaves it out keeps the current value). **On by default for every branch**, existing ones included (the
+migration's column default). Off, a scan with no proved number is admitted on the spot as `NotRequired` (5) and
+everything is as before admission existed. The setting is read when a tab opens; switching it later changes no
+open tab.
+
 | Tab opened by | `Tabs.Admission` | `AdmittedBecause` |
 | --- | --- | --- |
-| A scan with no diner token, or a token whose account number is not proved | **1 AwaitingAdmission** | - |
+| A scan with no diner token, or a token whose account number is not proved, setting on | **1 AwaitingAdmission** | - |
+| The same, setting off | 2 Admitted | 5 NotRequired |
 | A scan by an account with a proved number (`PhoneVerifiedAtUtc`, read from the row) | 2 Admitted | 2 VerifiedHost |
 | `open-by-booking` (the gate proved the number) | 2 Admitted | 4 Booker |
 | Staff `open-tab` | 2 Admitted | 3 OpenedByStaff (by that waiter) |
 | Tabs from before admission | 2 Admitted | - |
 
-Later admission: a waiter's tap (`POST /api/tabs/{tabId}/admit`, reason 1), **a waiter's own order** on
-the tab (`staff-orders`, reason 5 - the waiter keyed it standing at the table, and the tablet's offline
-queue replays orders, so refusing them would turn a queued round into a conflict), or the **booker joining
-their own booking's sitting** (reason 4).
+Later admission happens **only** by a waiter's Admit (`POST /api/tabs/{tabId}/admit`, reason 1) or the
+**booker joining their own booking's sitting** (reason 4). **A waiter's own order never admits a tab** (after
+review, S4): staff may always order, on any tab, waiting or not - the tablet's offline queue replays orders, so
+refusing them would turn a queued round into a conflict - but a phantom that scanned a photographed code first
+would host the party's tab, and a waiter keying the party's round must not hand it the bill and the joiners. The
+tab goes on waiting until Admit.
 
 **While waiting** the phones read the tab and the menu, the host approves joiners, invitations work, and a
 waiter can be called (service requests - the per-tab limit bounds a phantom). Phone orders are **409
@@ -234,23 +244,48 @@ a 403. A request for `TheBill` is the same 409. `canOrderNow` is false for every
 live invitation is revoked and its open calls acknowledged by the rejecting waiter. When **the scan seated the table** - the sitting
 is a walk-in with no waiter and no booking behind it - the table is freed by the state machine's own free
 transition, in the same transaction (audit row Occupied→Free, the reason given, the waiter as actor,
-`signal` 3); a table the scan took from `Held` goes to Free, not back to Held. Otherwise the party is really
-there: the sitting stays and lets go of the tab (`TableSession.TabId` cleared; `UX_Tabs_TableSessionId` is
-filtered `[Admission] <> 3`, so the sitting's one tab slot is free), and the party's own scan opens a new tab.
-Admitting a rejected tab, or rejecting an admitted one, is **409 `tab-admission-decided`**.
+`signal` 3); **a table the scan took from `Held` goes back to Held** (after review, S6: the hold is exactly the
+window a phantom could use to take a late booked party's table) - a second audit row Free→Held in the same
+transaction. Otherwise the party is really there: the sitting stays and lets go of the tab (`TableSession.TabId`
+cleared; `UX_Tabs_TableSessionId` is filtered `[Admission] <> 3`, so the sitting's one tab slot is free), and
+the party's own scan opens a new tab. A waiting tab **a waiter has keyed orders on** cannot be turned away
+(`409 conflicting-state`): somebody is there; move the host or remove the phone, then admit. Admitting a
+rejected tab, or rejecting an admitted one, is **409 `tab-admission-decided`**.
+
+**After a reject, a pause** (after review, S7). The phone that **opened** the turned-away tab (its host's device
+id) opens or joins no tab at the branch for **30 minutes** (`ScanCooldown.Device`), and the table opens no tab
+by a scan with no proved number for **2 minutes** (`ScanCooldown.Table`) - joining a live tab there is not
+affected. Both answer the scan **409 `scan-turned-away`** with `context.retryAfterUtc`. Only where the scan
+would wait for a waiter at all: a proved scanner, and a branch with the setting off, are never paused. A real
+party that had joined the phantom's tab is not paused with it. The device id is the phone's own choice, so that
+half is friction; the table's pause is what stops a script re-opening a phantom the moment it is closed. During
+it a waiter can open the tab for a party really there (staff `open-tab`). Both read the branch's turned-away
+tabs through the filtered index `IX_Tabs_BranchId_Rejected` (`BranchId, AdmissionDecidedAtUtc`,
+`[Admission] = 3`).
 
 **Who**: `WaiterOrAbove` + `BranchScoped` on the tab's branch, and the stored staff row's branch
 (`StaffBranchGuard`). Who and when are on the tab (`AdmissionDecidedByStaffId`, `AdmissionDecidedAtUtc`).
 **Idempotent**: naturally (admit an admitted tab, reject a rejected one: 200 as it is, no event) and on
 `clientCommandId` through `ProcessedCommands` (`tab.admit`, `tab.reject`): the same id on another tab or
-command is `409 client-command-id-in-use`. **Online only**, like opening a tab and closing it.
+command is `409 client-command-id-in-use`. **One decision at a time**: Admit and Reject on one card - or one
+tap twice - queue on a session-owned application lock per tab (`tab-admission:{tabId}`), so the second reads
+what the first decided: the other way is `409 tab-admission-decided`, the same way answers 200 as it is. A
+lost row-version race that still slips through answers the same. **Online only**, like opening a tab and
+closing it.
 
 **Live**: tab events 21 `TabAdmitted` `{ admittedBecause, byStaffId, atUtc }` and 22 `TabAdmissionRejected`
-`{ byStaffId, atUtc, tableFreed }`, whole for every reader (7.4). Branch change stream: a `signal` row
+`{ byStaffId, atUtc, tableFreed }` - `byStaffId` only to readers with the table total (the host, and a guest
+allowed it); a stranger or a pending joiner gets the rest (7.4). Branch change stream: a `signal` row
 (`TableStateChanges.Signal`, with `tabId`) - 1 when an awaiting tab opens (same commit as the tab), 2 on
 admission, 3 on rejection. The floor carries `openTabAwaitingAdmission`; the rail reads
 `GET /api/branches/{branchId}/tabs/awaiting-admission` (oldest first, `sittingSeatedByScan` says whether a
-reject frees the table). Rejected tabs are left out of the revenue reports. Pinned by `TabAdmissionTests`.
+reject frees the table). The revenue report and the overview count **only admitted tabs**: a rejected one, and a
+phantom the waiter cleared by freeing the table (closed, never admitted, nothing on it), was never a tab the
+venue served. Pinned by `TabAdmissionTests`.
+
+**Rollout.** A diner app build that does not know `tab-awaiting-admission` shows an unknown 409, and a tablet
+build without the rail has no Admit button. The setting defaults on, so the tablet and diner builds that handle
+admission go out before (or with) the backend; a venue on an old tablet can switch it off meanwhile.
 
 ## 3. Inviting others
 
@@ -611,11 +646,13 @@ them.
 | 18 | `TabClosing` | `atUtc` | | | |
 | 19 | `TabClosed` | `closedAtUtc`, `tableSessionClosed` | | `totalAmd` | |
 | 20 | `TabAbandoned` | `reason`, `byStaffId` | | `writtenOffAmd` | |
-| 21 | `TabAdmitted` | `admittedBecause`, `byStaffId`, `atUtc` | | | |
-| 22 | `TabAdmissionRejected` | `byStaffId`, `atUtc`, `tableFreed` | | | |
+| 21 | `TabAdmitted` | `admittedBecause`, `atUtc` | | `byStaffId` | |
+| 22 | `TabAdmissionRejected` | `atUtc`, `tableFreed` | | `byStaffId` | |
 
 Participant ids, staff ids and the event's `actorId` stay for everyone: they are opaque, the
-projection shows a pending reader `hostParticipantId` already, and the clients key on them.
+projection shows a pending reader `hostParticipantId` already, and the clients key on them. The one
+exception is which waiter let a table in or turned it away (21, 22): that is staff business, not a
+stranger's or a pending joiner's (after review, 2026-10-20).
 
 ### 7.5 What the clients do with it
 

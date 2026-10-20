@@ -46,11 +46,10 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
 
     // A waiter's order is placed and sent to the kitchen in one commit (2026-10-20), so each of the
     // waiter's three orders is followed by its OrderStatusChanged; the phones' two are not. The host scanned
-    // with no proved number, so the waiter's first order is also what lets the table in (TabAdmitted, before
-    // it) - an event every reader gets whole.
+    // with no proved number, so the tab is let in first - by the fixture, behind the stream's back: a staff
+    // order admits nobody (review S4), and TabAdmitted's own redaction is TabAdmissionTests'.
     private static readonly TabEventType[] TheEvening =
     [
-        TabEventType.TabAdmitted,
         TabEventType.OrderPlaced,
         TabEventType.OrderStatusChanged,
         TabEventType.ParticipantJoined,
@@ -332,6 +331,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
         using var anonymous = factory.CreateClient();
         var host = await OpenAsync(anonymous, qrToken, "phone-host", hideTotalFromGuests: true);
         var tabId = host.TabId;
+        await fixture.AdmitTabAsync(factory.Clock, tabId);
 
         using var hostClient = factory.CreateClientWithToken(host.AccessToken);
         using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));

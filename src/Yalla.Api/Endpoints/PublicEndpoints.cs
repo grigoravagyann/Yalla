@@ -282,7 +282,9 @@ public static class PublicEndpoints
                 + "(`422 reservation-unverified-party-too-large`, `context.maxPartySize` - offer to verify, "
                 + "which lifts it). When the branch approves such bookings first "
                 + "(`policy.unverifiedBookingsNeedApproval`, on by default) it lands `PendingApproval` with "
-                + "`awaitingApprovalBecause` **6** and no deadline: the venue confirms it. No reminder is "
+                + "`awaitingApprovalBecause` **6** and an answer deadline (`approvalExpiresAtUtc`: a day at most, "
+                + "two hours before the start if that is sooner) - unanswered, it is declined for no answer. At "
+                + "most 20 wait at one branch at once (`409 branch-unverified-queue-full`). No reminder is "
                 + "sent. Its manage link reads and cancels it but never changes it (cancel and book again).\n\n"
                 + "**One active booking per number - for everybody.** A number that already holds a pending "
                 + "or confirmed booking that is not over, at any venue, is `409 phone-has-active-booking` with "
@@ -292,7 +294,9 @@ public static class PublicEndpoints
                 + "the same `clientCommandId` from the same `deviceId` answers `200` with the booking and "
                 + "**no token** (only its hash exists). The same id from another browser is "
                 + "`409 client-command-id-in-use`.\n\n"
-                + "Rate limited per address (10 an hour by default) on top of the branch ceiling.")
+                + "Rate limited per network - the address, an IPv6 one by its /64, never a token - at 10 bookings "
+                + "without a verified number an hour, a budget shared with the app's door (`429 rate-limited`); "
+                + "on a branch ceiling of its own, apart from the page's.")
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
             .ProducesProblemDetails(
@@ -311,11 +315,7 @@ public static class PublicEndpoints
                 + " `reservation-unverified-party-too-large`: over `policy.unverifiedMaxPartySize`.")
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, ReservationEndpoints.LockTimeoutDescription)
-            .AddEndpointFilter<ClientCommandIdFilter>()
-
-            // Its own budget per address, in place of the group's page budget: an endpoint carries one
-            // policy. The branch ceiling and the global limit are chained in front of every request.
-            .RequireRateLimiting(RateLimitingExtensions.PublicUnverifiedBookingPolicy);
+            .AddEndpointFilter<ClientCommandIdFilter>();
 
         group.MapGet("/branches/{branchId:guid}/meta", GetMetaAsync)
             .WithName("getPublicBranchMeta")
@@ -535,9 +535,10 @@ public static class PublicEndpoints
             request.DeviceId,
             ct);
 
+        // The booking's own resource is its manage link, the token the body carries.
         return view.WasReplay
             ? Results.Ok(view)
-            : Results.Created($"/api/public/bookings", view);
+            : Results.Created($"/api/public/bookings/{Uri.EscapeDataString(view.ManageToken ?? string.Empty)}", view);
     }
 
     private static async Task<IResult> GetMetaAsync(

@@ -330,6 +330,18 @@ public static class ErrorCodes
     public const string TabAdmissionDecided = "tab-admission-decided";
 
     /// <summary>
+    /// The branch already has as many bookings without a verified number waiting for its answer as it takes.
+    /// HTTP 409, no context. Minted by <c>BranchUnverifiedQueueFullException</c>.
+    /// </summary>
+    public const string BranchUnverifiedQueueFull = "branch-unverified-queue-full";
+
+    /// <summary>
+    /// A scan refused for a while after a waiter turned a tab away - from a phone that was on it, or of the
+    /// table it was at. HTTP 409, <c>context.retryAfterUtc</c>. Minted by <c>ScanTurnedAwayException</c>.
+    /// </summary>
+    public const string ScanTurnedAway = "scan-turned-away";
+
+    /// <summary>
     /// An upload is not a JPEG, PNG or WebP, or is too large to store. HTTP 409, with
     /// <c>context.detectedFormat</c> when the bytes were an image of some other kind. Decided by
     /// sniffing the bytes - the declared type and the file name are both the caller's to lie about.
@@ -523,6 +535,8 @@ public static class ErrorCodes
         DeviceHasActiveBooking => "This browser already has a booking",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
+        BranchUnverifiedQueueFull => "Venue has too many unconfirmed bookings",
+        ScanTurnedAway => "Ask a waiter",
         UnsupportedImage => "Unsupported image",
         RelocationNotAllowed => "Relocation not allowed",
         FloorPlanChanged => "Floor plan changed",

@@ -81,14 +81,23 @@ public static class TabEndpoints
                 + "- **Out of service**: 409.\n\n"
                 + "Two phones scanning a free table at the same moment produce exactly one tab; the "
                 + "loser lands pending on it. A double scan with the same `clientCommandId` returns the "
-                + "same tab with `wasReplay` set.")
+                + "same tab with `wasReplay` set.\n\n"
+                + "**Admission.** A tab this scan opens with no proved phone number behind it (no diner token, or "
+                + "one whose number was never proved) **waits for a waiter** - `tab.admission.status` 1, nobody "
+                + "orders until a waiter admits it - where the branch's `unverifiedScansNeedAdmission` is on, "
+                + "the default. Off, it is admitted at once (`admittedBecause` 5). A proved scanner's tab is "
+                + "admitted at once (2).\n\n"
+                + "**After a waiter turned a scan away** the phone that opened it is refused at the branch for 30 "
+                + "minutes, and the table opens no tab by such a scan for 2 (joining a live tab there is not "
+                + "affected): `409 scan-turned-away`, `context.retryAfterUtc`. Say \"ask a waiter\".")
             .Produces<TabAccessResult>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Missing device id or clientCommandId.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No table in service carries that QR code.")
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
                 "The table is out of service, or the tab there is being settled and takes no new people. "
-                + "Also returned when this `clientCommandId` was used by a different device.")
+                + "Also returned when this `clientCommandId` was used by a different device. "
+                + "`scan-turned-away`: a waiter just turned a scan away (`context.retryAfterUtc`).")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         group.MapPost("/join", JoinAsync)
@@ -404,10 +413,13 @@ public static class TabEndpoints
                 + "waiter, but not order. A waiter who can see the party at the table taps Admit; from then on "
                 + "it is an ordinary tab (approved guests with `canOrder` order, a phone's order waits at New for "
                 + "a waiter). A tab whose host proved their number, one opened from a booking, and one staff "
-                + "opened are admitted on the spot; a waiter's own order on a waiting tab admits it too.\n\n"
-                + "Already admitted answers `200` as it is, writing nothing. Writes `TabAdmitted` (21) on the "
-                + "tab's stream and a signal entry (2) on the branch's change stream. Idempotent on "
-                + "`clientCommandId`. **Online only** - not one of the commands the tablet queues.")
+                + "opened are admitted on the spot - and every scan is, at a branch whose policy has "
+                + "`unverifiedScansNeedAdmission` off. **A waiter's own order never admits a tab**: staff may order "
+                + "on a waiting tab, and it goes on waiting until this tap.\n\n"
+                + "Already admitted answers `200` as it is, writing nothing. Two waiters tapping Admit and Reject "
+                + "on one card at once: one wins, the other gets `409 tab-admission-decided`. Writes "
+                + "`TabAdmitted` (21) on the tab's stream and a signal entry (2) on the branch's change stream. "
+                + "Idempotent on `clientCommandId`. **Online only** - not one of the commands the tablet queues.")
             .Produces<TabStaffView>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "Missing clientCommandId.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a waiter or above at this tab's branch.")
@@ -428,8 +440,15 @@ public static class TabEndpoints
                 + "**When the scan itself seated the table** (a walk-in sitting no waiter and no booking opened), "
                 + "the table is **freed** through the table state machine - an Occupied-to-Free audit row with "
                 + "the reason given - and `admission.tableFreed` is true. A table a waiter or a booking seated "
-                + "stays seated; only the tab goes, and the party really there can scan again for a new one.\n\n"
-                + "Already turned away answers `200` as it is. Writes `TabAdmissionRejected` (22) on the tab's "
+                + "stays seated; only the tab goes, and the party really there can scan again for a new one. A "
+                + "scan that took a table **held** for a late booked party gives it back to Held, not Free.\n\n"
+                + "**Afterwards, a pause:** the phone that opened the tab opens or joins no tab at the branch for "
+                + "30 minutes, and the table opens no tab by an unverified scan for 2 (`409 scan-turned-away` on "
+                + "the scan, with `context.retryAfterUtc`); a waiter can open the tab for a party really there "
+                + "meanwhile. A tab a waiter has keyed orders on cannot be turned away (`409 conflicting-state`): "
+                + "move the host or remove the phone, then admit.\n\n"
+                + "Already turned away answers `200` as it is; racing an Admit, the loser gets "
+                + "`409 tab-admission-decided`. Writes `TabAdmissionRejected` (22) on the tab's "
                 + "stream and a signal entry (3) on the branch's change stream. Idempotent on "
                 + "`clientCommandId`. **Online only.**")
             .Produces<TabStaffView>()

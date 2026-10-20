@@ -1,2 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!--
+      Phone numbers in one canonical E.164 form (2026-10-20): Google's libphonenumber port. Pure managed code,
+      Apache-2.0, no native assets and no I/O - the numbering plan ships inside the assembly. The one rule
+      a booking is keyed on (one active booking per number) is only as good as "+374 091..." and
+      "+374 91..." being one number, which a regex cannot know. Exact version, locked like every other.
+    -->
+    <PackageReference Include="libphonenumber-csharp" Version="9.0.40" />
+  </ItemGroup>
+
 </Project>

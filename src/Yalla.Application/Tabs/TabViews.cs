@@ -345,7 +345,8 @@ public sealed record TabStaffView(
 /// <param name="Status">1 AwaitingAdmission, 2 Admitted, 3 Rejected.</param>
 /// <param name="AdmittedBecause">
 /// 1 a waiter admitted it, 2 the host's number is proved, 3 staff opened it, 4 the booker opened or joined it,
-/// 5 a waiter's order admitted it. Absent while waiting, once rejected, and on tabs from before admission.
+/// 5 not required - the branch lets unverified scans order at once. Absent while waiting, once rejected, and
+/// on tabs from before admission.
 /// </param>
 /// <param name="DecidedAtUtc">When it was admitted or turned away; absent while waiting.</param>
 /// <param name="DecidedByStaffId">The waiter who did, when one did.</param>

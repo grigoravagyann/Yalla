@@ -97,6 +97,7 @@ internal sealed class ReservationService(
     ITableStateService tableState,
     IOutbox outbox,
     IOptions<PublicWebOptions> publicWeb,
+    IUnverifiedBookingBudget unverifiedBudget,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -167,8 +168,9 @@ internal sealed class ReservationService(
         }
 
         // The number is the key the one-active-booking rule holds, so it is held in one form: spaces,
-        // dashes and brackets cannot make a second number out of the first. 400 naming guestPhone.
-        var phone = Domain.Common.PhoneNumber.Normalise(command.GuestPhone, "guestPhone");
+        // dashes, brackets and a trunk zero cannot make a second number out of the first
+        // (PhoneNumber.Canonical). 400 naming guestPhone for something that is not a number at all.
+        var phone = Domain.Common.PhoneNumber.Canonical(Domain.Common.PhoneNumber.Normalise(command.GuestPhone, "guestPhone"));
 
         return await CreateCoreAsync(
             command with { Channel = ReservationChannel.Web, GuestPhone = phone },
@@ -177,7 +179,10 @@ internal sealed class ReservationService(
             cancellationToken);
     }
 
-    /// <summary>The number an account books under: its own, in E.164 - or as stored when that is not parseable.</summary>
+    /// <summary>
+    /// The number an account books under: its own, in the canonical form - or as stored when that is not
+    /// parseable.
+    /// </summary>
     private static string? BookerPhone(string? stored)
     {
         if (string.IsNullOrWhiteSpace(stored))
@@ -187,7 +192,7 @@ internal sealed class ReservationService(
 
         try
         {
-            return Domain.Common.PhoneNumber.Normalise(stored, "phoneE164");
+            return Domain.Common.PhoneNumber.Canonical(Domain.Common.PhoneNumber.Normalise(stored, "phoneE164"));
         }
         catch (ArgumentException)
         {
@@ -201,7 +206,7 @@ internal sealed class ReservationService(
     /// </summary>
     private sealed record BookerContext(Guid? DinerUserId, string? PhoneE164, string? DeviceHash, bool PhoneProved)
     {
-        public BookerKey Key => new(DinerUserId, PhoneE164, DeviceHash);
+        public BookerKey Key => new(DinerUserId, PhoneE164, DeviceHash, PhoneProved);
     }
 
     /// <summary>A booking, for an account or a web visitor - see <see cref="CreateAsync"/>.</summary>
@@ -224,6 +229,13 @@ internal sealed class ReservationService(
 
             return await ToViewAsync(
                 replay, replayBranch, table: null, wasReplay: true, trigger: null, cancellationToken);
+        }
+
+        // A booking without proof spends from its network's budget - the same one whichever door it came
+        // through - and a retry above never does.
+        if (!booker.PhoneProved && !unverifiedBudget.TrySpend())
+        {
+            throw new UnverifiedBookingRateLimitedException();
         }
 
         var branch = await LoadBranchAsync(command.BranchId, cancellationToken);
@@ -268,7 +280,8 @@ internal sealed class ReservationService(
             approvedPartySize: null,
             policy,
             booker.DinerUserId,
-            booker.PhoneProved ? null : booker.PhoneE164,
+            booker.PhoneProved,
+            booker.PhoneE164,
             startUtc,
             shortNotice,
             nowUtc,
@@ -722,7 +735,8 @@ internal sealed class ReservationService(
                 approvedPartySize,
                 policy,
                 dinerUserId,
-                unverifiedPhone: null,
+                phoneProved: true,
+                bookerPhone: null,
                 startUtc,
                 ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc)),
                 nowUtc,
@@ -1307,6 +1321,23 @@ internal sealed class ReservationService(
 
         if (reservation.DinerUserId != dinerUserId)
         {
+            // The number's owner may cancel a booking a stranger made with their number and no proof: they
+            // proved the number, which is the better claim to it, and the hold would otherwise be the
+            // stranger's to keep. Recorded with a reason the venue reads.
+            if (reservation.PhoneUnverified
+                && reservation.BookerPhoneE164 is { } held
+                && await ProvedNumberOfAsync(dinerUserId, cancellationToken) == held)
+            {
+                logger.LogInformation(
+                    "Booking {Code}, made with diner {DinerUserId}'s number and no proof, was cancelled by that number's owner.",
+                    reservation.Code, dinerUserId);
+
+                return await CancelCoreAsync(
+                    reservation,
+                    command.Reason ?? "Cancelled by the owner of the phone number, who did not make it.",
+                    cancellationToken);
+            }
+
             // Deliberately the same answer as a booking that does not exist would give a stranger
             // guessing ids, except that the caller is told plainly they do not own this one.
             throw new UnauthorizedAccessException("A diner may only cancel their own bookings.");
@@ -1511,12 +1542,24 @@ internal sealed class ReservationService(
         var dinerUserId = RequireDiner("Read my bookings");
         var nowUtc = clock.UtcNow;
 
+        // A proved number's owner also sees the bookings strangers made with that number and no proof - so a
+        // number typed in by somebody else is not a mystery hold on the owner's own bookings, and they can
+        // cancel it (decided 2026-10-20, after review).
+        var myNumber = await ProvedNumberOfAsync(dinerUserId, cancellationToken);
+
         var rows = await db.Reservations
             .AsNoTracking()
-            .Where(r => r.DinerUserId == dinerUserId)
+            .Where(r => r.DinerUserId == dinerUserId
+                        || (myNumber != null
+                            && r.PhoneUnverified
+                            && r.BookerPhoneE164 == myNumber
+                            && r.DinerUserId != dinerUserId))
             .Select(r => new MineRow
             {
                 Reservation = r,
+                MadeWithYourNumber = r.DinerUserId != dinerUserId,
+                PhoneUnverifiedNow = r.PhoneUnverified
+                                     && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 TableLabel = r.DiningTable.Label,
@@ -1565,6 +1608,21 @@ internal sealed class ReservationService(
         return new MyReservations(upcoming, past);
     }
 
+    /// <summary>
+    /// The account's number in the canonical form when the account has proved it, else null - whose
+    /// unverified bookings by others the account may see and cancel.
+    /// </summary>
+    private async Task<string?> ProvedNumberOfAsync(Guid dinerUserId, CancellationToken cancellationToken)
+    {
+        var me = await db.DinerUsers
+            .AsNoTracking()
+            .Where(d => d.Id == dinerUserId && d.IsActive && d.DeletedAtUtc == null)
+            .Select(d => new { d.PhoneE164, Proved = d.PhoneVerifiedAtUtc != null })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return me is { Proved: true } ? BookerPhone(me.PhoneE164) : null;
+    }
+
     public async Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
         Guid branchId,
         ReservationStatus status,
@@ -1592,6 +1650,8 @@ internal sealed class ReservationService(
             .Select(r => new MineRow
             {
                 Reservation = r,
+                PhoneUnverifiedNow = r.PhoneUnverified
+                                     && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 TableLabel = r.DiningTable.Label,
@@ -1616,7 +1676,8 @@ internal sealed class ReservationService(
                 policy.CancellationDeadlineMinutes,
                 wasReplay: false,
                 trigger: PendingTriggerFor(r.Reservation, policy),
-                awaitsEarlierGuestAnswer: r.AwaitsEarlierGuestAnswer))
+                awaitsEarlierGuestAnswer: r.AwaitsEarlierGuestAnswer,
+                phoneUnverifiedNow: r.PhoneUnverifiedNow))
             .ToList();
     }
 
@@ -1654,6 +1715,8 @@ internal sealed class ReservationService(
             .Select(r => new AwaitingRow
             {
                 Reservation = r,
+                PhoneUnverifiedNow = r.PhoneUnverified
+                                     && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 Policy = r.Branch.ReservationPolicy,
@@ -1734,7 +1797,8 @@ internal sealed class ReservationService(
 
                     // False for every card: the list leaves out the bookings waiting on the guest
                     // before them in the app - those are not the floor's to answer.
-                    awaitsEarlierGuestAnswer: false);
+                    awaitsEarlierGuestAnswer: false,
+                    phoneUnverifiedNow: row.PhoneUnverifiedNow);
 
                 return new AwaitingApproval
                 {
@@ -1983,10 +2047,12 @@ internal sealed class ReservationService(
     /// </param>
     /// <param name="policy">The branch's policy.</param>
     /// <param name="dinerUserId">Whose booking, for the no-show count; null for a web visitor with no account.</param>
-    /// <param name="unverifiedPhone">
-    /// The booker's number when nobody proved it - the booking is then judged as unverified, and its no-show
-    /// history is the number's - or null for a booker whose number is proved.
+    /// <param name="phoneProved">
+    /// Whether the booker's number is proved. Unproved, the booking is judged as unverified - approval first
+    /// when the branch says so, with <see cref="UnverifiedBookingRules.AnswerDeadline"/> - and its no-show
+    /// history is the number's.
     /// </param>
+    /// <param name="bookerPhone">The number the booking is held under, for an unproved booker's history.</param>
     /// <param name="startUtc">When the booking starts, which caps the answer window.</param>
     /// <param name="shortNotice">Whether the booking is at short notice - see <see cref="ShortNoticeRule.Applies"/>.</param>
     /// <param name="nowUtc">Now, for the no-show window and the answer window.</param>
@@ -1996,7 +2062,8 @@ internal sealed class ReservationService(
         int? approvedPartySize,
         ReservationPolicy policy,
         Guid? dinerUserId,
-        string? unverifiedPhone,
+        bool phoneProved,
+        string? bookerPhone,
         DateTime startUtc,
         bool shortNotice,
         DateTime nowUtc,
@@ -2018,11 +2085,15 @@ internal sealed class ReservationService(
                 ReservationStatus.PendingApproval, ApprovalTrigger.BranchApprovesEveryBooking, null);
         }
 
-        // Nobody proved the number, and the branch looks at such bookings first (the default). No deadline:
-        // the venue decides, as for a large party, from the floor's list or the console's queue.
-        if (unverifiedPhone is not null && policy.UnverifiedBookingsNeedApproval)
+        // Nobody proved the number, and the branch looks at such bookings first (the default). With a deadline
+        // - a day, or two hours before the start - after which the sweep declines it for nobody answering, so a
+        // venue that never looks is not holding tables for strangers until the evening.
+        if (!phoneProved && policy.UnverifiedBookingsNeedApproval)
         {
-            return new StatusDecision(ReservationStatus.PendingApproval, ApprovalTrigger.UnverifiedPhone, null);
+            return new StatusDecision(
+                ReservationStatus.PendingApproval,
+                ApprovalTrigger.UnverifiedPhone,
+                UnverifiedBookingRules.AnswerDeadline(nowUtc, startUtc));
         }
 
         var alreadyConfirmedThisMany = approvedPartySize is { } approved && partySize <= approved;
@@ -2047,8 +2118,8 @@ internal sealed class ReservationService(
             .AsNoTracking()
             .Where(r => r.Status == ReservationStatus.NoShow && r.StartUtc >= windowStartUtc);
 
-        var noShows = unverifiedPhone is not null
-            ? await missed.CountAsync(r => r.BookerPhoneE164 == unverifiedPhone, cancellationToken)
+        var noShows = !phoneProved && bookerPhone is not null
+            ? await missed.CountAsync(r => r.BookerPhoneE164 == bookerPhone, cancellationToken)
             : await missed.CountAsync(r => r.DinerUserId == dinerUserId, cancellationToken);
 
         if (!noShowPolicy.RequiresApproval(noShows))
@@ -2912,6 +2983,12 @@ internal sealed class ReservationService(
                                                     && q.AsksEarlierGuest,
                                                cancellationToken);
 
+        // Made without proof by an account that has proved its number since: no longer "not verified".
+        var phoneUnverifiedNow = reservation.PhoneUnverified
+                                 && !(reservation.DinerUserId is { } account
+                                      && await db.DinerUsers.AnyAsync(
+                                          d => d.Id == account && d.PhoneVerifiedAtUtc != null, cancellationToken));
+
         return BuildView(
             reservation,
             branch.Name,
@@ -2922,7 +2999,8 @@ internal sealed class ReservationService(
             trigger,
             manageToken,
             incoming,
-            awaitsEarlierGuestAnswer);
+            awaitsEarlierGuestAnswer,
+            phoneUnverifiedNow);
     }
 
     private static ReservationView ToView(MineRow row) =>
@@ -2935,7 +3013,11 @@ internal sealed class ReservationService(
             wasReplay: false,
             trigger: null,
             incoming: row.Incoming,
-            awaitsEarlierGuestAnswer: row.AwaitsEarlierGuestAnswer);
+            awaitsEarlierGuestAnswer: row.AwaitsEarlierGuestAnswer,
+            phoneUnverifiedNow: row.PhoneUnverifiedNow) with
+        {
+            MadeWithYourNumber = row.MadeWithYourNumber,
+        };
 
     private static ReservationView BuildView(
         Reservation reservation,
@@ -2947,7 +3029,8 @@ internal sealed class ReservationService(
         ApprovalTrigger? trigger,
         string? manageToken = null,
         IncomingRow? incoming = null,
-        bool awaitsEarlierGuestAnswer = false)
+        bool awaitsEarlierGuestAnswer = false,
+        bool? phoneUnverifiedNow = null)
     {
         var zone = BranchZone.For(timeZoneId);
 
@@ -2975,7 +3058,9 @@ internal sealed class ReservationService(
             Status = reservation.Status,
             GuestName = reservation.GuestName,
             GuestPhone = reservation.GuestPhone,
-            PhoneUnverified = reservation.PhoneUnverified,
+            // Made without proof, and - for an account's booking - not proved since: staff see "not verified"
+            // only while it is true (the stored column records how it was made, and stays).
+            PhoneUnverified = phoneUnverifiedNow ?? reservation.PhoneUnverified,
 
             // What the diner asked for, on every view of the booking - the approval queue included,
             // which is where the venue reads it (K9).
@@ -3105,6 +3190,15 @@ internal sealed class ReservationService(
 
         /// <summary>Whether this booking waits on the guest before it to answer in the app.</summary>
         public bool AwaitsEarlierGuestAnswer { get; init; }
+
+        /// <summary>Made by somebody else, with the reader's number and no proof.</summary>
+        public bool MadeWithYourNumber { get; init; }
+
+        /// <summary>
+        /// Made without a proved number by a booker who has not proved it since. Null where the read did not
+        /// work it out, and the stored flag stands.
+        /// </summary>
+        public bool? PhoneUnverifiedNow { get; init; }
     }
 
     /// <summary>A later guest's open request for a booking's table, as the read finds it.</summary>
@@ -3146,5 +3240,8 @@ internal sealed class ReservationService(
         public AwaitingCurrentSitting? Sitting { get; init; }
 
         public DateTime? EarlierGuestFreeByUtc { get; init; }
+
+        /// <summary>Made without proof, and not proved since by the booking's account.</summary>
+        public bool PhoneUnverifiedNow { get; init; }
     }
 }

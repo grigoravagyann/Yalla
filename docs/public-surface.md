@@ -391,10 +391,19 @@ changes it (`canChange: false`). The rules are in [reservations.md](reservations
 
 **`manageToken` comes back once**, in the 201. A retry from the same browser answers 200 without it.
 
-Rate limited per address: `PublicUnverifiedBookingPermitLimit` (10) per `PublicUnverifiedBookingWindowSeconds`
-(3600), replacing the page budget on this route; the branch ceiling and the global limit still apply. Not
-one per address: a carrier puts thousands of phones behind one. The real limits are the number, the browser
-and the venue's approval.
+Rate limited per **network**, not per token (after review, 2026-10-20): `PublicUnverifiedBookingPermitLimit`
+(10) per `PublicUnverifiedBookingWindowSeconds` (3600) bookings without a verified number, keyed on the
+caller's address - an IPv6 address by its /64, the block one subscriber is handed - and **never** on a bearer
+token, so a tab participant's token from any photographed QR code buys no fresh budget. The budget is **shared
+with the app's door** (`POST /api/reservations` from an account that never proved its number) and spent in the
+booking service, which is the only place that knows the app's caller has no proof (`IUnverifiedBookingBudget`;
+a retry spends nothing). Over it: `429 rate-limited`. The route's requests count against a **branch ceiling of
+their own** (`branch-bookings:{branchId}`, the same size as the page's), so a burst of bookings cannot 429 the
+branch's page for everybody reading it; the page budget per address and the global limit still apply. Not one
+per address: a carrier puts thousands of phones behind one. The real limits are the number, the browser, the
+branch's twenty waiting and the venue's approval.
+
+A new booking answers `201` with `Location: /api/public/bookings/{manageToken}`, its manage link.
 
 The phone-proof channels read (`/api/auth/diner/phone-proof`, #52) carries no "unverified allowed" hint on
 purpose: whether a venue takes bookings without proof is per branch, and the page has it on the branch's
@@ -554,11 +563,12 @@ Chained, so a request passes every one that applies to it:
 | --- | --- | --- |
 | Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
 | Public | Client address — these routes are anonymous | 30 / min |
-| Public branch ceiling | One branch, whoever is asking | 300 / min |
+| Public branch ceiling | One branch, whoever is asking - its page and its bookings (`POST …/bookings`) each have their own | 300 / min |
 | Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
 | Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
 | Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/rooms` - replaces the page budget there; the branch ceiling still applies | 120 / min |
 | Public booking | Manage token (digest) - the read, the cancel and the change share it | 20 / min |
+| Bookings without a verified number | The network: the address, an IPv6 one by its /64, never a token - shared by the web's door and the app's, counted in the booking service | 10 / hour |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
 of phones behind one address, so the page budget was spent before dinner. The page budget exists to

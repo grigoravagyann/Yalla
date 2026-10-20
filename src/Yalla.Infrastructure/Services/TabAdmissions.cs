@@ -6,7 +6,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// Admitting a tab, written once for every way it happens: a waiter's tap, a waiter's order, the booker
+/// Admitting a tab, written once for every way it happens after it was opened: a waiter's tap, the booker
 /// arriving. The tab, its stream's <c>TabAdmitted</c> and the branch stream's signal, staged together.
 /// </summary>
 /// <remarks>

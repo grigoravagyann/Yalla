@@ -250,10 +250,11 @@ public sealed class DinerJourneyEndToEndTests(SqlServerFixture fixture) : IDispo
                 });
 
         // A number nobody has proved books unverified (2026-10-20) - flagged, waiting for the venue - and
-        // one number holds one active booking, so the diner gives that one back before booking proved.
+        // the same slot again is the diner's own overlap (that rule answers before the one-booking-per-number
+        // one, which would refuse it too), so the diner gives that one back before booking proved.
         var unproved = await JsonAsync(await ExpectAsync(HttpStatusCode.Created, BookAsync()));
         Assert.True(unproved.GetProperty("phoneUnverified").GetBoolean());
-        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Conflict, "phone-has-active-booking");
+        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Conflict, "reservation-overlaps-own");
         await ExpectAsync(
             HttpStatusCode.OK,
             diner.PostAsJsonAsync($"/api/reservations/{unproved.GetProperty("id").GetGuid()}/cancel", new { }));

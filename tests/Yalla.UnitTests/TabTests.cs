@@ -62,7 +62,7 @@ public class TabTests
         Assert.False(tab.IsAdmitted);
 
         Assert.True(tab.Admit(OpenedAt.AddMinutes(2), TabAdmissionReason.Waiter, waiter));
-        Assert.False(tab.Admit(OpenedAt.AddMinutes(3), TabAdmissionReason.WaiterOrder, Guid.CreateVersion7()));
+        Assert.False(tab.Admit(OpenedAt.AddMinutes(3), TabAdmissionReason.Booker, null));
 
         Assert.Equal(TabAdmission.Admitted, tab.Admission);
         Assert.Equal(TabAdmissionReason.Waiter, tab.AdmittedBecause);

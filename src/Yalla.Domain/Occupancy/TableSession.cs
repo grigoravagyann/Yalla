@@ -142,7 +142,6 @@ public sealed class TableSession : Entity
         TabId = Guard.NotEmpty(tabId, nameof(tabId));
     }
 
-    /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>
     /// <summary>
     /// Lets go of a tab a waiter turned away, so the party really sitting here can open their own.
     /// </summary>
@@ -159,6 +158,7 @@ public sealed class TableSession : Entity
         }
     }
 
+    /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>
     public void Close(DateTime closedAtUtc)
     {
         Guard.NotLocalTime(closedAtUtc, nameof(closedAtUtc));

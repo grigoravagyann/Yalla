@@ -1541,6 +1541,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Tabs_TableSessionId")
                         .HasFilter("[Admission] <> 3");
 
+                    b.HasIndex("BranchId", "AdmissionDecidedAtUtc")
+                        .HasDatabaseName("IX_Tabs_BranchId_Rejected")
+                        .HasFilter("[Admission] = 3");
+
                     b.HasIndex("BranchId", "ClosedAtUtc")
                         .HasDatabaseName("IX_Tabs_BranchId_ClosedAtUtc")
                         .HasFilter("[ClosedAtUtc] IS NOT NULL");
@@ -2946,6 +2950,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                                 .ValueGeneratedOnAdd()
                                 .HasColumnType("int")
                                 .HasDefaultValue(6);
+
+                            b1.Property<bool>("UnverifiedScansNeedAdmission")
+                                .HasColumnType("bit");
 
                             b1.Property<int>("WalkInHoldbackMinutes")
                                 .ValueGeneratedOnAdd()

@@ -185,6 +185,8 @@ public static class OrderingEndpoints
                 + "the waiter who took it at the table is the check a phone's order waits at `New` "
                 + "for, so there is no second send. The tab's stream carries `OrderPlaced` and then "
                 + "`OrderStatusChanged` (New -> InKitchen) in the same commit.\n\n"
+                + "**On a tab waiting for admission too** - staff may always order - and it **never admits the "
+                + "tab**: the phones on it still wait for a waiter's Admit (`POST /api/tabs/{tabId}/admit`).\n\n"
                 + "`onBehalfOfParticipantId` is what keeps \"everyone pays their own\" working. "
                 + "Without it the line is **attributed to the table** and splits across everyone "
                 + "present - a real answer rather than a wrong one, and one whose cost the venue can "

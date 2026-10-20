@@ -134,6 +134,10 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             // migration gives existing rows true; every write states the value.
             policy.Property(p => p.UnverifiedBookingsNeedApproval)
                 .IsRequired();
+
+            // The same, for the same reason: the migration gives every branch true.
+            policy.Property(p => p.UnverifiedScansNeedAdmission)
+                .IsRequired();
             policy.Property(p => p.UnverifiedMaxPartySize)
                 .IsRequired()
                 .HasDefaultValue(Domain.Venues.ReservationPolicy.DefaultUnverifiedMaxPartySize);

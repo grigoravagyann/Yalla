@@ -132,11 +132,6 @@ internal sealed class ReservationWriter(
             var (verdict, sitting) = await TableEvening.JudgeAsync(
                 db, table.Id, startUtc, policy, excludingReservationId: Guid.Empty, cancellationToken);
 
-            // One active booking per phone number, anywhere, for everybody - and one per browser booking
-            // without a proved number. After the replay, so a retry is never refused by its own booking;
-            // before the table's refusals, because the answer does not depend on the table.
-            await RefuseSecondActiveBookingAsync(booker, table, cancellationToken);
-
             // One table at a time for one diner at a branch, over the sitting this booking would have -
             // cut to the time to leave by when the next booking needs one. Before the table's own
             // refusals, so the diner's own booking on this table is named as theirs. Under the account's
@@ -156,6 +151,13 @@ internal sealed class ReservationWriter(
                 // Nothing was written. Leave the lock and build the answer outside it.
                 return refused.Clash is { } clash ? InsertOutcome.Conflicted(clash) : InsertOutcome.OccupiedBy(refused.Sitting!);
             }
+
+            // One active booking per phone number, anywhere - and, without a proved number, one per browser and
+            // no more than the branch's waiting room holds. After the replay, so a retry is never refused by its
+            // own booking; AFTER the table's own refusals, so a request naming a taken table answers "taken"
+            // whatever number it carries: asking whether a number holds a booking somewhere has to cost a real
+            // booking the venue sees, not a refused request.
+            await RefuseSecondActiveBookingAsync(booker, table, cancellationToken);
 
             if (verdict.MustFreeByUtc is { } required && !SameMinute(acceptsFreeByUtc, required))
             {
@@ -580,12 +582,19 @@ internal sealed class ReservationWriter(
 
     /// <summary>
     /// Refuses a new booking for a phone number that already holds an active one, or from a browser that
-    /// already holds one made without a proved number.
+    /// already holds one made without a proved number, or one without a proved number at a branch whose
+    /// waiting room is full.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>Active</b> is pending or confirmed and not over yet (<c>EndUtc</c> after now). Seated, finished,
     /// cancelled, declined and missed bookings hold nothing.
+    /// </para>
+    /// <para>
+    /// <b>Which holds count depends on proof</b> (decided 2026-10-20, after review). A booker whose number is
+    /// proved is held back only by a proved hold, or by their own account's: a stranger typing their number on
+    /// the public page must never stop the number's owner from booking - the owner sees such bookings among
+    /// their own and can cancel them. A booking without proof is held back by any active hold on the number.
     /// </para>
     /// <para>
     /// <b>Why an application lock and not a unique index.</b> "Not over yet" is about the clock, which a
@@ -604,11 +613,20 @@ internal sealed class ReservationWriter(
         {
             await TakeApplicationLockAsync("booking-phone:" + phone, table, cancellationToken);
 
-            var held = await db.Reservations
+            var holds = db.Reservations
                 .AsNoTracking()
                 .Where(r => r.BookerPhoneE164 == phone
                             && (r.Status == ReservationStatus.PendingApproval || r.Status == ReservationStatus.Confirmed)
-                            && r.EndUtc > nowUtc)
+                            && r.EndUtc > nowUtc);
+
+            if (booker.PhoneProved)
+            {
+                var caller = booker.DinerUserId;
+
+                holds = holds.Where(r => !r.PhoneUnverified || (caller != null && r.DinerUserId == caller));
+            }
+
+            var held = await holds
                 .OrderBy(r => r.StartUtc)
                 .Select(r => new
                 {
@@ -623,6 +641,28 @@ internal sealed class ReservationWriter(
                 // Named only to the account that holds it.
                 throw new PhoneHasActiveBookingException(
                     booker.DinerUserId is { } caller && held.DinerUserId == caller ? held.Facts : null);
+            }
+        }
+
+        if (!booker.PhoneProved)
+        {
+            // The branch's waiting room. Taken under a lock of its own so two bookings at two tables of one
+            // branch cannot both see nineteen.
+            await TakeApplicationLockAsync("booking-unverified-branch:" + table.BranchId.ToString("N"), table, cancellationToken);
+
+            var waiting = await db.Reservations
+                .AsNoTracking()
+                .CountAsync(
+                    r => r.BranchId == table.BranchId
+                         && r.PhoneUnverified
+                         && r.Status == ReservationStatus.PendingApproval
+                         && r.StartUtc > nowUtc
+                         && (r.ApprovalExpiresAtUtc == null || r.ApprovalExpiresAtUtc > nowUtc),
+                    cancellationToken);
+
+            if (waiting >= UnverifiedBookingRules.OutstandingPendingPerBranch)
+            {
+                throw new BranchUnverifiedQueueFullException();
             }
         }
 
@@ -784,7 +824,11 @@ internal sealed class ReservationWriter(
 /// <param name="DinerUserId">The account, or null for a web visitor booking without one.</param>
 /// <param name="PhoneE164">The number the rule keys on (E.164), or null for a booking the rule exempts.</param>
 /// <param name="DeviceHash">The browser's device hash, for a booking with no account; null otherwise.</param>
-internal sealed record BookerKey(Guid? DinerUserId, string? PhoneE164, string? DeviceHash);
+/// <param name="PhoneProved">
+/// Whether the booker's number is proved: which holds on the number count against them, and whether the
+/// unverified limits apply at all.
+/// </param>
+internal sealed record BookerKey(Guid? DinerUserId, string? PhoneE164, string? DeviceHash, bool PhoneProved);
 
 /// <summary>A booking that refuses another one a table at a time, and which rule did.</summary>
 /// <param name="ReservationId">The booking in the way.</param>

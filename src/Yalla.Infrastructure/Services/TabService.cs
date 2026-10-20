@@ -110,6 +110,14 @@ internal sealed class TabService(
                     .FirstOrDefaultAsync(t => t.QrToken == qrToken && t.IsActive, token)
                     ?? throw new KeyNotFoundException("That QR code does not belong to a table in service.");
 
+                // A phone that was on a tab a waiter just turned away, or a table whose phantom was just turned
+                // away, opens nothing for a while - otherwise the same photographed code opens the next phantom
+                // at once. Only where the scan would wait for a waiter at all: a proved scanner is traceable.
+                if (admitAs is null && table.Branch.ReservationPolicy.UnverifiedScansNeedAdmission)
+                {
+                    await RefuseTurnedAwayScanAsync(table, device, token);
+                }
+
                 // Nobody knows who scanned, so a free table is seated as a walk-in.
                 return new TableToOpen(
                     table,
@@ -431,7 +439,11 @@ internal sealed class TabService(
                 session.Id,
                 nowUtc,
                 table.Branch.ReservationPolicy.ServiceChargePercent,
-                opening.AdmitAs,
+                // Who opened it decides first; a scan with no proved number waits for a waiter only where the
+                // branch has admission on (the default) - off, it orders at once, as every scan did before.
+                opening.AdmitAs ?? (table.Branch.ReservationPolicy.UnverifiedScansNeedAdmission
+                    ? null
+                    : TabAdmissionReason.NotRequired),
                 opening.SettlementMode ?? SettlementMode.AnyonePaysAnyAmount,
                 opening.HideTotalFromGuests ?? false,
                 opening.ClientCommandId);
@@ -1307,6 +1319,24 @@ internal sealed class TabService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        try
+        {
+            return await UnderTabAdmissionLockAsync(command.TabId, () => AdmitCoreAsync(command, cancellationToken), cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            if (await AfterLostAdmissionRaceAsync(command.TabId, TabAdmission.Admitted, cancellationToken) is { } answer)
+            {
+                return answer;
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<TabStaffView> AdmitCoreAsync(AdmitTabCommand command, CancellationToken cancellationToken)
+    {
+
         var staffId = RequireStaffId("Let a table order");
         RequireOpening(command.ClientCommandId, partySize: null);
 
@@ -1341,6 +1371,122 @@ internal sealed class TabService(
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        try
+        {
+            var view = await UnderTabAdmissionLockAsync(
+                command.TabId, () => RejectAdmissionCoreAsync(command, cancellationToken), cancellationToken);
+
+            // Everybody on it may still read the receipt-grace view, and nobody may change anything.
+            authority.InvalidateTab(command.TabId);
+
+            return view;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            if (await AfterLostAdmissionRaceAsync(command.TabId, TabAdmission.Rejected, cancellationToken) is { } answer)
+            {
+                return answer;
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Runs one admission decision with the tab's admission lock held: Admit and Reject on one card, or one
+    /// tap twice, queue here, and the second reads what the first decided (409 <c>tab-admission-decided</c>,
+    /// or the same answer) instead of both writing - which collided on the tab's event numbering inside the
+    /// reject's transaction and answered 500 (review).
+    /// </summary>
+    /// <remarks>
+    /// Owned by the session, not a transaction, so each save inside keeps its own all-or-nothing
+    /// transaction (and the ledger's renumbering retry stays safe against a phone writing to the same
+    /// stream). The connection is held open for the duration and the lock released explicitly.
+    /// </remarks>
+    private async Task<T> UnderTabAdmissionLockAsync<T>(Guid tabId, Func<Task<T>> decide, CancellationToken cancellationToken)
+    {
+        const int timeoutMs = 10_000;
+        var resource = "tab-admission:" + tabId.ToString("N");
+
+        await db.Database.OpenConnectionAsync(cancellationToken);
+
+        try
+        {
+            var granted = await db.Database
+                .SqlQuery<int>(
+                    $"""
+                     DECLARE @result int;
+                     EXEC @result = sp_getapplock @Resource = {resource}, @LockMode = 'Exclusive',
+                          @LockOwner = 'Session', @LockTimeout = {timeoutMs};
+                     SELECT @result AS [Value];
+                     """)
+                .ToListAsync(cancellationToken);
+
+            // 0 granted, 1 granted after waiting; negative is a timeout, a deadlock victim or a refusal.
+            if (granted is not [>= 0])
+            {
+                var table = await db.Tabs
+                    .AsNoTracking()
+                    .Where(t => t.Id == tabId)
+                    .Select(t => new { t.DiningTableId, t.DiningTable.Label })
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                throw new TableLockTimeoutException(table?.DiningTableId ?? Guid.Empty, table?.Label ?? string.Empty, timeoutMs);
+            }
+
+            try
+            {
+                return await decide();
+            }
+            finally
+            {
+                await db.Database.ExecuteSqlAsync(
+                    $"EXEC sp_releaseapplock @Resource = {resource}, @LockOwner = 'Session';",
+                    CancellationToken.None);
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>
+    /// Another waiter's tap on the same waiting tab saved first, and this one lost on the tab's row version.
+    /// Answers as the tab now stands: decided the other way is <c>tab-admission-decided</c> (409), as it would
+    /// have been a moment later; decided the same way is answered as done, as a second tap on a decided card
+    /// is. Null when the tab still waits - something else changed the row - and the conflict stands.
+    /// </summary>
+    private async Task<TabStaffView?> AfterLostAdmissionRaceAsync(
+        Guid tabId,
+        TabAdmission wanted,
+        CancellationToken cancellationToken)
+    {
+        db.ChangeTracker.Clear();
+        ledger.DiscardPending();
+
+        var now = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.Id == tabId)
+            .Select(t => t.Admission)
+            .FirstAsync(cancellationToken);
+
+        if (now == TabAdmission.AwaitingAdmission)
+        {
+            return null;
+        }
+
+        if (now != wanted)
+        {
+            throw new TabAdmissionDecidedException(tabId, now);
+        }
+
+        return await StaffViewAsync(tabId, cancellationToken);
+    }
+
+    private async Task<TabStaffView> RejectAdmissionCoreAsync(RejectTabCommand command, CancellationToken cancellationToken)
+    {
+
         var staffId = RequireStaffId("Turn a table away");
         RequireOpening(command.ClientCommandId, partySize: null);
 
@@ -1360,6 +1506,15 @@ internal sealed class TabService(
         }
 
         var nowUtc = clock.UtcNow;
+
+        // A waiter keyed orders on it: somebody is there. Turning it away would close a tab with the
+        // kitchen's work on it; the waiter moves the host or removes the phone instead, then admits.
+        if (tab.Admission == TabAdmission.AwaitingAdmission
+            && await db.TabOrders.AnyAsync(o => o.TabId == tab.Id, cancellationToken))
+        {
+            throw new DomainStateException(
+                "A waiter has ordered on this tab, so it cannot be turned away. Move the host or remove the phone, then let it order.");
+        }
 
         // Throws TabAdmissionDecidedException for a tab already admitted. One already turned away is
         // answered as it is.
@@ -1381,6 +1536,17 @@ internal sealed class TabService(
                            && session.Source == TableSessionSource.WalkIn
                            && session.SeatedByStaffId is null
                            && session.ReservationId is null;
+
+        // What the scan took the table from. A table held for a late booked party goes back to Held, not to
+        // Free: the hold is exactly the window a phantom could use to take a table from a party on its way.
+        var seatedFrom = seatedByScan
+            ? await db.TableStateChanges
+                .AsNoTracking()
+                .Where(c => c.TableSessionId == session.Id && c.ToStatus == TableStatus.Occupied && c.Signal == null)
+                .OrderBy(c => c.Sequence)
+                .Select(c => (TableStatus?)c.FromStatus)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
 
         // Nobody new onto a tab that is gone.
         foreach (var live in tab.JoinTokens.Where(t => t.IsUsableAt(nowUtc)))
@@ -1439,11 +1605,17 @@ internal sealed class TabService(
             freed.WithSignal(TableChangeSignal.TabAdmissionRejected, tab.Id);
 
             await db.SaveChangesAsync(cancellationToken);
+
+            if (seatedFrom == TableStatus.Held)
+            {
+                await tableState.HoldForLatePartyAsync(
+                    new TableStateCommand(
+                        tab.BranchId, tab.DiningTableId, Guid.CreateVersion7(), "hold restored: the scan that took it was turned away"),
+                    cancellationToken);
+            }
+
             await transaction.CommitAsync(cancellationToken);
         }
-
-        // Everybody on it may still read the receipt-grace view, and nobody may change anything.
-        authority.InvalidateTab(tab.Id);
 
         logger.LogInformation(
             "Staff {StaffId} turned tab {TabId} away; table {TableId} {Freed}.",
@@ -1508,6 +1680,57 @@ internal sealed class TabService(
             : actor.Type == ActorType.Diner && actor.DinerUserId is { } diner
                 ? (ActorType.Diner, diner)
                 : (ActorType.System, null);
+
+    /// <summary>
+    /// Refuses a scan from a phone that opened (hosted) a tab a waiter turned away at this branch within
+    /// <see cref="ScanCooldown.Device"/>, and - when the scan would open the table's tab - of a table whose
+    /// last scan was turned away within <see cref="ScanCooldown.Table"/>. 409 <c>scan-turned-away</c>.
+    /// </summary>
+    /// <remarks>
+    /// Both read the branch's turned-away tabs through one small filtered index. Only the host's phone: a real
+    /// party that scanned onto a phantom's tab before the waiter came is not punished for it. The phone's id is
+    /// its own choice, so that half is friction against the honest-but-rejected; the table's pause is what stops a
+    /// script re-opening a phantom the moment it is closed. A table that already has a live tab is joined as
+    /// always: the pause is about opening one.
+    /// </remarks>
+    private async Task RefuseTurnedAwayScanAsync(DiningTable table, string device, CancellationToken cancellationToken)
+    {
+        var nowUtc = clock.UtcNow;
+        var deviceSince = nowUtc - ScanCooldown.Device;
+
+        var deviceTurnedAwayAt = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.BranchId == table.BranchId
+                        && t.Admission == TabAdmission.Rejected
+                        && t.AdmissionDecidedAtUtc > deviceSince
+                        && t.Participants.Any(p => p.Id == t.HostParticipantId && p.DeviceId == device))
+            .MaxAsync(t => t.AdmissionDecidedAtUtc, cancellationToken);
+
+        if (deviceTurnedAwayAt is { } byDevice)
+        {
+            throw new ScanTurnedAwayException(byDevice + ScanCooldown.Device);
+        }
+
+        var tableSince = nowUtc - ScanCooldown.Table;
+
+        var tableTurnedAwayAt = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.BranchId == table.BranchId
+                        && t.DiningTableId == table.Id
+                        && t.Admission == TabAdmission.Rejected
+                        && t.AdmissionDecidedAtUtc > tableSince)
+            .MaxAsync(t => t.AdmissionDecidedAtUtc, cancellationToken);
+
+        if (tableTurnedAwayAt is { } byTable
+            && !await db.Tabs.AnyAsync(
+                t => t.DiningTableId == table.Id
+                     && t.Status == TabStatus.Open
+                     && t.Admission != TabAdmission.Rejected,
+                cancellationToken))
+        {
+            throw new ScanTurnedAwayException(byTable + ScanCooldown.Table);
+        }
+    }
 
     /// <summary>
     /// Whether this admit or reject was already applied - or throws when the id belongs to another command,

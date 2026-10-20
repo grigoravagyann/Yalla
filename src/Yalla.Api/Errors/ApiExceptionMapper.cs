@@ -845,6 +845,21 @@ internal static class ApiExceptionMapper
         SignInUnknownException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
 
+        // The network's budget for bookings without a verified number, shared by the web's door and the
+        // app's. 429, as the pipeline limiter answers.
+        UnverifiedBookingRateLimitedException e => new MappedError(
+            StatusCodes.Status429TooManyRequests, ErrorCodes.RateLimited, e.Message, LogAsError: false),
+
+        BranchUnverifiedQueueFullException e => new MappedError(
+            StatusCodes.Status409Conflict, ErrorCodes.BranchUnverifiedQueueFull, e.Message, LogAsError: false),
+
+        ScanTurnedAwayException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ScanTurnedAway,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["retryAfterUtc"] = e.RetryAfterUtc }),
+
         // One number, one active booking. The other booking is named only to its own account - the
         // exception carries it only then. Must stay ABOVE DomainStateException.
         PhoneHasActiveBookingException e => new MappedError(

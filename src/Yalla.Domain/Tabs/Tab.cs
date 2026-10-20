@@ -221,7 +221,7 @@ public sealed class Tab : Entity
     /// Lets a tab that was waiting order. Answers false, changing nothing, when it is already admitted.
     /// </summary>
     /// <param name="atUtc">Now.</param>
-    /// <param name="because">A waiter's tap, a waiter's order, or the booker arriving.</param>
+    /// <param name="because">A waiter's tap or the booker arriving.</param>
     /// <param name="byStaffId">The waiter, when it was one.</param>
     /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
     public bool Admit(DateTime atUtc, TabAdmissionReason because, Guid? byStaffId)
@@ -249,9 +249,9 @@ public sealed class Tab : Entity
     /// Answers false, changing nothing, when it was already turned away.
     /// </summary>
     /// <remarks>
-    /// Nothing can be on it - no order is accepted before admission, and a waiter's order admits it - so
-    /// closing it settles nothing. What happens to the table is the caller's: freed when the scan seated
-    /// it, left as it is when a waiter or a booking did.
+    /// Nothing can be on it - no phone order is accepted before admission, and the caller refuses a tab a
+    /// waiter has keyed orders on - so closing it settles nothing. What happens to the table is the caller's:
+    /// freed (or held again) when the scan seated it, left as it is when a waiter or a booking did.
     /// </remarks>
     /// <exception cref="TabAdmissionDecidedException">It was already admitted.</exception>
     /// <exception cref="DomainStateException">There is money on it, which cannot happen through this API.</exception>

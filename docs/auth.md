@@ -311,7 +311,7 @@ person cut.**
 | `Photos` the account owns | Deleted, files first - the current picture and any replaced one still waiting for the sweep |
 | `BranchReviews` by the account | Deleted; rating and count are computed on read |
 | `TabParticipants` | `UserId` cleared and `DisplayName` set to `Guest`, which is what an account-less scan looks like. The row stays: order lines and shares point at it |
-| `Reservations` | `DinerUserId` cleared. `GuestName` and `GuestPhone` stay - they are what the venue was given for that booking |
+| `Reservations` | `DinerUserId` and `BookerPhoneE164` (the one-booking-per-number key) cleared. `GuestName` and `GuestPhone` stay - they are what the venue was given for that booking |
 | `TabOrders` and their lines | Untouched |
 | `PlatformAuditLogs` | One row: `Action` `diner.delete`, `TargetType` `DinerUser`, `TargetId` the account. `ActorStaffMemberId` holds the diner's id because no staff member acted; `ChangesJson` says `actorType: diner` and counts what was removed and detached, and carries nothing that identifies the person |
 

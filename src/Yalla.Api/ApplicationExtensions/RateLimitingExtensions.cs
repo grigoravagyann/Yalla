@@ -132,12 +132,12 @@ public static class RateLimitingExtensions
     public const string DinerWritePolicy = "diner-write";
 
     /// <summary>
-    /// A booking from the public page without a verified number, per client address: ten an hour by
-    /// default. Not one: a carrier puts thousands of phones behind one address. The real limits are the
-    /// number and the browser (one active booking each) and the venue's approval; this stops a script
-    /// cycling numbers. <c>PublicUnverifiedBookingPermitLimit</c> / <c>PublicUnverifiedBookingWindowSeconds</c>.
+    /// The public page's booking without a verified number: its own key on the per-branch ceiling, so a burst
+    /// of them never spends the budget the branch's public PAGE is served from. The per-network budget for
+    /// such bookings is not here but in the booking service (<c>IUnverifiedBookingBudget</c>), shared with the
+    /// app's door.
     /// </summary>
-    public const string PublicUnverifiedBookingPolicy = "public-unverified-booking";
+    private const string UnverifiedBookingRouteSuffix = "/bookings";
 
     /// <summary>
     /// The browse list's path, which carries no branch.
@@ -199,6 +199,10 @@ public static class RateLimitingExtensions
         IConfiguration configuration,
         IHostEnvironment environment)
     {
+        // Registered whether limiting is on or not: off, it lets everything through.
+        services.AddHttpContextAccessor();
+        services.AddSingleton<Application.Abstractions.IUnverifiedBookingBudget, UnverifiedBookingBudget>();
+
         if (!IsEnabled(configuration, environment))
         {
             return services;
@@ -246,8 +250,6 @@ public static class RateLimitingExtensions
         var dinerWriteWindowSeconds = section.GetValue<int?>("DinerWriteWindowSeconds") ?? 60;
 
         // And a ceiling per manage token, for the link that went round a group chat.
-        var publicUnverifiedBookingPermitLimit = section.GetValue<int?>("PublicUnverifiedBookingPermitLimit") ?? 10;
-        var publicUnverifiedBookingWindowSeconds = section.GetValue<int?>("PublicUnverifiedBookingWindowSeconds") ?? 3600;
         var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
         var publicBookingWindowSeconds = section.GetValue<int?>("PublicBookingWindowSeconds") ?? 60;
 
@@ -359,18 +361,6 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = publicPermitLimit,
                         Window = TimeSpan.FromSeconds(publicWindowSeconds),
-                        QueueLimit = 0,
-                    }));
-
-            // A booking without a verified number, per address - an hour's window, replacing the page
-            // budget on that one route.
-            options.AddPolicy(PublicUnverifiedBookingPolicy, context =>
-                RateLimitPartition.GetFixedWindowLimiter(
-                    PartitionKey(context),
-                    _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = publicUnverifiedBookingPermitLimit,
-                        Window = TimeSpan.FromSeconds(publicUnverifiedBookingWindowSeconds),
                         QueueLimit = 0,
                     }));
 
@@ -499,6 +489,15 @@ public static class RateLimitingExtensions
     private static string PublicBranchPartitionKey(HttpContext context)
     {
         var route = context.Request.RouteValues;
+
+        // A booking made from the branch's page is not a read of the page: its own key, the same size, so a
+        // burst of them cannot 429 the page for everybody looking at it.
+        if (HttpMethods.IsPost(context.Request.Method)
+            && context.Request.Path.Value?.EndsWith(UnverifiedBookingRouteSuffix, StringComparison.OrdinalIgnoreCase) == true
+            && route.TryGetValue("branchId", out var bookedBranch) && bookedBranch is not null)
+        {
+            return $"branch-bookings:{bookedBranch}";
+        }
 
         // A manage link belongs to no branch on the wire, and bucketing every one of them into the
         // shared browse partition below would put all manage traffic, everywhere, under a single
@@ -630,4 +629,34 @@ public static class RateLimitingExtensions
 
     private static string Address(HttpContext context) =>
         $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
+
+    /// <summary>
+    /// The caller's network, whatever token it carries: an IPv4 address whole, an IPv6 one by its /64 - the
+    /// block one subscriber is handed, so cycling through it is not 2^64 budgets. An IPv4 address mapped into
+    /// IPv6 is the IPv4 address.
+    /// </summary>
+    internal static string NetworkBucket(HttpContext context)
+    {
+        var address = context.Connection.RemoteIpAddress;
+
+        if (address is null)
+        {
+            return "net:unknown";
+        }
+
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            return $"net:{address}";
+        }
+
+        var bytes = address.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+
+        return $"net:{new System.Net.IPAddress(bytes)}/64";
+    }
 }

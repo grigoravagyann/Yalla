@@ -95,8 +95,9 @@ public enum ApprovalTrigger
     /// <summary>
     /// Nobody proved the booker's phone number - a web visitor who booked without verifying, or an app
     /// account whose number was never proved - and the branch approves such bookings first
-    /// (<c>ReservationPolicy.UnverifiedBookingsNeedApproval</c>, on by default). No deadline: the venue
-    /// decides, as for a large party.
+    /// (<c>ReservationPolicy.UnverifiedBookingsNeedApproval</c>, on by default). The venue has until
+    /// <c>UnverifiedBookingRules.AnswerDeadline</c> - a day at most, two hours before the start if sooner -
+    /// and the approval sweep declines it for no answer after that.
     /// </summary>
     UnverifiedPhone = 6,
 }

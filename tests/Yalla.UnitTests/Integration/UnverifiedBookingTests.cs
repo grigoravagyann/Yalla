@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Occupancy;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -49,7 +50,9 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
         Assert.True(body.GetProperty("phoneUnverified").GetBoolean());
         Assert.Equal(ReservationStatus.PendingApproval, (ReservationStatus)body.GetProperty("status").GetInt32());
         Assert.Equal(ApprovalTrigger.UnverifiedPhone, (ApprovalTrigger)body.GetProperty("awaitingApprovalBecause").GetInt32());
-        Assert.False(body.TryGetProperty("approvalExpiresAtUtc", out _), "An unverified booking waits with no deadline.");
+
+        // A day at most for the venue's answer (review S3).
+        Assert.True(body.TryGetProperty("approvalExpiresAtUtc", out _));
 
         // The number the venue calls, in one form.
         Assert.Equal("+374" + digits, body.GetProperty("guestPhone").GetString());
@@ -298,7 +301,9 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
 
     /// <summary>
     /// A verified diner with a booking cannot make a second anywhere - told which one they hold, because it is
-    /// theirs - and a web visitor typing that diner's number is refused with nothing about it.
+    /// theirs - and a web visitor typing that diner's number afterwards is refused with nothing about it: an
+    /// unverified booking is held back by any hold on the number. The other way round - a stranger's
+    /// unverified hold first - never stops the owner (review B1, the test after the race).
     /// </summary>
     [SkippableFact]
     public async Task One_number_holds_one_active_booking_named_only_to_its_own_account()
@@ -469,6 +474,278 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
         Assert.Contains("unverifiedMaxPartySize", await tooSmall.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
+    // ---------------------------------------------------------------- after review (2026-10-20)
+
+    /// <summary>
+    /// Review B1: a stranger's unverified booking with a proved person's number never stops that person from
+    /// booking. The owner sees it among their bookings, flagged as made with their number and not by them, and
+    /// cancels it with the usual cancel; nobody else's account can.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_strangers_unverified_booking_with_my_number_never_stops_me_and_I_can_cancel_it()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var other = await ArrangeAsync(factory);
+
+        var (token, phone) = await SignInVerifiedDinerAsync(factory);
+
+        // The prank: the public page, the owner's number, a browser of its own.
+        using var anonymous = factory.CreateClient();
+        var prank = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, phone: phone));
+        Assert.Equal(HttpStatusCode.Created, prank.StatusCode);
+        var prankId = (await prank.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        // The owner books elsewhere as if it were not there.
+        using var diner = factory.CreateClientWithToken(token);
+        var own = await diner.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, other, daysAhead: 3));
+        Assert.Equal(HttpStatusCode.Created, own.StatusCode);
+        var ownId = (await own.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        // And sees it on their list, flagged; their own booking is not.
+        var upcoming = (await ReadAsync(diner, "/api/reservations/mine")).GetProperty("upcoming").EnumerateArray().ToList();
+
+        var flagged = upcoming.Single(r => r.GetProperty("id").GetGuid() == prankId);
+        Assert.True(flagged.GetProperty("madeWithYourNumber").GetBoolean());
+        Assert.True(flagged.GetProperty("phoneUnverified").GetBoolean());
+        Assert.False(upcoming.Single(r => r.GetProperty("id").GetGuid() == ownId).GetProperty("madeWithYourNumber").GetBoolean());
+
+        // Another proved account cannot cancel it: the number is not theirs.
+        var (strangerToken, _) = await SignInVerifiedDinerAsync(factory);
+        using var stranger = factory.CreateClientWithToken(strangerToken);
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await stranger.PostAsJsonAsync($"/api/reservations/{prankId}/cancel", new { })).StatusCode);
+
+        // The owner can.
+        Assert.Equal(HttpStatusCode.OK, (await diner.PostAsJsonAsync($"/api/reservations/{prankId}/cancel", new { })).StatusCode);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        var cancelled = await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == prankId);
+        Assert.NotEqual(ReservationStatus.PendingApproval, cancelled.Status);
+        Assert.Null(cancelled.DinerUserId);
+    }
+
+    /// <summary>
+    /// Review S1: the number check answers after the table's own refusal, so a probe naming a booked table
+    /// gets the same answer whether the number it types holds a booking or not.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_probe_on_a_booked_table_cannot_tell_whether_a_number_holds_a_booking()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+
+        var (token, phone) = await SignInVerifiedDinerAsync(factory);
+        using var diner = factory.CreateClientWithToken(token);
+        Assert.Equal(HttpStatusCode.Created, (await diner.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, branch))).StatusCode);
+
+        using var anonymous = factory.CreateClient();
+
+        var heldNumber = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, phone: phone));
+        var freeNumber = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch));
+
+        Assert.Equal(HttpStatusCode.Conflict, heldNumber.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, freeNumber.StatusCode);
+        Assert.Equal("table-already-booked", (await heldNumber.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+        Assert.Equal("table-already-booked", (await freeNumber.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
+    /// <summary>
+    /// Review S2: one budget per network for bookings without a proved number, shared by both doors - an IPv6
+    /// caller by its /64, and a bearer token (a tab participant's, from any photographed QR code) buys no fresh
+    /// one. A proved booker spends nothing from it.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_unverified_budget_is_per_network_shared_by_both_doors_and_no_token_resets_it()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory()
+            .With("RateLimiting:Enabled", "true")
+            .With("RateLimiting:GlobalPermitLimit", "10000")
+            .With("RateLimiting:PublicBranchPermitLimit", "10000")
+            .With("RateLimiting:PublicUnverifiedBookingPermitLimit", "1");
+
+        var branch = await ArrangeAsync(factory);
+        var other = await ArrangeAsync(factory);
+
+        using var client = factory.CreateClient();
+
+        // The first from 2001:db8:1:2::/64 goes through.
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await SendFromAsync(client, "2001:db8:1:2::10", HttpMethod.Post, PublicBookingUrl(branch), NewWebBooking(factory, branch))).StatusCode);
+
+        // Another address in the same /64, carrying a tab participant's token: the same budget, spent.
+        string participantToken;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var qrToken = await db.DiningTables.AsNoTracking().Where(t => t.Id == other.FirstTableId).Select(t => t.QrToken).SingleAsync();
+            var scanned = await client.PostAsJsonAsync(
+                "/api/tabs/open", new { qrToken, deviceId = $"scanner-{Guid.NewGuid():N}", clientCommandId = Guid.CreateVersion7() });
+            Assert.Equal(HttpStatusCode.OK, scanned.StatusCode);
+            participantToken = (await scanned.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetProperty("accessToken").GetString()!;
+        }
+
+        var withToken = await SendFromAsync(
+            client, "2001:db8:1:2::99", HttpMethod.Post, PublicBookingUrl(branch), NewWebBooking(factory, branch, time: "20:30"), participantToken);
+        Assert.Equal(HttpStatusCode.TooManyRequests, withToken.StatusCode);
+        Assert.Equal("rate-limited", (await withToken.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        // The app's door, from the same /64, for an account that never proved its number: the same budget.
+        var unproved = await RegisterUnprovedDinerAsync(factory);
+        var appDoor = await SendFromAsync(client, "2001:db8:1:2::abc", HttpMethod.Post, "/api/reservations", NewAppBooking(factory, other), unproved);
+        Assert.Equal(HttpStatusCode.TooManyRequests, appDoor.StatusCode);
+
+        // A proved booker from that network is not on the budget at all.
+        var (provedToken, _) = await SignInVerifiedDinerAsync(factory);
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await SendFromAsync(client, "2001:db8:1:2::abc", HttpMethod.Post, "/api/reservations", NewAppBooking(factory, other, daysAhead: 3), provedToken)).StatusCode);
+
+        // Another /64 is another network.
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await SendFromAsync(client, "2001:db8:1:3::10", HttpMethod.Post, PublicBookingUrl(branch), NewWebBooking(factory, branch, time: "21:30"))).StatusCode);
+    }
+
+    /// <summary>
+    /// Review S3, the deadline: a booking without a proved number that waits for the venue has a day at most
+    /// for its answer (two hours before it starts, if sooner). Unanswered, the approval sweep declines it for
+    /// no answer, and the number is free again.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unanswered_unverified_booking_is_declined_by_the_sweep_at_its_deadline()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        var phone = UniquePhone();
+        var created = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, phone: phone));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var body = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var id = body.GetProperty("id").GetGuid();
+
+        // Two days ahead, so the day is the sooner of the two.
+        var deadline = body.GetProperty("approvalExpiresAtUtc").GetDateTime().ToUniversalTime();
+        var expected = factory.Clock.UtcNow.Add(UnverifiedBookingRules.AnswerWindow);
+        Assert.InRange(deadline, expected.AddSeconds(-1), expected.AddSeconds(1));
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var declined = await fixture.CreateApprovalExpirySweep(db, new TestClock(deadline.AddMinutes(1))).RunOnceAsync();
+            Assert.InRange(declined, 1, int.MaxValue);
+        }
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var row = await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == id);
+
+            Assert.NotEqual(ReservationStatus.PendingApproval, row.Status);
+            Assert.Equal(DeclineReason.NoAnswer, row.DeclineReason);
+        }
+
+        var again = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, phone: phone, time: "20:30"));
+        Assert.Equal(HttpStatusCode.Created, again.StatusCode);
+    }
+
+    /// <summary>
+    /// Review S3, the ceiling: a branch takes twenty bookings without a proved number waiting for its answer at
+    /// once; the twenty-first is refused (from a new browser and a new number), and a proved booker is not
+    /// counted.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_branch_takes_twenty_unverified_bookings_waiting_for_it_and_refuses_the_next()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        var slots = Enumerable.Range(2, 10)
+            .SelectMany(day => branch.TableIds.Take(2).Select(table => (day, table)))
+            .ToList();
+        Assert.Equal(UnverifiedBookingRules.OutstandingPendingPerBranch, slots.Count);
+
+        foreach (var (day, table) in slots)
+        {
+            var made = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), WebBookingAt(factory, table, day));
+            Assert.True(made.StatusCode == HttpStatusCode.Created, await made.Content.ReadAsStringAsync());
+        }
+
+        var refused = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), WebBookingAt(factory, branch.FirstTableId, 12));
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Equal("branch-unverified-queue-full", (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        var (token, _) = await SignInVerifiedDinerAsync(factory);
+        using var diner = factory.CreateClientWithToken(token);
+        Assert.Equal(HttpStatusCode.Created, (await diner.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, branch, daysAhead: 12))).StatusCode);
+    }
+
+    /// <summary>
+    /// Review S8: deleting an account takes its number off the bookings it leaves to the venue, so whoever
+    /// registers the number next books at once.
+    /// </summary>
+    [SkippableFact]
+    public async Task Deleting_an_account_frees_its_number_for_whoever_registers_it_next()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var other = await ArrangeAsync(factory);
+
+        var (token, phone) = await SignInVerifiedDinerAsync(factory);
+        using (var diner = factory.CreateClientWithToken(token))
+        {
+            Assert.Equal(HttpStatusCode.Created, (await diner.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, branch))).StatusCode);
+
+            // Fresh from a code sign-in: no password, no code needed.
+            var deleted = await diner.SendAsync(
+                new HttpRequestMessage(HttpMethod.Delete, "/api/diner/me") { Content = JsonContent.Create(new { }) });
+            Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        }
+
+        var (againToken, _) = await SignInVerifiedDinerAsync(factory, phone);
+        using var again = factory.CreateClientWithToken(againToken);
+
+        Assert.Equal(HttpStatusCode.Created, (await again.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, other))).StatusCode);
+    }
+
+    /// <summary>
+    /// Review S9: a number typed with Armenia's trunk 0 after the country code is the same number, so it holds
+    /// the same one booking.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_number_typed_with_a_trunk_zero_is_the_same_number()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var other = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        var phone = UniquePhone();
+        var created = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, phone: phone));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var withZero = await anonymous.PostAsJsonAsync(
+            PublicBookingUrl(other), NewWebBooking(factory, other, phone: "+3740" + phone[4..]));
+        Assert.Equal(HttpStatusCode.Conflict, withZero.StatusCode);
+        Assert.Equal("phone-has-active-booking", (await withZero.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
@@ -550,6 +827,40 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
             clientCommandId = commandId ?? Guid.CreateVersion7(),
         };
 
+    /// <summary>A web booking on a given table and day at 18:00, with a number and a browser of its own.</summary>
+    private static object WebBookingAt(YallaApiFactory factory, Guid tableId, int daysAhead) =>
+        new
+        {
+            tableId,
+            date = LocalDate(factory, daysAhead),
+            time = "18:00",
+            partySize = 2,
+            guestName = "Ani Web",
+            guestPhone = UniquePhone(),
+            deviceId = $"web-device-{Guid.NewGuid():N}",
+            clientCommandId = Guid.CreateVersion7(),
+        };
+
+    /// <summary>A request as if from <paramref name="address"/>, with a bearer token when one is given.</summary>
+    private static async Task<HttpResponseMessage> SendFromAsync(
+        HttpClient client,
+        string address,
+        HttpMethod method,
+        string url,
+        object body,
+        string? bearer = null)
+    {
+        using var request = new HttpRequestMessage(method, url) { Content = JsonContent.Create(body) };
+        request.Headers.Add(YallaApiFactory.RemoteAddressHeader, address);
+
+        if (bearer is not null)
+        {
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearer);
+        }
+
+        return await client.SendAsync(request);
+    }
+
     private static object NewAppBooking(YallaApiFactory factory, AuthBranch branch, int daysAhead = 2) =>
         new
         {
@@ -587,10 +898,10 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
             unverifiedMaxPartySize = maxParty,
         };
 
-    private static async Task<(string Token, string Phone)> SignInVerifiedDinerAsync(YallaApiFactory factory)
+    private static async Task<(string Token, string Phone)> SignInVerifiedDinerAsync(YallaApiFactory factory, string? phone = null)
     {
         using var client = factory.CreateClient();
-        var phone = $"+3749{Random.Shared.Next(1_000_000, 9_999_999)}";
+        phone ??= $"+3749{Random.Shared.Next(1_000_000, 9_999_999)}";
 
         var requested = await client.PostAsJsonAsync("/api/auth/diner/request-code", new { phoneE164 = phone });
         requested.EnsureSuccessStatusCode();

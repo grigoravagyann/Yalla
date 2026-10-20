@@ -90,6 +90,11 @@ internal sealed class TabConfiguration : EntityConfiguration<Tab>
             .HasFilter("[Admission] <> 3")
             .HasDatabaseName(DatabaseIndexNames.TabPerSession);
 
+        // The scan cool-down's reads: a branch's tabs turned away lately, by when.
+        builder.HasIndex(t => new { t.BranchId, t.AdmissionDecidedAtUtc })
+            .HasFilter("[Admission] = 3")
+            .HasDatabaseName("IX_Tabs_BranchId_Rejected");
+
         // The rail's list of tabs waiting for a waiter: a handful per branch at most.
         builder.HasIndex(t => new { t.BranchId, t.OpenedAtUtc })
             .HasFilter("[Admission] = 1")

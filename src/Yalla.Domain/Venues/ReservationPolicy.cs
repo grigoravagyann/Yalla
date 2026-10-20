@@ -105,6 +105,19 @@ public sealed class ReservationPolicy
     /// <summary>A new branch lets an unproved number book for at most this many.</summary>
     public const int DefaultUnverifiedMaxPartySize = 6;
 
+    /// <summary>
+    /// Whether a tab opened by a QR scan with no proved phone number behind it waits for a waiter to admit it
+    /// before anybody on it can order (<c>TabAdmission</c>). On by default - the user's decision of 2026-10-20:
+    /// a photographed code can be scanned from anywhere, and the waiter can see who is sitting there.
+    /// </summary>
+    /// <remarks>
+    /// Off, a scan opens a tab that orders at once, as every scan did before admission
+    /// (<c>TabAdmissionReason.NotRequired</c>). A switch per branch because admission needs a tablet that
+    /// can admit: a branch whose floor runs an older tablet build turns it off until the new one is on its
+    /// devices.
+    /// </remarks>
+    public bool UnverifiedScansNeedAdmission { get; private set; } = true;
+
     private ReservationPolicy()
     {
     }
@@ -126,9 +139,11 @@ public sealed class ReservationPolicy
         int walkInHoldbackMinutes = 30,
         int reminderHoursBefore = 3,
         bool unverifiedBookingsNeedApproval = true,
-        int unverifiedMaxPartySize = DefaultUnverifiedMaxPartySize)
+        int unverifiedMaxPartySize = DefaultUnverifiedMaxPartySize,
+        bool unverifiedScansNeedAdmission = true)
     {
         UnverifiedBookingsNeedApproval = unverifiedBookingsNeedApproval;
+        UnverifiedScansNeedAdmission = unverifiedScansNeedAdmission;
         UnverifiedMaxPartySize = Positive(unverifiedMaxPartySize, nameof(unverifiedMaxPartySize));
 
         WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));

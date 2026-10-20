@@ -197,6 +197,9 @@ public enum TabAdmissionReason
     /// <summary>The booking's own diner opened it, or joined it, from their booking.</summary>
     Booker = 4,
 
-    /// <summary>A waiter keyed an order in for the table, standing at it.</summary>
-    WaiterOrder = 5,
+    /// <summary>
+    /// The branch lets a scan with no proved number order at once
+    /// (<c>ReservationPolicy.UnverifiedScansNeedAdmission</c> off) - as every scan did before admission.
+    /// </summary>
+    NotRequired = 5,
 }

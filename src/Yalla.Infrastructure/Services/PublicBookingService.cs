@@ -81,7 +81,7 @@ internal sealed class PublicBookingService(
                 db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
                                                && q.Status == Domain.Enums.TableShareRequestStatus.Pending
                                                && q.AsksEarlierGuest),
-                r.PhoneUnverified,
+                r.PhoneUnverified && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
 
                 // Whether the link may move the booking: the account it lands on is live with a proved
                 // number - the reschedule's own gate, asked ahead so the page hides a button that would 403.

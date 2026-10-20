@@ -88,3 +88,51 @@ public sealed class UnverifiedBookingNotChangeableException()
     : Exception(
         "A booking made without a verified phone number can't be changed online. Cancel it and book again, "
         + "or call the venue.");
+
+/// <summary>
+/// The rules a booking made without a proved number lives by that are the product's, not a branch's:
+/// how long the venue has to answer one, and how many may wait at one branch at once.
+/// </summary>
+public static class UnverifiedBookingRules
+{
+    /// <summary>
+    /// How many bookings without a proved number may wait for one branch's answer at once (pending, not yet
+    /// started, window open). Twenty is more than a real evening produces and few enough that a script cycling
+    /// numbers cannot hold every table of a branch until somebody declines each by hand.
+    /// </summary>
+    public const int OutstandingPendingPerBranch = 20;
+
+    /// <summary>The longest the venue has to answer one: a day.</summary>
+    public static readonly TimeSpan AnswerWindow = TimeSpan.FromHours(24);
+
+    /// <summary>How long before its start the visitor has their answer at the latest.</summary>
+    public static readonly TimeSpan AnsweredBeforeStart = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// When a booking without a proved number that waits for the venue is declined for nobody answering:
+    /// a day after it was made, or two hours before it starts, whichever is sooner - never past the start.
+    /// </summary>
+    /// <remarks>
+    /// Such a booking never waits at short notice (tonight, or under six hours away: that is
+    /// <see cref="ShortNoticeRule"/>'s fifteen minutes), so two hours before the start is at least four hours
+    /// from now. Unanswered, <c>ApprovalExpirySweep</c> declines it with <c>NoAnswer</c> and it holds nothing.
+    /// </remarks>
+    public static DateTime AnswerDeadline(DateTime nowUtc, DateTime startUtc)
+    {
+        var byWindow = nowUtc.Add(AnswerWindow);
+        var beforeStart = startUtc.Subtract(AnsweredBeforeStart);
+        var deadline = byWindow < beforeStart ? byWindow : beforeStart;
+
+        return deadline > nowUtc ? deadline : startUtc;
+    }
+}
+
+/// <summary>
+/// The branch already has <see cref="UnverifiedBookingRules.OutstandingPendingPerBranch"/> bookings without a
+/// proved number waiting for its answer. 409 <c>branch-unverified-queue-full</c>, no context: verifying the
+/// number books as usual.
+/// </summary>
+public sealed class BranchUnverifiedQueueFullException()
+    : DomainStateException(
+        "This venue has too many bookings waiting for it to confirm right now. Verify your number to book, or "
+        + "call the venue.");

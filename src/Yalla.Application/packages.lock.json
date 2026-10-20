@@ -2,8 +2,16 @@
   "version": 1,
   "dependencies": {
     "net9.0": {
+      "libphonenumber-csharp": {
+        "type": "Transitive",
+        "resolved": "9.0.40",
+        "contentHash": "ywU5vgr+Q7bX+MSU2oxXfYDQDsrUCDfpkSae8PEd1t2L6e+nNIQtmsk/FHV9IIoMGEuuoxOZNQetFJTvTPcyOA=="
+      },
       "yalla.domain": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "libphonenumber-csharp": "[9.0.40, )"
+        }
       }
     }
   }
