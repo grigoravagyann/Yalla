@@ -169,13 +169,10 @@ which one a diner came in by.
   `DinerUser.ProveNumber`, which also moves the account's session generation on: the access
   token the registrant still holds is refused on its very next request with **401
   `session-revoked`** - see [Ending a diner's sessions](#ending-a-diners-sessions).
-- **An unproved number books without proof (2026-10-20).** `POST /api/reservations` from an account
-  whose `PhoneVerifiedAtUtc` is null no longer answers 403: it books an *unverified* booking - flagged
-  `phoneUnverified`, capped at the branch's `unverifiedMaxPartySize`, and waiting for the venue when the
-  branch approves such bookings first. Telegram is the only proof in production (#52), and a diner without
-  it could otherwise never book from the app while a stranger on the web can. A deactivated or deleted
-  account is still `403 phone-not-verified`. See [reservations.md](reservations.md#3g-booking-without-a-proved-number-and-one-active-booking-per-number).
-  What stays gated is below.
+- **An unproved number cannot book.** `POST /api/reservations` from an account whose `PhoneVerifiedAtUtc`
+  is null - or a deactivated or deleted one - answers **403 `phone-not-verified`**. (Yalla#54 let such an
+  account book without proof for a few hours on 2026-10-20; the user withdrew it the same day - see
+  [reservations.md](reservations.md#3g-booking-needs-a-proved-number-the-per-number-rules-the-guest-record).)
 - **An unproved number cannot change a booking or open a tab from one.** Moving a booking, extending its
   hold (`POST /api/reservations/{id}/extend-hold`) and opening a tab from one
   (`POST /api/tabs/open-by-booking`) answer **403 `phone-not-verified`** while

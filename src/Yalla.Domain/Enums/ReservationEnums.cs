@@ -55,7 +55,7 @@ public enum ReservationStatus
 /// </para>
 /// <para>
 /// When more than one applies, the first in this order is the one stored: <see cref="ShortNotice"/>,
-/// <see cref="EarlierGuestConsent"/>, <see cref="BranchApprovesEveryBooking"/>, <see cref="UnverifiedPhone"/>,
+/// <see cref="EarlierGuestConsent"/>, <see cref="BranchApprovesEveryBooking"/>,
 /// <see cref="LargeParty"/>, <see cref="NoShowHistory"/>. Short notice leads because it is the one with a deadline - fifteen
 /// minutes to answer - and the one the floor, not the office, decides; the earlier guest's two hours
 /// come next. Persisted as its number: a member keeps it for good.
@@ -63,7 +63,11 @@ public enum ReservationStatus
 /// </remarks>
 public enum ApprovalTrigger
 {
-    /// <summary>The branch does not auto-confirm anything.</summary>
+    /// <summary>
+    /// The branch does not auto-confirm anything - except, when it auto-confirms guests with a good record
+    /// (<c>ReservationPolicy.AutoConfirmGuestsWithGoodRecord</c>), a guest whose record is good. The only reason a
+    /// good record skips.
+    /// </summary>
     BranchApprovesEveryBooking = 1,
 
     /// <summary>The party is above the branch's <c>ApprovalRequiredAbovePartySize</c>.</summary>
@@ -93,11 +97,10 @@ public enum ApprovalTrigger
     EarlierGuestConsent = 5,
 
     /// <summary>
-    /// Nobody proved the booker's phone number - a web visitor who booked without verifying, or an app
-    /// account whose number was never proved - and the branch approves such bookings first
-    /// (<c>ReservationPolicy.UnverifiedBookingsNeedApproval</c>, on by default). The venue has until
-    /// <c>UnverifiedBookingRules.AnswerDeadline</c> - a day at most, two hours before the start if sooner -
-    /// and the approval sweep declines it for no answer after that.
+    /// <b>Legacy - never given any more.</b> Nobody proved the booker's phone number and the branch approved such
+    /// bookings first: Yalla#54's booking without proof, withdrawn the same day (2026-10-20). Bookings made while
+    /// it was live keep it - they are answered, or declined by the approval sweep at the deadline they were given,
+    /// like any other - so it stays, and its number is never reused.
     /// </summary>
     UnverifiedPhone = 6,
 }

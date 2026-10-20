@@ -38,16 +38,6 @@ public interface IReservationService
     Task<ReservationView> CreateAsync(CreateReservationCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// A web visitor's booking with no account and no phone proof: <paramref name="deviceId"/> is the
-    /// browser's, the number is typed. Flagged <c>phoneUnverified</c>, capped, and waiting for approval
-    /// when the branch says so; one active booking per number and per browser. See <c>docs/public-surface.md</c>.
-    /// </summary>
-    Task<ReservationView> CreateWithoutAccountAsync(
-        CreateReservationCommand command,
-        string? deviceId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Moves the calling diner's own booking to another time, table or party size, keeping its code
     /// and manage link - or, for a retry with the same <c>ClientCommandId</c>, returns the booking as
     /// it stands.
@@ -245,6 +235,18 @@ public interface IReservationService
     /// <exception cref="Yalla.Domain.DomainStateException">The booking is not in a state that can be released.</exception>
     Task<ReservationReleaseResult> ReleaseAsync(
         ReleaseReservationCommand command,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Withdraws a no-show marked by mistake (review B1c): waiter or above at the booking's branch, until 05:00 the
+    /// morning after its service day (a start before 05:00 is the evening before's), branch time. The booking is confirmed again; if the guest was blocked and fewer than
+    /// three no-shows are left to hold the block, it is lifted - nothing it cancelled comes back - and the guest told.
+    /// Withdrawing one already withdrawn answers with the booking as it stands.
+    /// </summary>
+    /// <exception cref="Domain.Occupancy.NoShowUndoWindowClosedException">Its service day is over.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">It is not a no-show.</exception>
+    Task<ReservationView> UndoNoShowAsync(
+        UndoNoShowCommand command,
         CancellationToken cancellationToken = default);
 
     /// <summary>

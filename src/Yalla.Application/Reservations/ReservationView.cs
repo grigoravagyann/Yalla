@@ -85,17 +85,19 @@ public sealed record ReservationView
     public required string GuestPhone { get; init; }
 
     /// <summary>
-    /// True when the booking was made without a proved phone number - a web visitor who did not verify,
-    /// or an app account whose number was never proved. Staff show "number not verified" beside it.
+    /// True when the booking was made without a proved phone number - only a booking made while Yalla#54's
+    /// unverified booking was live (2026-10-20): a web visitor who did not verify, or an app account whose number
+    /// was never proved. No booking is made that way any more; the flag stays as history, and staff show "number
+    /// not verified" beside such a booking while its account has still not proved its number.
     /// </summary>
     public bool PhoneUnverified { get; init; }
 
     /// <summary>
-    /// On the reader's own list only: true for a booking somebody else made with the reader's (proved) phone
-    /// number and no proof of it. Show it as "made with your number, not by you"; the reader may cancel it
-    /// with the usual cancel. False for the reader's own bookings and on every other read.
+    /// The guest's record over the last twelve months at every venue - on the venue's reads of a booking only
+    /// (the console's list, the floor's awaiting cards, the answers to approve and reject). Absent on every diner
+    /// and public read, and for a booking with no verified account behind it. See <see cref="Reservations.GuestRecord"/>.
     /// </summary>
-    public bool MadeWithYourNumber { get; init; }
+    public GuestRecord? GuestRecord { get; init; }
 
     /// <summary>
     /// The diner's note to the venue - "window table", "a high chair" - or absent (K9).
@@ -113,6 +115,12 @@ public sealed record ReservationView
     /// never punished here.
     /// </summary>
     public bool CancelledAfterDeadline { get; init; }
+
+    /// <summary>
+    /// Why the platform cancelled it, when neither the guest nor the venue did: 1 = the guest was blocked for
+    /// three no-shows in three days. Absent on every other booking. The status is then CancelledByVenue.
+    /// </summary>
+    public Domain.Occupancy.CancellationCause? CancelledBecause { get; init; }
 
     /// <summary>
     /// The instant past which cancelling is recorded as late: the start less the branch's
@@ -237,6 +245,10 @@ public static class BranchReservationList
 /// <summary>A diner's own bookings, split the way the app shows them.</summary>
 /// <param name="Upcoming">Bookings that have not finished yet, soonest first.</param>
 /// <param name="Past">Everything else - completed, cancelled, missed - most recent first.</param>
+/// <param name="GuestRecord">
+/// The diner's own record over the last twelve months - what venues see beside their bookings. Always present.
+/// </param>
 public sealed record MyReservations(
     IReadOnlyList<ReservationView> Upcoming,
-    IReadOnlyList<ReservationView> Past);
+    IReadOnlyList<ReservationView> Past,
+    GuestRecord? GuestRecord = null);

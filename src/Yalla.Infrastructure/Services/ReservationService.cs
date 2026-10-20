@@ -97,7 +97,6 @@ internal sealed class ReservationService(
     ITableStateService tableState,
     IOutbox outbox,
     IOptions<PublicWebOptions> publicWeb,
-    IUnverifiedBookingBudget unverifiedBudget,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -112,71 +111,24 @@ internal sealed class ReservationService(
         // `note` is the answer whatever else would have gone on to be refused (K9).
         var note = Reservation.NormaliseNote(command.Note);
 
-        // The account, read from the row. A deactivated or deleted one books nothing - the gate's old
-        // answer. One whose number was never proved books WITHOUT proof (decided 2026-10-20): flagged,
-        // capped, and waiting for the venue when the branch says so - Telegram is the only proof, and a
-        // diner without it would otherwise be the one person who could not book from the app.
+        // The account, read from the row. Before the replay, too: an account that cannot book has no original
+        // to be handed back. A deactivated or deleted one books nothing, and neither does one whose number was
+        // never proved - a booking's reminders, its record and the per-number rules land on the number, so it must
+        // be a real one. (Yalla#54 let an unproved account book; the user withdrew that the same day.)
         var account = await db.DinerUsers
             .AsNoTracking()
             .Where(d => d.Id == dinerUserId)
             .Select(d => new { d.PhoneE164, Proved = d.PhoneVerifiedAtUtc != null, Live = d.IsActive && d.DeletedAtUtc == null })
             .FirstOrDefaultAsync(cancellationToken);
 
-        if (account is not { Live: true })
+        if (account is not { Live: true, Proved: true })
         {
             throw new Domain.Identity.PhoneNotVerifiedException(dinerUserId, "Booking a table");
         }
 
-        return await CreateCoreAsync(
-            command,
-            note,
-            new BookerContext(dinerUserId, BookerPhone(account.PhoneE164), DeviceHash: null, account.Proved),
-            cancellationToken);
-    }
+        var booker = new BookerKey(dinerUserId, BookerPhone(account.PhoneE164));
 
-    /// <summary>
-    /// A web visitor books with no account and no phone proof: the number typed, the browser's device id.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Exactly a diner's booking - every branch rule, the table lock, the table's evening - with what an
-    /// account would have given replaced: the booking is <c>PhoneUnverified</c>, capped at
-    /// <see cref="ReservationPolicy.UnverifiedMaxPartySize"/>, waits for approval when the branch says so,
-    /// counts against the number it was made with (one active booking per number) and against the browser
-    /// (one active unverified booking per browser). No reminders are written: there is no account to push to,
-    /// and a later SMS or Telegram channel must not message a number nobody proved.
-    /// </para>
-    /// <para>
-    /// The channel is the public page's, whatever the body says, so <c>acceptsWebBookings</c> gates it.
-    /// </para>
-    /// </remarks>
-    public async Task<ReservationView> CreateWithoutAccountAsync(
-        CreateReservationCommand command,
-        string? deviceId,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(command);
-
-        var note = Reservation.NormaliseNote(command.Note);
-
-        var device = deviceId?.Trim();
-
-        if (string.IsNullOrEmpty(device) || device.Length > Domain.Common.FieldLengths.DeviceId)
-        {
-            throw new ArgumentException(
-                $"A device id of at most {Domain.Common.FieldLengths.DeviceId} characters is required.", "deviceId");
-        }
-
-        // The number is the key the one-active-booking rule holds, so it is held in one form: spaces,
-        // dashes, brackets and a trunk zero cannot make a second number out of the first
-        // (PhoneNumber.Canonical). 400 naming guestPhone for something that is not a number at all.
-        var phone = Domain.Common.PhoneNumber.Canonical(Domain.Common.PhoneNumber.Normalise(command.GuestPhone, "guestPhone"));
-
-        return await CreateCoreAsync(
-            command with { Channel = ReservationChannel.Web, GuestPhone = phone },
-            note,
-            new BookerContext(DinerUserId: null, phone, Secrets.Hash(device), PhoneProved: false),
-            cancellationToken);
+        return await CreateCoreAsync(command, note, booker, cancellationToken);
     }
 
     /// <summary>
@@ -200,25 +152,16 @@ internal sealed class ReservationService(
         }
     }
 
-    /// <summary>
-    /// Who is booking: the account (or none), the number the one-active-booking rule keys on, the web
-    /// browser's hash for a booking with no account, and whether the number is proved.
-    /// </summary>
-    private sealed record BookerContext(Guid? DinerUserId, string? PhoneE164, string? DeviceHash, bool PhoneProved)
-    {
-        public BookerKey Key => new(DinerUserId, PhoneE164, DeviceHash, PhoneProved);
-    }
-
-    /// <summary>A booking, for an account or a web visitor - see <see cref="CreateAsync"/>.</summary>
+    /// <summary>A diner's booking - see <see cref="CreateAsync"/>.</summary>
     private async Task<ReservationView> CreateCoreAsync(
         CreateReservationCommand command,
         string? note,
-        BookerContext booker,
+        BookerKey booker,
         CancellationToken cancellationToken)
     {
         // Cheap path first: a retry that arrives after the original committed never reaches the
         // lock at all. The unique index below is what makes the racing case safe.
-        if (await reservations.FindReplayAsync(command.ClientCommandId, booker.Key, cancellationToken)
+        if (await reservations.FindReplayAsync(command.ClientCommandId, booker.DinerUserId, cancellationToken)
             is { } replay)
         {
             logger.LogInformation(
@@ -231,6 +174,11 @@ internal sealed class ReservationService(
                 replay, replayBranch, table: null, wasReplay: true, trigger: null, cancellationToken);
         }
 
+        // Blocked for no-shows: said before anything about the table - after the replay, so a retry of a booking
+        // made just before the block answers as the booking (review N7). The writer asks again under the
+        // account's lock, which is what makes it hold against a block being written this moment.
+        await GuestRecords.RequireNotBlockedAsync(db, booker.DinerUserId, booker.PhoneE164, clock.UtcNow, cancellationToken);
+
         var branch = await LoadBranchAsync(command.BranchId, cancellationToken);
 
         // A venue that stopped paying, or one that was deleted, takes no new bookings - a diner
@@ -239,20 +187,6 @@ internal sealed class ReservationService(
         VenueGate.RequireOpenForBusiness(branch);
 
         RequireChannelAccepted(command.Channel, branch);
-
-        // A branch that takes no bookings without a verified number (a cap of 0) says so before anything
-        // else about the booking - and before the network's budget is spent on it.
-        if (!booker.PhoneProved && !branch.ReservationPolicy.AcceptsUnverifiedBookings)
-        {
-            throw new VerifiedPhoneRequiredException();
-        }
-
-        // A booking without proof spends from its network's budget - the same one whichever door it came
-        // through - and a retry above never does.
-        if (!booker.PhoneProved && !unverifiedBudget.TrySpend())
-        {
-            throw new UnverifiedBookingRateLimitedException();
-        }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
@@ -270,13 +204,6 @@ internal sealed class ReservationService(
 
         Validate(command.LocalDate, command.LocalTime, command.PartySize, table, pinned, hours, policy, zone, proposed, nowUtc);
 
-        // A number nobody proved books a family table at most: a phantom booking for twelve empties a room.
-        // 422, so the client can offer to verify the number, which lifts it.
-        if (!booker.PhoneProved && command.PartySize > policy.UnverifiedMaxPartySize)
-        {
-            throw new UnverifiedPartyTooLargeException(command.PartySize, policy.UnverifiedMaxPartySize);
-        }
-
         // Every booking here is a diner's - the app's or the public page's, whatever channel the
         // client reports, because the channel is self-reported and a rule it could switch off would be
         // no rule. Tonight's are the floor's to decide.
@@ -287,8 +214,6 @@ internal sealed class ReservationService(
             approvedPartySize: null,
             policy,
             booker.DinerUserId,
-            booker.PhoneProved,
-            booker.PhoneE164,
             startUtc,
             shortNotice,
             nowUtc,
@@ -309,7 +234,7 @@ internal sealed class ReservationService(
             table,
             startUtc,
             policy,
-            booker.Key,
+            booker,
             command.AcceptsFreeByUtc,
             async (verdict, ct) =>
             {
@@ -336,9 +261,7 @@ internal sealed class ReservationService(
                     approvalTrigger: withTable.Status.Trigger,
                     approvalExpiresAtUtc: withTable.Status.ApprovalExpiresAtUtc,
                     promisedFreeByUtc: verdict.MustFreeByUtc,
-                    phoneUnverified: !booker.PhoneProved,
-                    bookerPhoneE164: booker.PhoneE164,
-                    bookerDeviceHash: booker.DeviceHash);
+                    bookerPhoneE164: booker.PhoneE164);
 
                 booking.AttachManageToken(manageTokenHash);
 
@@ -385,12 +308,7 @@ internal sealed class ReservationService(
         // The reminder and the nudge, written in the same unit of work as the booking. A booking
         // that exists without its reminder is the failure mode an outbox is for, and the diner finds
         // out about it by not being reminded.
-        // Not for a web visitor with no account: nobody to push to, and no channel may message a number
-        // nobody proved.
-        if (reservation.DinerUserId is not null)
-        {
-            await ScheduleRemindersAsync(reservation, branch, table.Label, manageToken, cancellationToken);
-        }
+        await ScheduleRemindersAsync(reservation, branch, table.Label, manageToken, cancellationToken);
 
         logger.LogInformation(
             "Booked table {TableLabel} at branch {BranchId} for {PartySize} as {Code} ({Status}).",
@@ -595,14 +513,6 @@ internal sealed class ReservationService(
 
         var reservation = await FindByManageTokenAsync(manageToken, cancellationToken);
 
-        // A booking made with no account and no proof is never moved: a move re-decides the booking and
-        // must re-run every unverified safeguard, which cancelling and booking again does through the one
-        // create path - and cancelling frees the number at once. 403, in words for the link holder.
-        if (reservation is { PhoneUnverified: true, DinerUserId: null })
-        {
-            throw new UnverifiedBookingNotChangeableException();
-        }
-
         // The account the move would land on: none left (deleted), not live, or without a proved number -
         // the app's 403, in words the link holder can act on (they have no account to verify).
         if (reservation.DinerUserId is not { } dinerUserId)
@@ -686,6 +596,10 @@ internal sealed class ReservationService(
             return await ReplayViewAsync(reservation.Id, cancellationToken);
         }
 
+        // A guest blocked for no-shows moves nothing - on the app or by the link. Again under the lock, in the writer.
+        await GuestRecords.RequireNotBlockedAsync(
+            db, dinerUserId, reservation.BookerPhoneE164, clock.UtcNow, cancellationToken);
+
         var nowUtc = clock.UtcNow;
 
         // Before any rule about the new slot. A booking that is cancelled, seated or already under way
@@ -742,8 +656,6 @@ internal sealed class ReservationService(
                 approvedPartySize,
                 policy,
                 dinerUserId,
-                phoneProved: true,
-                bookerPhone: null,
                 startUtc,
                 ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc)),
                 nowUtc,
@@ -757,7 +669,7 @@ internal sealed class ReservationService(
             table,
             startUtc,
             policy,
-            dinerUserId,
+            new BookerKey(dinerUserId, reservation.BookerPhoneE164),
             command.ClientCommandId,
             command.AcceptsFreeByUtc,
             keepsItsConfirmation,
@@ -1108,7 +1020,7 @@ internal sealed class ReservationService(
         DiningTable table,
         DateTime startUtc,
         ReservationPolicy policy,
-        Guid dinerUserId,
+        BookerKey booker,
         Guid clientCommandId,
         DateTime? acceptsFreeByUtc,
         bool keepsItsSlot,
@@ -1118,7 +1030,7 @@ internal sealed class ReservationService(
         try
         {
             return await reservations.MoveUnderTableLockAsync(
-                reservation, table, startUtc, policy, dinerUserId, clientCommandId, acceptsFreeByUtc, keepsItsSlot,
+                reservation, table, startUtc, policy, booker, clientCommandId, acceptsFreeByUtc, keepsItsSlot,
                 applyAsync, cancellationToken);
         }
         catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
@@ -1328,23 +1240,6 @@ internal sealed class ReservationService(
 
         if (reservation.DinerUserId != dinerUserId)
         {
-            // The number's owner may cancel a booking a stranger made with their number and no proof: they
-            // proved the number, which is the better claim to it, and the hold would otherwise be the
-            // stranger's to keep. Recorded with a reason the venue reads.
-            if (reservation.PhoneUnverified
-                && reservation.BookerPhoneE164 is { } held
-                && await ProvedNumberOfAsync(dinerUserId, cancellationToken) == held)
-            {
-                logger.LogInformation(
-                    "Booking {Code}, made with diner {DinerUserId}'s number and no proof, was cancelled by that number's owner.",
-                    reservation.Code, dinerUserId);
-
-                return await CancelCoreAsync(
-                    reservation,
-                    command.Reason ?? "Cancelled by the owner of the phone number, who did not make it.",
-                    cancellationToken);
-            }
-
             // Deliberately the same answer as a booking that does not exist would give a stranger
             // guessing ids, except that the caller is told plainly they do not own this one.
             throw new UnauthorizedAccessException("A diner may only cancel their own bookings.");
@@ -1497,7 +1392,12 @@ internal sealed class ReservationService(
 
         // Late is recorded, never refused. A diner who cannot cancel simply does not turn up, and
         // a no-show costs the venue the same table plus the chance to resell it.
-        reservation.CancelByDiner(nowUtc, reason, late);
+        // Against the guest's record only when it was confirmed and had been made before the deadline it missed
+        // (review S2): a same-evening booking is inside its deadline from the moment it is made.
+        var madeInTime = reservation.CreatedAtUtc
+                         <= ReservationRules.CancellationDeadline(reservation.StartUtc, branch.ReservationPolicy);
+
+        reservation.CancelByDiner(nowUtc, reason, late, countsAgainstGuest: madeInTime);
 
         // A question this booking was waiting on goes with it, and a guest who was asked to free their
         // table for it - or a booking waiting on this one's guest - is settled now the table is free.
@@ -1549,22 +1449,12 @@ internal sealed class ReservationService(
         var dinerUserId = RequireDiner("Read my bookings");
         var nowUtc = clock.UtcNow;
 
-        // A proved number's owner also sees the bookings strangers made with that number and no proof - so a
-        // number typed in by somebody else is not a mystery hold on the owner's own bookings, and they can
-        // cancel it (decided 2026-10-20, after review).
-        var myNumber = await ProvedNumberOfAsync(dinerUserId, cancellationToken);
-
         var rows = await db.Reservations
             .AsNoTracking()
-            .Where(r => r.DinerUserId == dinerUserId
-                        || (myNumber != null
-                            && r.PhoneUnverified
-                            && r.BookerPhoneE164 == myNumber
-                            && r.DinerUserId != dinerUserId))
+            .Where(r => r.DinerUserId == dinerUserId)
             .Select(r => new MineRow
             {
                 Reservation = r,
-                MadeWithYourNumber = r.DinerUserId != dinerUserId,
                 PhoneUnverifiedNow = r.PhoneUnverified
                                      && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
@@ -1612,22 +1502,10 @@ internal sealed class ReservationService(
             .Select(r => ToView(r))
             .ToList();
 
-        return new MyReservations(upcoming, past);
-    }
+        // The diner's own record - what venues see beside their bookings - once, beside the lists.
+        var record = await GuestRecords.ForAccountAsync(db, dinerUserId, nowUtc, cancellationToken);
 
-    /// <summary>
-    /// The account's number in the canonical form when the account has proved it, else null - whose
-    /// unverified bookings by others the account may see and cancel.
-    /// </summary>
-    private async Task<string?> ProvedNumberOfAsync(Guid dinerUserId, CancellationToken cancellationToken)
-    {
-        var me = await db.DinerUsers
-            .AsNoTracking()
-            .Where(d => d.Id == dinerUserId && d.IsActive && d.DeletedAtUtc == null)
-            .Select(d => new { d.PhoneE164, Proved = d.PhoneVerifiedAtUtc != null })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return me is { Proved: true } ? BookerPhone(me.PhoneE164) : null;
+        return new MyReservations(upcoming, past, record);
     }
 
     public async Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
@@ -1674,6 +1552,12 @@ internal sealed class ReservationService(
             })
             .ToListAsync(cancellationToken);
 
+        // Every guest's record in one grouped statement, not one per row - for the bookings still to come or today's.
+        var nowUtc = clock.UtcNow;
+        var today = rows.Count == 0 ? default : BranchZone.For(rows[0].TimeZoneId).LocalDateAt(nowUtc);
+        var records = await GuestRecords.ForAccountsAsync(
+            db, RecordedAccounts(rows.Select(r => (r.Reservation, r.PhoneUnverifiedNow ?? false)), today), nowUtc, cancellationToken);
+
         return rows
             .Select(r => BuildView(
                 r.Reservation,
@@ -1684,8 +1568,46 @@ internal sealed class ReservationService(
                 wasReplay: false,
                 trigger: PendingTriggerFor(r.Reservation, policy),
                 awaitsEarlierGuestAnswer: r.AwaitsEarlierGuestAnswer,
-                phoneUnverifiedNow: r.PhoneUnverifiedNow))
+                phoneUnverifiedNow: r.PhoneUnverifiedNow) with
+            {
+                GuestRecord = RecordOf(records, r.Reservation, r.PhoneUnverifiedNow ?? false, today),
+            })
             .ToList();
+    }
+
+    /// <summary>
+    /// Whether a staff read shows a booking's guest record: a proved account is behind it, and it is pending or
+    /// confirmed, today or still to come (review S3). Never on a finished, cancelled or past booking - an old booking
+    /// must not be a window on the guest's evenings since.
+    /// </summary>
+    private static bool ShowsRecord(Reservation reservation, bool phoneUnverifiedNow, DateOnly branchToday) =>
+        !phoneUnverifiedNow
+        && reservation.DinerUserId is not null
+        && reservation.Status is ReservationStatus.PendingApproval or ReservationStatus.Confirmed
+        && reservation.LocalDate >= branchToday;
+
+    /// <summary>The accounts whose records a staff list shows - see <see cref="ShowsRecord"/>.</summary>
+    private static IEnumerable<Guid> RecordedAccounts(
+        IEnumerable<(Reservation Reservation, bool PhoneUnverifiedNow)> rows, DateOnly branchToday) =>
+        rows.Where(r => ShowsRecord(r.Reservation, r.PhoneUnverifiedNow, branchToday))
+            .Select(r => r.Reservation.DinerUserId!.Value);
+
+    /// <summary>A booking's guest record from a list's batch, or null where it is not shown.</summary>
+    private static GuestRecord? RecordOf(
+        IReadOnlyDictionary<Guid, GuestRecord> records, Reservation reservation, bool phoneUnverifiedNow, DateOnly branchToday) =>
+        ShowsRecord(reservation, phoneUnverifiedNow, branchToday) && records.TryGetValue(reservation.DinerUserId!.Value, out var record)
+            ? record
+            : null;
+
+    /// <summary>One booking's guest record for a staff answer, or null where it is not shown.</summary>
+    private async Task<GuestRecord?> RecordForStaffAsync(
+        Reservation reservation, bool phoneUnverifiedNow, string timeZoneId, CancellationToken cancellationToken)
+    {
+        var nowUtc = clock.UtcNow;
+
+        return ShowsRecord(reservation, phoneUnverifiedNow, BranchZone.For(timeZoneId).LocalDateAt(nowUtc))
+            ? await GuestRecords.ForAccountAsync(db, reservation.DinerUserId!.Value, nowUtc, cancellationToken)
+            : null;
     }
 
     public async Task<IReadOnlyList<AwaitingApproval>> ListAwaitingApprovalAsync(
@@ -1788,6 +1710,14 @@ internal sealed class ReservationService(
             })
             .ToListAsync(cancellationToken);
 
+        // Every guest's record in one grouped statement, not one per card.
+        var records = await GuestRecords.ForAccountsAsync(
+            db,
+            rows.Where(r => ShowsRecord(r.Reservation, r.PhoneUnverifiedNow, BranchZone.For(r.TimeZoneId).LocalDateAt(nowUtc)))
+                .Select(r => r.Reservation.DinerUserId!.Value),
+            nowUtc,
+            cancellationToken);
+
         return rows
             .Select(row =>
             {
@@ -1805,7 +1735,11 @@ internal sealed class ReservationService(
                     // False for every card: the list leaves out the bookings waiting on the guest
                     // before them in the app - those are not the floor's to answer.
                     awaitsEarlierGuestAnswer: false,
-                    phoneUnverifiedNow: row.PhoneUnverifiedNow);
+                    phoneUnverifiedNow: row.PhoneUnverifiedNow) with
+                {
+                    GuestRecord = RecordOf(
+                        records, row.Reservation, row.PhoneUnverifiedNow, BranchZone.For(row.TimeZoneId).LocalDateAt(nowUtc)),
+                };
 
                 return new AwaitingApproval
                 {
@@ -2053,13 +1987,7 @@ internal sealed class ReservationService(
     /// booking and on a move of one still waiting.
     /// </param>
     /// <param name="policy">The branch's policy.</param>
-    /// <param name="dinerUserId">Whose booking, for the no-show count; null for a web visitor with no account.</param>
-    /// <param name="phoneProved">
-    /// Whether the booker's number is proved. Unproved, the booking is judged as unverified - approval first
-    /// when the branch says so, with <see cref="UnverifiedBookingRules.AnswerDeadline"/> - and its no-show
-    /// history is the number's.
-    /// </param>
-    /// <param name="bookerPhone">The number the booking is held under, for an unproved booker's history.</param>
+    /// <param name="dinerUserId">Whose booking, for the no-show count and the guest record.</param>
     /// <param name="startUtc">When the booking starts, which caps the answer window.</param>
     /// <param name="shortNotice">Whether the booking is at short notice - see <see cref="ShortNoticeRule.Applies"/>.</param>
     /// <param name="nowUtc">Now, for the no-show window and the answer window.</param>
@@ -2068,9 +1996,7 @@ internal sealed class ReservationService(
         int partySize,
         int? approvedPartySize,
         ReservationPolicy policy,
-        Guid? dinerUserId,
-        bool phoneProved,
-        string? bookerPhone,
+        Guid dinerUserId,
         DateTime startUtc,
         bool shortNotice,
         DateTime nowUtc,
@@ -2086,21 +2012,15 @@ internal sealed class ReservationService(
                 ShortNoticeRule.AnswerDeadline(nowUtc, startUtc));
         }
 
-        if (!policy.AutoConfirm)
+        // The venue looks at every booking - unless it auto-confirms guests with a good record and this is one.
+        // That skips this reason only: the large party and the no-show history below are still asked, and short
+        // notice above and an earlier guest's consent (DecideWithTheTableAsync) never reach here to be skipped.
+        if (!policy.AutoConfirm
+            && !(policy.AutoConfirmGuestsWithGoodRecord
+                 && (await GuestRecords.ForAccountAsync(db, dinerUserId, nowUtc, cancellationToken)).QualifiesAsGood()))
         {
             return new StatusDecision(
                 ReservationStatus.PendingApproval, ApprovalTrigger.BranchApprovesEveryBooking, null);
-        }
-
-        // Nobody proved the number, and the branch looks at such bookings first (the default). With a deadline
-        // - a day, or two hours before the start - after which the sweep declines it for nobody answering, so a
-        // venue that never looks is not holding tables for strangers until the evening.
-        if (!phoneProved && policy.UnverifiedBookingsNeedApproval)
-        {
-            return new StatusDecision(
-                ReservationStatus.PendingApproval,
-                ApprovalTrigger.UnverifiedPhone,
-                UnverifiedBookingRules.AnswerDeadline(nowUtc, startUtc));
         }
 
         var alreadyConfirmedThisMany = approvedPartySize is { } approved && partySize <= approved;
@@ -2117,17 +2037,14 @@ internal sealed class ReservationService(
             return new StatusDecision(ReservationStatus.Confirmed, null, null);
         }
 
-        // A proved booker's history is their account's. An unproved number's is the number's, across every
-        // booking made with it - so a missed booking made without proof follows the number, and somebody
-        // typing a stranger's number cannot touch that stranger's account.
         var windowStartUtc = noShowPolicy.WindowStartUtc(nowUtc);
-        var missed = db.Reservations
+        var noShows = await db.Reservations
             .AsNoTracking()
-            .Where(r => r.Status == ReservationStatus.NoShow && r.StartUtc >= windowStartUtc);
-
-        var noShows = !phoneProved && bookerPhone is not null
-            ? await missed.CountAsync(r => r.BookerPhoneE164 == bookerPhone, cancellationToken)
-            : await missed.CountAsync(r => r.DinerUserId == dinerUserId, cancellationToken);
+            .CountAsync(
+                r => r.DinerUserId == dinerUserId
+                     && r.Status == ReservationStatus.NoShow
+                     && r.StartUtc >= windowStartUtc,
+                cancellationToken);
 
         if (!noShowPolicy.RequiresApproval(noShows))
         {
@@ -2155,6 +2072,13 @@ internal sealed class ReservationService(
         // a question about a table the person on the floor can see and the office cannot, and one that
         // waits for somebody senior to walk past is one the clock declines.
         var staffId = await RequireStaffForBranchAsync(reservation.BranchId, operation, cancellationToken);
+
+        // The platform cancelled it - its guest was blocked for no-shows: said in so many words, not as an answer
+        // already given.
+        if (reservation.CancelledBecause == CancellationCause.NoShowBlock)
+        {
+            throw new ReservationCancelledByBlockException(reservation.Id, reservation.CancelledAtUtc);
+        }
 
         // Waiting on the guest before it to answer in the app: theirs to answer, not the floor's. A yes
         // here would tell them they had agreed to a time they were never asked about. 409.
@@ -2245,6 +2169,12 @@ internal sealed class ReservationService(
 
         var view = await ToViewAsync(
             reservation, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+
+        // The venue decided with the guest's record in front of it; the answer carries it too.
+        view = view with
+        {
+            GuestRecord = await RecordForStaffAsync(reservation, view.PhoneUnverified, branch.TimeZoneId, cancellationToken),
+        };
 
         // The guest's number is the venue's to call, not the platform's to read - as on the floor's list.
         return actor.Role == StaffRole.PlatformAdmin ? view with { GuestPhone = string.Empty } : view;
@@ -2656,49 +2586,97 @@ internal sealed class ReservationService(
                 "Booking {Code} was already released as {Status}; returning that answer.",
                 reservation.Code, reservation.Status);
 
+            // The block this very no-show made, if it made one - its BlockedAtUtc is the instant it was marked.
+            var blockedByThis = reservation is { Status: ReservationStatus.NoShow, DinerUserId: { } blockedAccount }
+                ? await db.BookingBlocks
+                    .AsNoTracking()
+                    .Where(b => b.DinerUserId == blockedAccount && b.BlockedAtUtc == reservation.CancelledAtUtc)
+                    .Select(b => (DateTime?)b.BlockedUntilUtc)
+                    .FirstOrDefaultAsync(cancellationToken)
+                : null;
+
             return await BuildReleaseAsync(
                 reservation, OutcomeOf(reservation.Status), tableFreed: false, table.Id, table.Label,
-                table.Status, wasReplay: true, cancellationToken);
+                table.Status, wasReplay: true, cancellationToken, blockedByThis);
         }
 
         var nowUtc = clock.UtcNow;
         var reason = command.Reason ?? DefaultReleaseReason(command.Outcome);
-
-        if (command.Outcome == ReleaseOutcome.NoShow)
-        {
-            reservation.MarkNoShow(nowUtc);
-        }
-        else
-        {
-            reservation.CancelByVenue(nowUtc, reason);
-        }
-
-        // As for a cancellation: the table is free of this booking, so a question it asked goes, and a
-        // booking waiting on this one's guest no longer has to.
         var releasedFrom = await LoadBranchAsync(reservation.BranchId, cancellationToken);
 
-        await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
-        await TableShares.EarlierChangedAsync(
-            db, outbox, reservation, releasedFrom, nowUtc, cancellationToken);
+        // A no-show of a proved account may be the third in three days: it is recorded under the booking's table
+        // lock and then the account's, in a transaction of its own, so two marked at once at two venues are judged
+        // one after the other - the second sees the first - and the block is neither missed nor written twice.
+        var guest = command.Outcome == ReleaseOutcome.NoShow && !reservation.PhoneUnverified
+            ? reservation.DinerUserId
+            : null;
 
-        // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
-        // after a waiter has already given the table away is the worst of both.
-        await outbox.CancelAsync(
-            OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+        IReadOnlyList<Reservation> cancelledByBlock = [];
+        DateTime? blockedUntilUtc = null;
 
-        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
-
-        // The venue let an accepted booking go, and the diner's feed hears about it (K12). No push has
-        // ever been sent for this; the entry is saved with the release. A no-show tells nobody.
-        if (command.Outcome != ReleaseOutcome.NoShow && reservation.DinerUserId is not null)
+        await using (var locked = await LockForNoShowAsync(reservation, table.Label, guest, cancellationToken))
         {
-            var releasedAt = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+            if (command.Outcome == ReleaseOutcome.NoShow)
+            {
+                // It counts toward a block only when marked after the guest's grace: the start plus the branch's
+                // grace, or the extended hold when that is later (review B1a). Recorded either way, with who marked it.
+                var graceEndsUtc = reservation.StartUtc.AddMinutes(releasedFrom.ReservationPolicy.GraceMinutes);
 
-            DinerNotices.BookingCancelledByVenue(
-                db, reservation, releasedAt.Venue?.Name ?? releasedAt.Name, releasedAt.Name, nowUtc);
+                if (reservation.HoldExpiresAtUtc is { } hold && hold > graceEndsUtc)
+                {
+                    graceEndsUtc = hold;
+                }
+
+                reservation.MarkNoShow(nowUtc, staffId, countsTowardBlock: nowUtc >= graceEndsUtc);
+            }
+            else
+            {
+                reservation.CancelByVenue(nowUtc, reason);
+            }
+
+            // As for a cancellation: the table is free of this booking, so a question it asked goes, and a
+            // booking waiting on this one's guest no longer has to.
+            await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(
+                db, outbox, reservation, releasedFrom, nowUtc, cancellationToken);
+
+            // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
+            // after a waiter has already given the table away is the worst of both.
+            await outbox.CancelAsync(
+                OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
+
+            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+            if (reservation.DinerUserId is not null)
+            {
+                if (command.Outcome == ReleaseOutcome.NoShow)
+                {
+                    // Every no-show is told to the guest, so a mistake is put right with the venue before it counts
+                    // (review B1d). After the cancel above, which would otherwise take it with the reminder.
+                    TellDinerNoShow(reservation, releasedFrom, nowUtc);
+                }
+                else
+                {
+                    // The venue let an accepted booking go, and the diner's feed hears about it (K12).
+                    DinerNotices.BookingCancelledByVenue(
+                        db, reservation, releasedFrom.Venue?.Name ?? releasedFrom.Name, releasedFrom.Name, nowUtc);
+                }
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            // Saved first, so the count reads this one as it reads the others.
+            if (guest is { } account)
+            {
+                (cancelledByBlock, blockedUntilUtc) = await BlockForNoShowsIfDueAsync(account, releasedFrom, nowUtc, cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            await locked.CommitAsync(cancellationToken);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        // The tables a block's cancellations held, given back through the state machine - so every floor sees it.
+        await ReleaseHoldsOfAsync(cancelledByBlock, cancellationToken);
 
         // The table is freed only when it is being held for THIS booking. A table somebody is
         // sitting at is left exactly as it is: the booking is released either way, but a floor plan
@@ -2728,7 +2706,350 @@ internal sealed class ReservationService(
 
         return await BuildReleaseAsync(
             reservation, command.Outcome, freed, table.Id, table.Label, tableStatus,
-            wasReplay: false, cancellationToken);
+            wasReplay: false, cancellationToken, blockedUntilUtc);
+    }
+
+    public async Task<ReservationView> UndoNoShowAsync(
+        UndoNoShowCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var reservation = await LoadReservationAsync(command.ReservationId, cancellationToken);
+        var staffId = await RequireStaffForBranchAsync(reservation.BranchId, "Withdraw a no-show", cancellationToken);
+        var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
+
+        // Already withdrawn: the booking as it stands - a tap sent twice is not refused.
+        if (reservation.Status != ReservationStatus.NoShow && reservation.NoShowUndoneAtUtc is not null)
+        {
+            return await ToViewAsync(reservation, branch, table: null, wasReplay: true, trigger: null, cancellationToken);
+        }
+
+        if (reservation.Status != ReservationStatus.NoShow)
+        {
+            throw new Domain.DomainStateException(
+                $"Only a no-show can be withdrawn; {reservation.Code} is {reservation.Status}.");
+        }
+
+        var nowUtc = clock.UtcNow;
+
+        // Until the end of its service day, 05:00 the next morning on the branch's wall clock. Past it, the record
+        // is settled; a mistake then is support's to put right.
+        var zone = BranchZone.For(branch.TimeZoneId);
+        var undoableUntilUtc = zone.ToUtc(
+            NoShowBlockRules.ServiceDateOf(reservation.LocalDate, reservation.LocalStartTime).AddDays(1),
+            new TimeOnly(NoShowBlockRules.UndoUntilLocalHourNextDay, 0));
+
+        if (nowUtc >= undoableUntilUtc)
+        {
+            throw new NoShowUndoWindowClosedException(undoableUntilUtc);
+        }
+
+        var table = await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == reservation.DiningTableId)
+            .Select(t => t.Label)
+            .FirstAsync(cancellationToken);
+
+        var guest = reservation.PhoneUnverified ? null : reservation.DinerUserId;
+
+        await using (var locked = await LockForNoShowAsync(reservation, table, guest, cancellationToken))
+        {
+            reservation.UndoNoShow(nowUtc, staffId, command.Reason);
+            await db.SaveChangesAsync(cancellationToken);
+
+            // The block this no-show helped make, judged again without it: fewer than three left, and it is lifted.
+            if (guest is { } account)
+            {
+                await LiftBlockIfNoLongerHeldAsync(account, staffId, command.Reason, nowUtc, cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            await locked.CommitAsync(cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Staff {StaffId} withdrew the no-show on booking {Code}: {Reason}",
+            staffId, reservation.Code, command.Reason ?? "(no reason given)");
+
+        var view = await ToViewAsync(reservation, branch, table: null, wasReplay: false, trigger: null, cancellationToken);
+
+        return actor.Role == StaffRole.PlatformAdmin ? view with { GuestPhone = string.Empty } : view;
+    }
+
+    /// <summary>
+    /// The writer's lock for recording a no-show or withdrawing one, with a lock timeout re-labelled as the
+    /// booking-specific one (503, retryable).
+    /// </summary>
+    private async Task<TableLockScope> LockForNoShowAsync(
+        Reservation reservation,
+        string tableLabel,
+        Guid? account,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reservations.LockForNoShowAsync(reservation.DiningTableId, tableLabel, account, cancellationToken);
+        }
+        catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
+        {
+            throw new ReservationLockTimeoutException(ex.TableId, ex.TableLabel, ex.TimeoutMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// "Marked as a no-show at {venue}" - the push and the feed entry beside it, in the caller's unit of work. Keyed
+    /// under the booking with the instant, so a no-show withdrawn and marked again is told again.
+    /// </summary>
+    private void TellDinerNoShow(Reservation reservation, Branch branch, DateTime nowUtc)
+    {
+        if (reservation.DinerUserId is not { } dinerUserId)
+        {
+            return;
+        }
+
+        var venueName = branch.Venue?.Name ?? branch.Name;
+
+        outbox.Enqueue(
+            OutboxMessageTypes.ReservationNoShow,
+            new
+            {
+                reservationId = reservation.Id,
+                dinerUserId,
+                venueName,
+                branchName = branch.Name,
+                tableLabel = string.Empty,
+                localStartTime = reservation.LocalStartTime,
+                reservationCode = reservation.Code,
+                localDate = reservation.LocalDate,
+                partySize = reservation.PartySize,
+                status = reservation.Status,
+            },
+            nowUtc,
+            OutboxMessageTypes.KeyFor(
+                "reservation",
+                reservation.Id,
+                "no-show:" + nowUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture)));
+
+        DinerNotices.BookingNoShow(db, reservation, venueName, branch.Name, nowUtc);
+    }
+
+    /// <summary>
+    /// Blocks the guest for <see cref="NoShowBlockRules.BlockDays"/> days when the no-shows that count toward a block
+    /// reach <see cref="NoShowBlockRules.Threshold"/>, and cancels every booking of theirs not yet started. Stages
+    /// everything in the caller's unit of work; returns the bookings it cancelled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called under the account's lock, inside the release's transaction, after the no-show is saved: every no-show
+    /// is read as committed - one another venue marked a moment ago included, since it held the same lock until it
+    /// committed.
+    /// </para>
+    /// <para>
+    /// What counts is <see cref="GuestRecords.BlockingNoShowDaysAsync"/>: the account's own proved bookings, marked
+    /// after the guest's grace, at most one per venue per service day, started in the last 72 hours and after the
+    /// last block ended or was lifted. So one venue can never block a guest in one evening, a waiter who is quick
+    /// to mark never does, and a lifted block's no-shows never block again.
+    /// </para>
+    /// <para>
+    /// A block already in force is left as it is: a fourth no-show in the same days neither extends it nor
+    /// cancels again (there is nothing left to cancel; the block refused every booking since).
+    /// </para>
+    /// </remarks>
+    private async Task<(IReadOnlyList<Reservation> Cancelled, DateTime? BlockedUntilUtc)> BlockForNoShowsIfDueAsync(
+        Guid account,
+        Branch triggeredAt,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var counted = await GuestRecords.BlockingNoShowDaysAsync(db, account, nowUtc, cancellationToken);
+
+        if (counted < NoShowBlockRules.Threshold)
+        {
+            return ([], null);
+        }
+
+        var proved = await db.DinerUsers
+            .AsNoTracking()
+            .Where(d => d.Id == account && d.PhoneVerifiedAtUtc != null)
+            .Select(d => d.PhoneE164)
+            .FirstOrDefaultAsync(cancellationToken);
+        var phone = BookerPhone(proved);
+
+        if (await GuestRecords.BlockedUntilAsync(db, account, phone, nowUtc, cancellationToken) is not null)
+        {
+            return ([], null);
+        }
+
+        var block = new BookingBlock(account, phone, nowUtc);
+        db.BookingBlocks.Add(block);
+
+        // Every booking of the guest's not yet started, at every venue. Read with an update lock, so a guest
+        // cancelling or moving one this moment waits for this to commit rather than failing it (review N8).
+        var toCancel = await db.Reservations
+            .FromSql(
+                $"""
+                 SELECT * FROM dbo.Reservations WITH (UPDLOCK, ROWLOCK)
+                 WHERE DinerUserId = {account} AND Status IN (1, 2) AND StartUtc > {nowUtc}
+                 """)
+            .ToListAsync(cancellationToken);
+
+        foreach (var booking in toCancel)
+        {
+            booking.CancelForNoShowBlock(nowUtc);
+
+            // As for any cancellation: its questions go, the guest before it is settled, and its unsent reminders
+            // and feed entries go with it.
+            var branch = await LoadBranchAsync(booking.BranchId, cancellationToken);
+
+            await TableShares.CloseForLaterAsync(db, booking.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(db, outbox, booking, branch, nowUtc, cancellationToken);
+            await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", booking.Id), cancellationToken);
+            await DinerNotices.CancelUnshownAsync(db, booking.Id, nowUtc, cancellationToken);
+        }
+
+        // Each venue is told on its change stream: a row on the booking's table, naming it (review S8).
+        await SignalBlockCancellationsAsync(toCancel, nowUtc, cancellationToken);
+
+        // One push and one feed entry for the whole block: what happened, and the day they can book again - on the
+        // wall clock of the venue whose no-show made it (review N3).
+        var until = block.BlockedUntilUtc;
+        var untilLocal = BranchZone.For(triggeredAt.TimeZoneId).LocalDateAt(until);
+
+        outbox.Enqueue(
+            OutboxMessageTypes.DinerBookingsBlocked,
+            new
+            {
+                dinerUserId = account,
+                blockedUntilUtc = until,
+                blockedUntilLocalDate = untilLocal,
+                cancelledCount = toCancel.Count,
+            },
+            nowUtc,
+            OutboxMessageTypes.KeyFor("booking-block", block.Id, "notice"));
+
+        DinerNotices.BookingsBlockedForNoShows(db, account, until, untilLocal, toCancel.Count, nowUtc);
+
+        logger.LogInformation(
+            "Diner {DinerUserId} missed bookings at {Days} venue-days in {Hours} hours; blocked until {BlockedUntilUtc} and {Cancelled} bookings cancelled.",
+            account, counted, NoShowBlockRules.WindowHours, until, toCancel.Count);
+
+        return (toCancel, until);
+    }
+
+    /// <summary>
+    /// Lifts the guest's block in force when, without the no-show just withdrawn, fewer than
+    /// <see cref="NoShowBlockRules.Threshold"/> are left to hold it - counted as of when it began. Nothing it
+    /// cancelled comes back; the guest is told they can book again. Stages in the caller's unit of work.
+    /// </summary>
+    private async Task LiftBlockIfNoLongerHeldAsync(
+        Guid account,
+        Guid staffId,
+        string? reason,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var block = await db.BookingBlocks
+            .Where(b => b.DinerUserId == account && b.LiftedAtUtc == null && b.BlockedUntilUtc > nowUtc)
+            .OrderByDescending(b => b.BlockedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (block is null
+            || await GuestRecords.BlockingNoShowDaysAsync(db, account, block.BlockedAtUtc, cancellationToken)
+               >= NoShowBlockRules.Threshold)
+        {
+            return;
+        }
+
+        block.Lift(nowUtc, BookingBlockLiftCause.NoShowUndone, staffId, reason);
+        TellDinerUnblocked(db, outbox, block, nowUtc);
+
+        logger.LogInformation(
+            "The no-show block on diner {DinerUserId} was lifted: a no-show was withdrawn and fewer than {Threshold} remain.",
+            account, NoShowBlockRules.Threshold);
+    }
+
+    /// <summary>"You can book again" - the push and the feed entry, in the caller's unit of work.</summary>
+    internal static void TellDinerUnblocked(YallaDbContext db, IOutbox outbox, BookingBlock block, DateTime nowUtc)
+    {
+        outbox.Enqueue(
+            OutboxMessageTypes.DinerBookingsUnblocked,
+            new { dinerUserId = block.DinerUserId, liftedBecause = block.LiftedBecause },
+            nowUtc,
+            OutboxMessageTypes.KeyFor("booking-block", block.Id, "lifted"));
+
+        DinerNotices.BookingsUnblocked(db, block.DinerUserId, block.LiftedBecause!.Value, nowUtc);
+    }
+
+    /// <summary>
+    /// Puts each booking a block cancelled on its branch's change stream: a same-status row on its table, naming the
+    /// booking, with signal <see cref="TableChangeSignal.BookingCancelledByBlock"/> - so the floor and the console
+    /// refetch and see why. A table held for it is freed afterwards, through the state machine.
+    /// </summary>
+    private async Task SignalBlockCancellationsAsync(
+        IReadOnlyList<Reservation> cancelled,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        if (cancelled.Count == 0)
+        {
+            return;
+        }
+
+        var tableIds = cancelled.Select(r => r.DiningTableId).Distinct().ToList();
+        var statuses = await db.DiningTables
+            .AsNoTracking()
+            .Where(t => tableIds.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
+
+        foreach (var booking in cancelled)
+        {
+            var status = statuses.GetValueOrDefault(booking.DiningTableId, TableStatus.Free);
+
+            db.TableStateChanges.Add(
+                new Domain.Audit.TableStateChange(
+                    booking.BranchId,
+                    booking.DiningTableId,
+                    status,
+                    status,
+                    NoShowBlockRules.CancellationReason,
+                    ActorType.System,
+                    nowUtc,
+                    Guid.CreateVersion7(),
+                    reservationId: booking.Id)
+                .WithSignal(TableChangeSignal.BookingCancelledByBlock));
+        }
+    }
+
+    /// <summary>
+    /// Gives back, through the table state machine, the tables held for bookings a block just cancelled - so the
+    /// change stream moves and every floor sees them free. Best effort: the cancellations are already committed,
+    /// and a hold left behind is the floor's to release by hand, as for any cancelled booking.
+    /// </summary>
+    private async Task ReleaseHoldsOfAsync(IReadOnlyList<Reservation> cancelled, CancellationToken cancellationToken)
+    {
+        foreach (var booking in cancelled)
+        {
+            try
+            {
+                var held = await db.DiningTables
+                    .AsNoTracking()
+                    .AnyAsync(t => t.Id == booking.DiningTableId && t.Status == TableStatus.Held, cancellationToken);
+
+                if (held && await HoldIsForAsync(booking.DiningTableId, booking.Id, cancellationToken))
+                {
+                    await tableState.ReleaseHoldAsync(
+                        new TableStateCommand(
+                            booking.BranchId, booking.DiningTableId, Guid.CreateVersion7(), NoShowBlockRules.CancellationReason),
+                        cancellationToken);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    ex, "The hold for booking {Code}, cancelled by a no-show block, was not released.", booking.Code);
+            }
+        }
     }
 
     /// <summary>
@@ -2768,7 +3089,8 @@ internal sealed class ReservationService(
         string tableLabel,
         TableStatus tableStatus,
         bool wasReplay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTime? guestBlockedUntilUtc = null)
     {
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
 
@@ -2786,7 +3108,10 @@ internal sealed class ReservationService(
             // Stated rather than implied. A client should be able to tell the waiter "this one goes
             // on their record" without knowing the rule.
             CountsTowardNoShowThreshold: outcome == ReleaseOutcome.NoShow,
-            wasReplay);
+            wasReplay,
+
+            // Set when this no-show blocked the guest, so the floor can say so at once.
+            GuestBlockedUntilUtc: guestBlockedUntilUtc);
     }
 
     /// <summary>
@@ -3021,10 +3346,7 @@ internal sealed class ReservationService(
             trigger: null,
             incoming: row.Incoming,
             awaitsEarlierGuestAnswer: row.AwaitsEarlierGuestAnswer,
-            phoneUnverifiedNow: row.PhoneUnverifiedNow) with
-        {
-            MadeWithYourNumber = row.MadeWithYourNumber,
-        };
+            phoneUnverifiedNow: row.PhoneUnverifiedNow);
 
     private static ReservationView BuildView(
         Reservation reservation,
@@ -3061,6 +3383,9 @@ internal sealed class ReservationService(
             // Derived for display only. The stored wall-clock start is the one the diner was
             // shown and is never recomputed.
             LocalEndTime = zone.LocalTimeAt(reservation.EndUtc),
+
+            // Set only when the platform cancelled it - a guest's no-show block.
+            CancelledBecause = reservation.CancelledBecause,
 
             Status = reservation.Status,
             GuestName = reservation.GuestName,
@@ -3197,9 +3522,6 @@ internal sealed class ReservationService(
 
         /// <summary>Whether this booking waits on the guest before it to answer in the app.</summary>
         public bool AwaitsEarlierGuestAnswer { get; init; }
-
-        /// <summary>Made by somebody else, with the reader's number and no proof.</summary>
-        public bool MadeWithYourNumber { get; init; }
 
         /// <summary>
         /// Made without a proved number by a booker who has not proved it since. Null where the read did not

@@ -172,7 +172,7 @@ public sealed record LeadTimeBucket(int UpToHours, int Bookings);
 /// <param name="Scope">What was asked for.</param>
 /// <param name="Booked">Bookings made for a sitting in the period.</param>
 /// <param name="Seated">Those the party turned up for.</param>
-/// <param name="Cancelled">Those called off, by anyone.</param>
+/// <param name="Cancelled">Those called off by the guest or the venue - not the platform's (see <paramref name="SystemCancelled"/>).</param>
 /// <param name="NoShow">Those where grace ran out and the table was released.</param>
 /// <param name="NoShowRate">No-shows over bookings. The number the whole reminder feature exists to move.</param>
 /// <param name="CancellationRate">Cancellations over bookings.</param>
@@ -181,6 +181,10 @@ public sealed record LeadTimeBucket(int UpToHours, int Bookings);
 /// cancellation because a table given up in time is resold and one given up at 19:50 is not.
 /// </param>
 /// <param name="LeadTime">How far ahead people book - what <c>BookingWindowDays</c> should be set from.</param>
+/// <param name="SystemCancelled">
+/// Cancelled by the platform, not the venue: the guest was blocked for three no-shows in three days elsewhere. Left
+/// out of <paramref name="Cancelled"/>, its rate and <paramref name="LateCancellations"/>.
+/// </param>
 /// <param name="WebBookingsWithoutAnApp">
 /// Booked from the public page by somebody with no registered device. <b>These people cannot be
 /// reminded</b>: no app means no push channel, so the reminder, the late nudge and one-tap cancel -
@@ -197,7 +201,8 @@ public sealed record ReservationReport(
     Compared CancellationRate,
     Compared LateCancellations,
     IReadOnlyList<LeadTimeBucket> LeadTime,
-    Compared WebBookingsWithoutAnApp);
+    Compared WebBookingsWithoutAnApp,
+    Compared? SystemCancelled = null);
 
 // ------------------------------------------------------------------ revenue
 

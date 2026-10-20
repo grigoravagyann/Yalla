@@ -25,4 +25,20 @@ internal sealed class DinerNotificationRetention(YallaDbContext db, IClock clock
             .Where(n => n.CreatedAtUtc < cutoffUtc)
             .ExecuteDeleteAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Takes the number off ended no-show blocks of deleted accounts (review S7). A block in force when its account
+    /// was deleted keeps the number so re-registering does not escape it; once it ends, the number is nobody's
+    /// business any more.
+    /// </summary>
+    public Task<int> ForgetEndedBlockNumbersAsync(CancellationToken cancellationToken = default)
+    {
+        var nowUtc = clock.UtcNow;
+
+        return db.BookingBlocks
+            .Where(b => b.PhoneE164 != null
+                        && (b.LiftedAtUtc != null || b.BlockedUntilUtc <= nowUtc)
+                        && db.DinerUsers.Any(d => d.Id == b.DinerUserId && d.DeletedAtUtc != null))
+            .ExecuteUpdateAsync(set => set.SetProperty(b => b.PhoneE164, (string?)null), cancellationToken);
+    }
 }

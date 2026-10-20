@@ -17,10 +17,11 @@ namespace Yalla.UnitTests.Integration;
 /// <c>Asia/Yerevan</c> (UTC+4) on the shipped restaurant policy - a 90-minute turn; "now" is noon on
 /// Thursday 10 September 2026 there and the evening booked is Sunday the 13th's.
 /// <para>
-/// Since 2026-10-20 one phone number holds one active booking (<see cref="UnverifiedBookingTests"/>), so a
-/// second booking of the same diner's is refused by that rule first. These tests are about the overlap rule
-/// itself, which still decides a pair from before the number rule - and a diner's seated booking - so they
-/// mark the earlier bookings as such (<c>MakeBookingsFromBeforeTheNumberRuleAsync</c>).
+/// Since 2026-10-20 one proved number holds at most three active bookings (<see cref="BookingPerNumberTests"/>),
+/// and the rule reaches every venue: at another one the two sittings need half an hour between them. These tests
+/// are about the rule at one branch - unchanged - and some still mark earlier bookings as held by no number
+/// (<c>MakeBookingsFromBeforeTheNumberRuleAsync</c>, from the one-booking rule), which the overlap, keyed on the
+/// account as well, still sees.
 /// </para>
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
@@ -66,19 +67,22 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(Sunday, mapped.Context["localDate"]);
         Assert.Equal("2", mapped.Context["tableLabel"]);
 
-        // A booking that does not overlap is then the number rule's: one active booking per number, named to
-        // her because it is hers.
-        var held = await Assert.ThrowsAsync<PhoneHasActiveBookingException>(
-            () => bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(12, 0))));
-        Assert.Equal(first.Id, held.Existing!.ReservationId);
+        Assert.False(string.IsNullOrEmpty((string?)mapped.Context["venueName"]));
+        Assert.Equal(first.BranchName, mapped.Context["branchName"]);
 
-        // Nothing was written: one booking, the first.
+        // A booking that does not overlap is fine now (2026-10-20: up to three per number, not one).
+        var lunch = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(12, 0)));
+
+        // Nothing else was written: the first, and lunch.
         await using var check = fixture.CreateContext(clock);
-        Assert.Equal(1, await check.Reservations.CountAsync(r => r.BranchId == branch.BranchId));
+        var written = await check.Reservations.Where(r => r.BranchId == branch.BranchId).Select(r => r.Id).ToListAsync();
+        Assert.Equal(2, written.Count);
+        Assert.Contains(first.Id, written);
+        Assert.Contains(lunch.Id, written);
     }
 
     [SkippableFact]
-    public async Task Back_to_back_another_branch_another_diner_and_a_cancelled_booking_are_all_allowed()
+    public async Task Back_to_back_another_diner_and_a_cancelled_booking_are_allowed_and_another_branch_needs_a_gap()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -97,8 +101,14 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         Assert.Equal(ReservationStatus.Confirmed, after.Status);
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, after.Id);
 
-        // Another branch is another evening out, and another diner is somebody else.
-        var away = await bella.CreateAsync(Booking(elsewhere, elsewhere.TableIds[0], new TimeOnly(18, 30)));
+        // Another branch needs half an hour to get there (2026-10-20): 18:30 elsewhere runs into both of hers,
+        // 21:30 - half an hour after the 19:30 sitting ends - does not. Another diner is somebody else.
+        var tooClose = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
+            () => bella.CreateAsync(Booking(elsewhere, elsewhere.TableIds[0], new TimeOnly(18, 30))));
+        Assert.Equal(first.Id, tooClose.ReservationId);
+        Assert.NotNull(tooClose.VenueName);
+
+        var away = await bella.CreateAsync(Booking(elsewhere, elsewhere.TableIds[0], new TimeOnly(21, 30)));
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, away.Id);
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.TableIds[2], new TimeOnly(18, 30)));
@@ -107,6 +117,47 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         await bella.CancelAsync(new CancelReservationCommand(first.Id));
         var instead = await bella.CreateAsync(Booking(branch, branch.TableIds[0], new TimeOnly(16, 45)));
         Assert.Equal(ReservationStatus.Confirmed, instead.Status);
+    }
+
+    /// <summary>
+    /// Another venue's half hour is measured from where the sitting really ends: a 13:00 promising to leave by 13:55
+    /// lets the same diner start elsewhere at 14:25, not at 14:20. Two branches of one venue are two places to get
+    /// between, so the gap applies to them as to any two branches (review S9).
+    /// </summary>
+    [SkippableFact]
+    public async Task The_gap_to_another_venue_runs_from_a_cut_sitting_and_applies_between_two_branches_of_one_venue()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now);
+        await using var db = fixture.CreateContext(clock);
+        var here = await TestBranchBuilder.CreateAsync(db);
+        var there = await TestBranchBuilder.CreateAsync(db);
+        var sibling = await TestBranchBuilder.CreateAsync(db);
+
+        // The sibling is another branch of here's venue.
+        await db.Database.ExecuteSqlAsync($"UPDATE dbo.Branches SET VenueId = {here.VenueId} WHERE Id = {sibling.BranchId}");
+
+        // Somebody else has here's table 1 at 14:00, so Bella's 13:00 there is cut to 13:55.
+        await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(here, here.TableIds[0], new TimeOnly(14, 0)));
+
+        var bella = fixture.CreateReservationService(db, clock, TestActor.Diner());
+        var lunch = await bella.CreateAsync(
+            Booking(here, here.TableIds[0], new TimeOnly(13, 0), acceptsFreeByUtc: SundayAt(13, 55)));
+        Assert.Equal(SundayAt(13, 55), lunch.EndUtc);
+
+        var tooSoon = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
+            () => bella.CreateAsync(Booking(there, there.TableIds[0], new TimeOnly(14, 20))));
+        Assert.Equal(lunch.Id, tooSoon.ReservationId);
+
+        var afterLunch = await bella.CreateAsync(Booking(there, there.TableIds[0], new TimeOnly(14, 25)));
+        Assert.Equal(ReservationStatus.Confirmed, afterLunch.Status);
+
+        // The venue's other branch at 14:00 runs into lunch's half hour, as any other place would.
+        var sameVenue = await Assert.ThrowsAsync<ReservationOverlapsOwnException>(
+            () => bella.CreateAsync(Booking(sibling, sibling.TableIds[0], new TimeOnly(11, 30))));
+        Assert.Equal(lunch.Id, sameVenue.ReservationId);
     }
 
     [SkippableFact]

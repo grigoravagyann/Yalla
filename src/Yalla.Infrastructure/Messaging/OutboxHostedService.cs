@@ -126,6 +126,9 @@ internal sealed class OutboxHostedService(
 
             var deleted = await retention.PurgeAsync(cancellationToken);
 
+            // And the numbers on ended blocks of deleted accounts, on the same daily pass.
+            await retention.ForgetEndedBlockNumbersAsync(cancellationToken);
+
             if (deleted > 0)
             {
                 logger.LogInformation(

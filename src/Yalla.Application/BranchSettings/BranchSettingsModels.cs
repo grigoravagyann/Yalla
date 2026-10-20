@@ -61,9 +61,8 @@ public sealed record ReservationPolicyView(
     int? MaxSeatOverhang,
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes,
-    bool UnverifiedBookingsNeedApproval,
-    int UnverifiedMaxPartySize,
-    bool UnverifiedScansNeedAdmission)
+    bool UnverifiedScansNeedAdmission,
+    bool AutoConfirmGuestsWithGoodRecord)
 {
     public static ReservationPolicyView From(ReservationPolicy p) => new(
         p.TurnTimeMinutes,
@@ -80,16 +79,21 @@ public sealed record ReservationPolicyView(
         p.MaxSeatOverhang,
         p.ApprovalRequiredAbovePartySize,
         p.WalkInHoldbackMinutes,
-        p.UnverifiedBookingsNeedApproval,
-        p.UnverifiedMaxPartySize,
-        p.UnverifiedScansNeedAdmission);
+        p.UnverifiedScansNeedAdmission,
+        p.AutoConfirmGuestsWithGoodRecord);
 }
 
 /// <summary>Every field of the policy, as written. The whole form is replaced at once.</summary>
 /// <remarks>
-/// <c>UnverifiedBookingsNeedApproval</c>, <c>UnverifiedMaxPartySize</c> and <c>UnverifiedScansNeedAdmission</c>
-/// (2026-10-20) are the exception: left out, they keep what the branch has - a console from before them must
-/// not reset an owner's choice.
+/// <para>
+/// <c>UnverifiedScansNeedAdmission</c> and <c>AutoConfirmGuestsWithGoodRecord</c> (2026-10-20) are the exception:
+/// left out, they keep what the branch has - a console from before them must not reset an owner's choice.
+/// </para>
+/// <para>
+/// <c>unverifiedBookingsNeedApproval</c> and <c>unverifiedMaxPartySize</c>, which Yalla#54 added, are gone with
+/// booking without a verified number; a console that still sends them is not refused - unknown members are
+/// ignored - and nothing reads them.
+/// </para>
 /// </remarks>
 public sealed record ReservationPolicyCommand(
     int TurnTimeMinutes,
@@ -106,9 +110,8 @@ public sealed record ReservationPolicyCommand(
     int? MaxSeatOverhang,
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes = 30,
-    bool? UnverifiedBookingsNeedApproval = null,
-    int? UnverifiedMaxPartySize = null,
-    bool? UnverifiedScansNeedAdmission = null)
+    bool? UnverifiedScansNeedAdmission = null,
+    bool? AutoConfirmGuestsWithGoodRecord = null)
 {
     /// <summary>
     /// Builds the policy, applying the editing bounds first.
@@ -126,11 +129,8 @@ public sealed record ReservationPolicyCommand(
     /// <param name="current">The branch's policy now, for the two fields a client may leave out; null takes the defaults.</param>
     public ReservationPolicy ToPolicy(ReservationPolicy? current = null)
     {
-        var unverifiedNeedApproval = UnverifiedBookingsNeedApproval ?? current?.UnverifiedBookingsNeedApproval ?? true;
         var unverifiedScansNeedAdmission = UnverifiedScansNeedAdmission ?? current?.UnverifiedScansNeedAdmission ?? true;
-        var unverifiedMaxPartySize = UnverifiedMaxPartySize
-                                     ?? current?.UnverifiedMaxPartySize
-                                     ?? ReservationPolicy.DefaultUnverifiedMaxPartySize;
+        var autoConfirmGoodRecord = AutoConfirmGuestsWithGoodRecord ?? current?.AutoConfirmGuestsWithGoodRecord ?? false;
 
         ReservationPolicyLimits.Validate(
             TurnTimeMinutes,
@@ -144,8 +144,7 @@ public sealed record ReservationPolicyCommand(
             ServiceChargePercent,
             MaxSeatOverhang,
             ApprovalRequiredAbovePartySize,
-            WalkInHoldbackMinutes,
-            unverifiedMaxPartySize);
+            WalkInHoldbackMinutes);
 
         return new ReservationPolicy(
             TurnTimeMinutes,
@@ -162,9 +161,8 @@ public sealed record ReservationPolicyCommand(
             MaxSeatOverhang,
             ApprovalRequiredAbovePartySize,
             WalkInHoldbackMinutes,
-            unverifiedBookingsNeedApproval: unverifiedNeedApproval,
-            unverifiedMaxPartySize: unverifiedMaxPartySize,
-            unverifiedScansNeedAdmission: unverifiedScansNeedAdmission);
+            unverifiedScansNeedAdmission: unverifiedScansNeedAdmission,
+            autoConfirmGuestsWithGoodRecord: autoConfirmGoodRecord);
     }
 }
 
@@ -199,7 +197,6 @@ public sealed record ReservationPolicyDefaultsView(
         new(ReservationPolicyLimits.Fields.GraceExtensionMinutes, 0, ReservationPolicyLimits.MaxGraceExtensionMinutes),
         new(ReservationPolicyLimits.Fields.ApprovalRequiredAbovePartySize, ReservationPolicyLimits.MinApprovalRequiredAbovePartySize, null),
         new(ReservationPolicyLimits.Fields.ServiceChargePercent, 0m, 100m),
-        new(ReservationPolicyLimits.Fields.UnverifiedMaxPartySize, ReservationPolicyLimits.MinUnverifiedMaxPartySize, ReservationPolicyLimits.MaxUnverifiedMaxPartySize),
     ];
 }
 

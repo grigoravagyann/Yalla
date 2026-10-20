@@ -184,6 +184,10 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
         services.AddScoped<IOutboxHandler, ReservationChangedByLinkHandler>();
         services.AddScoped<IOutboxHandler, ReservationCancelledByLinkHandler>();
+        services.AddScoped<IOutboxHandler, DinerBookingsBlockedHandler>();
+        services.AddScoped<IOutboxHandler, DinerBookingsUnblockedHandler>();
+        services.AddScoped<IOutboxHandler, ReservationNoShowHandler>();
+        services.AddScoped<Yalla.Application.Reservations.IBookingBlockService, BookingBlockService>();
         services.AddScoped<IOutboxHandler, TableRequestHandler>();
         services.AddScoped<IOutboxHandler, TableRequestDecidedHandler>();
         services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();

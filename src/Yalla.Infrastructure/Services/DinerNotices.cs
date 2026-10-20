@@ -180,6 +180,42 @@ internal static class DinerNotices
                 ["status"] = ((int)reservation.Status).ToString(CultureInfo.InvariantCulture),
             });
 
+    /// <summary>
+    /// The guest was blocked for three no-shows in three days, and their bookings not yet started were cancelled.
+    /// One entry for the whole block, not one per booking: the booking ids are not the point, the week is.
+    /// </summary>
+    public static void BookingsBlockedForNoShows(
+        YallaDbContext db,
+        Guid dinerUserId,
+        DateTime blockedUntilUtc,
+        DateOnly blockedUntilLocalDate,
+        int cancelledCount,
+        DateTime atUtc) =>
+        db.DinerNotifications.Add(new DinerNotification(
+            dinerUserId,
+            DinerNotificationKinds.BookingsBlockedNoShows,
+            Params(new()
+            {
+                ["blockedUntilUtc"] = blockedUntilUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                ["blockedUntilLocalDate"] = blockedUntilLocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["cancelledCount"] = cancelledCount.ToString(CultureInfo.InvariantCulture),
+            }),
+            atUtc));
+
+    /// <summary>A venue marked the booking a no-show - told every time, so a mistake is put right in time.</summary>
+    public static void BookingNoShow(
+        YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>
+        Booking(db, DinerNotificationKinds.BookingNoShow, reservation, venueName, branchName, atUtc);
+
+    /// <summary>The guest's no-show block was lifted early; what it cancelled stays cancelled.</summary>
+    public static void BookingsUnblocked(
+        YallaDbContext db, Guid dinerUserId, BookingBlockLiftCause because, DateTime atUtc) =>
+        db.DinerNotifications.Add(new DinerNotification(
+            dinerUserId,
+            DinerNotificationKinds.BookingsUnblocked,
+            Params(new() { ["liftedBecause"] = ((int)because).ToString(CultureInfo.InvariantCulture) }),
+            atUtc));
+
     /// <summary>The booking was cancelled from its manage link.</summary>
     public static void BookingCancelledByLink(
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>

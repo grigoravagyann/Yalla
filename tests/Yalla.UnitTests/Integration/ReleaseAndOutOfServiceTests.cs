@@ -201,7 +201,7 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 6);
         var diner = TestActor.Diner();
 
-        // Three no-shows: the threshold is three, so the fourth booking is the one that costs it.
+        // Three no-shows, days apart: the threshold is three, so the fourth booking is the one that costs it.
         for (var i = 0; i < 3; i++)
         {
             var booking = await BookAsync(branch, branch.TableIds[i], new TimeOnly(18 + i, 0), clock, diner);
@@ -227,6 +227,13 @@ public sealed class ReleaseAndOutOfServiceTests(SqlServerFixture fixture)
 
             Assert.True(await verify.TableStateChanges.AnyAsync(
                 c => c.DiningTableId == branch.TableIds[i] && c.ToStatus == TableStatus.Free));
+
+            // Days apart, as a history is: three no-shows starting within 72 hours would block the diner for a
+            // week instead (NoShowBlockRules) - GuestRecordTests' subject, not this one's.
+            if (i < 2)
+            {
+                await fixture.MoveBookingsBackAsync(clock, TimeSpan.FromDays(4 * (2 - i)), booking);
+            }
         }
 
         // The next booking now waits for a human - one for another evening, so it is the record that

@@ -6,6 +6,7 @@ using Yalla.Application.Messaging;
 using Yalla.Application.Overview;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
@@ -126,6 +127,14 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 Channel = r.Channel,
                 HoldExpiresAtUtc = r.HoldExpiresAtUtc,
                 HasAccount = r.DinerUserId != null,
+
+                // The account whose record the venue sees beside the booking: one that proved its number.
+                // The same test as the bookings list: an account whose number is proved now (review N2).
+                RecordedAccount = r.PhoneUnverified
+                                  && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null)
+                    ? null
+                    : r.DinerUserId,
+                CancelledBecause = r.CancelledBecause,
                 PreviousStartUtc = r.PreviousStartUtc,
                 PreviousEndUtc = r.PreviousEndUtc,
                 PreviousLocalDate = r.PreviousLocalDate,
@@ -148,6 +157,13 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         var nudges = await LateNudgesAsync(entries, cancellationToken);
 
         var listed = entries.Where(e => !IsCancelled(e.Status)).ToList();
+
+        // Each guest's record, one grouped statement for the whole list (none when no listed guest has one).
+        var records = await GuestRecords.ForAccountsAsync(
+            db,
+            listed.Take(BranchReservationList.MaxRows).Where(ShowsRecord).Select(e => e.Row.RecordedAccount!.Value),
+            nowUtc,
+            cancellationToken);
 
         return new BranchOverview(
             branchId,
@@ -191,7 +207,8 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                         // booking is anything else, the column is history.
                         confirmed ? e.HoldExpiresAtUtc : null,
                         nudge?.AtUtc,
-                        nudge?.Sent);
+                        nudge?.Sent,
+                        ShowsRecord(e) && records.TryGetValue(e.Row.RecordedAccount!.Value, out var record) ? record : null);
                 })],
             listed.Count > BranchReservationList.MaxRows);
     }
@@ -287,6 +304,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             Completed: Of(ReservationStatus.Completed),
             NoShow: Of(ReservationStatus.NoShow),
             Cancelled: entries.Count(e => IsCancelled(e.Status)),
+            CancelledBySystem: entries.Count(e => IsCancelled(e.Status) && e.Row.CancelledBecause is not null),
             People: entries
                 .Where(e => IsBooked(e.Counted) || e.Counted == ReservationStatus.PendingApproval)
                 .Sum(e => e.PartySize),
@@ -504,6 +522,14 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
     private static bool IsBooked(ReservationStatus status) =>
         status is ReservationStatus.Confirmed or ReservationStatus.Seated or ReservationStatus.Completed;
 
+    /// <summary>
+    /// Whether the list shows the guest's record beside a booking: a proved account behind it, and still pending or
+    /// confirmed (review S3) - the day's sitting, never a finished one.
+    /// </summary>
+    private static bool ShowsRecord(Entry e) =>
+        e.Row.RecordedAccount is not null
+        && e.Row.Status is ReservationStatus.PendingApproval or ReservationStatus.Confirmed;
+
     private static bool IsCancelled(ReservationStatus status) =>
         status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue;
 
@@ -608,6 +634,12 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         public DateTime? HoldExpiresAtUtc { get; init; }
 
         public bool HasAccount { get; init; }
+
+        /// <summary>The booking's account when it made the booking with a proved number - whose record is shown.</summary>
+        public Guid? RecordedAccount { get; init; }
+
+        /// <summary>Set when the platform cancelled it (a guest's no-show block).</summary>
+        public CancellationCause? CancelledBecause { get; init; }
 
         public DateTime? PreviousStartUtc { get; init; }
 

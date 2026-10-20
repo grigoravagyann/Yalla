@@ -44,14 +44,14 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
             {
                 await db.GetService<IMigrator>().MigrateAsync(MigrationBefore);
 
-                // StaffSessionGeneration, SpecialDaysVersion and UnverifiedGuests sort after this migration, but today's StaffMember
+                // StaffSessionGeneration, SpecialDaysVersion and UnverifiedGuests and GuestRecord sort after this migration, but today's StaffMember
                 // Branch and Reservation write their columns, so they are put in place for the fixture to find.
                 await db.Database.ExecuteSqlRawAsync(
                     "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
                     + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;"
-                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedBookingsNeedApproval bit NOT NULL CONSTRAINT DF_Test_UnverifiedApproval DEFAULT 1; "
-                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedMaxPartySize int NOT NULL CONSTRAINT DF_Test_UnverifiedMaxParty DEFAULT 6; ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedScansNeedAdmission bit NOT NULL CONSTRAINT DF_Test_UnverifiedScans DEFAULT 1;"
-                    + "ALTER TABLE dbo.Reservations ADD PhoneUnverified bit NOT NULL CONSTRAINT DF_Test_PhoneUnverified DEFAULT 0, BookerPhoneE164 nvarchar(32) NULL, BookerDeviceHash nvarchar(128) NULL;");
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_AutoConfirmGuestsWithGoodRecord bit NOT NULL CONSTRAINT DF_Test_GoodRecord DEFAULT 0; "
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedScansNeedAdmission bit NOT NULL CONSTRAINT DF_Test_UnverifiedScans DEFAULT 1;"
+                    + "ALTER TABLE dbo.Reservations ADD PhoneUnverified bit NOT NULL CONSTRAINT DF_Test_PhoneUnverified DEFAULT 0, BookerPhoneE164 nvarchar(32) NULL, CancelledBecause int NULL, LateCancellationCounts bit NOT NULL CONSTRAINT DF_Test_LateCounts DEFAULT 0, NoShowCountsTowardBlock bit NOT NULL CONSTRAINT DF_Test_NoShowCounts DEFAULT 0, NoShowMarkedByStaffId uniqueidentifier NULL, NoShowUndoReason nvarchar(500) NULL, NoShowUndoneAtUtc datetime2 NULL, NoShowUndoneByStaffId uniqueidentifier NULL; ALTER TABLE dbo.TableStateChanges ADD Signal int NULL;");
 
                 // Nothing the branch, its tables or its room write changed in this migration, so today's
                 // entities write the schema before it as they are.

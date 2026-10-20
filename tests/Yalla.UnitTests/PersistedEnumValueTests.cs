@@ -439,6 +439,10 @@ public class PersistedEnumValueTests
         Assert.Equal(1, (int)TableChangeSignal.TabAwaitingAdmission);
         Assert.Equal(2, (int)TableChangeSignal.TabAdmitted);
         Assert.Equal(3, (int)TableChangeSignal.TabAdmissionRejected);
+
+        // The guest record (2026-10-20): a block's cancellation, and any booking event, on the change stream.
+        Assert.Equal(4, (int)TableChangeSignal.BookingCancelledByBlock);
+        Assert.Equal(5, (int)TableChangeSignal.BookingChanged);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>

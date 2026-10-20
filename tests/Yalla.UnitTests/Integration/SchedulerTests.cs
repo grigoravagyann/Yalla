@@ -360,13 +360,12 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         var offersNone = await TestBranchBuilder.CreateAsync(
             db, policy: WithoutExtensions(ReservationPolicy.DefaultFor(VenueType.Restaurant)));
         var offersOne = await TestBranchBuilder.CreateAsync(db);
+        // Two diners: one diner's two dinners at two venues at the same hour are refused (2026-10-20).
         var diner = TestActor.Diner();
+        var other = TestActor.Diner();
 
         var atOffersNone = await BookAsync(offersNone, offersNone.FirstTableId, Dinner, clock, diner);
-
-        // One number holds one active booking (2026-10-20); this test's two are one diner's on purpose.
-        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, atOffersNone);
-        var atOffersOne = await BookAsync(offersOne, offersOne.FirstTableId, Dinner, clock, diner);
+        var atOffersOne = await BookAsync(offersOne, offersOne.FirstTableId, Dinner, clock, other);
 
         // Dinner time, and the party is not here yet.
         clock.Advance(DinnerUtc.AddMinutes(11) - clock.UtcNow);
@@ -377,13 +376,13 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
 
         await using (var extendDb = fixture.CreateContext(clock))
         {
-            await fixture.CreateReservationService(extendDb, clock, diner)
+            await fixture.CreateReservationService(extendDb, clock, other)
                 .ExtendHoldAsync(new ExtendHoldCommand(atOffersOne, Guid.CreateVersion7()));
         }
 
         Assert.Equal(
             "hold-already-extended",
-            await RefusedExtensionCodeAsync(atOffersOne, Guid.CreateVersion7(), clock, diner));
+            await RefusedExtensionCodeAsync(atOffersOne, Guid.CreateVersion7(), clock, other));
     }
 
     /// <summary>
@@ -445,7 +444,11 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
 
         for (var i = 0; i < 2; i++)
         {
-            await NoShowAsync(branch, branch.TableIds[i], new TimeOnly(18 + i, 0), clock, diner);
+            var missed = await NoShowAsync(branch, branch.TableIds[i], new TimeOnly(18 + i, 0), clock, diner);
+
+            // Days apart, as a history is: three no-shows starting within 72 hours would block the diner for a
+            // week instead (NoShowBlockRules, 2026-10-20) - GuestRecordTests' subject, not this one's.
+            await fixture.MoveBookingsBackAsync(clock, TimeSpan.FromDays(4 * (2 - i)), missed.Reservation.Id);
         }
 
         // Two is the threshold, not past it. This is the boundary, and asserting only the far side
@@ -475,11 +478,18 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
             Assert.True(await verify.TableStateChanges.AnyAsync(
                 c => c.DiningTableId == branch.TableIds[2] && c.ToStatus == TableStatus.Free));
 
-            // And nothing is still queued to ask this party whether they are on their way.
+            // And nothing is still queued to ask this party whether they are on their way - only the notice that
+            // they were marked a no-show, which goes to every guest it happens to (2026-10-20, review B1d).
             Assert.Equal(
                 0,
                 await verify.OutboxMessages.CountAsync(m => m.IdempotencyKey.StartsWith(
-                    OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))));
+                                                                OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))
+                                                            && m.Type != OutboxMessageTypes.ReservationNoShow));
+            Assert.Equal(
+                1,
+                await verify.OutboxMessages.CountAsync(m => m.IdempotencyKey.StartsWith(
+                                                                OutboxMessageTypes.PrefixFor("reservation", third.Reservation.Id))
+                                                            && m.Type == OutboxMessageTypes.ReservationNoShow));
         }
 
         // The next one waits for a person - and says so, rather than being refused.

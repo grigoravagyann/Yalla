@@ -30,17 +30,15 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.Note)
             .HasMaxLength(FieldLengths.Reason);
 
-        // How the booking was made: without a proved number (2026-10-20). Existing rows were all made
-        // by an account whose number was proved, or by nobody at all, so false.
+        // How the booking was made: without a proved number (only while Yalla#54 allowed it, 2026-10-20).
+        // Existing rows were all made by an account whose number was proved, or by nobody at all, so false.
         builder.Property(r => r.PhoneUnverified)
             .IsRequired()
             .HasDefaultValue(false);
 
-        // The one-active-booking-per-number key and the web browser's hash. See the entity.
+        // The per-number rules' key. See the entity.
         builder.Property(r => r.BookerPhoneE164)
             .HasMaxLength(FieldLengths.Phone);
-        builder.Property(r => r.BookerDeviceHash)
-            .HasMaxLength(FieldLengths.TokenHash);
 
         builder.Property(r => r.PartySize).IsRequired();
         builder.Property(r => r.Status).IsRequired();
@@ -133,6 +131,15 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.Property(r => r.ApprovalTrigger);
         builder.Property(r => r.DeclineReason);
 
+        // Set only when the platform cancelled the booking (a guest's no-show block); null otherwise.
+        builder.Property(r => r.CancelledBecause);
+
+        // The review round (2026-10-20): whether a late cancel counts against the guest, and who marked - or
+        // withdrew - a no-show, and whether it counts toward a block.
+        builder.Property(r => r.LateCancellationCounts).IsRequired();
+        builder.Property(r => r.NoShowCountsTowardBlock).IsRequired();
+        builder.Property(r => r.NoShowUndoReason).HasMaxLength(FieldLengths.Reason);
+
         // The confirmed slot a waiting change can fall back to, all null when none is waiting. Wall
         // clock beside the instants, as for the booking's own slot. No foreign key on the table: it is
         // the table the booking was on, kept to go back to, and the booking's own key covers the one it
@@ -148,7 +155,7 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
             .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL")
             .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc");
 
-        // "Does this number already hold an active booking?" - asked inside every new booking's locks.
+        // "How many active bookings does this number hold?" - asked inside every new booking's locks.
         // Filtered to the two statuses that can be active, so it holds the city's live bookings and
         // nothing of their history. Not unique: "active" also means "not over yet", which an index
         // cannot express (a confirmed booking nobody seated would hold the number for ever) - the
@@ -156,10 +163,5 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         builder.HasIndex(r => new { r.BookerPhoneE164, r.EndUtc })
             .HasFilter("[BookerPhoneE164] IS NOT NULL AND [Status] IN (1, 2)")
             .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active");
-
-        // The same question for one browser booking without an account.
-        builder.HasIndex(r => new { r.BookerDeviceHash, r.EndUtc })
-            .HasFilter("[BookerDeviceHash] IS NOT NULL AND [Status] IN (1, 2)")
-            .HasDatabaseName("IX_Reservations_BookerDeviceHash_Active");
     }
 }

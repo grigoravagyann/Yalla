@@ -305,17 +305,29 @@ public static class ErrorCodes
     public const string PhoneNotVerified = "phone-not-verified";
 
     /// <summary>
-    /// The booker's phone number already holds an active booking (pending or confirmed, not over) at any
-    /// venue: one number, one active booking. HTTP 409. <c>context</c> names that booking only to the
-    /// account that holds it; anybody else gets none. Minted by <c>PhoneHasActiveBookingException</c>.
+    /// The booker's proved number already holds three active bookings (pending or confirmed, not over) at
+    /// any venue - the most one number holds. HTTP 409, <c>context.maxActiveBookings</c> and the caller's own
+    /// earliest active booking. Minted by <c>PhoneHasActiveBookingException</c>.
     /// </summary>
     public const string PhoneHasActiveBooking = "phone-has-active-booking";
 
     /// <summary>
-    /// The browser already holds an active booking made without a verified number. HTTP 409, no context.
-    /// Minted by <c>DeviceHasActiveBookingException</c>.
+    /// The guest missed three bookings in three days and cannot book until <c>context.blockedUntilUtc</c>.
+    /// HTTP 403. Minted by <c>BookingBlockedForNoShowsException</c>.
     /// </summary>
-    public const string DeviceHasActiveBooking = "device-has-active-booking";
+    public const string BookingBlockedNoShows = "booking-blocked-no-shows";
+
+    /// <summary>
+    /// A no-show can no longer be withdrawn: its service day ended (05:00 the next morning, branch time). HTTP 409,
+    /// <c>context.undoableUntilUtc</c>. Minted by <c>NoShowUndoWindowClosedException</c>.
+    /// </summary>
+    public const string NoShowUndoWindowClosed = "no-show-undo-window-closed";
+
+    /// <summary>
+    /// Approving or rejecting a booking a no-show block cancelled. HTTP 409, <c>context.reservationId</c> and
+    /// <c>cancelledAtUtc</c>. Minted by <c>ReservationCancelledByBlockException</c>.
+    /// </summary>
+    public const string ReservationCancelledByBlock = "reservation-cancelled-by-block";
 
     /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
@@ -328,12 +340,6 @@ public static class ErrorCodes
     /// <c>context.tabId</c> and <c>context.admission</c>. Minted by <c>TabAdmissionDecidedException</c>.
     /// </summary>
     public const string TabAdmissionDecided = "tab-admission-decided";
-
-    /// <summary>
-    /// The branch already has as many bookings without a verified number waiting for its answer as it takes.
-    /// HTTP 409, no context. Minted by <c>BranchUnverifiedQueueFullException</c>.
-    /// </summary>
-    public const string BranchUnverifiedQueueFull = "branch-unverified-queue-full";
 
     /// <summary>
     /// A scan refused for a while after a waiter turned a tab away - from a phone that was on it, or of the
@@ -531,11 +537,12 @@ public static class ErrorCodes
         EmailTaken => "Email address taken",
         PhoneInUse => "Phone number already has an account",
         PhoneNotVerified => "Phone number not verified",
-        PhoneHasActiveBooking => "This number already has a booking",
-        DeviceHasActiveBooking => "This browser already has a booking",
+        PhoneHasActiveBooking => "This number holds as many bookings as it can",
+        BookingBlockedNoShows => "Booking paused after missed bookings",
+        NoShowUndoWindowClosed => "Too late to withdraw this no-show",
+        ReservationCancelledByBlock => "Cancelled: the guest is blocked for no-shows",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
-        BranchUnverifiedQueueFull => "Venue has too many unconfirmed bookings",
         ScanTurnedAway => "Ask a waiter",
         UnsupportedImage => "Unsupported image",
         RelocationNotAllowed => "Relocation not allowed",

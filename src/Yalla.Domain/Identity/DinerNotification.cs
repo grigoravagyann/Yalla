@@ -145,6 +145,25 @@ public static class DinerNotificationKinds
     /// <summary>The booking was cancelled from its manage link. Never written for the diner's own cancel in the app.</summary>
     public const string BookingCancelledByLink = "booking-cancelled-by-link";
 
+    /// <summary>
+    /// The guest missed three bookings in three days: every booking of theirs not yet started was cancelled and
+    /// they cannot book until <c>blockedUntilUtc</c>. Params <c>blockedUntilUtc</c> (ISO 8601 UTC) and
+    /// <c>cancelledCount</c>.
+    /// </summary>
+    public const string BookingsBlockedNoShows = "bookings-blocked-no-shows";
+
+    /// <summary>
+    /// A venue marked one of the guest's bookings as a no-show - so a mistake can be put right with the venue
+    /// before it matters. Params are the booking's (<c>venueName</c>, <c>branchName</c>, <c>date</c>, <c>time</c>, ...).
+    /// </summary>
+    public const string BookingNoShow = "booking-no-show";
+
+    /// <summary>
+    /// The guest's no-show block was lifted early - a no-show withdrawn, or a platform admin. Params
+    /// <c>liftedBecause</c> (1 platform admin, 2 a no-show withdrawn). Nothing it cancelled came back.
+    /// </summary>
+    public const string BookingsUnblocked = "bookings-unblocked";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
@@ -152,5 +171,6 @@ public static class DinerNotificationKinds
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
         TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
+        BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked,
     ];
 }

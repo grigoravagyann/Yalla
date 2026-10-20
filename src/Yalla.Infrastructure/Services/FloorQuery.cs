@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Floor;
+using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Persistence;
@@ -53,6 +54,26 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
             return null;
         }
 
+        // The guests' records, for the next booking (today or still to come) and the sitting on each table: one
+        // grouped statement for the whole floor, and none at all when no table has a proved guest on it.
+        var today = BranchZone.For(row.TimeZoneId).LocalDateAt(nowUtc);
+
+        Guid? NextAccount(FloorTableRow t) =>
+            t.NextReservationLocalDate is { } date && date >= today ? t.NextReservationRecordedAccount : null;
+
+        var accounts = row.Tables
+            .SelectMany(t => new[] { NextAccount(t), t.SittingRecordedAccount })
+            .Where(a => a is not null)
+            .Select(a => a!.Value)
+            .ToList();
+
+        var records = accounts.Count == 0
+            ? new Dictionary<Guid, GuestRecord>()
+            : await GuestRecords.ForAccountsAsync(db, accounts, nowUtc, cancellationToken);
+
+        GuestRecord? RecordOf(Guid? account) =>
+            account is { } id && records.TryGetValue(id, out var record) ? record : null;
+
         return new BranchFloorState
         {
             MaxSequence = row.MaxSequence,
@@ -97,6 +118,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         t.NextReservationStartUtc, row.BufferMinutes),
                     NextReservationPromisedFreeByUtc = t.NextReservationPromisedFreeByUtc,
                     NextReservationPhoneUnverified = t.NextReservationPhoneUnverified,
+                    NextReservationGuestRecord = RecordOf(NextAccount(t)),
+                    SittingGuestRecord = RecordOf(t.SittingRecordedAccount),
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
                 })
                 // Ordered here rather than in SQL: the client draws by area then label, and
@@ -286,6 +309,40 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                                          && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null))
                             .FirstOrDefault(),
 
+                        // Whose record goes beside the next booking: its account, when that account's number is
+                        // proved now - and the booking's date, for the today-or-later rule.
+                        NextReservationRecordedAccount = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.PhoneUnverified
+                                         && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null)
+                                ? null
+                                : r.DinerUserId)
+                            .FirstOrDefault(),
+                        NextReservationLocalDate = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => (DateOnly?)r.LocalDate)
+                            .FirstOrDefault(),
+
+                        // And the party sitting here now: whose record, when they were seated on a proved account's
+                        // booking.
+                        SittingRecordedAccount = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null && s.ReservationId != null)
+                            .Select(s => db.Reservations
+                                .Where(r => r.Id == s.ReservationId
+                                            && !(r.PhoneUnverified
+                                                 && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null)))
+                                .Select(r => r.DinerUserId)
+                                .FirstOrDefault())
+                            .FirstOrDefault(),
+
                         // And the party sitting here now, when they came on a booking that promised one.
                         SittingPromisedFreeByUtc = db.TableSessions
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null && s.ReservationId != null)
@@ -362,5 +419,11 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public DateTime? NextReservationPromisedFreeByUtc { get; init; }
 
         public DateTime? SittingPromisedFreeByUtc { get; init; }
+
+        public Guid? NextReservationRecordedAccount { get; init; }
+
+        public DateOnly? NextReservationLocalDate { get; init; }
+
+        public Guid? SittingRecordedAccount { get; init; }
     }
 }

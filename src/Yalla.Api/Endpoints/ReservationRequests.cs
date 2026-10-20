@@ -19,6 +19,13 @@ public sealed record MarkNoShowRequest(
     [Required] Guid ClientCommandId,
     string? Reason = null) : IClientCommandRequest;
 
+/// <summary>Body of <c>POST /api/reservations/{id}/undo-no-show</c>.</summary>
+/// <param name="ClientCommandId">The tap's id.</param>
+/// <param name="Reason">Why it was a mistake - kept on the booking.</param>
+public sealed record UndoNoShowRequest(
+    [Required] Guid ClientCommandId,
+    [MaxLength(500)] string? Reason = null) : IClientCommandRequest;
+
 /// <summary>Body of <c>POST /api/reservations/{id}/release</c>.</summary>
 /// <param name="Outcome">
 /// <b>1 NoShow</b> - nobody came and nobody called; counts toward the diner's rolling no-show
@@ -111,37 +118,6 @@ public sealed record CreateReservationRequest(
     // Required only when the table's next booking cuts a full sitting short, and then it must be that
     // instant - which only the service, under the table's lock, can know. So no attribute: the refusal
     // is the service's 422 `reservation-free-by-required`, naming this field.
-    DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
-
-/// <summary>
-/// Body of <c>POST /api/public/branches/{branchId}/bookings</c>: the app's booking body without the branch
-/// (the route names it) and the channel (the web's), plus the browser's device id.
-/// </summary>
-/// <param name="TableId">The table picked off the room photos.</param>
-/// <param name="Date">The local calendar date at the branch.</param>
-/// <param name="Time">The local wall-clock start at the branch.</param>
-/// <param name="PartySize">How many are coming; at most the branch's <c>unverifiedMaxPartySize</c>.</param>
-/// <param name="GuestName">Who to ask for at the door.</param>
-/// <param name="GuestPhone">The number the venue calls, in E.164 (spaces and dashes are dropped).</param>
-/// <param name="DeviceId">
-/// An id the page generates once and keeps. It scopes a retry to this browser and limits it to one active
-/// booking without a verified number. Stored only as a hash.
-/// </param>
-/// <param name="ClientCommandId">The page's id for this booking; a retry from the same browser answers with it.</param>
-/// <param name="StayHint">Advisory only.</param>
-/// <param name="Note">A note to the venue, at most 500 characters.</param>
-/// <param name="AcceptsFreeByUtc">As on the app's booking.</param>
-public sealed record CreatePublicBookingRequest(
-    [Required][NotEmpty] Guid TableId,
-    [Required] DateOnly? Date,
-    [Required] TimeOnly? Time,
-    [Range(1, 100)] int PartySize,
-    [Required][MaxLength(200)] string GuestName,
-    [Required][MaxLength(32)] string GuestPhone,
-    [Required][MaxLength(128)] string DeviceId,
-    [Required] Guid ClientCommandId,
-    StayHint? StayHint = null,
-    string? Note = null,
     DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
 
 /// <summary>Body of <c>POST /api/reservations/{reservationId}/reschedule</c>.</summary>

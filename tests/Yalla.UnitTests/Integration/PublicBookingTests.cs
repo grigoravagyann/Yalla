@@ -124,15 +124,9 @@ public class PublicBookingTests(SqlServerFixture fixture)
         var page = await ReadAsync(anonymous, world.PageUrl);
         var policy = page.GetProperty("policy");
 
-        // Exactly these six. The three about booking without a verified number are a decision to publish
-        // (2026-10-20): the cap is a refusal, not an approval threshold, so it opens nothing to game, and
-        // acceptsUnverifiedBookings is only the cap above zero, said plainly.
+        // Exactly three fields, and they are these.
         Assert.Equal(
-            new[]
-            {
-                "acceptsUnverifiedBookings", "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
-                "unverifiedBookingsNeedApproval", "unverifiedMaxPartySize",
-            },
+            new[] { "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes" },
             policy.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
         // Named individually as well, so a failure says which one leaked rather than only that the

@@ -60,13 +60,15 @@ public static class ReservationEndpoints
         + "crosses with a late-committing original is recognised as a replay.";
 
     private const string OverlapsOwnDescription =
-        "**One table at a time per diner at a branch**: a sitting that overlaps another of the diner's "
-        + "own live bookings there (pending, confirmed or seated) is `409 reservation-overlaps-own`, with "
+        "**One table at a time per diner, anywhere**: a sitting that overlaps another of the diner's "
+        + "own live bookings (pending, confirmed or seated) is `409 reservation-overlaps-own`, with "
         + "`context` naming the booking already held - `reservationId`, `code` (its door code), "
         + "`localDate` (`\"2026-10-22\"`, the branch's calendar - say the day when it differs), "
-        + "`localStartTime` (`\"19:30:00\"`) and `tableLabel` - so the app can say \"You already have a "
-        + "booking at 19:30 (table 2)\". Sittings that only touch do not overlap; another branch is not "
-        + "refused. A retry with the same `clientCommandId` still answers as a replay.";
+        + "`localStartTime` (`\"19:30:00\"`), `tableLabel`, `venueName` and `branchName` - so the app can "
+        + "say \"You already have a booking at Café Aram at 19:30\". At the same branch sittings that only "
+        + "touch do not overlap; at **another venue** the two need **30 minutes** between them (with a "
+        + "90-minute sitting, starts less than 2 hours apart are refused). A retry with the same "
+        + "`clientCommandId` still answers as a replay.";
 
     private const string StateDescription =
         "The booking is not in a state that permits this - cancelling one that is already seated, "
@@ -309,23 +311,28 @@ public static class ReservationEndpoints
                 + "unanswered it is declined with `declinedBecause` 4 EarlierGuestNoAnswer. When it is false "
                 + "the floor calls them and decides, by the same deadline - unanswered it is declined with "
                 + "`declinedBecause` 2 NoAnswer.\n\n"
-                + "**An account whose number was never proved** books without a verified number "
-                + "(`phoneUnverified: true`), as the public page's door does: at most "
-                + "`policy.unverifiedMaxPartySize` people (`422 reservation-unverified-party-too-large`), and "
-                + "**none at a branch whose cap is 0** (`422 branch-requires-verified-phone` - send the diner to "
-                + "verify their number), one active booking per number (`409 phone-has-active-booking`), at "
-                + "most 20 waiting per branch (`409 branch-unverified-queue-full`), and the network's budget "
-                + "shared with the web (`429 rate-limited`).\n\n"
+                + "**Only an account whose number is proved books** (`403 phone-not-verified` otherwise - "
+                + "send the diner to verify it). **At most three active bookings per proved number**, at "
+                + "every venue: the fourth is `409 phone-has-active-booking` with `context.maxActiveBookings` "
+                + "and the diner's own earliest active booking (`reservationId`, `code`, `startUtc`, "
+                + "`localDate`, `localStartTime`, `venueName`, `branchName`). **A guest blocked for no-shows** "
+                + "(three in three days) is `403 booking-blocked-no-shows` with `context.blockedUntilUtc` until "
+                + "the block ends.\n\n"
+                + "With `autoConfirmGuestsWithGoodRecord` on at a branch that approves every booking, a guest "
+                + "with a good record is confirmed at once - see `GET /api/branches/{id}/reservation-policy`.\n\n"
                 + OverlapsOwnDescription)
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)
-            .ProducesProblemDetails(StatusCodes.Status403Forbidden, PhoneNotVerifiedDescription)
+            .ProducesProblem<BookingBlockedProblem>(
+                StatusCodes.Status403Forbidden,
+                PhoneNotVerifiedDescription + " `booking-blocked-no-shows`: blocked until `context.blockedUntilUtc`.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
-            .ProducesProblemDetails(
+            .ProducesProblem<PhoneHasActiveBookingProblem>(
                 StatusCodes.Status409Conflict,
                 "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
-                + " `reservation-overlaps-own`: the diner already has a booking at this branch then - "
-                + "`context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel` name it.")
+                + " `reservation-overlaps-own`: the diner already has a booking then, here or too close to it at "
+                + "another venue - `context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel`, "
+                + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
@@ -423,11 +430,9 @@ public static class ReservationEndpoints
                 "Upcoming means still going to happen: not finished, and not already called off. A "
                 + "booking cancelled for tomorrow belongs in the history, not at the top of the "
                 + "screen.\n\n"
-                + "**Made with your number, not by you.** For an account that proved its number, the list "
-                + "also carries the bookings somebody else made with that number and no proof of it - on the "
-                + "public page, or from an account that never proved it - with `madeWithYourNumber` true. "
-                + "They never stop this account booking; show them apart, with a cancel button "
-                + "(`POST /api/reservations/{id}/cancel`).")
+                + "**`guestRecord`** beside the two lists: the diner's own record over the last 12 months at "
+                + "every venue - `booked`, `came`, `noShows`, `lateCancellations`, `isNewGuest`, and "
+                + "`blockedUntilUtc` while blocked for no-shows. It is what venues see beside their bookings.")
             .Produces<MyReservations>();
 
         group.MapPost("/{id:guid}/extend-hold", ExtendHoldAsync)
@@ -461,8 +466,7 @@ public static class ReservationEndpoints
             .WithName("cancelReservation")
             .WithSummary("Cancel a booking")
             .WithDescription(
-                "A diner may only cancel their own - and one made with their proved number and no proof by "
-                + "somebody else (`madeWithYourNumber` on their list); anyone else's is 403. Free until the branch's "
+                "A diner may only cancel their own; anyone else's is 403. Free until the branch's "
                 + "cancellation deadline and still allowed after it - a late cancellation is far "
                 + "better than a no-show - with `cancelledAfterDeadline` recording which it was.")
             .Produces<ReservationView>()
@@ -478,6 +482,8 @@ public static class ReservationEndpoints
         + "`context` carries `reservationId`, `status`, `startUtc` and `approvalExpiresAtUtc`. Drop the "
         + "request from the panel: the diner is told the venue did not answer in time. "
         + "`conflicting-state`: the booking is not waiting for approval. "
+        + "`reservation-cancelled-by-block` (`context.reservationId`, `cancelledAtUtc`): a no-show block "
+        + "cancelled it - its guest missed three bookings in three days. "
         + "`reservation-awaiting-earlier-guest`: the booking waits on the guest before it on the table to answer "
         + "in the app - theirs to answer, not the floor's (`context`: `reservationId`, `requestId`, `expiresAtUtc`). "
         + "`table-request-not-pending`: approving a booking whose guest before has moved since they were asked.";
@@ -520,6 +526,27 @@ public static class ReservationEndpoints
 
         floor.AddEndpointFilter<ClientCommandIdFilter>();
 
+        floor.MapPost("/{id:guid}/undo-no-show", UndoNoShowAsync)
+            .WithName("undoReservationNoShow")
+            .WithSummary("Withdraw a no-show marked by mistake")
+            .WithDescription(
+                "For the tablet and the console, waiter or above at the booking's branch, **until 05:00 the "
+                + "morning after the booking's service day**, branch time - a booking starting before 05:00 belongs to "
+                + "the evening before, so a 01:00 booking's window closes at 05:00 that same morning. The booking is `Confirmed` again (seat it, or "
+                + "mark it again), and the withdrawal is recorded with who did it and `reason`. If the guest was "
+                + "blocked for no-shows and fewer than three are left to hold the block, it is **lifted** - nothing "
+                + "it cancelled comes back - and the guest is told (`bookings-unblocked`).\n\n"
+                + "Already withdrawn: `200` with the booking as it stands. **Online only** - not for the offline "
+                + "queue.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`no-show-undo-window-closed` (`context.undoableUntilUtc`): its service day is over. "
+                + "`conflicting-state`: the booking is not a no-show.")
+            .ProducesProblem<LockTimeoutProblem>(StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
         floor.MapPost("/{id:guid}/no-show", MarkNoShowAsync)
             .WithName("markReservationNoShow")
             .WithSummary("Mark a booking as a no-show, and free the table")
@@ -537,7 +564,13 @@ public static class ReservationEndpoints
                 + "`context.startUtc`) and nothing changes - the hold stays, the booking stays "
                 + "confirmed. From the start itself there is no further wait: the branch's grace "
                 + "period times the late nudge, and whether a party past their time is late or absent "
-                + "is the waiter's call. To let a booking go earlier, use `release` with `outcome: 2`.")
+                + "is the waiter's call. To let a booking go earlier, use `release` with `outcome: 2`.\n\n"
+                + "**The guest is told** every time (push `reservation.no-show`, feed `booking-no-show`), and who "
+                + "marked it is recorded. It counts toward a **no-show block** (three in three days, see "
+                + "`docs/reservations.md`) only when marked after the start plus the branch's grace (or the extended "
+                + "hold), and at most one per venue per service day counts. Marked by mistake? "
+                + "`POST /api/reservations/{id}/undo-no-show` until 05:00 the next morning. When this no-show "
+                + "blocked the guest, the answer's `guestBlockedUntilUtc` says until when.")
             .Produces<ReservationReleaseResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
@@ -595,6 +628,19 @@ public static class ReservationEndpoints
                 StatusCodes.Status403Forbidden, "Not a waiter or above at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, DecisionExpiredDescription);
+    }
+
+    private static async Task<IResult> UndoNoShowAsync(
+        Guid id,
+        UndoNoShowRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await reservations.UndoNoShowAsync(
+            new UndoNoShowCommand(id, request.ClientCommandId, request.Reason),
+            cancellationToken));
     }
 
     private static async Task<IResult> MarkNoShowAsync(

@@ -407,8 +407,10 @@ public sealed record BookingTabRefusedProblem : ProblemShape
 }
 
 /// <summary>
-/// The booking a number already holds, named to the account that holds it - and only to it.
+/// The most active bookings one number holds, and the caller's own earliest active booking - named to the account
+/// that holds it, and only to it.
 /// </summary>
+/// <param name="MaxActiveBookings">The limit: 3.</param>
 /// <param name="ReservationId">That booking.</param>
 /// <param name="Code">Its door code.</param>
 /// <param name="StartUtc">When it starts.</param>
@@ -417,24 +419,24 @@ public sealed record BookingTabRefusedProblem : ProblemShape
 /// <param name="VenueName">Where.</param>
 /// <param name="BranchName">Which branch.</param>
 public sealed record PhoneHasActiveBookingContext(
-    Guid ReservationId,
-    string Code,
-    DateTime StartUtc,
-    DateOnly LocalDate,
-    TimeOnly LocalStartTime,
-    string VenueName,
-    string BranchName);
+    int MaxActiveBookings,
+    Guid? ReservationId,
+    string? Code,
+    DateTime? StartUtc,
+    DateOnly? LocalDate,
+    TimeOnly? LocalStartTime,
+    string? VenueName,
+    string? BranchName);
 
 /// <summary>
-/// <c>phone-has-active-booking</c>, 409: the booker's number already holds a pending or confirmed booking
-/// that is not over, at any venue. <c>context</c> is present only when that booking is the calling
-/// account's own; a web visitor, or an account booking under a number another account holds, gets no
-/// context - say "this number already has an active booking". <c>device-has-active-booking</c> (the web
-/// route: this browser already holds an unverified booking) arrives on the same status with no context.
+/// <c>phone-has-active-booking</c>, 409: the booker's proved number already holds three pending or confirmed
+/// bookings that are not over, at any venue - the most it holds (decided 2026-10-20, replacing one per number).
+/// <c>context.maxActiveBookings</c> is the limit; the booking members name the caller's own earliest active
+/// booking (absent only for a booking made without proof while Yalla#54 allowed it).
 /// </summary>
 public sealed record PhoneHasActiveBookingProblem : ProblemShape
 {
-    public PhoneHasActiveBookingContext? Context { get; init; }
+    public required PhoneHasActiveBookingContext Context { get; init; }
 }
 
 /// <summary>The tab waiting for a waiter.</summary>
@@ -478,4 +480,17 @@ public sealed record ReviewNeedsVisitContext(Guid BranchId, int WindowDays);
 public sealed record ReviewNeedsVisitProblem : ProblemShape
 {
     public ReviewNeedsVisitContext? Context { get; init; }
+}
+
+/// <summary>When a guest blocked for no-shows may book again.</summary>
+/// <param name="BlockedUntilUtc">The end of the block.</param>
+public sealed record BookingBlockedContext(DateTime BlockedUntilUtc);
+
+/// <summary>
+/// <c>booking-blocked-no-shows</c>, 403: the guest missed three bookings in three days, every booking of theirs not
+/// yet started was cancelled, and they cannot book or move a booking until <c>context.blockedUntilUtc</c>.
+/// </summary>
+public sealed record BookingBlockedProblem : ProblemShape
+{
+    public required BookingBlockedContext Context { get; init; }
 }

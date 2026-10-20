@@ -314,7 +314,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked')");
                         });
                 });
 
@@ -915,6 +915,53 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("OutboxMessages", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Occupancy.BookingBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("BlockedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("BlockedUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("LiftReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("LiftedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("LiftedBecause")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("LiftedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PhoneE164")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("Reason")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DinerUserId", "BlockedUntilUtc");
+
+                    b.HasIndex("PhoneE164", "BlockedUntilUtc")
+                        .HasFilter("[PhoneE164] IS NOT NULL");
+
+                    b.ToTable("BookingBlocks", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -925,10 +972,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<int?>("ApprovalTrigger")
                         .HasColumnType("int");
-
-                    b.Property<string>("BookerDeviceHash")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
 
                     b.Property<string>("BookerPhoneE164")
                         .HasMaxLength(32)
@@ -946,6 +989,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime?>("CancelledAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<int?>("CancelledBecause")
+                        .HasColumnType("int");
 
                     b.Property<int>("Channel")
                         .ValueGeneratedOnAdd()
@@ -994,6 +1040,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("HoldExpiresAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<bool>("LateCancellationCounts")
+                        .HasColumnType("bit");
+
                     b.Property<DateOnly>("LocalDate")
                         .HasColumnType("date");
 
@@ -1003,6 +1052,22 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<string>("ManageTokenHash")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("NoShowCountsTowardBlock")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid?>("NoShowMarkedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("NoShowUndoReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("NoShowUndoneAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("NoShowUndoneByStaffId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("Note")
                         .HasMaxLength(500)
@@ -1076,10 +1141,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_Reservations_ManageTokenHash")
                         .HasFilter("[ManageTokenHash] IS NOT NULL");
-
-                    b.HasIndex("BookerDeviceHash", "EndUtc")
-                        .HasDatabaseName("IX_Reservations_BookerDeviceHash_Active")
-                        .HasFilter("[BookerDeviceHash] IS NOT NULL AND [Status] IN (1, 2)");
 
                     b.HasIndex("BookerPhoneE164", "EndUtc")
                         .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active")
@@ -2547,6 +2608,15 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Photo");
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Occupancy.BookingBlock", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
                 {
                     b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
@@ -2903,6 +2973,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                             b1.Property<bool>("AutoConfirm")
                                 .HasColumnType("bit");
 
+                            b1.Property<bool>("AutoConfirmGuestsWithGoodRecord")
+                                .HasColumnType("bit");
+
                             b1.Property<int>("BookingWindowDays")
                                 .HasColumnType("int");
 
@@ -2938,12 +3011,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                                 .HasColumnType("decimal(5,2)");
 
                             b1.Property<int>("TurnTimeMinutes")
-                                .HasColumnType("int");
-
-                            b1.Property<bool>("UnverifiedBookingsNeedApproval")
-                                .HasColumnType("bit");
-
-                            b1.Property<int>("UnverifiedMaxPartySize")
                                 .HasColumnType("int");
 
                             b1.Property<bool>("UnverifiedScansNeedAdmission")

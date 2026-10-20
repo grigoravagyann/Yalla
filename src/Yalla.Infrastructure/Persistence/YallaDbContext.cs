@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Menus;
 using Yalla.Domain.Occupancy;
@@ -49,6 +50,9 @@ public sealed class YallaDbContext : DbContext
     public DbSet<BranchGalleryPhoto> BranchGalleryPhotos => Set<BranchGalleryPhoto>();
 
     public DbSet<Reservation> Reservations => Set<Reservation>();
+
+    /// <summary>Guests blocked from booking for no-shows - see <see cref="BookingBlock"/>.</summary>
+    public DbSet<BookingBlock> BookingBlocks => Set<BookingBlock>();
 
     /// <summary>Later bookings asking the booking before them to free the table - see <see cref="TableShareRequest"/>.</summary>
     public DbSet<TableShareRequest> TableShareRequests => Set<TableShareRequest>();
@@ -149,19 +153,111 @@ public sealed class YallaDbContext : DbContext
     /// <remarks>
     /// This is the overload every other <c>SaveChangesAsync</c> entry point funnels into.
     /// </remarks>
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        await SignalBookingChangesAsync(sync: false, cancellationToken);
         StampCreationTimes();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     /// <inheritdoc cref="SaveChangesAsync(bool, CancellationToken)"/>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampCreationTimes();
         return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    /// <summary>
+    /// Puts every booking event on its table's change stream: a booking made, or one whose status, table, time or
+    /// party changed - approved, declined, moved (both tables), cancelled, marked a no-show, a no-show withdrawn -
+    /// writes one same-status row on each table it touches, naming the booking, with signal
+    /// <see cref="TableChangeSignal.BookingChanged"/>, in the same save and so the same transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Here rather than at each call site because a booking changes in a dozen places - the services, the approval
+    /// sweep, a guest's answer about their table - and a tablet that follows the change stream instead of reading the
+    /// floor every few seconds must hear about all of them: a booking made at 12:50 for 13:00 has to make table 4
+    /// "reserved soon" on every tablet, or a waiter seats a walk-in there (GR-FE-REVIEW B1).
+    /// </para>
+    /// <para>
+    /// The row carries the table's status as this save sees it, and nothing a client should fold: on signal 5 a
+    /// tablet refreshes that table's booking line (re-reads the floor). A booking a no-show block cancelled already
+    /// has its signal-4 row and gets no second one; a save that retries (a door code collision) adds none twice.
+    /// </para>
+    /// </remarks>
+    private async Task SignalBookingChangesAsync(bool sync, CancellationToken cancellationToken)
+    {
+        var touched = new List<(Guid BranchId, Guid TableId, Guid ReservationId)>();
+
+        foreach (var entry in ChangeTracker.Entries<Reservation>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
+                continue;
+            }
+
+            if (entry.State != EntityState.Modified
+                || !(entry.Property(r => r.Status).IsModified
+                     || entry.Property(r => r.DiningTableId).IsModified
+                     || entry.Property(r => r.StartUtc).IsModified
+                     || entry.Property(r => r.EndUtc).IsModified
+                     || entry.Property(r => r.PartySize).IsModified))
+            {
+                continue;
+            }
+
+            touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
+
+            if (entry.Property(r => r.DiningTableId).OriginalValue is var before && before != entry.Entity.DiningTableId)
+            {
+                touched.Add((entry.Entity.BranchId, before, entry.Entity.Id));
+            }
+        }
+
+        if (touched.Count == 0)
+        {
+            return;
+        }
+
+        // Already signalled in this save - a block's own row, or this method on an earlier attempt of the same save.
+        var signalled = ChangeTracker.Entries<TableStateChange>()
+            .Where(e => e.State == EntityState.Added && e.Entity.ReservationId is not null)
+            .Select(e => (e.Entity.DiningTableId, e.Entity.ReservationId!.Value))
+            .ToHashSet();
+
+        touched = touched.Distinct().Where(t => !signalled.Contains((t.TableId, t.ReservationId))).ToList();
+
+        if (touched.Count == 0)
+        {
+            return;
+        }
+
+        var tableIds = touched.Select(t => t.TableId).Distinct().ToList();
+        var query = DiningTables.AsNoTracking().Where(t => tableIds.Contains(t.Id)).Select(t => new { t.Id, t.Status });
+        var statuses = sync
+            ? query.ToDictionary(t => t.Id, t => t.Status)
+            : await query.ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
+
+        var now = _clock.UtcNow;
+
+        foreach (var (branchId, tableId, reservationId) in touched)
+        {
+            if (!statuses.TryGetValue(tableId, out var status))
+            {
+                continue;
+            }
+
+            TableStateChanges.Add(
+                new TableStateChange(
+                    branchId, tableId, status, status, "booking changed", ActorType.System, now, Guid.CreateVersion7(),
+                    reservationId: reservationId)
+                .WithSignal(TableChangeSignal.BookingChanged));
+        }
     }
 
     private void StampCreationTimes()
