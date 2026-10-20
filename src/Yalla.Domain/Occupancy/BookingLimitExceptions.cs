@@ -57,6 +57,28 @@ public sealed class DeviceHasActiveBookingException()
         + "first, or verify your number to book again.");
 
 /// <summary>
+/// The branch takes no bookings without a verified phone number at all (<c>ReservationPolicy.UnverifiedMaxPartySize</c>
+/// is 0). 422 <c>branch-requires-verified-phone</c>, <c>context.reason</c> 15.
+/// </summary>
+/// <remarks>
+/// Its own code rather than <c>reservation-unverified-party-too-large</c> with a cap of 0: the client's answer
+/// is not "a smaller party" but "verify your number to book here", and it should not have to infer that from a
+/// zero.
+/// </remarks>
+public sealed class VerifiedPhoneRequiredException()
+    : ReservationRejectedException(
+        "This venue takes bookings only from a verified phone number. Verify your number to book.")
+{
+    public const string ErrorCode = "branch-requires-verified-phone";
+
+    public override ReservationRejectionReason Reason => ReservationRejectionReason.VerifiedPhoneRequired;
+
+    public override string Code => ErrorCode;
+
+    public override IReadOnlyDictionary<string, object?> Context => ContextWith();
+}
+
+/// <summary>
 /// A booking with an unproved phone number for more people than the branch takes on trust
 /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c>). 422 <c>reservation-unverified-party-too-large</c>.
 /// </summary>

@@ -84,4 +84,10 @@ public enum ReservationRejectionReason
     /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c>).
     /// </summary>
     UnverifiedPartyTooLarge = 14,
+
+    /// <summary>
+    /// The branch takes no bookings from a booker whose phone number is not proved
+    /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c> is 0).
+    /// </summary>
+    VerifiedPhoneRequired = 15,
 }

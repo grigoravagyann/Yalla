@@ -469,7 +469,8 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
         Assert.False(after.GetProperty("unverifiedBookingsNeedApproval").GetBoolean());
         Assert.Equal(4, after.GetProperty("unverifiedMaxPartySize").GetInt32());
 
-        var tooSmall = await manager.PutAsJsonAsync(policyUrl, PolicyBody(current, needApproval: true, maxParty: 0));
+        // Zero is a setting (no bookings without a verified number); below it is not.
+        var tooSmall = await manager.PutAsJsonAsync(policyUrl, PolicyBody(current, needApproval: true, maxParty: -1));
         Assert.Equal(HttpStatusCode.UnprocessableEntity, tooSmall.StatusCode);
         Assert.Contains("unverifiedMaxPartySize", await tooSmall.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
@@ -720,6 +721,92 @@ public class UnverifiedBookingTests(SqlServerFixture fixture)
         using var again = factory.CreateClientWithToken(againToken);
 
         Assert.Equal(HttpStatusCode.Created, (await again.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, other))).StatusCode);
+    }
+
+    /// <summary>
+    /// A branch that takes no bookings without a verified number: <c>unverifiedMaxPartySize</c> 0 (decided
+    /// after the frontend review - the cap's old minimum of 1 left no way to switch the door off). Both doors
+    /// refuse with <c>branch-requires-verified-phone</c>, the public page says so, and a proved booker books
+    /// as usual.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_branch_with_a_cap_of_zero_takes_no_bookings_without_a_verified_number()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        using var manager = factory.CreateClientWithToken(await SignInManagerAsync(factory, branch));
+
+        var policyUrl = $"/api/branches/{branch.BranchId}/reservation-policy";
+        var current = await ReadAsync(manager, policyUrl);
+
+        var saved = await manager.PutAsJsonAsync(policyUrl, PolicyBody(current, needApproval: null, maxParty: 0));
+        Assert.True(saved.StatusCode == HttpStatusCode.OK, await saved.Content.ReadAsStringAsync());
+        Assert.Equal(0, (await ReadAsync(manager, policyUrl)).GetProperty("unverifiedMaxPartySize").GetInt32());
+
+        // The public page says so before anybody types a number.
+        using var anonymous = factory.CreateClient();
+        var policy = (await ReadAsync(anonymous, await PublicPageUrlAsync(factory, branch))).GetProperty("policy");
+        Assert.Equal(0, policy.GetProperty("unverifiedMaxPartySize").GetInt32());
+        Assert.False(policy.GetProperty("acceptsUnverifiedBookings").GetBoolean());
+
+        // The web door, even for one.
+        var web = await anonymous.PostAsJsonAsync(PublicBookingUrl(branch), NewWebBooking(factory, branch, partySize: 1));
+        await AssertRequiresVerifiedPhoneAsync(web);
+
+        // The app's door for an account that never proved its number.
+        using var unproved = factory.CreateClientWithToken(await RegisterUnprovedDinerAsync(factory));
+        await AssertRequiresVerifiedPhoneAsync(await unproved.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, branch)));
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.Equal(0, await db.Reservations.CountAsync(r => r.BranchId == branch.BranchId));
+        }
+
+        // A proved number books as it always did.
+        var (token, _) = await SignInVerifiedDinerAsync(factory);
+        using var diner = factory.CreateClientWithToken(token);
+        Assert.Equal(HttpStatusCode.Created, (await diner.PostAsJsonAsync("/api/reservations", NewAppBooking(factory, branch))).StatusCode);
+    }
+
+    /// <summary>A branch with the default cap says it takes bookings without a verified number.</summary>
+    [SkippableFact]
+    public async Task The_public_page_says_a_branch_takes_unverified_bookings_by_default()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        using var anonymous = factory.CreateClient();
+
+        var policy = (await ReadAsync(anonymous, await PublicPageUrlAsync(factory, branch))).GetProperty("policy");
+
+        Assert.Equal(6, policy.GetProperty("unverifiedMaxPartySize").GetInt32());
+        Assert.True(policy.GetProperty("acceptsUnverifiedBookings").GetBoolean());
+    }
+
+    /// <summary>The branch's public page, which carries its <c>policy</c>.</summary>
+    private async Task<string> PublicPageUrlAsync(YallaApiFactory factory, AuthBranch branch)
+    {
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        var slugs = await db.Branches.AsNoTracking()
+            .Where(b => b.Id == branch.BranchId)
+            .Select(b => new { b.Slug, VenueSlug = b.Venue.Slug })
+            .FirstAsync();
+
+        return $"/api/public/branches/{slugs.VenueSlug}/{slugs.Slug}";
+    }
+
+    private static async Task AssertRequiresVerifiedPhoneAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("branch-requires-verified-phone", problem.GetProperty("code").GetString());
+        Assert.Equal(15, problem.GetProperty("context").GetProperty("reason").GetInt32());
     }
 
     /// <summary>

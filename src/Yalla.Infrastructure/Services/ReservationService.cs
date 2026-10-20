@@ -231,13 +231,6 @@ internal sealed class ReservationService(
                 replay, replayBranch, table: null, wasReplay: true, trigger: null, cancellationToken);
         }
 
-        // A booking without proof spends from its network's budget - the same one whichever door it came
-        // through - and a retry above never does.
-        if (!booker.PhoneProved && !unverifiedBudget.TrySpend())
-        {
-            throw new UnverifiedBookingRateLimitedException();
-        }
-
         var branch = await LoadBranchAsync(command.BranchId, cancellationToken);
 
         // A venue that stopped paying, or one that was deleted, takes no new bookings - a diner
@@ -246,6 +239,20 @@ internal sealed class ReservationService(
         VenueGate.RequireOpenForBusiness(branch);
 
         RequireChannelAccepted(command.Channel, branch);
+
+        // A branch that takes no bookings without a verified number (a cap of 0) says so before anything
+        // else about the booking - and before the network's budget is spent on it.
+        if (!booker.PhoneProved && !branch.ReservationPolicy.AcceptsUnverifiedBookings)
+        {
+            throw new VerifiedPhoneRequiredException();
+        }
+
+        // A booking without proof spends from its network's budget - the same one whichever door it came
+        // through - and a retry above never does.
+        if (!booker.PhoneProved && !unverifiedBudget.TrySpend())
+        {
+            throw new UnverifiedBookingRateLimitedException();
+        }
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;

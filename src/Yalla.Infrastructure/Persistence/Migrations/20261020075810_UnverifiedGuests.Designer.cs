@@ -2947,9 +2947,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                                 .HasColumnType("bit");
 
                             b1.Property<int>("UnverifiedMaxPartySize")
-                                .ValueGeneratedOnAdd()
-                                .HasColumnType("int")
-                                .HasDefaultValue(6);
+                                .HasColumnType("int");
 
                             b1.Property<bool>("UnverifiedScansNeedAdmission")
                                 .HasColumnType("bit");

@@ -91,6 +91,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 table: "Branches",
                 type: "int",
                 nullable: false,
+
+                // Six for every existing branch. Not a model default either: 0 is a setting, and EF would
+                // leave an int equal to its CLR default out of the write.
                 defaultValue: 6);
 
             migrationBuilder.AddColumn<bool>(

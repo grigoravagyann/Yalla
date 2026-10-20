@@ -98,12 +98,16 @@ public sealed class ReservationPolicy
 
     /// <summary>
     /// The largest party a booking with an unproved number may be for. Six by default: a family table,
-    /// where a phantom booking for twelve would empty a room.
+    /// where a phantom booking for twelve would empty a room. <b>Zero</b>: the branch takes no booking
+    /// without a verified number (<see cref="AcceptsUnverifiedBookings"/>).
     /// </summary>
     public int UnverifiedMaxPartySize { get; private set; } = DefaultUnverifiedMaxPartySize;
 
     /// <summary>A new branch lets an unproved number book for at most this many.</summary>
     public const int DefaultUnverifiedMaxPartySize = 6;
+
+    /// <summary>Whether a booker with no proved number may book here at all: the cap above zero.</summary>
+    public bool AcceptsUnverifiedBookings => UnverifiedMaxPartySize > 0;
 
     /// <summary>
     /// Whether a tab opened by a QR scan with no proved phone number behind it waits for a waiter to admit it
@@ -144,7 +148,7 @@ public sealed class ReservationPolicy
     {
         UnverifiedBookingsNeedApproval = unverifiedBookingsNeedApproval;
         UnverifiedScansNeedAdmission = unverifiedScansNeedAdmission;
-        UnverifiedMaxPartySize = Positive(unverifiedMaxPartySize, nameof(unverifiedMaxPartySize));
+        UnverifiedMaxPartySize = NotNegative(unverifiedMaxPartySize, nameof(unverifiedMaxPartySize));
 
         WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));
 

@@ -48,8 +48,11 @@ public static class ReservationPolicyLimits
     /// <summary>A party of one still needs staff approval to be a meaningful threshold.</summary>
     public const int MinApprovalRequiredAbovePartySize = 1;
 
-    /// <summary>An unproved number may book for at least one person - zero would be switching the door off.</summary>
-    public const int MinUnverifiedMaxPartySize = 1;
+    /// <summary>
+    /// Zero is a setting: the branch takes no bookings without a verified number at all
+    /// (<c>branch-requires-verified-phone</c>). Without it a branch had no way to switch the door off.
+    /// </summary>
+    public const int MinUnverifiedMaxPartySize = 0;
 
     /// <summary>The same ceiling a booking's party size has on the wire.</summary>
     public const int MaxUnverifiedMaxPartySize = 100;

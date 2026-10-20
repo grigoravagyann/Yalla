@@ -63,7 +63,8 @@ public sealed class ReservationPolicyDefaultsTests(SqlServerFixture fixture)
             .ToDictionary(b => b.GetProperty("field").GetString()!, b => b);
 
         Assert.Equal(13, bounds.Count);
-        Assert.Equal(1m, bounds["unverifiedMaxPartySize"].GetProperty("min").GetDecimal());
+        // 0 is a setting: no bookings without a verified number.
+        Assert.Equal(0m, bounds["unverifiedMaxPartySize"].GetProperty("min").GetDecimal());
         Assert.Equal(100m, bounds["unverifiedMaxPartySize"].GetProperty("max").GetDecimal());
         Assert.Equal(ReservationPolicyLimits.MinTurnTimeMinutes, bounds["turnTimeMinutes"].GetProperty("min").GetDecimal());
         Assert.Equal(ReservationPolicyLimits.MaxTurnTimeMinutes, bounds["turnTimeMinutes"].GetProperty("max").GetDecimal());

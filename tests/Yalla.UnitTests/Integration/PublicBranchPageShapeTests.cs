@@ -103,6 +103,8 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
         Assert.Equal(
             new[]
             {
+                // Whether the page offers booking without a verified number at all: the cap above zero.
+                "acceptsUnverifiedBookings",
                 "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
 
                 // Published for booking without a verified number (2026-10-20): the page says the cap and

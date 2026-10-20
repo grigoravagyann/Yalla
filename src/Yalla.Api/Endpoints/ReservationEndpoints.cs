@@ -309,6 +309,13 @@ public static class ReservationEndpoints
                 + "unanswered it is declined with `declinedBecause` 4 EarlierGuestNoAnswer. When it is false "
                 + "the floor calls them and decides, by the same deadline - unanswered it is declined with "
                 + "`declinedBecause` 2 NoAnswer.\n\n"
+                + "**An account whose number was never proved** books without a verified number "
+                + "(`phoneUnverified: true`), as the public page's door does: at most "
+                + "`policy.unverifiedMaxPartySize` people (`422 reservation-unverified-party-too-large`), and "
+                + "**none at a branch whose cap is 0** (`422 branch-requires-verified-phone` - send the diner to "
+                + "verify their number), one active booking per number (`409 phone-has-active-booking`), at "
+                + "most 20 waiting per branch (`409 branch-unverified-queue-full`), and the network's budget "
+                + "shared with the web (`429 rate-limited`).\n\n"
                 + OverlapsOwnDescription)
             .Produces<ReservationView>(StatusCodes.Status201Created)
             .Produces<ReservationView>(StatusCodes.Status200OK)

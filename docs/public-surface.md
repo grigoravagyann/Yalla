@@ -178,7 +178,8 @@ So the two states a client needs are carried where they actually live:
 | `turnTimeMinutes` | How long the table is held — the answer to "can we linger?", and finding out at the table is worse |
 | `minLeadMinutes` | How far ahead a booking must be made; greys out the next slot |
 | `cancellationDeadlineMinutes` | A deadline nobody was told about produces no-shows, not cancellations |
-| `unverifiedMaxPartySize` | The page says "for more, verify your number" before the visitor commits. A refusal, not an approval threshold - nothing to game |
+| `unverifiedMaxPartySize` | The page says "for more, verify your number" before the visitor commits. A refusal, not an approval threshold - nothing to game. 0: no bookings without a verified number |
+| `acceptsUnverifiedBookings` | The cap above zero, said plainly: false → the page offers only "verify your number" (a booking without it is `422 branch-requires-verified-phone`) |
 | `unverifiedBookingsNeedApproval` | The page says the venue confirms a booking without a verified number before, not after |
 
 Withheld, deliberately:
@@ -340,7 +341,8 @@ else is elided.
     "minLeadMinutes": 30,
     "cancellationDeadlineMinutes": 120,
     "unverifiedMaxPartySize": 6,
-    "unverifiedBookingsNeedApproval": true
+    "unverifiedBookingsNeedApproval": true,
+    "acceptsUnverifiedBookings": true
   },
   "asOfUtc": "2026-09-06T22:53:12.1013041Z"
 }
@@ -383,6 +385,9 @@ Notes for a mapper:
 `channel`; the channel is the web's, so `acceptsWebBookings` gates it, and the public 404 rule applies. A
 visitor who *does* prove the number books through `POST /api/reservations` with their diner token as before
 and keeps instant confirmation.
+
+A branch whose cap is 0 takes none of these (`policy.acceptsUnverifiedBookings` false): the route answers
+`422 branch-requires-verified-phone` and the page offers only verifying the number.
 
 The booking is `phoneUnverified`, capped at `policy.unverifiedMaxPartySize`, waits for the venue
 (`awaitingApprovalBecause` 6) when `policy.unverifiedBookingsNeedApproval`, sends no reminder, holds its

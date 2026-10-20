@@ -642,7 +642,7 @@ replaced:
 | | Verified booker | Unverified booker |
 | --- | --- | --- |
 | `Reservations.PhoneUnverified` | false | **true** - on every booking read (`phoneUnverified`), the floor's next booking (`nextReservationPhoneUnverified`) and the awaiting cards. For an account's booking the reads show it only while the account has still not proved its number *(review, N5)*; the column records how it was made and stays |
-| Party size | the table's rules | also at most `ReservationPolicy.UnverifiedMaxPartySize` (default 6): `422 reservation-unverified-party-too-large`, `context.partySize`, `maxPartySize` |
+| Party size | the table's rules | also at most `ReservationPolicy.UnverifiedMaxPartySize` (default 6, bounds 0-100): `422 reservation-unverified-party-too-large`, `context.partySize`, `maxPartySize`. **0 means the branch takes no bookings without a verified number**: both doors answer `422 branch-requires-verified-phone` (`context.reason` 15 `VerifiedPhoneRequired`) before anything else about the booking, and the public page's `policy.acceptsUnverifiedBookings` is false. Its own code, not the party cap with a maximum of 0: the answer is "verify your number", not "a smaller party" |
 | Status | as before | after short notice and "approves everything", **`PendingApproval` with `ApprovalTrigger` 6 `UnverifiedPhone`** when `UnverifiedBookingsNeedApproval` (default on); otherwise the usual rules, flag kept |
 | Answer deadline *(review, S3)* | as before | **`approvalExpiresAtUtc` = the sooner of 24 hours after it was made and 2 hours before it starts** (`UnverifiedBookingRules.AnswerDeadline`). Such a booking never waits at short notice (that is the 15-minute rule), so the deadline is at least four hours out. Unanswered, `ApprovalExpirySweep` declines it with `NoAnswer` (`declinedBecause` 2) and it holds nothing |
 | Branch ceiling *(review, S3)* | not counted | at most **20** waiting at one branch at once (pending, not started, deadline not passed): the 21st is **`409 branch-unverified-queue-full`**, no context. Counted under an application lock per branch (`booking-unverified-branch:{id}`), so two at two tables cannot both see nineteen |
@@ -719,7 +719,7 @@ another browser is `409 client-command-id-in-use`. A new booking answers `201` w
 `/api/public/bookings/{manageToken}` *(review, N3)*.
 
 The two settings live on `ReservationPolicy` (`GET/PUT .../reservation-policy`: `unverifiedBookingsNeedApproval`,
-`unverifiedMaxPartySize` 1-100; optional on PUT, omitted keeps the stored value) and are published on the
+`unverifiedMaxPartySize` 0-100; optional on PUT, omitted keeps the stored value) and are published on the
 public page's `policy`. The third, `unverifiedScansNeedAdmission`, is the tabs' ([tabs.md](tabs.md) 2b). Pinned
 by `UnverifiedBookingTests` and `PhoneNumberCanonicalTests`.
 

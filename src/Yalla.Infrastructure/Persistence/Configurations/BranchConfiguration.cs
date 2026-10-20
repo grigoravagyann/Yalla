@@ -138,9 +138,12 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             // The same, for the same reason: the migration gives every branch true.
             policy.Property(p => p.UnverifiedScansNeedAdmission)
                 .IsRequired();
+
+            // And the cap: 0 is a setting ("no bookings without a verified number"), and with a model
+            // default EF would leave a 0 - the int's CLR default - out of the write and the database's 6
+            // would stand. The migration gives existing rows 6; every write states the value.
             policy.Property(p => p.UnverifiedMaxPartySize)
-                .IsRequired()
-                .HasDefaultValue(Domain.Venues.ReservationPolicy.DefaultUnverifiedMaxPartySize);
+                .IsRequired();
         });
 
         builder.Navigation(b => b.ReservationPolicy)

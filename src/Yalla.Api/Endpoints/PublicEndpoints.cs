@@ -280,7 +280,9 @@ public static class PublicEndpoints
                 + "**What is different from a verified booking.** The booking says `phoneUnverified: true` "
                 + "everywhere staff read it. It is for at most `policy.unverifiedMaxPartySize` people "
                 + "(`422 reservation-unverified-party-too-large`, `context.maxPartySize` - offer to verify, "
-                + "which lifts it). When the branch approves such bookings first "
+                + "which lifts it). **A branch whose cap is 0 takes none** (`policy.acceptsUnverifiedBookings` "
+                + "false - hide this door and offer verifying only): `422 branch-requires-verified-phone`, "
+                + "`context.reason` 15. When the branch approves such bookings first "
                 + "(`policy.unverifiedBookingsNeedApproval`, on by default) it lands `PendingApproval` with "
                 + "`awaitingApprovalBecause` **6** and an answer deadline (`approvalExpiresAtUtc`: a day at most, "
                 + "two hours before the start if that is sooner) - unanswered, it is declined for no answer. At "
@@ -312,7 +314,9 @@ public static class PublicEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status422UnprocessableEntity,
                 ReservationEndpoints.RejectedDescription
-                + " `reservation-unverified-party-too-large`: over `policy.unverifiedMaxPartySize`.")
+                + " `reservation-unverified-party-too-large`: over `policy.unverifiedMaxPartySize`."
+                + " `branch-requires-verified-phone`: the branch takes no bookings without a verified number"
+                + " (its cap is 0).")
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, ReservationEndpoints.LockTimeoutDescription)
             .AddEndpointFilter<ClientCommandIdFilter>();
