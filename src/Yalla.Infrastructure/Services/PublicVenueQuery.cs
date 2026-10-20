@@ -423,8 +423,6 @@ internal sealed class PublicVenueQuery(
                 b.ReservationPolicy.TurnTimeMinutes,
                 b.ReservationPolicy.MinLeadMinutes,
                 b.ReservationPolicy.CancellationDeadlineMinutes,
-                b.ReservationPolicy.UnverifiedMaxPartySize,
-                b.ReservationPolicy.UnverifiedBookingsNeedApproval,
                 // The cover, as columns: the read stays one query, so it cannot call
                 // PhotoView.From(Photo). Null-forgiving on the navigation is the EF idiom for an
                 // optional join; every column comes back null when there is no cover.
@@ -547,9 +545,7 @@ internal sealed class PublicVenueQuery(
             Policy: new PublicReservationPolicy(
                 branch.TurnTimeMinutes,
                 branch.MinLeadMinutes,
-                branch.CancellationDeadlineMinutes,
-                branch.UnverifiedMaxPartySize,
-                branch.UnverifiedBookingsNeedApproval),
+                branch.CancellationDeadlineMinutes),
 
             // Placeholder. Stamped by the caller, for the same reason as the free-table count: a
             // cached "as of" would tell the diner the count is fresh when it is minutes old.

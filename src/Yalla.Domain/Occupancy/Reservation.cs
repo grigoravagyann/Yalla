@@ -193,6 +193,12 @@ public sealed class Reservation : Entity
     public bool CancelledAfterDeadline { get; private set; }
 
     /// <summary>
+    /// Why the platform cancelled it, when neither the guest nor the venue did - see <see cref="CancellationCause"/>;
+    /// null for every other booking. The status is then <see cref="ReservationStatus.CancelledByVenue"/>.
+    /// </summary>
+    public CancellationCause? CancelledBecause { get; private set; }
+
+    /// <summary>
     /// The caller's own id for the command that created this booking. Unique across the table.
     /// </summary>
     /// <remarks>
@@ -246,35 +252,29 @@ public sealed class Reservation : Entity
     public string? Note { get; private set; }
 
     /// <summary>
-    /// True when nobody proved the booker's phone number: a web visitor who booked without verifying,
-    /// or an app account whose number was never proved. Staff see it beside the booking.
+    /// True when nobody proved the booker's phone number - possible only for a booking made while Yalla#54's
+    /// booking without proof was live (2026-10-20): a web visitor who did not verify, or an app account whose
+    /// number was never proved. Every booking since is made with a proved number and writes false.
     /// </summary>
     /// <remarks>
-    /// Set at creation and never cleared - it records how the booking was made. Such a booking is never
-    /// moved (cancelled and booked again instead), is capped at
-    /// <see cref="ReservationPolicy.UnverifiedMaxPartySize"/>, and waits for approval when the branch says
-    /// so (<see cref="ReservationPolicy.UnverifiedBookingsNeedApproval"/>).
+    /// Set at creation and never cleared - it records how the booking was made. Such a booking holds no proved
+    /// number against anybody but its own account (<c>ReservationWriter</c>) and never counts in a guest record:
+    /// whatever was typed on it, nobody proved it was theirs.
     /// </remarks>
     public bool PhoneUnverified { get; private set; }
 
     /// <summary>
-    /// The number the one-active-booking-per-number rule keys on, E.164: the booking account's own number,
-    /// or - for a web booking with no account - the guest number as typed, normalised. Null for a booking
-    /// from before the rule with no account, and for any booking staff take for a guest: those are the
-    /// venue's choice and neither count nor are refused.
+    /// The number the per-number rules key on, E.164 in the canonical form: the booking account's own proved
+    /// number - no two overlapping bookings at any venue, at most <see cref="BookingLimits.MaxActiveBookingsPerNumber"/>
+    /// active. Null for a booking from before the rules with no account, for any booking staff take for a guest
+    /// (those are the venue's choice and neither count nor are refused), and once the account is deleted. A
+    /// booking made during Yalla#54 with no account carries the number typed (see <see cref="PhoneUnverified"/>).
     /// </summary>
     /// <remarks>
-    /// Not <see cref="GuestPhone"/> on an account's booking: a diner may book for a friend, and keying on
-    /// what they typed would let anybody hold ten bookings by typing ten numbers.
+    /// Not <see cref="GuestPhone"/>: a diner may book for a friend, and keying on what they typed would let
+    /// anybody hold ten bookings by typing ten numbers.
     /// </remarks>
     public string? BookerPhoneE164 { get; private set; }
-
-    /// <summary>
-    /// Hex SHA-256 of the web page's device id, for a booking made with no account; null otherwise. Scopes
-    /// the booking's replay to the browser that made it, and limits one browser to one active booking
-    /// without a proved number. A hash so the column is not a tracking id.
-    /// </summary>
-    public string? BookerDeviceHash { get; private set; }
 
     /// <summary>A booking note as it is stored: trimmed, blank as null.</summary>
     /// <exception cref="FieldValidationException">Longer than <see cref="FieldLengths.Reason"/>, naming <c>note</c>.</exception>
@@ -455,8 +455,7 @@ public sealed class Reservation : Entity
         DateTime? approvalExpiresAtUtc = null,
         DateTime? promisedFreeByUtc = null,
         bool phoneUnverified = false,
-        string? bookerPhoneE164 = null,
-        string? bookerDeviceHash = null)
+        string? bookerPhoneE164 = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -511,7 +510,6 @@ public sealed class Reservation : Entity
         reservation.PromisedFreeByUtc = promisedFreeByUtc;
         reservation.PhoneUnverified = phoneUnverified;
         reservation.BookerPhoneE164 = Guard.OptionalText(bookerPhoneE164, nameof(bookerPhoneE164), FieldLengths.Phone);
-        reservation.BookerDeviceHash = Guard.OptionalText(bookerDeviceHash, nameof(bookerDeviceHash), FieldLengths.TokenHash);
         reservation.AwaitDecision(initialStatus, approvalTrigger, approvalExpiresAtUtc);
 
         return reservation;
@@ -1221,6 +1219,16 @@ public sealed class Reservation : Entity
     /// <summary>The venue cancelled a booking it had already accepted.</summary>
     public void CancelByVenue(DateTime atUtc, string? reason) =>
         Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
+
+    /// <summary>
+    /// The platform cancelled it: its guest was just blocked for three no-shows in three days
+    /// (<see cref="NoShowBlockRules"/>). Pending or confirmed; recorded as not the guest's doing.
+    /// </summary>
+    public void CancelForNoShowBlock(DateTime atUtc)
+    {
+        Cancel(ReservationStatus.CancelledByVenue, atUtc, NoShowBlockRules.CancellationReason, afterDeadline: false);
+        CancelledBecause = CancellationCause.NoShowBlock;
+    }
 
     /// <summary>
     /// Staff declined a booking that was waiting for approval.

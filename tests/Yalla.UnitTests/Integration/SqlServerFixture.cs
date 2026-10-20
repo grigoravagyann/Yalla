@@ -471,9 +471,6 @@ public sealed class SqlServerFixture : IAsyncLifetime
             // The manage-link template. Its default is the local dev page, which is all a test
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.
             Options.Create(new PublicWebOptions()),
-
-            // The per-network budget is the HTTP layer's; a service-level test has no network.
-            new UnlimitedUnverifiedBookingBudget(),
             NullLogger<ReservationService>.Instance);
     }
 
@@ -551,6 +548,23 @@ public sealed class SqlServerFixture : IAsyncLifetime
                      .ToList())
         {
             await entry.ReloadAsync();
+        }
+    }
+
+    /// <summary>
+    /// Moves bookings' sittings earlier by <paramref name="by"/> - for the tests of the no-show history, whose
+    /// no-shows must be days apart: three whose starts fall within 72 hours block the guest for a week
+    /// (<c>NoShowBlockRules</c>, 2026-10-20), which is not what those tests are about.
+    /// </summary>
+    internal async Task MoveBookingsBackAsync(IClock clock, TimeSpan by, params Guid[] reservationIds)
+    {
+        await using var db = CreateContext(clock);
+        var seconds = (int)by.TotalSeconds;
+
+        foreach (var id in reservationIds)
+        {
+            await db.Database.ExecuteSqlAsync(
+                $"UPDATE dbo.Reservations SET StartUtc = DATEADD(second, -{seconds}, StartUtc), EndUtc = DATEADD(second, -{seconds}, EndUtc) WHERE Id = {id}");
         }
     }
 

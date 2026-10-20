@@ -2,7 +2,7 @@ namespace Yalla.Domain.Occupancy;
 
 /// <summary>
 /// A diner booked, or moved a booking to, a time whose sitting overlaps another of their own live
-/// bookings at the same branch: one diner holds one table there at a time.
+/// bookings - at the same branch, or too close to one at another venue: one diner, one table at a time, anywhere.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,10 +14,12 @@ namespace Yalla.Domain.Occupancy;
 /// </para>
 /// <para>
 /// Live means pending, confirmed or seated (<see cref="ReservationOverlap.Blocks"/>); each sitting is the
-/// one the booking has - cut by a promise to leave by - and sittings that only touch (one ends at 19:30,
-/// the next starts at 19:30) do not overlap. Another branch is another evening
-/// out and is not refused. A move leaves the booking being moved out. Judged under the diner's account
-/// lock, inside the table's, so two bookings sent at once on two tables cannot both get through.
+/// one the booking has - cut by a promise to leave by - and at the same branch sittings that only touch (one
+/// ends at 19:30, the next starts at 19:30) do not overlap. At another venue (since 2026-10-20, the user's
+/// revision) the two need <see cref="BookingLimits.OtherVenueGapMinutes"/> between them to get from one to the
+/// other - with a 90-minute sitting, starts less than two hours apart - and the context also names the venue
+/// and branch. A move leaves the booking being moved out. Judged under the diner's account lock and the number's,
+/// inside the table's, so two bookings sent at once on two tables cannot both get through.
 /// </para>
 /// </remarks>
 public sealed class ReservationOverlapsOwnException(
@@ -25,9 +27,12 @@ public sealed class ReservationOverlapsOwnException(
     string code,
     DateOnly localDate,
     TimeOnly localStartTime,
-    string tableLabel)
+    string tableLabel,
+    string? venueName = null,
+    string? branchName = null)
     : DomainStateException(
-        $"You already have a booking at {localStartTime:HH\\:mm} (table {tableLabel}) that overlaps this time. "
+        $"You already have a booking {(venueName is null ? string.Empty : "at " + venueName + " ")}at "
+        + $"{localStartTime:HH\\:mm} (table {tableLabel}) that overlaps this time or is too close to it. "
         + "Change that booking, or cancel it first.")
 {
     /// <summary>The diner's own booking already holding that time.</summary>
@@ -47,4 +52,10 @@ public sealed class ReservationOverlapsOwnException(
 
     /// <summary>The label of the table it holds.</summary>
     public string TableLabel { get; } = tableLabel;
+
+    /// <summary>The venue it is at.</summary>
+    public string? VenueName { get; } = venueName;
+
+    /// <summary>The branch it is at.</summary>
+    public string? BranchName { get; } = branchName;
 }

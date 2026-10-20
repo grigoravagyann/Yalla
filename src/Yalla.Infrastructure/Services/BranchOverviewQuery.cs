@@ -126,6 +126,9 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 Channel = r.Channel,
                 HoldExpiresAtUtc = r.HoldExpiresAtUtc,
                 HasAccount = r.DinerUserId != null,
+
+                // The account whose record the venue sees beside the booking: one that proved its number.
+                RecordedAccount = r.PhoneUnverified ? null : r.DinerUserId,
                 PreviousStartUtc = r.PreviousStartUtc,
                 PreviousEndUtc = r.PreviousEndUtc,
                 PreviousLocalDate = r.PreviousLocalDate,
@@ -148,6 +151,13 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         var nudges = await LateNudgesAsync(entries, cancellationToken);
 
         var listed = entries.Where(e => !IsCancelled(e.Status)).ToList();
+
+        // Each guest's record, one grouped statement for the whole list (none when no listed guest has one).
+        var records = await GuestRecords.ForAccountsAsync(
+            db,
+            listed.Take(BranchReservationList.MaxRows).Where(e => e.Row.RecordedAccount is not null).Select(e => e.Row.RecordedAccount!.Value),
+            nowUtc,
+            cancellationToken);
 
         return new BranchOverview(
             branchId,
@@ -191,7 +201,8 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                         // booking is anything else, the column is history.
                         confirmed ? e.HoldExpiresAtUtc : null,
                         nudge?.AtUtc,
-                        nudge?.Sent);
+                        nudge?.Sent,
+                        e.Row.RecordedAccount is { } account && records.TryGetValue(account, out var record) ? record : null);
                 })],
             listed.Count > BranchReservationList.MaxRows);
     }
@@ -608,6 +619,9 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         public DateTime? HoldExpiresAtUtc { get; init; }
 
         public bool HasAccount { get; init; }
+
+        /// <summary>The booking's account when it made the booking with a proved number - whose record is shown.</summary>
+        public Guid? RecordedAccount { get; init; }
 
         public DateTime? PreviousStartUtc { get; init; }
 

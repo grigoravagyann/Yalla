@@ -178,9 +178,6 @@ So the two states a client needs are carried where they actually live:
 | `turnTimeMinutes` | How long the table is held — the answer to "can we linger?", and finding out at the table is worse |
 | `minLeadMinutes` | How far ahead a booking must be made; greys out the next slot |
 | `cancellationDeadlineMinutes` | A deadline nobody was told about produces no-shows, not cancellations |
-| `unverifiedMaxPartySize` | The page says "for more, verify your number" before the visitor commits. A refusal, not an approval threshold - nothing to game. 0: no bookings without a verified number |
-| `acceptsUnverifiedBookings` | The cap above zero, said plainly: false → the page offers only "verify your number" (a booking without it is `422 branch-requires-verified-phone`) |
-| `unverifiedBookingsNeedApproval` | The page says the venue confirms a booking without a verified number before, not after |
 
 Withheld, deliberately:
 
@@ -339,10 +336,7 @@ else is elided.
   "policy": {
     "turnTimeMinutes": 90,
     "minLeadMinutes": 30,
-    "cancellationDeadlineMinutes": 120,
-    "unverifiedMaxPartySize": 6,
-    "unverifiedBookingsNeedApproval": true,
-    "acceptsUnverifiedBookings": true
+    "cancellationDeadlineMinutes": 120
   },
   "asOfUtc": "2026-09-06T22:53:12.1013041Z"
 }
@@ -377,42 +371,19 @@ Notes for a mapper:
 
 ---
 
-## Booking without a verified number
+## Booking needs a verified number
 
-`POST /api/public/branches/{branchId}/bookings`, anonymous. The visitor who will not prove their number
-(Telegram is the only proof - `GET /api/auth/diner/phone-proof`) books with the number typed and a
-`deviceId` the page keeps in localStorage. The body is the app's booking body without `branchId` and
-`channel`; the channel is the web's, so `acceptsWebBookings` gates it, and the public 404 rule applies. A
-visitor who *does* prove the number books through `POST /api/reservations` with their diner token as before
-and keeps instant confirmation.
+There is **no anonymous booking door**. The page books only after the visitor proves their number
+(Telegram - `GET /api/auth/diner/phone-proof` says which ways are on): with the diner token from the proof,
+`POST /api/reservations` with `channel: 2`, the app's own route and rules. Yalla#54 added
+`POST /api/public/branches/{branchId}/bookings` for a visitor who would not verify; the user withdrew it the
+same day (2026-10-20) and the route is gone (404), with its `deviceId`, its per-network budget and its branch
+ceiling, and the three `policy` members that described it. See
+[reservations.md](reservations.md#3g-booking-needs-a-proved-number-the-per-number-rules-the-guest-record).
 
-A branch whose cap is 0 takes none of these (`policy.acceptsUnverifiedBookings` false): the route answers
-`422 branch-requires-verified-phone` and the page offers only verifying the number.
-
-The booking is `phoneUnverified`, capped at `policy.unverifiedMaxPartySize`, waits for the venue
-(`awaitingApprovalBecause` 6) when `policy.unverifiedBookingsNeedApproval`, sends no reminder, holds its
-number and its browser (one active booking each), and its manage link reads and cancels it but never
-changes it (`canChange: false`). The rules are in [reservations.md](reservations.md#3g-booking-without-a-proved-number-and-one-active-booking-per-number).
-
-**`manageToken` comes back once**, in the 201. A retry from the same browser answers 200 without it.
-
-Rate limited per **network**, not per token (after review, 2026-10-20): `PublicUnverifiedBookingPermitLimit`
-(10) per `PublicUnverifiedBookingWindowSeconds` (3600) bookings without a verified number, keyed on the
-caller's address - an IPv6 address by its /64, the block one subscriber is handed - and **never** on a bearer
-token, so a tab participant's token from any photographed QR code buys no fresh budget. The budget is **shared
-with the app's door** (`POST /api/reservations` from an account that never proved its number) and spent in the
-booking service, which is the only place that knows the app's caller has no proof (`IUnverifiedBookingBudget`;
-a retry spends nothing). Over it: `429 rate-limited`. The route's requests count against a **branch ceiling of
-their own** (`branch-bookings:{branchId}`, the same size as the page's), so a burst of bookings cannot 429 the
-branch's page for everybody reading it; the page budget per address and the global limit still apply. Not one
-per address: a carrier puts thousands of phones behind one. The real limits are the number, the browser, the
-branch's twenty waiting and the venue's approval.
-
-A new booking answers `201` with `Location: /api/public/bookings/{manageToken}`, its manage link.
-
-The phone-proof channels read (`/api/auth/diner/phone-proof`, #52) carries no "unverified allowed" hint on
-purpose: whether a venue takes bookings without proof is per branch, and the page has it on the branch's
-`policy`. This route needs neither SMS nor Telegram.
+**Tell the visitor before they book** that venues they book with see their record - how many of their bookings
+in the last 12 months they kept, missed or cancelled late, never where - and that three no-shows in three days
+pause booking for a week.
 
 ## Managing a booking without an account
 
@@ -458,10 +429,10 @@ The branch page's public address, `venueSlug` and `branchSlug`: the link a remin
 `/booking/{token}` (below), which names no branch, so the page needs them to link back to the branch
 and open its booking card there. They are the page's own address, public already.
 
-`phoneUnverified` says the booking was made without a verified number; `canChange` says whether
-`reschedule` would be considered at all (still to come, and an account with a proved number to land on) -
-false for every booking made without an account, whose link cancels but never changes it (`403
-phone-not-verified`, "cancel it and book again").
+`phoneUnverified` says the booking was made without a verified number - only the few made while Yalla#54 allowed
+it; `canChange` says whether `reschedule` would be considered at all (still to come, and an account with a proved
+number to land on) - false for a booking with no account behind it, whose link cancels but never changes it
+(`403 phone-not-verified`).
 
 Two ids, for changing the booking from the link: `reservationId`, which the change screen sends as
 `excludeReservationId` on the public availability and day-slot reads so the table the visitor already
@@ -568,12 +539,11 @@ Chained, so a request passes every one that applies to it:
 | --- | --- | --- |
 | Global | The caller: the principal where the request has one, the client address otherwise | 300 / min |
 | Public | Client address — these routes are anonymous | 30 / min |
-| Public branch ceiling | One branch, whoever is asking - its page and its bookings (`POST …/bookings`) each have their own | 300 / min |
+| Public branch ceiling | One branch, whoever is asking | 300 / min |
 | Browse list, per caller | The caller, on `GET /api/public/venues`, `/api/public/branches` and `/api/public/branches/search` - replaces the page budget there | 120 / min |
 | Browse list ceiling | The whole city: one partition for those three lists, sized for them rather than for one branch | 6,000 / min |
 | Place, per caller | The caller, on `GET /api/public/branches/{id}`, `…/reviews` and `…/rooms` - replaces the page budget there; the branch ceiling still applies | 120 / min |
 | Public booking | Manage token (digest) - the read, the cancel and the change share it | 20 / min |
-| Bookings without a verified number | The network: the address, an IPv6 one by its /64, never a token - shared by the web's door and the app's, counted in the booking service | 10 / hour |
 
 The browse list is the diner app's Explore as well as the web chooser, and a carrier puts thousands
 of phones behind one address, so the page budget was spent before dinner. The page budget exists to

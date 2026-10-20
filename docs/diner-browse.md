@@ -953,6 +953,7 @@ The user's decision: the feed is built now. As built:
   | `review-replied` | The venue first replies to the diner's review (not on an edit). Deleted while unread if the venue removes the reply | none - written with the reply |
   | `booking-changed-by-link` | Somebody holding the booking's manage link changes it - never the diner's own change in the app. `params` add `status` (the `ReservationStatus` number: 1 waiting for the venue, 2 confirmed); `date`/`time`/`partySize` are where it stands now | `reservation.changed-by-link` |
   | `booking-cancelled-by-link` | Somebody holding the booking's manage link cancels it - never the app's cancel | `reservation.cancelled-by-link` |
+  | `bookings-blocked-no-shows` | Three no-shows in three days: upcoming bookings cancelled, booking paused until `blockedUntilUtc` (params `blockedUntilUtc`, `cancelledCount`; no booking id) | `diner.bookings-blocked` |
 
   The late nudge and "participant approved" pushes write no entry. Cancelling a booking - by the diner,
   through the manage link, by rejection or by release - deletes its entries that have not appeared yet

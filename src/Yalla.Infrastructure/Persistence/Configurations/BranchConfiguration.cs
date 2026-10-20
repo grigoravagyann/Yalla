@@ -126,23 +126,15 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             policy.Property(p => p.MaxSeatOverhang);
             policy.Property(p => p.ApprovalRequiredAbovePartySize);
 
-            // 2026-10-20, booking without a proved number. Existing branches take the shipped defaults:
-            // such bookings wait for the venue, and a party of six at most.
-            //
-            // No model default on the flag: EF leaves a bool equal to its CLR default (false) out of an
-            // INSERT, so a database default of true would silently turn an owner's "off" back on. The
-            // migration gives existing rows true; every write states the value.
-            policy.Property(p => p.UnverifiedBookingsNeedApproval)
-                .IsRequired();
-
-            // The same, for the same reason: the migration gives every branch true.
+            // 2026-10-20, tab admission. No model default on the flag: EF leaves a bool equal to its CLR default
+            // (false) out of an INSERT, so a database default of true would silently turn an owner's "off" back
+            // on. The migration gave existing rows true; every write states the value.
             policy.Property(p => p.UnverifiedScansNeedAdmission)
                 .IsRequired();
 
-            // And the cap: 0 is a setting ("no bookings without a verified number"), and with a model
-            // default EF would leave a 0 - the int's CLR default - out of the write and the database's 6
-            // would stand. The migration gives existing rows 6; every write states the value.
-            policy.Property(p => p.UnverifiedMaxPartySize)
+            // 2026-10-20, auto-confirm guests with a good record. Off: the migration gives every branch 0, and
+            // every write states the value.
+            policy.Property(p => p.AutoConfirmGuestsWithGoodRecord)
                 .IsRequired();
         });
 

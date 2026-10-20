@@ -103,13 +103,9 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
         Assert.Equal(
             new[]
             {
-                // Whether the page offers booking without a verified number at all: the cap above zero.
-                "acceptsUnverifiedBookings",
+                // Booking without a verified number is gone again (2026-10-20, the user's revision), and with it
+                // the three members that described it.
                 "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
-
-                // Published for booking without a verified number (2026-10-20): the page says the cap and
-                // that the venue confirms such a booking before the visitor commits.
-                "unverifiedBookingsNeedApproval", "unverifiedMaxPartySize",
             },
             page.GetProperty("policy").EnumerateObject()
                 .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());

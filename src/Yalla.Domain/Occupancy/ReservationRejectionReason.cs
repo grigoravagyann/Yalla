@@ -79,15 +79,6 @@ public enum ReservationRejectionReason
     /// </summary>
     EarlierGuestBeingAsked = 13,
 
-    /// <summary>
-    /// The party is larger than the branch takes from a booker whose phone number is not proved
-    /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c>).
-    /// </summary>
-    UnverifiedPartyTooLarge = 14,
-
-    /// <summary>
-    /// The branch takes no bookings from a booker whose phone number is not proved
-    /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c> is 0).
-    /// </summary>
-    VerifiedPhoneRequired = 15,
+    // 14 (UnverifiedPartyTooLarge) and 15 (VerifiedPhoneRequired) belonged to booking without a verified number
+    // (Yalla#54), withdrawn the same day. Retired: clients may still know them, so never reuse either.
 }

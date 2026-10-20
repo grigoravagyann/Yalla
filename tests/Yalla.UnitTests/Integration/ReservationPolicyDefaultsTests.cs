@@ -54,18 +54,17 @@ public sealed class ReservationPolicyDefaultsTests(SqlServerFixture fixture)
         Assert.True(defaults.GetProperty("autoConfirm").GetBoolean());
         Assert.True(defaults.GetProperty("pricesIncludeVat").GetBoolean());
 
-        // Booking without a verified number (2026-10-20): such bookings wait for the venue, six at most.
-        Assert.True(defaults.GetProperty("unverifiedBookingsNeedApproval").GetBoolean());
-        Assert.Equal(6, defaults.GetProperty("unverifiedMaxPartySize").GetInt32());
+        // Auto-confirm guests with a good record (2026-10-20): off until the owner turns it on. The scans setting
+        // is on. The two settings for booking without a verified number are gone with it.
+        Assert.False(defaults.GetProperty("autoConfirmGuestsWithGoodRecord").GetBoolean());
+        Assert.True(defaults.GetProperty("unverifiedScansNeedAdmission").GetBoolean());
+        Assert.False(defaults.TryGetProperty("unverifiedMaxPartySize", out _));
 
         // Every bounded field, by its wire name, with the numbers the save is checked against.
         var bounds = body.GetProperty("bounds").EnumerateArray()
             .ToDictionary(b => b.GetProperty("field").GetString()!, b => b);
 
-        Assert.Equal(13, bounds.Count);
-        // 0 is a setting: no bookings without a verified number.
-        Assert.Equal(0m, bounds["unverifiedMaxPartySize"].GetProperty("min").GetDecimal());
-        Assert.Equal(100m, bounds["unverifiedMaxPartySize"].GetProperty("max").GetDecimal());
+        Assert.Equal(12, bounds.Count);
         Assert.Equal(ReservationPolicyLimits.MinTurnTimeMinutes, bounds["turnTimeMinutes"].GetProperty("min").GetDecimal());
         Assert.Equal(ReservationPolicyLimits.MaxTurnTimeMinutes, bounds["turnTimeMinutes"].GetProperty("max").GetDecimal());
         Assert.Equal(ReservationPolicyLimits.MaxMinLeadMinutes, bounds["minLeadMinutes"].GetProperty("max").GetDecimal());

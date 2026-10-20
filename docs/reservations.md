@@ -286,14 +286,15 @@ refusals and its sittings, then the time to leave by.
 ### One diner, one table at a time
 
 A signed-in diner - every booking here is one: the app's, or the public page's after a phone proof -
-cannot book, or move a booking to, a sitting that overlaps one of **their own live bookings at the same
-branch**: `409 reservation-overlaps-own`. QA found one diner holding table 1 at 19:45 and table 2 at
+cannot book, or move a booking to, a sitting that overlaps one of **their own live bookings** at the same
+branch - or that comes within **30 minutes** of one at **another venue** (since 2026-10-20, §3g): `409
+reservation-overlaps-own`. QA found one diner holding table 1 at 19:45 and table 2 at
 19:30 the same evening - two tables kept from everybody else for one party.
 
 ```json
 409 { "code": "reservation-overlaps-own",
       "context": { "reservationId": "guid", "code": "K7Q2M9", "localDate": "2026-10-22", "localStartTime": "19:30:00",
-                   "tableLabel": "2" } }
+                   "tableLabel": "2", "venueName": "Café Aram", "branchName": "Main" } }
 ```
 
 The context names the booking already held, so the client can say "You already have a booking at 19:30
@@ -303,11 +304,11 @@ that time (one diner can book 13:00 promising to leave by 13:55 and their own 14
 sending the promise, they are asked for it, `422 reservation-free-by-required`, not refused as
 overlapping); the existing one runs to its stored end, which a promise already cut. Sittings that only
 touch (one ends at 19:30, the next starts at 19:30) do not overlap - no clearing time, it is the same
-people. Another branch is another evening out and
-is not refused. A move leaves the booking being moved out, so moving dinner half an hour is never refused
+people. At another branch the two sittings need half an hour between them to get there - with a 90-minute
+sitting, starts under two hours apart are refused (§3g). A move leaves the booking being moved out, so moving dinner half an hour is never refused
 because of itself. It is judged inside the table's lock **after the account's lock and the replay**: a
 retry with the same `clientCommandId` is still answered as a replay, and two bookings sent at once on two
-tables queue on the account's row, so the second sees the first. Bookings that already overlapped before
+tables queue on the account's row (and the number's lock, §3g), so the second sees the first. Bookings that already overlapped before
 this rule (2026-10-18) are left as they are; a change that keeps the table, the start and the end - a
 party size - is not judged (it makes no new overlap, so such a pair stays editable), and any other move
 of either is.
@@ -628,100 +629,172 @@ gets `guestPhone` empty and `previousBooking.guestPhone` absent.
 (`ReservationRules.AwaitsApproval` takes the slot): every time today and the first six hours tomorrow
 say true; the same times next week say false. See [5](#what-the-diner-is-told-before-they-commit).
 
-## 3g. Booking without a proved number, and one active booking per number
+## 3g. Booking needs a proved number; the per-number rules; the guest record
 
-Decided 2026-10-20. ID-card checks were rejected; a phone number nobody proved is allowed, with safeguards.
-Revised the same day after an adversarial review (B1, S1-S3, S8, S9): the changes are marked *(review)*.
+Decided by the user on 2026-10-20, revising Yalla#54 the same day. Yalla#54 let a booker who never proved their
+number book (the public page's `POST /api/public/branches/{branchId}/bookings`, and an unproved app account),
+with one active booking per number. Both are withdrawn:
 
-**Who books unverified.** A web visitor through `POST /api/public/branches/{branchId}/bookings` (no
-account, no proof - see [public-surface.md](public-surface.md#booking-without-a-verified-number)), and an app
-account whose number was never proved through `POST /api/reservations`. Both create the booking through the
-one path (`ReservationService.CreateCoreAsync`, the writer's lock); what an account would have given is
-replaced:
+**No booking without a proved number - anywhere.** The public page's door is gone (the route answers 404); the
+page books only after the visitor proves the number (Telegram) and sends `POST /api/reservations` with the diner
+token. An app account whose number is not proved is refused **`403 phone-not-verified`**, as before #54. The two
+branch settings #54 added for such bookings (`unverifiedBookingsNeedApproval`, `unverifiedMaxPartySize`) are
+dropped (migration `GuestRecord`), with the public page's `policy.unverifiedMaxPartySize`,
+`unverifiedBookingsNeedApproval` and `acceptsUnverifiedBookings`, the branch queue cap, the per-browser limit,
+the per-network budget, `422 branch-requires-verified-phone`, `422 reservation-unverified-party-too-large`
+(`ReservationRejectionReason` 14 and 15 retired), `409 device-has-active-booking`,
+`409 branch-unverified-queue-full`, `Reservations.BookerDeviceHash`, and `madeWithYourNumber` with the
+number owner's cancel. A console that still sends the two settings on `PUT .../reservation-policy` is not
+refused - unknown members are ignored. **Kept:** QR-scan admission by a waiter (`unverifiedScansNeedAdmission`,
+[tabs.md](tabs.md) 2b), unchanged.
 
-| | Verified booker | Unverified booker |
-| --- | --- | --- |
-| `Reservations.PhoneUnverified` | false | **true** - on every booking read (`phoneUnverified`), the floor's next booking (`nextReservationPhoneUnverified`) and the awaiting cards. For an account's booking the reads show it only while the account has still not proved its number *(review, N5)*; the column records how it was made and stays |
-| Party size | the table's rules | also at most `ReservationPolicy.UnverifiedMaxPartySize` (default 6, bounds 0-100): `422 reservation-unverified-party-too-large`, `context.partySize`, `maxPartySize`. **0 means the branch takes no bookings without a verified number**: both doors answer `422 branch-requires-verified-phone` (`context.reason` 15 `VerifiedPhoneRequired`) before anything else about the booking, and the public page's `policy.acceptsUnverifiedBookings` is false. Its own code, not the party cap with a maximum of 0: the answer is "verify your number", not "a smaller party" |
-| Status | as before | after short notice and "approves everything", **`PendingApproval` with `ApprovalTrigger` 6 `UnverifiedPhone`** when `UnverifiedBookingsNeedApproval` (default on); otherwise the usual rules, flag kept |
-| Answer deadline *(review, S3)* | as before | **`approvalExpiresAtUtc` = the sooner of 24 hours after it was made and 2 hours before it starts** (`UnverifiedBookingRules.AnswerDeadline`). Such a booking never waits at short notice (that is the 15-minute rule), so the deadline is at least four hours out. Unanswered, `ApprovalExpirySweep` declines it with `NoAnswer` (`declinedBecause` 2) and it holds nothing |
-| Branch ceiling *(review, S3)* | not counted | at most **20** waiting at one branch at once (pending, not started, deadline not passed): the 21st is **`409 branch-unverified-queue-full`**, no context. Counted under an application lock per branch (`booking-unverified-branch:{id}`), so two at two tables cannot both see nineteen |
-| Network budget *(review, S2)* | not counted | **10 an hour per network** - the caller's address, an IPv6 one by its /64, never a bearer token - **shared by both doors** (`IUnverifiedBookingBudget`, in the service: only it knows the app's caller has no proof). `429 rate-limited`. Off wherever rate limiting is off |
-| No-show history | the account's | the **number's**: no-shows on every booking with that `BookerPhoneE164`. A prankster typing a stranger's number never touches the stranger's account record |
-| Reminders | as before | an app account's as before; a web visitor with no account gets **none** - nobody to push to, and no future channel may message a number nobody proved |
-| Changing it | as before | never: the app's `reschedule` stays `403 phone-not-verified` until the number is proved; the manage link answers `403 phone-not-verified` ("cancel it and book again") |
+**The bookings made without proof while #54 was live are left as they are.** They are real bookings a venue
+may have confirmed and a guest may be counting on; a migration cannot tell anybody it cancelled them. They keep
+`PhoneUnverified` (`phoneUnverified` on reads, while their account has not proved its number since), a pending
+one keeps `ApprovalTrigger` 6 `UnverifiedPhone` and the deadline it was given, and `ApprovalExpirySweep`
+declines it unanswered like any other. Trigger 6 is never given again. Such a booking holds no proved number
+against anybody but its own account and never counts in a guest record. Their manage links still read and
+cancel; changing one with no account behind it is `403 phone-not-verified`, as for any link without a live
+proved account.
 
-**One active booking per number - for everybody.** `Reservations.BookerPhoneE164` is the number a booking
-holds: the booking account's own `PhoneE164` (proved or not), or a web visitor's typed number, in **one
-canonical form** *(review, S9)*: `PhoneNumber.Canonical`, by Google's libphonenumber (the
-`libphonenumber-csharp` package, Apache-2.0, pure managed code, no native parts) - so `+374 091 234 567` and
-`+37491234567`, a trunk 0 typed after the country code, are one number. Only the booking keys are
-canonicalised; sign-in numbers keep `PhoneNumber.Normalise` so no existing account is orphaned. *Not*
-`GuestPhone` on an account booking: a diner may book for a friend, and keying on what they typed would let
-one person hold ten bookings by typing ten numbers. A booking is **active** while it is pending or confirmed
-and not over (`EndUtc` after now), at **any** venue.
+### The per-number rules
 
-**Which holds stop a booking depends on proof** *(review, B1)*:
+`Reservations.BookerPhoneE164` is the number a booking holds: the booking account's proved `PhoneE164`, in one
+canonical form (`PhoneNumber.Canonical`, libphonenumber - a trunk 0 after `+374` is the same number). *Not*
+`GuestPhone`: a diner may book for a friend. A booking holds the number when it is proved (`PhoneUnverified`
+false) or the caller's own account's. Staff bookings (no path exists) would write null and are exempt. Deleting
+an account clears the number from its bookings.
 
-| The new booking's booker | Held back by |
-| --- | --- |
-| **Proved** (an account with `PhoneVerifiedAtUtc`) | an active **proved** hold on the number (`PhoneUnverified` false), or one of **its own account's** |
-| **Unproved** (a web visitor, an unproved account) | **any** active hold on the number |
+**No two overlapping bookings, at any venue** - `409 reservation-overlaps-own` (§2's rule, widened). The diner's
+live bookings (pending, confirmed, seated): their account's, and any proved booking holding their number.
+- **Same branch:** unchanged - the sittings as they are; back to back is fine.
+- **Another branch:** the two sittings need **30 minutes between them** (`BookingLimits.OtherVenueGapMinutes`):
+  refused when `other.Start < new.End + 30 min` and `other.End > new.Start - 30 min`. At the shipped 90-minute
+  restaurant turn that is "starts less than two hours apart" - the "about ±2 h" the user agreed; a longer sitting
+  blocks what it really overlaps.
+- The context names the booking: `reservationId, code, localDate, localStartTime, tableLabel` and now
+  **`venueName`, `branchName`**. If the clashing booking is another account's that holds the same proved number
+  (a number re-assigned), it is `409 phone-has-active-booking` with **no context**.
+- On create and on every move (unless the move keeps table, start and end); and when a waiting change goes back
+  to its confirmed slot.
 
-So a stranger who types somebody's number on the public page can never stop the number's owner from
-booking: one number may carry one proved and one unverified active booking at once, the unverified one
-flagged, capped and approval-first. Refused, the answer is **`409 phone-has-active-booking`**:
+**At most three active bookings per proved number** (`BookingLimits.MaxActiveBookingsPerNumber` = 3, a product
+constant). Active = pending or confirmed and not over (`EndUtc` after now), at any venue. The fourth is
+**`409 phone-has-active-booking`**:
 
 ```json
 409 { "code": "phone-has-active-booking",
-      "context": { "reservationId": "guid", "code": "K7Q2LM", "startUtc": "…", "localDate": "2026-10-22",
-                   "localStartTime": "19:30:00", "venueName": "Café Aram", "branchName": "Main" } }
+      "context": { "maxActiveBookings": 3, "reservationId": "guid", "code": "K7Q2LM", "startUtc": "…",
+                   "localDate": "2026-10-22", "localStartTime": "19:30:00", "venueName": "Café Aram",
+                   "branchName": "Main" } }
 ```
 
-The context is there **only when the held booking is the calling account's own**; a web visitor, or an
-account booking under a number another account holds, gets the sentence and no context - the number has a
-booking, nothing about where or when. Cancelling the held booking frees the number at once; moving it is
-never refused by this rule (a move adds no booking). Seated, finished, cancelled, declined and missed
-bookings hold nothing. A web visitor's browser is limited the same way, by `BookerDeviceHash` (hex SHA-256
-of the page's `deviceId`): **`409 device-has-active-booking`**, no context.
+naming the caller's **own earliest** active booking (absent members when none is theirs). Moves are not judged
+(they add no booking); cancelling one frees a place at once.
 
-**The owner's recourse** *(review, B1)*. An account that proved its number sees, on its own list
-(`GET /api/reservations/mine`), the bookings somebody else made **with its number and no proof**, each with
-**`madeWithYourNumber` true** - "made with your number, not by you" - and may cancel them with the usual
-`POST /api/reservations/{id}/cancel` (the reason recorded, unless given, is "Cancelled by the owner of the phone
-number, who did not make it."). Nobody else's account may. `madeWithYourNumber` is false on the reader's own
-bookings and on every other read.
+**Order and locks.** Inside the table's lock: the account's row lock (`DinerAccountLock`), the replay, the
+no-show block, the table's status, the evening's verdict, **the number's lock** (`sp_getapplock`
+`booking-phone:{E164}`, exclusive, owned by the transaction), the overlap, the table's own refusal, the
+three-booking limit. Moves take table → account → number too. A unique index cannot hold either rule ("not over
+yet" is about the clock, "overlapping" about two intervals), so the applock serialises two bookings for one
+number - on two tables, at two venues - and the second reads the first's committed row
+(`BookingPerNumberTests.Two_bookings_for_the_last_place_at_the_same_moment_write_exactly_one`). A wait past the
+table lock's bound is `503 reservation-lock-timeout`, retryable.
 
-**Deleting an account** *(review, S8)* takes the number off the bookings it leaves to the venue
-(`BookerPhoneE164` cleared with the account link), so whoever registers the number next books at once.
+### Guest record
 
-**Staff bookings are exempt.** There is no staff create path today; one added later writes
-`BookerPhoneE164 = null`, so a booking the venue chose to take neither counts against a diner nor is refused.
+What a venue sees beside a booking - `guestRecord` - and the guest sees of themselves:
 
-**The order of the checks** *(review, S1)*, inside the table's lock: the account's lock, the replay, the table's
-status, the evening's verdict, the diner's own overlap (§2), **the table's own refusal**, and only then the
-number, the branch ceiling and the browser. A probe naming a table that is already booked therefore gets
-`table-already-booked` whatever number it types; to learn anything from the number rule it has to make a
-real booking, which the venue sees and which spends the number, the browser and the network's budget.
+```json
+"guestRecord": { "booked": 7, "came": 6, "noShows": 1, "lateCancellations": 0, "isNewGuest": false,
+                 "blockedUntilUtc": "…" }
+```
 
-**Why a lock and not a unique index.** "Active" includes "not over yet", which a filtered index cannot
-express - a confirmed booking nobody seated or released would hold the number for ever. So the writer takes
-`sp_getapplock` on `booking-phone:{E164}` (and `booking-unverified-branch:{id}`, `booking-device:{hash}`),
-exclusive and owned by the transaction, then reads. Two bookings for one number on two tables - or two
-venues - meet on it and the second reads the first's committed row
-(`UnverifiedBookingTests.Two_bookings_for_one_number_at_the_same_moment_write_exactly_one`). The order is
-table, account, number, branch, browser on every insert; moves take none of these, so there is no cycle. A
-wait past the table lock's bound is `503 reservation-lock-timeout`, retryable.
+Over the guest's **account**'s bookings made with a proved number whose **start is in the last 365 days and has
+passed** (`GuestRecordRules.WindowDays`), at **every venue**:
 
-**Replay without an account** is scoped to the browser: the same `clientCommandId` with the same
-`deviceId` answers 200 with the booking and **no `manageToken`** (only its hash exists); the same id from
-another browser is `409 client-command-id-in-use`. A new booking answers `201` with `Location`
-`/api/public/bookings/{manageToken}` *(review, N3)*.
+| Field | Counts |
+| --- | --- |
+| `came` | seated or completed |
+| `noShows` | `NoShow` |
+| `lateCancellations` | cancelled by the guest with `CancelledAfterDeadline` - the branch's deadline when it was cancelled, stored on the row, so a deadline edited since rewrites nothing |
+| `booked` | `came + noShows + lateCancellations` + confirmed bookings nobody marked - the bookings whose time came |
+| `isNewGuest` | `booked == 0`: a neutral "new guest", never a warning |
+| `blockedUntilUtc` | while a no-show block is in force (below); absent otherwise |
 
-The two settings live on `ReservationPolicy` (`GET/PUT .../reservation-policy`: `unverifiedBookingsNeedApproval`,
-`unverifiedMaxPartySize` 0-100; optional on PUT, omitted keeps the stored value) and are published on the
-public page's `policy`. The third, `unverifiedScansNeedAdmission`, is the tabs' ([tabs.md](tabs.md) 2b). Pinned
-by `UnverifiedBookingTests` and `PhoneNumberCanonicalTests`.
+**Never counted:** a venue's cancellation or decline (`CancelledByVenue`, `NoAnswer` included - the venue's
+doing), a cancellation in good time, a booking still waiting for the venue, future bookings. **Never from
+anything a stranger could create:** only the account's own bookings count - not a booking whose typed
+`guestPhone` is the guest's number, not a booking made without proof with it - so nobody can spoil another
+person's record. No venue names, no dates, nothing per booking.
+
+**Where.** Staff reads only, on `ReservationView.guestRecord` - absent when no proved account is behind the
+booking: the console list (`GET /api/branches/{id}/reservations`), the floor's awaiting cards
+(`GET .../reservations/awaiting` → `reservation.guestRecord`), the answers to approve, reject, no-show and
+release, and the console overview (`GET /api/branches/{id}/overview` → `todayBookings[].guestRecord`). Never on
+a diner or public read of a booking. The guest's own: `GET /api/reservations/mine` → top-level `guestRecord`.
+
+**Cost.** One `GROUP BY DinerUserId` with conditional counts over `IX_Reservations_DinerUserId_StartUtc` for every
+account on a list, and one read of the blocks in force - never a query per booking (`GuestRecords`; pinned by
+`GuestRecordTests.The_console_list_reads_every_guests_record_without_a_query_per_booking`). A maintained aggregate
+was rejected: every status change and two sweeps would have to keep it, and the window slides daily.
+
+**Privacy.** The record is shared with **every venue the guest books at**: counts across all venues, never where
+or when. That is a disclosure the guest must be told about before booking - the terms, and a line near the Book
+button in the app and on the public page ("Venues you book with see how many of your bookings in the last 12
+months you kept, missed or cancelled late - never where"). The guest sees exactly what venues see, on `/mine`.
+
+### Auto-confirm guests with a good record
+
+`ReservationPolicy.AutoConfirmGuestsWithGoodRecord` (`autoConfirmGuestsWithGoodRecord` on `GET/PUT
+.../reservation-policy`, optional on PUT - omitted keeps the stored value; default **off**; in `/defaults`).
+A **good record** (`GuestRecordRules.IsGood`) is **came ≥ 3, no no-shows, no late cancellations** in the window.
+
+It matters only when the branch's `autoConfirm` is **off** ("we approve every booking"): then a good-record
+guest skips **exactly one** reason to wait - `ApprovalTrigger.BranchApprovesEveryBooking` (1), the trust
+question the venue was asking. **Never skipped:** `ShortNotice` (4 - somebody may be sitting at the table; a
+floor question), `EarlierGuestConsent` (5 - another guest's answer), `LargeParty` (2 - tables may need moving),
+`NoShowHistory` (3). Decided in `DecideStatusAsync` in the usual order - short notice, then approve-every
+(skipped for a good record), large party, no-show history - for a new booking and a move alike.
+
+### No-show block
+
+Three no-shows in three days block a guest from booking for a week (the user's rule, 2026-10-20;
+`NoShowBlockRules`: `Threshold` 3, `WindowHours` 72, `BlockDays` 7).
+
+- **Trigger.** Marking a no-show (`ReservationService.ReleaseAsync` with outcome NoShow - the floor's
+  `POST /api/reservations/{id}/no-show` and `/release`; nothing else writes `NoShow`) leaves the guest's
+  **account** with three no-shows on bookings **that started in the last 72 hours**. The window is over start
+  times, ending now - the start is when the guest failed to come; when a floor marked it is the venue's
+  business. Marking last week's no-shows together at closing time blocks nobody; marking late does not let the
+  third slip. Only the account's own bookings made with a proved number count.
+- **Concurrency.** The no-show is saved in a transaction under the **account's row lock** - the lock every
+  booking of that account takes. Two no-shows marked at once at two venues are judged one after the other, the
+  second sees the first committed, so the third is never missed and the block never written twice
+  (`GuestRecordTests.Two_no_shows_marked_at_the_same_moment_write_exactly_one_block`). A block already in force
+  is left alone. A replayed release (already NoShow) returns before any of it.
+- **Effect, in the same transaction.** A `BookingBlocks` row (`DinerUserId`, the account's proved `PhoneE164`,
+  `BlockedAtUtc`, `BlockedUntilUtc` = now + 7 days, `Reason` 1, `LiftedAtUtc` null). Every booking of the guest's
+  **not yet started** (pending or confirmed, start after now; their account's and proved bookings holding their
+  number), at every venue, is cancelled: status `CancelledByVenue` (not the guest's own cancel - it never counts
+  in a record; the no-shows do) with **`CancelledBecause` 1 `NoShowBlock`** (`cancelledBecause` on reads) and
+  the reason "Cancelled automatically: the guest missed three bookings in three days.". As for any cancellation,
+  its open table questions are withdrawn and its unsent reminders and feed entries dropped; after the commit a
+  table held for one of them is released through the table state machine, which moves the change stream. The
+  guest gets **one** push (`diner.bookings-blocked`) and **one** feed entry (`bookings-blocked-no-shows`,
+  params `blockedUntilUtc`, `cancelledCount`).
+- **Refusal.** While a block is in force for the account **or its number**, `POST /api/reservations` and every
+  move (the app's reschedule, the manage link's) answer **`403 booking-blocked-no-shows`**,
+  `context.blockedUntilUtc` - asked early, and again under the account's lock in the writer, so a booking racing
+  the third no-show is refused rather than slipped in beside the block. Keyed on the number too, so deleting the
+  account and proving the number on a new one does not escape it.
+- **Visible** as `guestRecord.blockedUntilUtc` on every read that carries the record.
+- **Lifting.** No endpoint yet. A platform admin lifts a block on the database:
+  `UPDATE dbo.BookingBlocks SET LiftedAtUtc = SYSUTCDATETIME() WHERE DinerUserId = @account AND LiftedAtUtc IS NULL;`
+  The cancelled bookings are not restored. A console action is a follow-up.
+- **Retention.** The block row is the record of why bookings were cancelled and is kept. Deleting the account
+  clears the number from blocks no longer in force; a block still in force keeps it until it ends (so deleting
+  and re-registering does not escape it) - the number on such a row is then dead data nothing reads.
 
 ## 3e. A table's evening: when one booking may follow another
 
@@ -1271,8 +1344,7 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | --- | --- | --- |
 | `GET /api/branches/{branchId}/availability` | `AllowAnonymous` | — |
 | `GET /api/branches/{branchId}/availability/slots` | `AllowAnonymous` | — |
-| `POST /api/reservations` | `VerifiedDiner` | an unproved account books **unverified** (§3g); one active booking per number |
-| `POST /api/public/branches/{branchId}/bookings` | `AllowAnonymous` | a web visitor without proof (§3g): web bookings on, the public 404 rule, `deviceId` |
+| `POST /api/reservations` | `VerifiedDiner` | a proved number only (§3g); no overlap anywhere, at most three active per number, refused while blocked for no-shows |
 | `POST /api/reservations/{reservationId}/reschedule` | `VerifiedDiner` | the booking must be **theirs**, else 404 - see [3c](#3c-changing-a-booking) |
 | `POST /api/public/bookings/{token}/reschedule` | `AllowAnonymous` | the manage link names the booking; its account's phone must be proved - see [public-surface.md](public-surface.md#changing-the-booking) |
 | `POST /api/reservations/{reservationId}/table-requests/{requestId}/answer` | `VerifiedDiner` | the booking must be **theirs** and the request put to them, else 404 - see [3e](#3e-a-tables-evening-when-one-booking-may-follow-another) |

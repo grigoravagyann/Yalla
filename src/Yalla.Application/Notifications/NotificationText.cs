@@ -214,6 +214,24 @@ public static class NotificationText
                   + "։ Փոխվել է ամրագրման հղումով — եթե դա Դուք չէիք, ստուգեք Ձեր ամրագրումը։"),
         };
 
+    /// <summary>
+    /// "You can't book for a week" - to a guest who missed three bookings in three days. Says what happened to the
+    /// bookings they had, and the day they can book again.
+    /// </summary>
+    public static (string Title, string Body) BookingsBlocked(string locale, DateOnly until, int cancelledCount) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Бронирование приостановлено",
+                     $"Три пропущенные брони за три дня. Отменено предстоящих броней: {cancelledCount}. "
+                     + $"Снова бронировать можно с {Date(until)}."),
+            "en" => ("Booking paused for a week",
+                     $"Three missed bookings in three days. {cancelledCount} upcoming bookings were cancelled. "
+                     + $"You can book again from {Date(until)}."),
+            _ => ("Ամրագրումը դադարեցված է",
+                  $"Երեք օրում երեք բաց թողնված ամրագրում։ Չեղարկվել է առաջիկա {cancelledCount} ամրագրում։ "
+                  + $"Կրկին ամրագրել կարող եք {Date(until)}-ից։"),
+        };
+
     /// <summary>"Your booking was cancelled" - to the account holder, after somebody holding the link cancelled it.</summary>
     public static (string Title, string Body) ReservationCancelledByLink(
         string locale, string venue, DateOnly date, TimeOnly at) =>

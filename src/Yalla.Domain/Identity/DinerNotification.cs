@@ -145,6 +145,13 @@ public static class DinerNotificationKinds
     /// <summary>The booking was cancelled from its manage link. Never written for the diner's own cancel in the app.</summary>
     public const string BookingCancelledByLink = "booking-cancelled-by-link";
 
+    /// <summary>
+    /// The guest missed three bookings in three days: every booking of theirs not yet started was cancelled and
+    /// they cannot book until <c>blockedUntilUtc</c>. Params <c>blockedUntilUtc</c> (ISO 8601 UTC) and
+    /// <c>cancelledCount</c>.
+    /// </summary>
+    public const string BookingsBlockedNoShows = "bookings-blocked-no-shows";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
@@ -152,5 +159,6 @@ public static class DinerNotificationKinds
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
         TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
+        BookingsBlockedNoShows,
     ];
 }

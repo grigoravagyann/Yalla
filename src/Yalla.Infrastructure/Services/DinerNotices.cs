@@ -180,6 +180,22 @@ internal static class DinerNotices
                 ["status"] = ((int)reservation.Status).ToString(CultureInfo.InvariantCulture),
             });
 
+    /// <summary>
+    /// The guest was blocked for three no-shows in three days, and their bookings not yet started were cancelled.
+    /// One entry for the whole block, not one per booking: the booking ids are not the point, the week is.
+    /// </summary>
+    public static void BookingsBlockedForNoShows(
+        YallaDbContext db, Guid dinerUserId, DateTime blockedUntilUtc, int cancelledCount, DateTime atUtc) =>
+        db.DinerNotifications.Add(new DinerNotification(
+            dinerUserId,
+            DinerNotificationKinds.BookingsBlockedNoShows,
+            Params(new()
+            {
+                ["blockedUntilUtc"] = blockedUntilUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                ["cancelledCount"] = cancelledCount.ToString(CultureInfo.InvariantCulture),
+            }),
+            atUtc));
+
     /// <summary>The booking was cancelled from its manage link.</summary>
     public static void BookingCancelledByLink(
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>

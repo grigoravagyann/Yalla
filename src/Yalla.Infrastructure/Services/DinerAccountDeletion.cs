@@ -90,7 +90,7 @@ internal static class DinerAccountDeletion
         await db.SaveChangesAsync(cancellationToken);
 
         var removed = await RemoveRowsOwnedByAsync(db, dinerUserId, phoneE164, cancellationToken);
-        var detached = await DetachVenueRecordsAsync(db, dinerUserId, cancellationToken);
+        var detached = await DetachVenueRecordsAsync(db, dinerUserId, nowUtc, cancellationToken);
 
         foreach (var photoId in photoIds)
         {
@@ -172,6 +172,7 @@ internal static class DinerAccountDeletion
     private static async Task<Dictionary<string, int>> DetachVenueRecordsAsync(
         YallaDbContext db,
         Guid dinerUserId,
+        DateTime nowUtc,
         CancellationToken cancellationToken) =>
         new()
         {
@@ -196,5 +197,14 @@ internal static class DinerAccountDeletion
                         .SetProperty(r => r.DinerUserId, (Guid?)null)
                         .SetProperty(r => r.BookerPhoneE164, (string?)null),
                     cancellationToken),
+
+            // A no-show block is the record of why bookings were cancelled, and stays. The number on it goes
+            // once the block no longer refuses anything; a block still in force keeps it until it ends, so that
+            // deleting the account and proving the number on a new one does not escape the week.
+            ["bookingBlocks"] = await db.BookingBlocks
+                .Where(b => b.DinerUserId == dinerUserId
+                            && b.PhoneE164 != null
+                            && (b.LiftedAtUtc != null || b.BlockedUntilUtc <= nowUtc))
+                .ExecuteUpdateAsync(set => set.SetProperty(b => b.PhoneE164, (string?)null), cancellationToken),
         };
 }

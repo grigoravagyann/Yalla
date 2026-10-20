@@ -50,6 +50,9 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<Reservation> Reservations => Set<Reservation>();
 
+    /// <summary>Guests blocked from booking for no-shows - see <see cref="BookingBlock"/>.</summary>
+    public DbSet<BookingBlock> BookingBlocks => Set<BookingBlock>();
+
     /// <summary>Later bookings asking the booking before them to free the table - see <see cref="TableShareRequest"/>.</summary>
     public DbSet<TableShareRequest> TableShareRequests => Set<TableShareRequest>();
 

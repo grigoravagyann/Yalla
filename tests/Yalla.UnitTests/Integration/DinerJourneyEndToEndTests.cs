@@ -249,15 +249,8 @@ public sealed class DinerJourneyEndToEndTests(SqlServerFixture fixture) : IDispo
                     note = BookingNote,
                 });
 
-        // A number nobody has proved books unverified (2026-10-20) - flagged, waiting for the venue - and
-        // the same slot again is the diner's own overlap (that rule answers before the one-booking-per-number
-        // one, which would refuse it too), so the diner gives that one back before booking proved.
-        var unproved = await JsonAsync(await ExpectAsync(HttpStatusCode.Created, BookAsync()));
-        Assert.True(unproved.GetProperty("phoneUnverified").GetBoolean());
-        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Conflict, "reservation-overlaps-own");
-        await ExpectAsync(
-            HttpStatusCode.OK,
-            diner.PostAsJsonAsync($"/api/reservations/{unproved.GetProperty("id").GetGuid()}/cancel", new { }));
+        // A number nobody has proved books nothing.
+        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Forbidden, "phone-not-verified");
 
         var code = await RequestCodeAsync(anyone, phone);
         await ExpectAsync(HttpStatusCode.OK, diner.PostAsJsonAsync("/api/auth/diner/verify-code", new { phoneE164 = phone, code }));

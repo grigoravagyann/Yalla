@@ -182,6 +182,10 @@ public sealed record OverviewLoadHour(int Hour, int People, int PendingPeople);
 /// the nudge as it stands in the outbox, its send time once sent. Absent when none is scheduled.
 /// </param>
 /// <param name="LateNudgeSent">With <paramref name="LateNudgeAtUtc"/>: whether it has gone out.</param>
+/// <param name="GuestRecord">
+/// The guest's record over the last twelve months at every venue; absent when no verified account is behind the
+/// booking. See <see cref="Reservations.GuestRecord"/>.
+/// </param>
 public sealed record OverviewBooking(
     Guid Id,
     string Code,
@@ -200,7 +204,8 @@ public sealed record OverviewBooking(
     bool ChangeRequested,
     DateTime? HoldExpiresAtUtc,
     DateTime? LateNudgeAtUtc,
-    bool? LateNudgeSent);
+    bool? LateNudgeSent,
+    Reservations.GuestRecord? GuestRecord = null);
 
 /// <summary>Reads <see cref="BranchOverview"/>.</summary>
 public interface IBranchOverviewQuery

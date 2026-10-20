@@ -157,6 +157,12 @@ public static class OutboxMessageTypes
     /// <summary>To the same guest: their yes took effect - free the table by the time they promised.</summary>
     public const string ReservationTableRequestDecided = "reservation.table-request-decided";
 
+    /// <summary>
+    /// To a guest just blocked for three no-shows in three days: their bookings not yet started were cancelled and
+    /// they can book again at <c>blockedUntilUtc</c>. Keyed <c>booking-block:{blockId}:notice</c>.
+    /// </summary>
+    public const string DinerBookingsBlocked = "diner.bookings-blocked";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

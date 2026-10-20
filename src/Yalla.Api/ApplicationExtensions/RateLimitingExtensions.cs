@@ -132,14 +132,6 @@ public static class RateLimitingExtensions
     public const string DinerWritePolicy = "diner-write";
 
     /// <summary>
-    /// The public page's booking without a verified number: its own key on the per-branch ceiling, so a burst
-    /// of them never spends the budget the branch's public PAGE is served from. The per-network budget for
-    /// such bookings is not here but in the booking service (<c>IUnverifiedBookingBudget</c>), shared with the
-    /// app's door.
-    /// </summary>
-    private const string UnverifiedBookingRouteSuffix = "/bookings";
-
-    /// <summary>
     /// The browse list's path, which carries no branch.
     /// </summary>
     /// <remarks>
@@ -199,10 +191,6 @@ public static class RateLimitingExtensions
         IConfiguration configuration,
         IHostEnvironment environment)
     {
-        // Registered whether limiting is on or not: off, it lets everything through.
-        services.AddHttpContextAccessor();
-        services.AddSingleton<Application.Abstractions.IUnverifiedBookingBudget, UnverifiedBookingBudget>();
-
         if (!IsEnabled(configuration, environment))
         {
             return services;
@@ -490,15 +478,6 @@ public static class RateLimitingExtensions
     {
         var route = context.Request.RouteValues;
 
-        // A booking made from the branch's page is not a read of the page: its own key, the same size, so a
-        // burst of them cannot 429 the page for everybody looking at it.
-        if (HttpMethods.IsPost(context.Request.Method)
-            && context.Request.Path.Value?.EndsWith(UnverifiedBookingRouteSuffix, StringComparison.OrdinalIgnoreCase) == true
-            && route.TryGetValue("branchId", out var bookedBranch) && bookedBranch is not null)
-        {
-            return $"branch-bookings:{bookedBranch}";
-        }
-
         // A manage link belongs to no branch on the wire, and bucketing every one of them into the
         // shared browse partition below would put all manage traffic, everywhere, under a single
         // branch-sized budget. They are limited per token instead - see ManageTokenPartitionKey.
@@ -629,34 +608,4 @@ public static class RateLimitingExtensions
 
     private static string Address(HttpContext context) =>
         $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
-
-    /// <summary>
-    /// The caller's network, whatever token it carries: an IPv4 address whole, an IPv6 one by its /64 - the
-    /// block one subscriber is handed, so cycling through it is not 2^64 budgets. An IPv4 address mapped into
-    /// IPv6 is the IPv4 address.
-    /// </summary>
-    internal static string NetworkBucket(HttpContext context)
-    {
-        var address = context.Connection.RemoteIpAddress;
-
-        if (address is null)
-        {
-            return "net:unknown";
-        }
-
-        if (address.IsIPv4MappedToIPv6)
-        {
-            address = address.MapToIPv4();
-        }
-
-        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6)
-        {
-            return $"net:{address}";
-        }
-
-        var bytes = address.GetAddressBytes();
-        Array.Clear(bytes, 8, 8);
-
-        return $"net:{new System.Net.IPAddress(bytes)}/64";
-    }
 }

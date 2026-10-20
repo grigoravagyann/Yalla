@@ -46,6 +46,11 @@ public sealed class UnverifiedGuestsMigrationRollbackTests(SqlServerFixture fixt
             {
                 await db.GetService<IMigrator>().MigrateAsync(UnverifiedGuestsMigration);
 
+                // GuestRecord sorts after this migration, but today's Branch writes its column.
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE dbo.Branches ADD ReservationPolicy_AutoConfirmGuestsWithGoodRecord bit NOT NULL "
+                    + "CONSTRAINT DF_Test_GoodRecord DEFAULT 0;");
+
                 var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
                 var tableId = branch.TableIds[0];
 

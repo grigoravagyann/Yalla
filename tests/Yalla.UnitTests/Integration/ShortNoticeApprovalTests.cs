@@ -62,7 +62,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var tonight = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, tonight.Id);
         var inThreeDays = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today.AddDays(3), EightPm));
 
@@ -143,7 +143,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var thisEvening = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today.AddDays(1), EightPm));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, thisEvening.Id);
         var tomorrowEvening = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today.AddDays(2), EightPm));
 
@@ -170,13 +170,16 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var largeTonight = await diner.CreateAsync(Booking(branch, tenSeater.Id, Today, EightPm, partySize: 9));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, largeTonight.Id);
         var largeNextWeek = await diner.CreateAsync(Booking(branch, tenSeater.Id, Today.AddDays(7), EightPm, partySize: 9));
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, largeNextWeek.Id);
-        var strictTonight = await diner.CreateAsync(Booking(strict, strict.TableIds[0], Today, EightPm));
+        // At the other venue at 17:30, not 20:00: one diner's sittings at two venues need half an hour between
+        // them (2026-10-20), and this test is about the reasons, not that rule.
+        var strictTonight = await diner.CreateAsync(Booking(strict, strict.TableIds[0], Today, new TimeOnly(17, 30)));
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, strictTonight.Id);
-        var strictNextWeek = await diner.CreateAsync(Booking(strict, strict.TableIds[0], Today.AddDays(7), EightPm));
+        var strictNextWeek = await diner.CreateAsync(
+            Booking(strict, strict.TableIds[0], Today.AddDays(7), new TimeOnly(17, 30)));
 
         Assert.Equal(ApprovalTrigger.ShortNotice, largeTonight.AwaitingApprovalBecause);
         Assert.NotNull(largeTonight.ApprovalExpiresAtUtc);
@@ -250,7 +253,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         clock.Advance(TimeSpan.FromMinutes(10));
         var second = await diner.CreateAsync(Booking(branch, branch.TableIds[1], today, EightPm));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, second.Id);
         var largeNextWeek = await diner.CreateAsync(Booking(branch, tenSeater.Id, today.AddDays(7), EightPm, partySize: 9));
         // Another diner: one diner holds one table at a branch at a time.
@@ -513,7 +516,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var waiter = fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId));
 
         var tonight = await diner.CreateAsync(Booking(branch, branch.FirstTableId, today, EightPm));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, tonight.Id);
         var large = await diner.CreateAsync(Booking(branch, tenSeater.Id, today.AddDays(2), EightPm, partySize: 9));
 
@@ -591,9 +594,10 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         var awaiting = await floor.ListAwaitingApprovalAsync(branch.BranchId);
 
-        // One statement to check the waiter's own staff row, and one for the whole list - however many
-        // requests there are and however much of each table's evening comes with them.
-        Assert.Equal(2, counter.Count);
+        // One statement to check the waiter's own staff row, one for the whole list - however many
+        // requests there are and however much of each table's evening comes with them - and one for every
+        // guest's record on it (GuestRecords, 2026-10-20).
+        Assert.Equal(3, counter.Count);
 
         Assert.Equal([request.Id, later.Id, large.Id], awaiting.Select(a => a.Reservation.Id).ToList());
 
@@ -844,7 +848,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         // 15:10 is three hours and ten minutes away: its reminder would fall at 12:10, inside the window.
         var soon = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(15, 10)));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, soon.Id);
         var unanswered = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today, EightPm));
         // Another diner: one diner holds one table at a branch at a time.
@@ -1213,7 +1217,7 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var tonight = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, EightPm));
-        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        // One number holds at most three active bookings (2026-10-20); this test's four are one diner's on purpose.
         await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, tonight.Id);
         var later = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Today.AddDays(3), EightPm));
 

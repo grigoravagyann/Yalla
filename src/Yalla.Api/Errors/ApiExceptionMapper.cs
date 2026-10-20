@@ -726,6 +726,8 @@ internal static class ApiExceptionMapper
                 ["localDate"] = e.LocalDate,
                 ["localStartTime"] = e.LocalStartTime,
                 ["tableLabel"] = e.TableLabel,
+                ["venueName"] = e.VenueName,
+                ["branchName"] = e.BranchName,
             }),
 
         // An answer to a request for a table that no longer waits. Its own code so the app drops the
@@ -845,14 +847,6 @@ internal static class ApiExceptionMapper
         SignInUnknownException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
 
-        // The network's budget for bookings without a verified number, shared by the web's door and the
-        // app's. 429, as the pipeline limiter answers.
-        UnverifiedBookingRateLimitedException e => new MappedError(
-            StatusCodes.Status429TooManyRequests, ErrorCodes.RateLimited, e.Message, LogAsError: false),
-
-        BranchUnverifiedQueueFullException e => new MappedError(
-            StatusCodes.Status409Conflict, ErrorCodes.BranchUnverifiedQueueFull, e.Message, LogAsError: false),
-
         ScanTurnedAwayException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.ScanTurnedAway,
@@ -860,28 +854,22 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: new Dictionary<string, object?> { ["retryAfterUtc"] = e.RetryAfterUtc }),
 
-        // One number, one active booking. The other booking is named only to its own account - the
-        // exception carries it only then. Must stay ABOVE DomainStateException.
+        // At most three active bookings per proved number. The caller's own earliest is named - only to its
+        // own account; the limit always. Must stay ABOVE DomainStateException.
         PhoneHasActiveBookingException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.PhoneHasActiveBooking,
             e.Message,
             LogAsError: false,
-            Context: e.Existing is { } held
-                ? new Dictionary<string, object?>
-                {
-                    ["reservationId"] = held.ReservationId,
-                    ["code"] = held.Code,
-                    ["startUtc"] = held.StartUtc,
-                    ["localDate"] = held.LocalDate,
-                    ["localStartTime"] = held.LocalStartTime,
-                    ["venueName"] = held.VenueName,
-                    ["branchName"] = held.BranchName,
-                }
-                : null),
+            Context: PhoneHasActiveBookingContextOf(e)),
 
-        DeviceHasActiveBookingException e => new MappedError(
-            StatusCodes.Status409Conflict, ErrorCodes.DeviceHasActiveBooking, e.Message, LogAsError: false),
+        // Blocked for three no-shows in three days, until the block ends.
+        BookingBlockedForNoShowsException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.BookingBlockedNoShows,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["blockedUntilUtc"] = e.BlockedUntilUtc }),
 
         // The phone waits for the waiter; its own code so it shows that, not an error.
         TabAwaitingAdmissionException e => new MappedError(
@@ -921,11 +909,6 @@ internal static class ApiExceptionMapper
         // A move from a manage link whose booking's account cannot take it - the app's 403 and code, in
         // words the link holder can act on, and never the account lock's 401: there is no session.
         ManageLinkAccountUnavailableException e => new MappedError(
-            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
-
-        // The same answer for a booking made without a verified number: never moved from its link -
-        // cancelled and booked again.
-        UnverifiedBookingNotChangeableException e => new MappedError(
             StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
 
         // A diner whose number was typed at sign-up and never proved, trying to book or open a tab
@@ -1035,6 +1018,33 @@ internal static class ApiExceptionMapper
         if (exception.Availability is { } availability)
         {
             context["availability"] = availability;
+        }
+
+        return context;
+    }
+
+    /// <summary>
+    /// <c>phone-has-active-booking</c>'s context: the limit, and the caller's own earliest active booking when
+    /// there is one. None at all for the rare refusal about another account's booking at the same hour.
+    /// </summary>
+    private static Dictionary<string, object?>? PhoneHasActiveBookingContextOf(PhoneHasActiveBookingException e)
+    {
+        if (e.MaxActiveBookings is not { } limit)
+        {
+            return null;
+        }
+
+        var context = new Dictionary<string, object?> { ["maxActiveBookings"] = limit };
+
+        if (e.Existing is { } held)
+        {
+            context["reservationId"] = held.ReservationId;
+            context["code"] = held.Code;
+            context["startUtc"] = held.StartUtc;
+            context["localDate"] = held.LocalDate;
+            context["localStartTime"] = held.LocalStartTime;
+            context["venueName"] = held.VenueName;
+            context["branchName"] = held.BranchName;
         }
 
         return context;

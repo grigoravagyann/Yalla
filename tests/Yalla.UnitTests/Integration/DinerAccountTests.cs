@@ -6,7 +6,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SkiaSharp;
 using Yalla.Application.Media;
-using Yalla.Domain.Enums;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -848,14 +847,10 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
             "Verifying an already-proved number must not revoke the sessions it already has.");
     }
 
-    // ------------------------------------------------------------ an unproved number books unverified
+    // ------------------------------------------------------------ an unproved number cannot book
 
-    /// <summary>
-    /// An account whose number was never proved books - unverified, flagged, waiting for the venue (decided
-    /// 2026-10-20) - but cannot open a tab from the booking until a code comes back.
-    /// </summary>
     [SkippableFact]
-    public async Task An_unverified_diner_books_unverified_and_is_refused_opening_a_tab_until_a_code_comes_back()
+    public async Task An_unverified_diner_is_refused_booking_and_opening_a_tab_until_a_code_comes_back()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -871,23 +866,19 @@ public sealed class DinerAccountTests(SqlServerFixture fixture) : IDisposable
         var account = await RegisteredAsync(anonymous);
         using var unverified = factory.CreateClientWithToken(account.AccessToken);
 
-        var unproved = await BookAsync(unverified, factory, branch);
-        Assert.Equal(HttpStatusCode.Created, unproved.StatusCode);
-
-        var unprovedBooking = await unproved.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(unprovedBooking.GetProperty("phoneUnverified").GetBoolean());
-        Assert.Equal(ReservationStatus.PendingApproval, (ReservationStatus)unprovedBooking.GetProperty("status").GetInt32());
+        await AssertProblemAsync(
+            await BookAsync(unverified, factory, branch), HttpStatusCode.Forbidden, "phone-not-verified");
 
         await AssertProblemAsync(
-            await OpenByBookingAsync(unverified, unprovedBooking.GetProperty("code").GetString()!),
-            HttpStatusCode.Forbidden,
-            "phone-not-verified");
+            await OpenByBookingAsync(unverified, "ABCD-EFGH"), HttpStatusCode.Forbidden, "phone-not-verified");
 
-        // Reading one's own bookings stays open, and so does cancelling - which frees the number.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            Assert.False(await db.Reservations.AnyAsync(r => r.DinerUserId == account.DinerUserId));
+        }
+
+        // Reading one's own bookings stays open.
         Assert.Equal(HttpStatusCode.OK, (await unverified.GetAsync("/api/reservations/mine")).StatusCode);
-        Assert.Equal(
-            HttpStatusCode.OK,
-            (await unverified.PostAsJsonAsync($"/api/reservations/{unprovedBooking.GetProperty("id").GetGuid()}/cancel", new { })).StatusCode);
 
         // The same diner proves the number, and the same routes let them through.
         var (_, verifiedToken) = await SignInByCodeAsync(anonymous, account.Phone, expectNewAccount: false);
