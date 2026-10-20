@@ -511,7 +511,7 @@ public sealed class MenuAndStaffManagementTests(SqlServerFixture fixture)
         db.TableSessions.Add(session);
         table.Occupy(session.Id);
 
-        var tab = new Tab(branch.BranchId, table.Id, session.Id, Now, 10m);
+        var tab = new Tab(branch.BranchId, table.Id, session.Id, Now, 10m, TabAdmissionReason.OpenedByStaff);
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);
 

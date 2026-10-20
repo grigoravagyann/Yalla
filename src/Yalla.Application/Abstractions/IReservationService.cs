@@ -38,6 +38,16 @@ public interface IReservationService
     Task<ReservationView> CreateAsync(CreateReservationCommand command, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// A web visitor's booking with no account and no phone proof: <paramref name="deviceId"/> is the
+    /// browser's, the number is typed. Flagged <c>phoneUnverified</c>, capped, and waiting for approval
+    /// when the branch says so; one active booking per number and per browser. See <c>docs/public-surface.md</c>.
+    /// </summary>
+    Task<ReservationView> CreateWithoutAccountAsync(
+        CreateReservationCommand command,
+        string? deviceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Moves the calling diner's own booking to another time, table or party size, keeping its code
     /// and manage link - or, for a retry with the same <c>ClientCommandId</c>, returns the booking as
     /// it stands.

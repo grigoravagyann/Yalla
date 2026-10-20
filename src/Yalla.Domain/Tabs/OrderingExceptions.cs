@@ -166,3 +166,32 @@ public sealed class TableNotSeatedException(Guid tableId, string tableLabel, Tab
 
     public TableStatus Status { get; } = status;
 }
+
+/// <summary>
+/// A phone ordered - or asked for the bill - on a tab still waiting for a waiter to admit it.
+/// </summary>
+/// <remarks>
+/// Its own type, answering 409 <c>tab-awaiting-admission</c>, because the phone's answer is to wait for
+/// the waiter rather than to show an error.
+/// </remarks>
+public sealed class TabAwaitingAdmissionException(Guid tabId)
+    : DomainStateException(
+        "A member of staff has to let this table order first. Call a waiter - they will be with you shortly.")
+{
+    public Guid TabId { get; } = tabId;
+}
+
+/// <summary>
+/// Admitting a tab already turned away, or turning away one already admitted. 409
+/// <c>tab-admission-decided</c>.
+/// </summary>
+public sealed class TabAdmissionDecidedException(Guid tabId, TabAdmission admission)
+    : DomainStateException(
+        admission == TabAdmission.Rejected
+            ? "This tab was already turned away. If the party is at the table, ask them to scan the code again."
+            : "This tab was already let in and can no longer be turned away.")
+{
+    public Guid TabId { get; } = tabId;
+
+    public TabAdmission Admission { get; } = admission;
+}

@@ -110,6 +110,18 @@ public sealed record SetSettlementModeRequest(
 public sealed record ReassignHostRequest(
     [Required] Guid NewHostParticipantId);
 
+/// <summary>Body of <c>POST /api/tabs/{tabId}/admit</c>.</summary>
+/// <param name="ClientCommandId">The tablet's id for this tap. A retry answers with the tab as it stands.</param>
+public sealed record AdmitTabRequest(
+    [Required] Guid ClientCommandId) : IClientCommandRequest;
+
+/// <summary>Body of <c>POST /api/tabs/{tabId}/reject</c>.</summary>
+/// <param name="ClientCommandId">The tablet's id for this tap.</param>
+/// <param name="Reason">Optional, at most 500 characters: the audit row's reason when the table is freed.</param>
+public sealed record RejectTabRequest(
+    [Required] Guid ClientCommandId,
+    string? Reason = null) : IClientCommandRequest;
+
 /// <summary>Body of <c>POST /api/branches/{branchId}/tables/{tableId}/open-tab</c>.</summary>
 /// <param name="ClientCommandId">Caller-generated. A double tap with the same id answers with the same tab.</param>
 public sealed record OpenTabForStaffRequest(

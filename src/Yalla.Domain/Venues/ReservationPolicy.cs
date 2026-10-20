@@ -84,6 +84,27 @@ public sealed class ReservationPolicy
     /// </remarks>
     public int WalkInHoldbackMinutes { get; private set; }
 
+    /// <summary>
+    /// Whether a booking whose booker never proved their phone number waits for staff approval
+    /// (<c>ApprovalTrigger.UnverifiedPhone</c>). On by default.
+    /// </summary>
+    /// <remarks>
+    /// Booking without a proved number is allowed (decided 2026-10-20) - Telegram is the only proof, and
+    /// not everybody has it - but such a number is worth nothing to a reminder or a no-show record, so
+    /// by default the venue looks at the booking before promising the table. A venue happy to take them
+    /// on trust switches this off; the booking is then flagged and nothing more.
+    /// </remarks>
+    public bool UnverifiedBookingsNeedApproval { get; private set; } = true;
+
+    /// <summary>
+    /// The largest party a booking with an unproved number may be for. Six by default: a family table,
+    /// where a phantom booking for twelve would empty a room.
+    /// </summary>
+    public int UnverifiedMaxPartySize { get; private set; } = DefaultUnverifiedMaxPartySize;
+
+    /// <summary>A new branch lets an unproved number book for at most this many.</summary>
+    public const int DefaultUnverifiedMaxPartySize = 6;
+
     private ReservationPolicy()
     {
     }
@@ -103,8 +124,13 @@ public sealed class ReservationPolicy
         int? maxSeatOverhang,
         int? approvalRequiredAbovePartySize,
         int walkInHoldbackMinutes = 30,
-        int reminderHoursBefore = 3)
+        int reminderHoursBefore = 3,
+        bool unverifiedBookingsNeedApproval = true,
+        int unverifiedMaxPartySize = DefaultUnverifiedMaxPartySize)
     {
+        UnverifiedBookingsNeedApproval = unverifiedBookingsNeedApproval;
+        UnverifiedMaxPartySize = Positive(unverifiedMaxPartySize, nameof(unverifiedMaxPartySize));
+
         WalkInHoldbackMinutes = NotNegative(walkInHoldbackMinutes, nameof(walkInHoldbackMinutes));
 
         TurnTimeMinutes = Positive(turnTimeMinutes, nameof(turnTimeMinutes));

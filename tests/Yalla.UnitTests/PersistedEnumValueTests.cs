@@ -245,6 +245,9 @@ public class PersistedEnumValueTests
         // Booking times: the guest before is asked whether they will have left in time.
         Assert.Equal(5, (int)ApprovalTrigger.EarlierGuestConsent);
 
+        // Booking without a proved number (2026-10-20).
+        Assert.Equal(6, (int)ApprovalTrigger.UnverifiedPhone);
+
         Assert.Equal(1, (int)DeclineReason.StaffDeclined);
         Assert.Equal(2, (int)DeclineReason.NoAnswer);
         Assert.Equal(3, (int)DeclineReason.EarlierGuestDeclined);
@@ -346,7 +349,8 @@ public class PersistedEnumValueTests
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
-            nameof(SubscriptionTier), nameof(TabEventType), nameof(TabOrderStatus), nameof(TabStatus),
+            nameof(SubscriptionTier), nameof(TabAdmission), nameof(TabAdmissionReason), nameof(TabEventType),
+            nameof(TabOrderStatus), nameof(TabStatus), nameof(TableChangeSignal),
             nameof(TableSessionSource), nameof(TableShareRequestStatus), nameof(TableStatus),
             nameof(TelegramVerificationStatus),
             nameof(VenueType),
@@ -411,6 +415,30 @@ public class PersistedEnumValueTests
         Assert.Equal(18, (int)TabEventType.TabClosing);
         Assert.Equal(19, (int)TabEventType.TabClosed);
         Assert.Equal(20, (int)TabEventType.TabAbandoned);
+        Assert.Equal(21, (int)TabEventType.TabAdmitted);
+        Assert.Equal(22, (int)TabEventType.TabAdmissionRejected);
+    }
+
+    /// <summary>
+    /// Admission (2026-10-20): stored on every tab, on the wire as <c>admission.status</c> and
+    /// <c>admittedBecause</c>, and on the branch stream as <c>signal</c>. Existing rows were written as 2.
+    /// </summary>
+    [Fact]
+    public void Tab_admission_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)TabAdmission.AwaitingAdmission);
+        Assert.Equal(2, (int)TabAdmission.Admitted);
+        Assert.Equal(3, (int)TabAdmission.Rejected);
+
+        Assert.Equal(1, (int)TabAdmissionReason.Waiter);
+        Assert.Equal(2, (int)TabAdmissionReason.VerifiedHost);
+        Assert.Equal(3, (int)TabAdmissionReason.OpenedByStaff);
+        Assert.Equal(4, (int)TabAdmissionReason.Booker);
+        Assert.Equal(5, (int)TabAdmissionReason.WaiterOrder);
+
+        Assert.Equal(1, (int)TableChangeSignal.TabAwaitingAdmission);
+        Assert.Equal(2, (int)TableChangeSignal.TabAdmitted);
+        Assert.Equal(3, (int)TableChangeSignal.TabAdmissionRejected);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>

@@ -363,6 +363,9 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
 
         // Two bookings of one diner at one branch, and one of a stranger's.
         var mine = await ArrangeAsync(db, clock);
+
+        // A pair from before one number held one booking (2026-10-20): the only way one diner holds two.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, mine.Booked.Id);
         var second = await mine.Diner.CreateAsync(Booking(mine.Branch, mine.Branch.TableIds[2], BookingDate.AddDays(1), SixPm));
         var stranger = await ArrangeAsync(db, clock);
 
@@ -428,6 +431,9 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(clock);
 
         var mine = await ArrangeAsync(db, clock);
+
+        // A pair from before one number held one booking (2026-10-20): the only way one diner holds two.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, mine.Booked.Id);
         var other = await mine.Diner.CreateAsync(Booking(mine.Branch, mine.Branch.TableIds[2], BookingDate, new TimeOnly(20, 30)));
 
         // The app names the other booking - it is the diner's own, and they are signed in.

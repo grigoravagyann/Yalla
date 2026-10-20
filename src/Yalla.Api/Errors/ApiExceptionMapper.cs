@@ -845,6 +845,48 @@ internal static class ApiExceptionMapper
         SignInUnknownException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
 
+        // One number, one active booking. The other booking is named only to its own account - the
+        // exception carries it only then. Must stay ABOVE DomainStateException.
+        PhoneHasActiveBookingException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PhoneHasActiveBooking,
+            e.Message,
+            LogAsError: false,
+            Context: e.Existing is { } held
+                ? new Dictionary<string, object?>
+                {
+                    ["reservationId"] = held.ReservationId,
+                    ["code"] = held.Code,
+                    ["startUtc"] = held.StartUtc,
+                    ["localDate"] = held.LocalDate,
+                    ["localStartTime"] = held.LocalStartTime,
+                    ["venueName"] = held.VenueName,
+                    ["branchName"] = held.BranchName,
+                }
+                : null),
+
+        DeviceHasActiveBookingException e => new MappedError(
+            StatusCodes.Status409Conflict, ErrorCodes.DeviceHasActiveBooking, e.Message, LogAsError: false),
+
+        // The phone waits for the waiter; its own code so it shows that, not an error.
+        TabAwaitingAdmissionException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TabAwaitingAdmission,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["tabId"] = e.TabId }),
+
+        TabAdmissionDecidedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TabAdmissionDecided,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["admission"] = (int)e.Admission,
+            }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 
@@ -864,6 +906,11 @@ internal static class ApiExceptionMapper
         // A move from a manage link whose booking's account cannot take it - the app's 403 and code, in
         // words the link holder can act on, and never the account lock's 401: there is no session.
         ManageLinkAccountUnavailableException e => new MappedError(
+            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
+
+        // The same answer for a booking made without a verified number: never moved from its link -
+        // cancelled and booked again.
+        UnverifiedBookingNotChangeableException e => new MappedError(
             StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
 
         // A diner whose number was typed at sign-up and never proved, trying to book or open a tab

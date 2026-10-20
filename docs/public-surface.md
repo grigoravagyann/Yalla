@@ -178,6 +178,8 @@ So the two states a client needs are carried where they actually live:
 | `turnTimeMinutes` | How long the table is held — the answer to "can we linger?", and finding out at the table is worse |
 | `minLeadMinutes` | How far ahead a booking must be made; greys out the next slot |
 | `cancellationDeadlineMinutes` | A deadline nobody was told about produces no-shows, not cancellations |
+| `unverifiedMaxPartySize` | The page says "for more, verify your number" before the visitor commits. A refusal, not an approval threshold - nothing to game |
+| `unverifiedBookingsNeedApproval` | The page says the venue confirms a booking without a verified number before, not after |
 
 Withheld, deliberately:
 
@@ -336,7 +338,9 @@ else is elided.
   "policy": {
     "turnTimeMinutes": 90,
     "minLeadMinutes": 30,
-    "cancellationDeadlineMinutes": 120
+    "cancellationDeadlineMinutes": 120,
+    "unverifiedMaxPartySize": 6,
+    "unverifiedBookingsNeedApproval": true
   },
   "asOfUtc": "2026-09-06T22:53:12.1013041Z"
 }
@@ -370,6 +374,31 @@ Notes for a mapper:
   `shape`. A room is its photos and the pins on them.
 
 ---
+
+## Booking without a verified number
+
+`POST /api/public/branches/{branchId}/bookings`, anonymous. The visitor who will not prove their number
+(Telegram is the only proof - `GET /api/auth/diner/phone-proof`) books with the number typed and a
+`deviceId` the page keeps in localStorage. The body is the app's booking body without `branchId` and
+`channel`; the channel is the web's, so `acceptsWebBookings` gates it, and the public 404 rule applies. A
+visitor who *does* prove the number books through `POST /api/reservations` with their diner token as before
+and keeps instant confirmation.
+
+The booking is `phoneUnverified`, capped at `policy.unverifiedMaxPartySize`, waits for the venue
+(`awaitingApprovalBecause` 6) when `policy.unverifiedBookingsNeedApproval`, sends no reminder, holds its
+number and its browser (one active booking each), and its manage link reads and cancels it but never
+changes it (`canChange: false`). The rules are in [reservations.md](reservations.md#3g-booking-without-a-proved-number-and-one-active-booking-per-number).
+
+**`manageToken` comes back once**, in the 201. A retry from the same browser answers 200 without it.
+
+Rate limited per address: `PublicUnverifiedBookingPermitLimit` (10) per `PublicUnverifiedBookingWindowSeconds`
+(3600), replacing the page budget on this route; the branch ceiling and the global limit still apply. Not
+one per address: a carrier puts thousands of phones behind one. The real limits are the number, the browser
+and the venue's approval.
+
+The phone-proof channels read (`/api/auth/diner/phone-proof`, #52) carries no "unverified allowed" hint on
+purpose: whether a venue takes bookings without proof is per branch, and the page has it on the branch's
+`policy`. This route needs neither SMS nor Telegram.
 
 ## Managing a booking without an account
 
@@ -414,6 +443,11 @@ no, 4 they did not answer), so the page apologises for the right thing. See [res
 The branch page's public address, `venueSlug` and `branchSlug`: the link a reminder carries is
 `/booking/{token}` (below), which names no branch, so the page needs them to link back to the branch
 and open its booking card there. They are the page's own address, public already.
+
+`phoneUnverified` says the booking was made without a verified number; `canChange` says whether
+`reschedule` would be considered at all (still to come, and an account with a proved number to land on) -
+false for every booking made without an account, whose link cancels but never changes it (`403
+phone-not-verified`, "cancel it and book again").
 
 Two ids, for changing the booking from the link: `reservationId`, which the change screen sends as
 `excludeReservationId` on the public availability and day-slot reads so the table the visitor already

@@ -236,7 +236,8 @@ internal static class TestBranchBuilder
             diningTableId: tableId,
             tableSessionId: tableSessionId,
             openedAtUtc: openedAtUtc,
-            serviceChargePercentSnapshot: 10m);
+            serviceChargePercentSnapshot: 10m,
+            admittedBecause: TabAdmissionReason.OpenedByStaff);
 
         // Server-computed totals: the only way money gets onto a tab.
         tab.ApplyComputedTotals(subtotalAmd: outstandingAmd, serviceChargeAmd: 0L, paidAmd: 0L);

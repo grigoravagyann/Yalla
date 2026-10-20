@@ -576,7 +576,7 @@ public class RealAuthFlowTests(SqlServerFixture fixture)
 
     private sealed record Opened(Guid TabId, Guid ParticipantId, string AccessToken);
 
-    private static async Task<Opened> OpenAsync(
+    private async Task<Opened> OpenAsync(
         HttpClient client,
         string qrToken,
         string deviceId,
@@ -590,6 +590,10 @@ public class RealAuthFlowTests(SqlServerFixture fixture)
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var tab = body.GetProperty("tab");
+
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); these tests are about the
+        // tokens and what they reach once the table may order.
+        await fixture.AdmitTabAsync(tab.GetProperty("tabId").GetGuid());
 
         return new Opened(
             tab.GetProperty("tabId").GetGuid(),

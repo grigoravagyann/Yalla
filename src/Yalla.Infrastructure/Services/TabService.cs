@@ -9,6 +9,7 @@ using Yalla.Application.Tables;
 using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
+using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Occupancy;
@@ -56,6 +57,7 @@ internal sealed class TabService(
     IOptions<TabOptions> options,
     TabLedger ledger,
     IOutbox outbox,
+    StaffBranchGuard branchGuard,
     ILogger<TabService> logger) : ITabService
 {
     /// <summary>
@@ -85,9 +87,21 @@ internal sealed class TabService(
             return replay;
         }
 
+        // A scanner whose diner account has a proved number is somebody the venue could reach; anybody
+        // else - most scans, and a photographed code scanned from home - waits for a waiter to admit the
+        // tab before it can order (decided 2026-10-20).
+        var admitAs = await ScannerHasProvedNumberAsync(cancellationToken)
+            ? TabAdmissionReason.VerifiedHost
+            : (TabAdmissionReason?)null;
+
         return await OpenAtTableAsync(
             new TabOpening(
-                device, command.ClientCommandId, command.DisplayName, command.SettlementMode, command.HideTotalFromGuests),
+                device,
+                command.ClientCommandId,
+                command.DisplayName,
+                command.SettlementMode,
+                command.HideTotalFromGuests,
+                admitAs),
             async token =>
             {
                 var table = await db.DiningTables
@@ -130,9 +144,15 @@ internal sealed class TabService(
             return replay;
         }
 
+        // The booking's own diner, whose number the gate above has just read as proved.
         return await OpenAtTableAsync(
             new TabOpening(
-                device, command.ClientCommandId, command.DisplayName, command.SettlementMode, command.HideTotalFromGuests),
+                device,
+                command.ClientCommandId,
+                command.DisplayName,
+                command.SettlementMode,
+                command.HideTotalFromGuests,
+                TabAdmissionReason.Booker),
             async token =>
             {
                 // Read again on every attempt. A waiter seating the party between two attempts moves
@@ -260,13 +280,30 @@ internal sealed class TabService(
     private static DomainStateException OutOfService(DiningTable table) =>
         new($"Table {table.Label} is out of service. Ask a member of staff for another table.");
 
-    /// <summary>What an opening asks for, whichever way it found its table.</summary>
+    /// <summary>
+    /// What an opening asks for, whichever way it found its table - and whether a tab it opens may order
+    /// at once (<paramref name="AdmitAs"/>), or waits for a waiter (null).
+    /// </summary>
     private sealed record TabOpening(
         string Device,
         Guid ClientCommandId,
         string? DisplayName,
         SettlementMode? SettlementMode,
-        bool? HideTotalFromGuests);
+        bool? HideTotalFromGuests,
+        TabAdmissionReason? AdmitAs);
+
+    /// <summary>
+    /// Whether the caller scanned with a diner account whose phone number is proved - read from the row,
+    /// as the booking gate reads it, because the token cannot carry a fact that changes under it.
+    /// </summary>
+    private async Task<bool> ScannerHasProvedNumberAsync(CancellationToken cancellationToken) =>
+        actor.Type == ActorType.Diner
+        && actor.DinerUserId is { } dinerUserId
+        && await db.DinerUsers
+            .AsNoTracking()
+            .AnyAsync(
+                d => d.Id == dinerUserId && d.PhoneVerifiedAtUtc != null && d.IsActive && d.DeletedAtUtc == null,
+                cancellationToken);
 
     /// <summary>
     /// The table an opening is for, and how to seat it when nobody is sitting there yet - the one step
@@ -394,6 +431,7 @@ internal sealed class TabService(
                 session.Id,
                 nowUtc,
                 table.Branch.ReservationPolicy.ServiceChargePercent,
+                opening.AdmitAs,
                 opening.SettlementMode ?? SettlementMode.AnyonePaysAnyAmount,
                 opening.HideTotalFromGuests ?? false,
                 opening.ClientCommandId);
@@ -406,6 +444,14 @@ internal sealed class TabService(
 
             db.Tabs.Add(tab);
             db.TabParticipants.Add(host);
+
+            // Onto the branch's change stream in the same commit, so every tablet learns a table is
+            // waiting for somebody to look at it - a scan onto a table a waiter seated changes no table
+            // state, and a scan that seated the table committed its own row before the tab existed.
+            if (!tab.IsAdmitted)
+            {
+                SignalTable(tab, TableChangeSignal.TabAwaitingAdmission, "a scan is waiting to be let in", staffId: null, nowUtc);
+            }
 
             try
             {
@@ -505,13 +551,20 @@ internal sealed class TabService(
                 existing.SetDisplayName(displayName);
             }
 
+            // The booker is here: their booking's sitting is theirs, so a tab a friend's unverified scan
+            // opened on it is admitted - the booking is the proof a waiter would otherwise give.
+            if (asBooker)
+            {
+                AdmitInContext(tab, TabAdmissionReason.Booker, staffId: null, nowUtc);
+            }
+
             if (asBooker && !existing.IsApproved)
             {
                 await ApproveBookerAsync(tab, existing, nowUtc, cancellationToken);
             }
             else
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await ledger.SaveAppendedAsync(cancellationToken);
             }
 
             return existing;
@@ -560,9 +613,11 @@ internal sealed class TabService(
         db.TabParticipants.Add(guest);
 
         // It is their booking: the party at the table is theirs, so nobody has to let them on. The
-        // host - the friend who scanned first - stays host.
+        // host - the friend who scanned first - stays host, and the tab may order from now on.
         if (asBooker)
         {
+            AdmitInContext(tab, TabAdmissionReason.Booker, staffId: null, nowUtc);
+
             await ApproveBookerAsync(tab, guest, nowUtc, cancellationToken);
 
             logger.LogInformation(
@@ -832,7 +887,7 @@ internal sealed class TabService(
             "Participant {ParticipantId} left tab {TabId}; the host is now {HostParticipantId}.",
             leaving.Id, tab.Id, tab.HostParticipantId);
 
-        return await ToViewAsync(leaving, tab.Status, cancellationToken);
+        return await ToViewAsync(leaving, tab.Status, tab.Admission, cancellationToken);
     }
 
     /// <summary>
@@ -873,7 +928,7 @@ internal sealed class TabService(
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
-        return await ToViewAsync(participant, tab.Status, cancellationToken);
+        return await ToViewAsync(participant, tab.Status, tab.Admission, cancellationToken);
     }
 
     private async Task<TabParticipantView> ChangeParticipantAsync(
@@ -898,7 +953,7 @@ internal sealed class TabService(
         // its idempotency key.
         if (alreadyAnswered?.Invoke(target) == true)
         {
-            return await ToViewAsync(target, tab.Status, cancellationToken);
+            return await ToViewAsync(target, tab.Status, tab.Admission, cancellationToken);
         }
 
         change(target, clock.UtcNow);
@@ -954,7 +1009,7 @@ internal sealed class TabService(
             var current = await LoadTabAsync(tabId, cancellationToken);
 
             return await ToViewAsync(
-                current.Participants.First(p => p.Id == participantId), current.Status, cancellationToken);
+                current.Participants.First(p => p.Id == participantId), current.Status, current.Admission, cancellationToken);
         }
 
         // Their standing just changed, so the cached answer about it is wrong. A participant the
@@ -966,7 +1021,7 @@ internal sealed class TabService(
             "{Operation} on tab {TabId}: participant {ParticipantId} is now {Status}.",
             operation, tab.Id, target.Id, target.Status);
 
-        return await ToViewAsync(target, tab.Status, cancellationToken);
+        return await ToViewAsync(target, tab.Status, tab.Admission, cancellationToken);
     }
 
     // ---------------------------------------------------------------- settlement mode
@@ -1078,7 +1133,9 @@ internal sealed class TabService(
                 session.Id,
                 clock.UtcNow,
                 table.Branch.ReservationPolicy.ServiceChargePercent,
-                clientCommandId: command.ClientCommandId);
+                TabAdmissionReason.OpenedByStaff,
+                clientCommandId: command.ClientCommandId,
+                admittedByStaffId: actor.StaffMemberId);
 
             session.AttachTab(tab.Id);
             db.Tabs.Add(tab);
@@ -1238,6 +1295,293 @@ internal sealed class TabService(
         return await StaffViewAsync(tab.Id, cancellationToken);
     }
 
+    // ---------------------------------------------------------------- admission
+
+    /// <summary>What admitting a tab is recorded as in <c>ProcessedCommands</c>.</summary>
+    internal const string AdmitCommandType = "tab.admit";
+
+    /// <summary>What turning a tab away is recorded as in <c>ProcessedCommands</c>.</summary>
+    internal const string RejectCommandType = "tab.reject";
+
+    public async Task<TabStaffView> AdmitAsync(AdmitTabCommand command, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var staffId = RequireStaffId("Let a table order");
+        RequireOpening(command.ClientCommandId, partySize: null);
+
+        var tab = await LoadTabAsync(command.TabId, cancellationToken);
+
+        // The stored row's branch, not only the token's: a waiter moved to another branch is refused at
+        // once, as for acknowledging a call.
+        await branchGuard.RequireAsync(staffId, tab.BranchId, "Letting this table order", "tab", cancellationToken);
+
+        if (await IsAdmissionReplayAsync(command.ClientCommandId, AdmitCommandType, tab.Id, cancellationToken))
+        {
+            return await StaffViewAsync(tab.Id, cancellationToken);
+        }
+
+        var nowUtc = clock.UtcNow;
+
+        // Throws TabAdmissionDecidedException for a tab already turned away. An admitted tab is answered
+        // as it is - two waiters tapping the same card is the normal case - and writes no second event.
+        if (AdmitInContext(tab, TabAdmissionReason.Waiter, staffId, nowUtc))
+        {
+            logger.LogInformation("Staff {StaffId} let tab {TabId} order.", staffId, tab.Id);
+        }
+
+        RecordAdmissionCommand(command.ClientCommandId, AdmitCommandType, tab.Id, staffId, nowUtc);
+
+        await SaveAdmissionAsync(command.ClientCommandId, AdmitCommandType, tab.Id, cancellationToken);
+
+        return await StaffViewAsync(tab.Id, cancellationToken);
+    }
+
+    public async Task<TabStaffView> RejectAdmissionAsync(RejectTabCommand command, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var staffId = RequireStaffId("Turn a table away");
+        RequireOpening(command.ClientCommandId, partySize: null);
+
+        var reason = string.IsNullOrWhiteSpace(command.Reason) ? null : command.Reason.Trim();
+
+        if (reason is { Length: > FieldLengths.Reason })
+        {
+            throw new ArgumentException($"A reason is at most {FieldLengths.Reason} characters.", "reason");
+        }
+        var tab = await LoadTabAsync(command.TabId, cancellationToken, includeJoinTokens: true);
+
+        await branchGuard.RequireAsync(staffId, tab.BranchId, "Turning this table away", "tab", cancellationToken);
+
+        if (await IsAdmissionReplayAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken))
+        {
+            return await StaffViewAsync(tab.Id, cancellationToken);
+        }
+
+        var nowUtc = clock.UtcNow;
+
+        // Throws TabAdmissionDecidedException for a tab already admitted. One already turned away is
+        // answered as it is.
+        if (!tab.RejectAdmission(nowUtc, staffId))
+        {
+            RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
+            await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken);
+
+            return await StaffViewAsync(tab.Id, cancellationToken);
+        }
+
+        var session = await db.TableSessions.FirstAsync(s => s.Id == tab.TableSessionId, cancellationToken);
+
+        // Did the scan seat the table? A walk-in sitting with no waiter and no booking behind it is one
+        // only a phone opened - the phantom this whole step exists for - and turning it away gives the
+        // table back. A party a waiter or a booking seated is really there: only the tab goes, and they
+        // can scan again.
+        var seatedByScan = session.IsOpen
+                           && session.Source == TableSessionSource.WalkIn
+                           && session.SeatedByStaffId is null
+                           && session.ReservationId is null;
+
+        // Nobody new onto a tab that is gone.
+        foreach (var live in tab.JoinTokens.Where(t => t.IsUsableAt(nowUtc)))
+        {
+            live.Revoke(nowUtc);
+        }
+
+        // Its open calls are answered by the waiter who came over and found nobody - acknowledged, so the
+        // rail drops them, by the same person, at the same moment.
+        var calls = await db.ServiceRequests
+            .Where(r => r.TabId == tab.Id && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var call in calls)
+        {
+            call.Acknowledge(nowUtc, staffId);
+        }
+
+        ledger.Append(tab.Id, TabEventType.TabAdmissionRejected, new
+        {
+            byStaffId = staffId,
+            atUtc = nowUtc,
+            tableFreed = seatedByScan,
+        });
+
+        RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
+
+        if (!seatedByScan)
+        {
+            session.DetachRejectedTab(tab.Id);
+
+            SignalTable(tab, TableChangeSignal.TabAdmissionRejected, reason ?? "scan turned away", staffId, nowUtc);
+
+            await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken);
+        }
+        else
+        {
+            // The rejection and the table going free commit together: the free is the state machine's
+            // own transition (its audit row, its row-version check against a waiter acting on the same
+            // table), run inside this transaction after the tab's rows are saved and numbered.
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+            if (!await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken))
+            {
+                // The same tap, racing itself: the other one is freeing the table.
+                return await StaffViewAsync(tab.Id, cancellationToken);
+            }
+
+            var freeCommandId = Guid.CreateVersion7();
+
+            await tableState.FreeTableAsync(
+                new TableStateCommand(tab.BranchId, tab.DiningTableId, freeCommandId, reason ?? "scan turned away"),
+                cancellationToken);
+
+            var freed = await db.TableStateChanges.FirstAsync(c => c.ClientCommandId == freeCommandId, cancellationToken);
+            freed.WithSignal(TableChangeSignal.TabAdmissionRejected, tab.Id);
+
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        // Everybody on it may still read the receipt-grace view, and nobody may change anything.
+        authority.InvalidateTab(tab.Id);
+
+        logger.LogInformation(
+            "Staff {StaffId} turned tab {TabId} away; table {TableId} {Freed}.",
+            staffId, tab.Id, tab.DiningTableId, seatedByScan ? "freed" : "left seated");
+
+        return await StaffViewAsync(tab.Id, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<TabAwaitingAdmissionView>> ListAwaitingAdmissionAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        var staffId = RequireStaffId("Read the tables waiting to be let in");
+
+        await branchGuard.RequireAsync(staffId, branchId, "Reading this branch's waiting tables", "branch", cancellationToken);
+
+        // One statement, served by the filtered index on the waiting tabs: a handful per branch at most.
+        var rows = await db.Tabs
+            .AsNoTracking()
+            .Where(t => t.BranchId == branchId
+                        && t.Admission == TabAdmission.AwaitingAdmission
+                        && t.Status == TabStatus.Open)
+            .OrderBy(t => t.OpenedAtUtc)
+            .ThenBy(t => t.Id)
+            .Take(200)
+            .Select(t => new TabAwaitingAdmissionView(
+                t.Id,
+                t.DiningTableId,
+                t.DiningTable.Label,
+                t.DiningTable.FloorArea == null ? null : t.DiningTable.FloorArea.Name,
+                t.OpenedAtUtc,
+                t.Participants.Where(p => p.Id == t.HostParticipantId).Select(p => p.DisplayName).FirstOrDefault(),
+                t.Participants.Count(p => p.Status != ParticipantStatus.Removed),
+                t.TableSession.ClosedAtUtc == null
+                && t.TableSession.Source == TableSessionSource.WalkIn
+                && t.TableSession.SeatedByStaffId == null
+                && t.TableSession.ReservationId == null))
+            .ToListAsync(cancellationToken);
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Admits a tab that was waiting, in the caller's unit of work: the tab, its stream's
+    /// <c>TabAdmitted</c>, and the branch stream's signal. False, staging nothing, when it already was.
+    /// </summary>
+    /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
+    private bool AdmitInContext(Tab tab, TabAdmissionReason because, Guid? staffId, DateTime nowUtc) =>
+        TabAdmissions.Admit(db, ledger, tab, because, staffId, SignalActor(staffId), nowUtc);
+
+    /// <summary>
+    /// Puts a signal about the table's tab on the branch change stream - a same-status row, as the
+    /// hold-extended row is - in the caller's unit of work, so every tablet following the stream moves.
+    /// </summary>
+    private void SignalTable(Tab tab, TableChangeSignal signal, string reason, Guid? staffId, DateTime nowUtc) =>
+        TabAdmissions.Signal(db, tab, signal, reason, SignalActor(staffId), nowUtc);
+
+    /// <summary>Who a branch-stream row names: the waiter, else the diner account on the request, else the system.</summary>
+    private (ActorType Type, Guid? Id) SignalActor(Guid? staffId) =>
+        staffId is { } staff
+            ? (ActorType.Staff, staff)
+            : actor.Type == ActorType.Diner && actor.DinerUserId is { } diner
+                ? (ActorType.Diner, diner)
+                : (ActorType.System, null);
+
+    /// <summary>
+    /// Whether this admit or reject was already applied - or throws when the id belongs to another command,
+    /// or to the same command on another tab.
+    /// </summary>
+    private async Task<bool> IsAdmissionReplayAsync(
+        Guid clientCommandId,
+        string commandType,
+        Guid tabId,
+        CancellationToken cancellationToken)
+    {
+        var processed = await db.ProcessedCommands
+            .AsNoTracking()
+            .Where(c => c.ClientCommandId == clientCommandId)
+            .Select(c => new { c.CommandType, c.ResponseJson })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (processed is null)
+        {
+            return false;
+        }
+
+        if (processed.CommandType != commandType || !processed.ResponseJson.Contains(tabId.ToString(), StringComparison.Ordinal))
+        {
+            throw new ClientCommandIdAlreadyUsedException(clientCommandId);
+        }
+
+        return true;
+    }
+
+    /// <summary>Records the admission command in the caller's unit of work: which tab, nothing more.</summary>
+    private void RecordAdmissionCommand(Guid clientCommandId, string commandType, Guid tabId, Guid staffId, DateTime nowUtc) =>
+        db.ProcessedCommands.Add(new Domain.Audit.ProcessedCommand(
+            clientCommandId,
+            commandType,
+            ActorType.Staff,
+            staffId,
+            System.Text.Json.JsonSerializer.Serialize(new { tabId }),
+            StatusCodes200,
+            nowUtc));
+
+    private const int StatusCodes200 = 200;
+
+    /// <summary>
+    /// Saves the admission's rows, numbering its events. Two taps of one command racing each other: the
+    /// loser finds the winner's record and answers as a replay; another command's id is refused.
+    /// </summary>
+    /// <returns>True when this request's rows were written; false when it was answered as a replay.</returns>
+    private async Task<bool> SaveAdmissionAsync(
+        Guid clientCommandId,
+        string commandType,
+        Guid tabId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ledger.SaveAppendedAsync(cancellationToken);
+
+            return true;
+        }
+        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.ProcessedCommandId))
+        {
+            db.ChangeTracker.Clear();
+            ledger.DiscardPending();
+
+            if (!await IsAdmissionReplayAsync(clientCommandId, commandType, tabId, cancellationToken))
+            {
+                throw;
+            }
+
+            return false;
+        }
+    }
+
     // ---------------------------------------------------------------- idempotency
 
     /// <summary>
@@ -1298,6 +1642,13 @@ internal sealed class TabService(
         return acting;
     }
 
+    private Guid RequireStaffId(string operation)
+    {
+        RequireStaff(operation);
+
+        return actor.StaffMemberId!.Value;
+    }
+
     private void RequireStaff(string operation)
     {
         if (actor.Type != ActorType.Staff || actor.StaffMemberId is null)
@@ -1342,10 +1693,15 @@ internal sealed class TabService(
         }
     }
 
+    /// <summary>
+    /// The sitting's tab - never one a waiter turned away, which gave the sitting's tab slot back so the
+    /// party really there can open their own.
+    /// </summary>
     private Task<Tab?> LoadTabBySessionAsync(Guid sessionId, CancellationToken cancellationToken) =>
         db.Tabs
             .Include(t => t.Participants)
-            .FirstOrDefaultAsync(t => t.TableSessionId == sessionId, cancellationToken);
+            .FirstOrDefaultAsync(
+                t => t.TableSessionId == sessionId && t.Admission != TabAdmission.Rejected, cancellationToken);
 
     private async Task<TabAccessResult> ResultAsync(
         Tab tab,
@@ -1378,6 +1734,7 @@ internal sealed class TabService(
     private async Task<TabParticipantView> ToViewAsync(
         TabParticipant participant,
         TabStatus tabStatus,
+        TabAdmission admission,
         CancellationToken cancellationToken)
     {
         var photo = participant.UserId is { } userId
@@ -1399,7 +1756,8 @@ internal sealed class TabService(
                 participant.CanPay,
                 participant.JoinedAtUtc,
                 photo is null ? null : PhotoView.From(photo)),
-            tabStatus);
+            tabStatus,
+            admission);
     }
 
     private static string RequireDevice(string? deviceId) =>

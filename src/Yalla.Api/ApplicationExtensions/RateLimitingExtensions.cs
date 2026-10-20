@@ -132,6 +132,14 @@ public static class RateLimitingExtensions
     public const string DinerWritePolicy = "diner-write";
 
     /// <summary>
+    /// A booking from the public page without a verified number, per client address: ten an hour by
+    /// default. Not one: a carrier puts thousands of phones behind one address. The real limits are the
+    /// number and the browser (one active booking each) and the venue's approval; this stops a script
+    /// cycling numbers. <c>PublicUnverifiedBookingPermitLimit</c> / <c>PublicUnverifiedBookingWindowSeconds</c>.
+    /// </summary>
+    public const string PublicUnverifiedBookingPolicy = "public-unverified-booking";
+
+    /// <summary>
     /// The browse list's path, which carries no branch.
     /// </summary>
     /// <remarks>
@@ -238,6 +246,8 @@ public static class RateLimitingExtensions
         var dinerWriteWindowSeconds = section.GetValue<int?>("DinerWriteWindowSeconds") ?? 60;
 
         // And a ceiling per manage token, for the link that went round a group chat.
+        var publicUnverifiedBookingPermitLimit = section.GetValue<int?>("PublicUnverifiedBookingPermitLimit") ?? 10;
+        var publicUnverifiedBookingWindowSeconds = section.GetValue<int?>("PublicUnverifiedBookingWindowSeconds") ?? 3600;
         var publicBookingPermitLimit = section.GetValue<int?>("PublicBookingPermitLimit") ?? 20;
         var publicBookingWindowSeconds = section.GetValue<int?>("PublicBookingWindowSeconds") ?? 60;
 
@@ -349,6 +359,18 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = publicPermitLimit,
                         Window = TimeSpan.FromSeconds(publicWindowSeconds),
+                        QueueLimit = 0,
+                    }));
+
+            // A booking without a verified number, per address - an hour's window, replacing the page
+            // budget on that one route.
+            options.AddPolicy(PublicUnverifiedBookingPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    PartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = publicUnverifiedBookingPermitLimit,
+                        Window = TimeSpan.FromSeconds(publicUnverifiedBookingWindowSeconds),
                         QueueLimit = 0,
                     }));
 

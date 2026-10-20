@@ -443,7 +443,9 @@ public sealed class AvailabilityQueryTests(SqlServerFixture fixture, ITestOutput
         await booker.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(19, 0)));
-        await booker.CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(13, 0)) with { LocalDate = new DateOnly(2026, 9, 10) });
+        // Somebody else again: one number holds one active booking (2026-10-20).
+        await fixture.CreateReservationService(db, clock, TestActor.Diner())
+            .CreateAsync(Booking(branch, branch.TableIds[1], new TimeOnly(13, 0)) with { LocalDate = new DateOnly(2026, 9, 10) });
 
         await using var readDb = fixture.CreateContext(clock);
         var query = fixture.CreateAvailabilityQuery(readDb, clock);

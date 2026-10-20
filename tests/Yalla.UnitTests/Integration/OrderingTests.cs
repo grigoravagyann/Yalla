@@ -1717,6 +1717,7 @@ public sealed class OrderingTests(SqlServerFixture fixture)
             .FirstAsync();
 
         var opened = await tabs.OpenAsync(new OpenTabCommand(qr, "phone-next-table", Guid.CreateVersion7(), "Gor"));
+        await fixture.AdmitTabAsync(world.Clock, opened.Tab.TabId);
 
         Assert.NotEqual(world.TabId, opened.Tab.TabId);
         Assert.Equal(ParticipantStatus.Approved, opened.Tab.Me.Status);
@@ -1772,6 +1773,9 @@ public sealed class OrderingTests(SqlServerFixture fixture)
 
         await tabs.ApproveParticipantAsync(
             opened.Tab.TabId, opened.Tab.Me.ParticipantId, joined.Tab.Me.ParticipantId);
+
+        // An anonymous scan waits for a waiter (TabAdmissionTests); these tests are about what follows.
+        await fixture.AdmitTabAsync(clock, opened.Tab.TabId);
 
         return new World(
             db, clock, branch, menu, opened.Tab.TabId, opened.Tab.Me.ParticipantId, joined.Tab.Me.ParticipantId);

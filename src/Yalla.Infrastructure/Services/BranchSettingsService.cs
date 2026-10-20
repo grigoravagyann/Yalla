@@ -163,7 +163,7 @@ internal sealed class BranchSettingsService(
         var branch = await LoadBranchAsync(branchId, cancellationToken);
 
         // Constructor checks, then the editing bounds. Refuses; never clamps.
-        var policy = command.ToPolicy();
+        var policy = command.ToPolicy(branch.ReservationPolicy);
         var nowUtc = clock.UtcNow;
 
         // Which live bookings the new rules would not have allowed. Counted, reported, and left

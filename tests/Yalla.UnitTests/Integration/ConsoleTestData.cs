@@ -101,7 +101,7 @@ internal static class ConsoleTestData
         db.TableSessions.Add(session);
         table.Occupy(session.Id);
 
-        var tab = new Tab(branch.BranchId, table.Id, session.Id, atUtc, 10m);
+        var tab = new Tab(branch.BranchId, table.Id, session.Id, atUtc, 10m, TabAdmissionReason.OpenedByStaff);
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);
 

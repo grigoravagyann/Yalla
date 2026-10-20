@@ -42,14 +42,16 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
             bigTableId = (await TestBranchBuilder.AddTableAsync(db, testBranch, "12", seats: 10)).Id;
         }
 
-        var approvedId = await DinerFeedTestData.BookAsync(diner, factory, branch, bigTableId, daysOut: 2, partySize: 9);
-        var declinedId = await DinerFeedTestData.BookAsync(diner, factory, branch, bigTableId, daysOut: 3, partySize: 9);
-
+        // One number holds one active booking (2026-10-20): the declined one is decided before the other is made.
         using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
-        Assert.Equal(HttpStatusCode.OK, (await manager.PostAsJsonAsync($"/api/reservations/{approvedId}/approve", new { })).StatusCode);
+
+        var declinedId = await DinerFeedTestData.BookAsync(diner, factory, branch, bigTableId, daysOut: 3, partySize: 9);
         Assert.Equal(
             HttpStatusCode.OK,
             (await manager.PostAsJsonAsync($"/api/reservations/{declinedId}/reject", new { reason = "A private event that evening." })).StatusCode);
+
+        var approvedId = await DinerFeedTestData.BookAsync(diner, factory, branch, bigTableId, daysOut: 2, partySize: 9);
+        Assert.Equal(HttpStatusCode.OK, (await manager.PostAsJsonAsync($"/api/reservations/{approvedId}/approve", new { })).StatusCode);
 
         var feed = await diner.GetFromJsonAsync<JsonElement>("/api/diner/notifications");
         var items = feed.GetProperty("items").EnumerateArray().ToList();
@@ -58,11 +60,11 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
         Assert.Equal(2, items.Count);
         Assert.Equal(2, feed.GetProperty("unreadCount").GetInt32());
 
-        // Newest first: the decline was written last.
-        Assert.Equal(DinerNotificationKinds.BookingDeclined, items[0].GetProperty("kind").GetString());
-        Assert.Equal(declinedId, items[0].GetProperty("reservationId").GetGuid());
+        // Newest first: the approval was written last.
+        Assert.Equal(DinerNotificationKinds.BookingDeclined, items[1].GetProperty("kind").GetString());
+        Assert.Equal(declinedId, items[1].GetProperty("reservationId").GetGuid());
 
-        var confirmed = items[1];
+        var confirmed = items[0];
         Assert.Equal(DinerNotificationKinds.BookingConfirmed, confirmed.GetProperty("kind").GetString());
         Assert.Equal(approvedId, confirmed.GetProperty("reservationId").GetGuid());
         Assert.Equal(branch.BranchId, confirmed.GetProperty("branchId").GetGuid());
@@ -109,8 +111,8 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
             branch = await AuthTestData.CreateBranchAsync(db);
         }
 
-        var keptId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
-        // At 20:00, after the kept one's sitting: one diner holds one table at a branch at a time.
+        // One number holds one active booking (2026-10-20), so the one given back goes first, and the kept
+        // one is booked once it is cancelled.
         var cancelledId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2, time: "20:00");
 
         // Written, not yet shown.
@@ -121,6 +123,8 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
         Assert.Equal(
             HttpStatusCode.OK,
             (await diner.PostAsJsonAsync($"/api/reservations/{cancelledId}/cancel", new { reason = "Plans changed." })).StatusCode);
+
+        var keptId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
 
         await using var context = fixture.CreateContext(factory.Clock);
 
@@ -167,8 +171,6 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
         }
 
         var seatedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[0], daysOut: 2);
-        // At 20:00, after the other's sitting: one diner holds one table at a branch at a time.
-        var finishedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2, time: "20:00");
 
         DateTime dueAtUtc;
         await using (var db = fixture.CreateContext(factory.Clock))
@@ -181,6 +183,10 @@ public sealed class DinerNotificationFeedTests(SqlServerFixture fixture)
 
         // Seated two days early, long before the reminder is due.
         Assert.Equal(HttpStatusCode.OK, (await SeatAsync(waiter, branch, branch.TableIds[0], seatedId)).StatusCode);
+
+        // A seated booking no longer holds the number (one active booking per number, 2026-10-20), so the
+        // second is booked now - at 20:00, after the other's sitting: one table at a branch at a time.
+        var finishedId = await DinerFeedTestData.BookAsync(diner, factory, branch, branch.TableIds[1], daysOut: 2, time: "20:00");
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {

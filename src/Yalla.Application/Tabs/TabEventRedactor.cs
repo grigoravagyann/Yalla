@@ -172,6 +172,11 @@ public sealed class TabEventRedactor
         {
             Table = ["writtenOffAmd"],
         },
+
+        // Admission (2026-10-20): about the table, not about anybody's money or name, so every reader -
+        // a pending joiner included - gets the whole payload. It is how the phones learn they may order.
+        [TabEventType.TabAdmitted] = new(Subject.None, null, Public: ["admittedBecause", "byStaffId", "atUtc"]),
+        [TabEventType.TabAdmissionRejected] = new(Subject.None, null, Public: ["byStaffId", "atUtc", "tableFreed"]),
     };
 
     private readonly Guid viewerParticipantId;

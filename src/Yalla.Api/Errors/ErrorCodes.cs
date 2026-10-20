@@ -305,6 +305,31 @@ public static class ErrorCodes
     public const string PhoneNotVerified = "phone-not-verified";
 
     /// <summary>
+    /// The booker's phone number already holds an active booking (pending or confirmed, not over) at any
+    /// venue: one number, one active booking. HTTP 409. <c>context</c> names that booking only to the
+    /// account that holds it; anybody else gets none. Minted by <c>PhoneHasActiveBookingException</c>.
+    /// </summary>
+    public const string PhoneHasActiveBooking = "phone-has-active-booking";
+
+    /// <summary>
+    /// The browser already holds an active booking made without a verified number. HTTP 409, no context.
+    /// Minted by <c>DeviceHasActiveBookingException</c>.
+    /// </summary>
+    public const string DeviceHasActiveBooking = "device-has-active-booking";
+
+    /// <summary>
+    /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
+    /// 409, <c>context.tabId</c>. Minted by <c>TabAwaitingAdmissionException</c>.
+    /// </summary>
+    public const string TabAwaitingAdmission = "tab-awaiting-admission";
+
+    /// <summary>
+    /// Admitting a tab already turned away, or turning away one already admitted. HTTP 409,
+    /// <c>context.tabId</c> and <c>context.admission</c>. Minted by <c>TabAdmissionDecidedException</c>.
+    /// </summary>
+    public const string TabAdmissionDecided = "tab-admission-decided";
+
+    /// <summary>
     /// An upload is not a JPEG, PNG or WebP, or is too large to store. HTTP 409, with
     /// <c>context.detectedFormat</c> when the bytes were an image of some other kind. Decided by
     /// sniffing the bytes - the declared type and the file name are both the caller's to lie about.
@@ -494,6 +519,10 @@ public static class ErrorCodes
         EmailTaken => "Email address taken",
         PhoneInUse => "Phone number already has an account",
         PhoneNotVerified => "Phone number not verified",
+        PhoneHasActiveBooking => "This number already has a booking",
+        DeviceHasActiveBooking => "This browser already has a booking",
+        TabAwaitingAdmission => "Waiting for a waiter",
+        TabAdmissionDecided => "Already decided",
         UnsupportedImage => "Unsupported image",
         RelocationNotAllowed => "Relocation not allowed",
         FloorPlanChanged => "Floor plan changed",

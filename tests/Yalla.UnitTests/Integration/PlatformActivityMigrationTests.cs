@@ -56,6 +56,8 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
                     "ALTER TABLE dbo.Venues ADD ActiveBeforeDeletion bit NULL; "
                     + "ALTER TABLE dbo.StaffMembers ADD SessionGeneration int NOT NULL CONSTRAINT DF_Test_SessionGeneration DEFAULT 0;"
                     + "ALTER TABLE dbo.Branches ADD SpecialDaysVersion int NOT NULL CONSTRAINT DF_Test_SpecialDaysVersion DEFAULT 0;"
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedBookingsNeedApproval bit NOT NULL CONSTRAINT DF_Test_UnverifiedApproval DEFAULT 1; "
+                    + "ALTER TABLE dbo.Branches ADD ReservationPolicy_UnverifiedMaxPartySize int NOT NULL CONSTRAINT DF_Test_UnverifiedMaxParty DEFAULT 6;"
                     + "ALTER TABLE dbo.BranchReviews ADD ReplyText nvarchar(500) NULL, ReplyAuthorName nvarchar(200) NULL, "
                     + "ReplyAuthorRole int NULL, ReplyByStaffMemberId uniqueidentifier NULL, RepliedAtUtc datetime2 NULL, "
                     + "ReplyUpdatedAtUtc datetime2 NULL;");

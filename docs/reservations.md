@@ -628,6 +628,67 @@ gets `guestPhone` empty and `previousBooking.guestPhone` absent.
 (`ReservationRules.AwaitsApproval` takes the slot): every time today and the first six hours tomorrow
 say true; the same times next week say false. See [5](#what-the-diner-is-told-before-they-commit).
 
+## 3g. Booking without a proved number, and one active booking per number
+
+Decided 2026-10-20. ID-card checks were rejected; a phone number nobody proved is allowed, with safeguards.
+
+**Who books unverified.** A web visitor through `POST /api/public/branches/{branchId}/bookings` (no
+account, no proof - see [public-surface.md](public-surface.md#booking-without-a-verified-number)), and an app
+account whose number was never proved through `POST /api/reservations`. Both create the booking through the
+one path (`ReservationService.CreateCoreAsync`, the writer's lock); what an account would have given is
+replaced:
+
+| | Verified booker | Unverified booker |
+| --- | --- | --- |
+| `Reservations.PhoneUnverified` | false | **true** - on every booking read (`phoneUnverified`), the floor's next booking (`nextReservationPhoneUnverified`) and the awaiting cards |
+| Party size | the table's rules | also at most `ReservationPolicy.UnverifiedMaxPartySize` (default 6): `422 reservation-unverified-party-too-large`, `context.partySize`, `maxPartySize` |
+| Status | as before | after short notice and "approves everything", **`PendingApproval` with `ApprovalTrigger` 6 `UnverifiedPhone`, no deadline**, when `UnverifiedBookingsNeedApproval` (default on); otherwise the usual rules, flag kept |
+| No-show history | the account's | the **number's**: no-shows on every booking with that `BookerPhoneE164`. A prankster typing a stranger's number never touches the stranger's account record |
+| Reminders | as before | an app account's as before; a web visitor with no account gets **none** - nobody to push to, and no future channel may message a number nobody proved |
+| Changing it | as before | never: the app's `reschedule` stays `403 phone-not-verified` until the number is proved; the manage link answers `403 phone-not-verified` ("cancel it and book again") |
+
+**One active booking per number - for everybody.** `Reservations.BookerPhoneE164` is the number a booking
+holds: the booking account's own `PhoneE164` (proved or not), or a web visitor's typed number, normalised
+by `PhoneNumber.Normalise` so spaces and dashes are not a second number. *Not* `GuestPhone` on an account
+booking: a diner may book for a friend, and keying on what they typed would let one person hold ten
+bookings by typing ten numbers. A new booking for a number that already holds one that is **pending or
+confirmed and not over** (`EndUtc` after now), at **any** venue, is **`409 phone-has-active-booking`**:
+
+```json
+409 { "code": "phone-has-active-booking",
+      "context": { "reservationId": "guid", "code": "K7Q2LM", "startUtc": "…", "localDate": "2026-10-22",
+                   "localStartTime": "19:30:00", "venueName": "Café Aram", "branchName": "Main" } }
+```
+
+The context is there **only when the held booking is the calling account's own**; a web visitor, or an
+account booking under a number another account holds, gets the sentence and no context - the number has a
+booking, nothing about where or when. Cancelling the held booking frees the number at once; moving it is
+never refused by this rule (a move adds no booking). Seated, finished, cancelled, declined and missed
+bookings hold nothing. A web visitor's browser is limited the same way, by `BookerDeviceHash` (hex SHA-256
+of the page's `deviceId`): **`409 device-has-active-booking`**, no context. It replaced the earlier idea of
+"one unverified booking per number": the rule is now universal.
+
+**Staff bookings are exempt.** There is no staff create path today; one added later writes
+`BookerPhoneE164 = null`, so a booking the venue chose to take neither counts against a diner nor is refused.
+
+**Why a lock and not a unique index.** "Active" includes "not over yet", which a filtered index cannot
+express - a confirmed booking nobody seated or released would hold the number for ever. So inside the
+table's lock, after the account's lock and the replay check, the writer takes `sp_getapplock` on
+`booking-phone:{E164}` (and `booking-device:{hash}`), exclusive and owned by the transaction, then reads.
+Two bookings for one number on two tables - or two venues - meet on it and the second reads the first's
+committed row (`UnverifiedBookingTests.Two_bookings_for_one_number_at_the_same_moment_write_exactly_one`).
+The order is table, account, number, browser on every insert; moves take none of these, so there is no
+cycle. A wait past the table lock's bound is `503 reservation-lock-timeout`, retryable. The check runs
+before the overlaps-own check, which now matters only against the diner's own *seated* booking.
+
+**Replay without an account** is scoped to the browser: the same `clientCommandId` with the same
+`deviceId` answers 200 with the booking and **no `manageToken`** (only its hash exists); the same id from
+another browser is `409 client-command-id-in-use`.
+
+The two settings live on `ReservationPolicy` (`GET/PUT .../reservation-policy`: `unverifiedBookingsNeedApproval`,
+`unverifiedMaxPartySize` 1-100; optional on PUT, omitted keeps the stored value) and are published on the
+public page's `policy`. Pinned by `UnverifiedBookingTests`.
+
 ## 3e. A table's evening: when one booking may follow another
 
 The overlap rule (§2) says when two sittings physically clash. It does not say whether a table whose
@@ -1176,7 +1237,8 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | --- | --- | --- |
 | `GET /api/branches/{branchId}/availability` | `AllowAnonymous` | — |
 | `GET /api/branches/{branchId}/availability/slots` | `AllowAnonymous` | — |
-| `POST /api/reservations` | `VerifiedDiner` | — |
+| `POST /api/reservations` | `VerifiedDiner` | an unproved account books **unverified** (§3g); one active booking per number |
+| `POST /api/public/branches/{branchId}/bookings` | `AllowAnonymous` | a web visitor without proof (§3g): web bookings on, the public 404 rule, `deviceId` |
 | `POST /api/reservations/{reservationId}/reschedule` | `VerifiedDiner` | the booking must be **theirs**, else 404 - see [3c](#3c-changing-a-booking) |
 | `POST /api/public/bookings/{token}/reschedule` | `AllowAnonymous` | the manage link names the booking; its account's phone must be proved - see [public-surface.md](public-surface.md#changing-the-booking) |
 | `POST /api/reservations/{reservationId}/table-requests/{requestId}/answer` | `VerifiedDiner` | the booking must be **theirs** and the request put to them, else 404 - see [3e](#3e-a-tables-evening-when-one-booking-may-follow-another) |

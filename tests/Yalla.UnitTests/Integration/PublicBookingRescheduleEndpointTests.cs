@@ -235,6 +235,8 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
         var date = MoveToNoonTomorrow(factory).AddDays(2);
 
         var booking = await BookAsync(diner, branch, date, "18:00", branch.FirstTableId);
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, booking.Id);
         var other = await BookAsync(diner, branch, date, "21:15", branch.TableIds[2]);
         await BookAsync(stranger, branch, date.AddDays(1), "20:00", branch.TableIds[1]);
 
@@ -361,6 +363,8 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
         var date = MoveToNoonTomorrow(factory).AddDays(2);
 
         var booking = await BookAsync(diner, branch, date, "18:00", branch.FirstTableId);
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, booking.Id);
         var otherBooking = await BookAsync(diner, branch, date.AddDays(1), "18:00", branch.FirstTableId);
         using var anonymous = factory.CreateClient();
 

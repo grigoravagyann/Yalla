@@ -265,6 +265,58 @@ public static class PublicEndpoints
             // the app's routes.
             .AddEndpointFilter<ClientCommandIdFilter>();
 
+        group.MapPost("/branches/{branchId:guid}/bookings", CreateBookingWithoutAccountAsync)
+            .WithName("createPublicBookingWithoutAccount")
+            .WithSummary("Book a table from the public page without verifying a phone number")
+            .WithDescription(
+                "For the visitor who will not prove their number (decided 2026-10-20). A visitor who does "
+                + "prove it - Telegram, `GET /api/auth/diner/phone-proof` says which ways are on - books with "
+                + "the diner token through `POST /api/reservations` as before and keeps instant confirmation "
+                + "per the venue's policy. This route needs neither SMS nor Telegram.\n\n"
+                + "The app's booking body without `branchId` and `channel` (the route names the branch; the "
+                + "channel is the web's, so `acceptsWebBookings` gates it), plus **`deviceId`**: an id the page "
+                + "generates once and keeps (localStorage). `guestPhone` must be a real number in E.164 - "
+                + "spaces and dashes are dropped - and is what the venue calls.\n\n"
+                + "**What is different from a verified booking.** The booking says `phoneUnverified: true` "
+                + "everywhere staff read it. It is for at most `policy.unverifiedMaxPartySize` people "
+                + "(`422 reservation-unverified-party-too-large`, `context.maxPartySize` - offer to verify, "
+                + "which lifts it). When the branch approves such bookings first "
+                + "(`policy.unverifiedBookingsNeedApproval`, on by default) it lands `PendingApproval` with "
+                + "`awaitingApprovalBecause` **6** and no deadline: the venue confirms it. No reminder is "
+                + "sent. Its manage link reads and cancels it but never changes it (cancel and book again).\n\n"
+                + "**One active booking per number - for everybody.** A number that already holds a pending "
+                + "or confirmed booking that is not over, at any venue, is `409 phone-has-active-booking` with "
+                + "**no context** here. One active unverified booking per browser too: `409 "
+                + "device-has-active-booking`. Cancelling the other booking frees the number at once.\n\n"
+                + "**`manageToken` comes back once**, in the `201`. Store it before anything else: a retry with "
+                + "the same `clientCommandId` from the same `deviceId` answers `200` with the booking and "
+                + "**no token** (only its hash exists). The same id from another browser is "
+                + "`409 client-command-id-in-use`.\n\n"
+                + "Rate limited per address (10 an hour by default) on top of the branch ceiling.")
+            .Produces<ReservationView>(StatusCodes.Status201Created)
+            .Produces<ReservationView>(StatusCodes.Status200OK)
+            .ProducesProblemDetails(
+                StatusCodes.Status400BadRequest,
+                "`guestPhone` is not a phone number (`context.field` `guestPhone`), or `deviceId` is missing.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch, it is not published, or no such table.")
+            .ProducesProblem<PhoneHasActiveBookingProblem>(
+                StatusCodes.Status409Conflict,
+                "`phone-has-active-booking` / `device-has-active-booking` (no context on this route). Also "
+                + "`table-already-booked` / `table-currently-occupied`: " + ReservationEndpoints.ConflictDescription
+                + " `web-bookings-not-accepted`, `branch-unavailable`: the branch is not taking bookings. "
+                + "`client-command-id-in-use`: another browser's id.")
+            .ProducesProblemDetails(
+                StatusCodes.Status422UnprocessableEntity,
+                ReservationEndpoints.RejectedDescription
+                + " `reservation-unverified-party-too-large`: over `policy.unverifiedMaxPartySize`.")
+            .ProducesProblem<LockTimeoutProblem>(
+                StatusCodes.Status503ServiceUnavailable, ReservationEndpoints.LockTimeoutDescription)
+            .AddEndpointFilter<ClientCommandIdFilter>()
+
+            // Its own budget per address, in place of the group's page budget: an endpoint carries one
+            // policy. The branch ceiling and the global limit are chained in front of every request.
+            .RequireRateLimiting(RateLimitingExtensions.PublicUnverifiedBookingPolicy);
+
         group.MapGet("/branches/{branchId:guid}/meta", GetMetaAsync)
             .WithName("getPublicBranchMeta")
             .WithSummary("Open Graph and Twitter card fields for this branch")
@@ -450,6 +502,42 @@ public static class PublicEndpoints
                 request.ClientCommandId,
                 request.AcceptsFreeByUtc),
             ct));
+    }
+
+    /// <summary>
+    /// A booking without an account or a phone proof - the public gate first, as for every read here.
+    /// </summary>
+    private static async Task<IResult> CreateBookingWithoutAccountAsync(
+        Guid branchId,
+        CreatePublicBookingRequest request,
+        IPublicVenueQuery venues,
+        IReservationService reservations,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        await venues.RequirePublicBranchAsync(branchId, ct);
+
+        var view = await reservations.CreateWithoutAccountAsync(
+            new CreateReservationCommand(
+                branchId,
+                request.TableId,
+                request.Date!.Value,
+                request.Time!.Value,
+                request.PartySize,
+                request.GuestName,
+                request.GuestPhone,
+                request.ClientCommandId,
+                request.StayHint,
+                ReservationChannel.Web,
+                request.Note,
+                request.AcceptsFreeByUtc),
+            request.DeviceId,
+            ct);
+
+        return view.WasReplay
+            ? Results.Ok(view)
+            : Results.Created($"/api/public/bookings", view);
     }
 
     private static async Task<IResult> GetMetaAsync(

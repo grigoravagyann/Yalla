@@ -249,8 +249,14 @@ public sealed class DinerJourneyEndToEndTests(SqlServerFixture fixture) : IDispo
                     note = BookingNote,
                 });
 
-        // A number nobody has proved books nothing.
-        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Forbidden, "phone-not-verified");
+        // A number nobody has proved books unverified (2026-10-20) - flagged, waiting for the venue - and
+        // one number holds one active booking, so the diner gives that one back before booking proved.
+        var unproved = await JsonAsync(await ExpectAsync(HttpStatusCode.Created, BookAsync()));
+        Assert.True(unproved.GetProperty("phoneUnverified").GetBoolean());
+        await ReviewIntegrityTests.AssertProblemAsync(await BookAsync(), HttpStatusCode.Conflict, "phone-has-active-booking");
+        await ExpectAsync(
+            HttpStatusCode.OK,
+            diner.PostAsJsonAsync($"/api/reservations/{unproved.GetProperty("id").GetGuid()}/cancel", new { }));
 
         var code = await RequestCodeAsync(anyone, phone);
         await ExpectAsync(HttpStatusCode.OK, diner.PostAsJsonAsync("/api/auth/diner/verify-code", new { phoneE164 = phone, code }));

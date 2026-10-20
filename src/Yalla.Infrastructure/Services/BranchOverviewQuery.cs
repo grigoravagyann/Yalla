@@ -423,6 +423,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             .AsNoTracking()
             .Where(t => t.BranchId == branchId
                         && t.Status == TabStatus.Closed
+                        && t.Admission != TabAdmission.Rejected
                         && t.ClosedAtUtc != null
                         && ((t.ClosedAtUtc >= sinceUtc && t.ClosedAtUtc <= nowUtc)
                             || (t.ClosedAtUtc >= lastWeekFromUtc && t.ClosedAtUtc <= lastWeekToUtc)))

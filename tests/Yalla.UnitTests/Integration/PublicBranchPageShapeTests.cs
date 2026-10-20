@@ -101,7 +101,14 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
             page.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
         Assert.Equal(
-            new[] { "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes" },
+            new[]
+            {
+                "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
+
+                // Published for booking without a verified number (2026-10-20): the page says the cap and
+                // that the venue confirms such a booking before the visitor commits.
+                "unverifiedBookingsNeedApproval", "unverifiedMaxPartySize",
+            },
             page.GetProperty("policy").EnumerateObject()
                 .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 

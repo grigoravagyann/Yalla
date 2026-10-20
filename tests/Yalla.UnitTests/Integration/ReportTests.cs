@@ -682,7 +682,7 @@ public class ReportTests(SqlServerFixture fixture)
         db.TableSessions.Add(session);
         await db.SaveChangesAsync();
 
-        var tab = new Tab(branch.BranchId, tableId, session.Id, openedAtUtc, 0m);
+        var tab = new Tab(branch.BranchId, tableId, session.Id, openedAtUtc, 0m, TabAdmissionReason.OpenedByStaff);
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);
 

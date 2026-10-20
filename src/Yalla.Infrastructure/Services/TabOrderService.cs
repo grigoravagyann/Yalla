@@ -81,6 +81,23 @@ internal sealed class TabOrderService(
         var nowUtc = clock.UtcNow;
         var order = await BuildOrderAsync(tab, command, nowUtc, cancellationToken);
 
+        // A tab a scan opened with no proved number behind it orders nothing until a waiter has seen the
+        // table (decided 2026-10-20). After BuildOrderAsync, so who may order at all is answered first - a
+        // pending guest is still the 403 it always was, and a waiter's branch is checked. A phone is then
+        // told to wait: 409, not 403 - its flags are fine, the table is not let in yet. A waiter's own
+        // order is that waiter standing at the table, so it admits the tab instead - which is also what
+        // keeps the tablet's queued rounds working. The admission's event goes on the stream first.
+        if (!tab.IsAdmitted)
+        {
+            if (order.PlacedByStaffId is not { } admittingWaiter)
+            {
+                throw new TabAwaitingAdmissionException(tab.Id);
+            }
+
+            TabAdmissions.Admit(
+                db, ledger, tab, TabAdmissionReason.WaiterOrder, admittingWaiter, (ActorType.Staff, admittingWaiter), nowUtc);
+        }
+
         db.TabOrders.Add(order);
 
         ledger.Append(tab.Id, TabEventType.OrderPlaced, new

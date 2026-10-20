@@ -85,6 +85,12 @@ public sealed record ReservationView
     public required string GuestPhone { get; init; }
 
     /// <summary>
+    /// True when the booking was made without a proved phone number - a web visitor who did not verify,
+    /// or an app account whose number was never proved. Staff show "number not verified" beside it.
+    /// </summary>
+    public bool PhoneUnverified { get; init; }
+
+    /// <summary>
     /// The diner's note to the venue - "window table", "a high chair" - or absent (K9).
     /// </summary>
     public string? Note { get; init; }

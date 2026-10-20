@@ -69,6 +69,13 @@ internal sealed class ServiceRequestService(
             throw new TabPermissionException("Calling a waiter", "somebody still on this tab");
         }
 
+        // A tab still waiting for a waiter may call one - that is how it gets let in - but there is no bill
+        // to bring for a table nobody has admitted.
+        if (preset == ServiceRequestPreset.TheBill && tab.Admission != TabAdmission.Admitted)
+        {
+            throw new TabAwaitingAdmissionException(tab.Id);
+        }
+
         var nowUtc = clock.UtcNow;
         var since = nowUtc.AddMinutes(-RateWindowMinutes);
 

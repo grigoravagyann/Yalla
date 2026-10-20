@@ -388,7 +388,10 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
                         && t.ClosedAtUtc != null
                         && t.ClosedAtUtc >= fromUtc
                         && t.ClosedAtUtc < toUtc
-                        && t.Status == TabStatus.Closed)
+                        && t.Status == TabStatus.Closed
+
+                        // A scan a waiter turned away was never a sitting that ordered anything.
+                        && t.Admission != TabAdmission.Rejected)
             .Select(t => new TabRow(
                 t.ClosedAtUtc!.Value,
                 t.TotalAmd,

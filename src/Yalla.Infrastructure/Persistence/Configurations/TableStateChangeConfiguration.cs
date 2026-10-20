@@ -27,6 +27,7 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
         builder.Property(c => c.ReservationId);
         builder.Property(c => c.TabId);
         builder.Property(c => c.TableSessionId);
+        builder.Property(c => c.Signal);
 
         builder.Property(c => c.ClientCommandId)
             .IsRequired();

@@ -61,6 +61,7 @@ namespace Yalla.Application.Tabs;
 /// <param name="TipsAmd">
 /// The tips on the tab's succeeded payments. Outside the balance, so outside the five cached totals.
 /// </param>
+/// <param name="Admission">Whether the tab may order yet. Null reads as admitted.</param>
 public sealed record TabSnapshot(
     Guid TabId,
     Guid BranchId,
@@ -86,7 +87,12 @@ public sealed record TabSnapshot(
     IReadOnlyList<TabParticipantSnapshot> Participants,
     IReadOnlyList<TabLineSnapshot> Lines,
     IReadOnlyList<TabAdjustmentSnapshot> Adjustments,
-    long TipsAmd = 0L);
+    long TipsAmd = 0L,
+    TabAdmissionView? Admission = null)
+{
+    /// <summary>A tab read with no admission state - a fixture - is one that may order, as every tab before admission could.</summary>
+    public TabAdmissionView AdmissionOrAdmitted => Admission ?? TabProjection.LegacyAdmitted;
+}
 
 /// <summary>One participant, every flag, no filtering.</summary>
 /// <param name="ParticipantId">The participant row.</param>

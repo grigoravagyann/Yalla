@@ -60,7 +60,9 @@ public sealed record ReservationPolicyView(
     bool PricesIncludeVat,
     int? MaxSeatOverhang,
     int? ApprovalRequiredAbovePartySize,
-    int WalkInHoldbackMinutes)
+    int WalkInHoldbackMinutes,
+    bool UnverifiedBookingsNeedApproval,
+    int UnverifiedMaxPartySize)
 {
     public static ReservationPolicyView From(ReservationPolicy p) => new(
         p.TurnTimeMinutes,
@@ -76,10 +78,16 @@ public sealed record ReservationPolicyView(
         p.PricesIncludeVat,
         p.MaxSeatOverhang,
         p.ApprovalRequiredAbovePartySize,
-        p.WalkInHoldbackMinutes);
+        p.WalkInHoldbackMinutes,
+        p.UnverifiedBookingsNeedApproval,
+        p.UnverifiedMaxPartySize);
 }
 
 /// <summary>Every field of the policy, as written. The whole form is replaced at once.</summary>
+/// <remarks>
+/// <c>UnverifiedBookingsNeedApproval</c> and <c>UnverifiedMaxPartySize</c> (2026-10-20) are the exception:
+/// left out, they keep what the branch has - a console from before them must not reset an owner's choice.
+/// </remarks>
 public sealed record ReservationPolicyCommand(
     int TurnTimeMinutes,
     int BufferMinutes,
@@ -94,7 +102,9 @@ public sealed record ReservationPolicyCommand(
     bool PricesIncludeVat,
     int? MaxSeatOverhang,
     int? ApprovalRequiredAbovePartySize,
-    int WalkInHoldbackMinutes = 30)
+    int WalkInHoldbackMinutes = 30,
+    bool? UnverifiedBookingsNeedApproval = null,
+    int? UnverifiedMaxPartySize = null)
 {
     /// <summary>
     /// Builds the policy, applying the editing bounds first.
@@ -109,8 +119,14 @@ public sealed record ReservationPolicyCommand(
     /// <exception cref="Yalla.Domain.FieldValidationException">
     /// One or more fields are outside their bounds. Every one of them is named.
     /// </exception>
-    public ReservationPolicy ToPolicy()
+    /// <param name="current">The branch's policy now, for the two fields a client may leave out; null takes the defaults.</param>
+    public ReservationPolicy ToPolicy(ReservationPolicy? current = null)
     {
+        var unverifiedNeedApproval = UnverifiedBookingsNeedApproval ?? current?.UnverifiedBookingsNeedApproval ?? true;
+        var unverifiedMaxPartySize = UnverifiedMaxPartySize
+                                     ?? current?.UnverifiedMaxPartySize
+                                     ?? ReservationPolicy.DefaultUnverifiedMaxPartySize;
+
         ReservationPolicyLimits.Validate(
             TurnTimeMinutes,
             BufferMinutes,
@@ -123,7 +139,8 @@ public sealed record ReservationPolicyCommand(
             ServiceChargePercent,
             MaxSeatOverhang,
             ApprovalRequiredAbovePartySize,
-            WalkInHoldbackMinutes);
+            WalkInHoldbackMinutes,
+            unverifiedMaxPartySize);
 
         return new ReservationPolicy(
             TurnTimeMinutes,
@@ -139,7 +156,9 @@ public sealed record ReservationPolicyCommand(
             PricesIncludeVat,
             MaxSeatOverhang,
             ApprovalRequiredAbovePartySize,
-            WalkInHoldbackMinutes);
+            WalkInHoldbackMinutes,
+            unverifiedBookingsNeedApproval: unverifiedNeedApproval,
+            unverifiedMaxPartySize: unverifiedMaxPartySize);
     }
 }
 
@@ -174,6 +193,7 @@ public sealed record ReservationPolicyDefaultsView(
         new(ReservationPolicyLimits.Fields.GraceExtensionMinutes, 0, ReservationPolicyLimits.MaxGraceExtensionMinutes),
         new(ReservationPolicyLimits.Fields.ApprovalRequiredAbovePartySize, ReservationPolicyLimits.MinApprovalRequiredAbovePartySize, null),
         new(ReservationPolicyLimits.Fields.ServiceChargePercent, 0m, 100m),
+        new(ReservationPolicyLimits.Fields.UnverifiedMaxPartySize, ReservationPolicyLimits.MinUnverifiedMaxPartySize, ReservationPolicyLimits.MaxUnverifiedMaxPartySize),
     ];
 }
 

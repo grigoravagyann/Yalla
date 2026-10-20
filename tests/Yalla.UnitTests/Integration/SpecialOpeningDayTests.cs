@@ -239,7 +239,10 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
 
         var newYearLunch = await diner.CreateAsync(Booking(branch, branch.TableIds[0], NewYear, Noon));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, newYearLunch.Id);
         var dayAfter = await diner.CreateAsync(Booking(branch, branch.TableIds[1], NewYear.AddDays(1), Noon));
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, dayAfter.Id);
         var christmasLunch = await diner.CreateAsync(Booking(branch, branch.TableIds[2], NewYear.AddDays(5), Noon));
 
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
@@ -304,6 +307,8 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
         // own hours still have room for.
         var diner = fixture.CreateReservationService(db, clock, TestActor.Diner());
         var lunch = await diner.CreateAsync(Booking(branch, branch.TableIds[0], NewYear, Noon));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, lunch.Id);
         var evening = await diner.CreateAsync(Booking(branch, branch.TableIds[1], Eve, new TimeOnly(19, 0)));
 
         var service = fixture.CreateBranchSettingsService(db, clock, TestActor.Manager(branch.ManagerId));
@@ -434,6 +439,8 @@ public sealed class SpecialOpeningDayTests(SqlServerFixture fixture)
 
         // Late on the Eve is bookable, though Thursdays shut at 23:00.
         var late = await service.CreateAsync(Booking(branch, branch.TableIds[0], Eve, new TimeOnly(23, 30)));
+        // One number holds one active booking (2026-10-20); this test's bookings are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(db, late.Id);
         Assert.Equal(Eve, late.LocalDate);
 
         // A booking for an ordinary day cannot be moved onto the holiday.

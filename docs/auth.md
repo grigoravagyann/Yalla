@@ -169,13 +169,20 @@ which one a diner came in by.
   `DinerUser.ProveNumber`, which also moves the account's session generation on: the access
   token the registrant still holds is refused on its very next request with **401
   `session-revoked`** - see [Ending a diner's sessions](#ending-a-diners-sessions).
-- **An unproved number cannot book.** Creating a booking (`POST /api/reservations`), extending its
+- **An unproved number books without proof (2026-10-20).** `POST /api/reservations` from an account
+  whose `PhoneVerifiedAtUtc` is null no longer answers 403: it books an *unverified* booking - flagged
+  `phoneUnverified`, capped at the branch's `unverifiedMaxPartySize`, and waiting for the venue when the
+  branch approves such bookings first. Telegram is the only proof in production (#52), and a diner without
+  it could otherwise never book from the app while a stranger on the web can. A deactivated or deleted
+  account is still `403 phone-not-verified`. See [reservations.md](reservations.md#3g-booking-without-a-proved-number-and-one-active-booking-per-number).
+  What stays gated is below.
+- **An unproved number cannot change a booking or open a tab from one.** Moving a booking, extending its
   hold (`POST /api/reservations/{id}/extend-hold`) and opening a tab from one
   (`POST /api/tabs/open-by-booking`) answer **403 `phone-not-verified`** while
   `PhoneVerifiedAtUtc` is null, because each of them puts reminders and a no-show record on that
   number. The check reads the row, not the token, and lives in `ReservationService` and
   `TabService` through `DinerPhoneGate`, so no caller of those services skips it. Reading your own
-  bookings and cancelling one stay open.
+  bookings and cancelling one stay open. (Creating a booking left this list on 2026-10-20 - see above.)
 - `POST /api/auth/diner/login` — `{ identifier, password, localeCode? }`, where `identifier` is a
   username or an email, case-insensitively. Unknown identifier, wrong password, an account with
   no password yet and a deactivated account all answer **401 `invalid-credentials`** - and all

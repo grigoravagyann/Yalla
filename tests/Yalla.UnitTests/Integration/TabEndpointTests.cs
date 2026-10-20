@@ -1039,7 +1039,7 @@ public class TabEndpointTests(SqlServerFixture fixture)
     }
 
     /// <summary>A table's QR code, scanned by whoever the client is signed in as.</summary>
-    private static async Task<JsonElement> ScanAsync(HttpClient client, string qrToken, string deviceId)
+    private async Task<JsonElement> ScanAsync(HttpClient client, string qrToken, string deviceId)
     {
         var response = await client.PostAsJsonAsync(
             "/api/tabs/open",
@@ -1047,7 +1047,12 @@ public class TabEndpointTests(SqlServerFixture fixture)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        return await response.Content.ReadFromJsonAsync<JsonElement>();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); these tests are about the tab.
+        await fixture.AdmitTabAsync(body.GetProperty("tab").GetProperty("tabId").GetGuid());
+
+        return body;
     }
 
     /// <summary>A profile photo on a diner account, as the upload would leave it.</summary>
@@ -1097,7 +1102,7 @@ public class TabEndpointTests(SqlServerFixture fixture)
     }
 
     /// <summary>Scans onto a tab that is already open, and is approved by its host.</summary>
-    private static async Task<Opened> JoinApprovedAsync(
+    private async Task<Opened> JoinApprovedAsync(
         YallaApiFactory factory,
         HttpClient anonymous,
         Opened host,
@@ -1134,7 +1139,7 @@ public class TabEndpointTests(SqlServerFixture fixture)
 
     private sealed record Opened(Guid TabId, Guid ParticipantId, string AccessToken, TabOpenOutcome Outcome);
 
-    private static async Task<Opened> OpenAsync(
+    private async Task<Opened> OpenAsync(
         HttpClient client,
         string qrToken,
         string deviceId,
@@ -1148,6 +1153,9 @@ public class TabEndpointTests(SqlServerFixture fixture)
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var tab = body.GetProperty("tab");
+
+        // An anonymous scan waits for a waiter's admission (TabAdmissionTests); these tests are about the tab.
+        await fixture.AdmitTabAsync(tab.GetProperty("tabId").GetGuid());
 
         return new Opened(
             tab.GetProperty("tabId").GetGuid(),

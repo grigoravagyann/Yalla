@@ -52,6 +52,9 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         var annas = await BookAsync(anna, branch, branch.TableIds[0], day, "18:00");
         Assert.Equal(HttpStatusCode.Created, annas.StatusCode);
         var annasId = (await annas.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        // One number holds one active booking (2026-10-20); Anna's two here are one diner's on purpose.
+        await fixture.MakeBookingsFromBeforeTheNumberRuleAsync(factory.Clock, annasId);
         Assert.Equal(HttpStatusCode.Created, (await BookAsync(anna, branch, branch.TableIds[1], day, "21:30")).StatusCode);
 
         // The day, every quarter hour: 19:30 on table 1 can be asked for; 20:45 on table 2 must be left by 21:25.
@@ -95,20 +98,20 @@ public sealed class TableSequencingEndpointTests(SqlServerFixture fixture)
         var gors = await accepted.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(mustFreeBy, gors.GetProperty("promisedFreeByUtc").GetDateTime());
 
-        // Table 1 at 19:45 as well would be Gor's second table that evening at once: refused, naming the
-        // booking he already has, so the app can say "You already have a booking at 20:45 (table 2)".
+        // Table 1 at 19:45 as well would be Gor's second booking while his first is active: since 2026-10-20 one
+        // number holds one active booking, so that rule answers - naming the booking he already has, so the app
+        // can say "You already have a booking at 20:45".
         var twice = await BookAsync(gor, branch, branch.TableIds[0], day, "19:45");
         Assert.Equal(HttpStatusCode.Conflict, twice.StatusCode);
 
         var overlap = await twice.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("reservation-overlaps-own", overlap.GetProperty("code").GetString());
+        Assert.Equal("phone-has-active-booking", overlap.GetProperty("code").GetString());
 
         var own = overlap.GetProperty("context");
         Assert.Equal(gors.GetProperty("id").GetGuid(), own.GetProperty("reservationId").GetGuid());
         Assert.Equal(gors.GetProperty("code").GetString(), own.GetProperty("code").GetString());
         Assert.Equal("20:45:00", own.GetProperty("localStartTime").GetString());
         Assert.Equal(day, own.GetProperty("localDate").GetString());
-        Assert.Equal(gors.GetProperty("tableLabel").GetString(), own.GetProperty("tableLabel").GetString());
 
         // Aram asks for table 1 at 19:45: he waits, and Anna is asked.
         var waiting = await BookAsync(aram, branch, branch.TableIds[0], day, "19:45");

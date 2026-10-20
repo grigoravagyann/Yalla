@@ -55,8 +55,8 @@ public enum ReservationStatus
 /// </para>
 /// <para>
 /// When more than one applies, the first in this order is the one stored: <see cref="ShortNotice"/>,
-/// <see cref="EarlierGuestConsent"/>, <see cref="BranchApprovesEveryBooking"/>, <see cref="LargeParty"/>,
-/// <see cref="NoShowHistory"/>. Short notice leads because it is the one with a deadline - fifteen
+/// <see cref="EarlierGuestConsent"/>, <see cref="BranchApprovesEveryBooking"/>, <see cref="UnverifiedPhone"/>,
+/// <see cref="LargeParty"/>, <see cref="NoShowHistory"/>. Short notice leads because it is the one with a deadline - fifteen
 /// minutes to answer - and the one the floor, not the office, decides; the earlier guest's two hours
 /// come next. Persisted as its number: a member keeps it for good.
 /// </para>
@@ -91,6 +91,14 @@ public enum ApprovalTrigger
     /// <c>TableSequencing</c> and <c>TableShareRequest</c>.
     /// </summary>
     EarlierGuestConsent = 5,
+
+    /// <summary>
+    /// Nobody proved the booker's phone number - a web visitor who booked without verifying, or an app
+    /// account whose number was never proved - and the branch approves such bookings first
+    /// (<c>ReservationPolicy.UnverifiedBookingsNeedApproval</c>, on by default). No deadline: the venue
+    /// decides, as for a large party.
+    /// </summary>
+    UnverifiedPhone = 6,
 }
 
 /// <summary>Why a booking that was waiting for the venue was declined.</summary>

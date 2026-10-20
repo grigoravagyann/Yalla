@@ -161,6 +161,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Sequence"));
 
+                    b.Property<int?>("Signal")
+                        .HasColumnType("int");
+
                     b.Property<Guid?>("TabId")
                         .HasColumnType("uniqueidentifier");
 
@@ -923,6 +926,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int?>("ApprovalTrigger")
                         .HasColumnType("int");
 
+                    b.Property<string>("BookerDeviceHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("BookerPhoneE164")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1000,6 +1011,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int>("PartySize")
                         .HasColumnType("int");
 
+                    b.Property<bool>("PhoneUnverified")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<DateTime?>("PreviousConfirmedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -1060,6 +1076,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_Reservations_ManageTokenHash")
                         .HasFilter("[ManageTokenHash] IS NOT NULL");
+
+                    b.HasIndex("BookerDeviceHash", "EndUtc")
+                        .HasDatabaseName("IX_Reservations_BookerDeviceHash_Active")
+                        .HasFilter("[BookerDeviceHash] IS NOT NULL AND [Status] IN (1, 2)");
+
+                    b.HasIndex("BookerPhoneE164", "EndUtc")
+                        .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active")
+                        .HasFilter("[BookerPhoneE164] IS NOT NULL AND [Status] IN (1, 2)");
 
                     b.HasIndex("BranchId", "StartUtc");
 
@@ -1426,6 +1450,20 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int>("Admission")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(2);
+
+                    b.Property<DateTime?>("AdmissionDecidedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("AdmissionDecidedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("AdmittedBecause")
+                        .HasColumnType("int");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -1497,11 +1535,16 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TableSessionId")
                         .IsUnique()
-                        .HasDatabaseName("UX_Tabs_TableSessionId");
+                        .HasDatabaseName("UX_Tabs_TableSessionId")
+                        .HasFilter("[Admission] <> 3");
 
                     b.HasIndex("BranchId", "ClosedAtUtc")
                         .HasDatabaseName("IX_Tabs_BranchId_ClosedAtUtc")
                         .HasFilter("[ClosedAtUtc] IS NOT NULL");
+
+                    b.HasIndex("BranchId", "OpenedAtUtc")
+                        .HasDatabaseName("IX_Tabs_BranchId_AwaitingAdmission")
+                        .HasFilter("[Admission] = 1");
 
                     b.HasIndex("BranchId", "Status");
 
@@ -2892,6 +2935,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                             b1.Property<int>("TurnTimeMinutes")
                                 .HasColumnType("int");
+
+                            b1.Property<bool>("UnverifiedBookingsNeedApproval")
+                                .HasColumnType("bit");
+
+                            b1.Property<int>("UnverifiedMaxPartySize")
+                                .ValueGeneratedOnAdd()
+                                .HasColumnType("int")
+                                .HasDefaultValue(6);
 
                             b1.Property<int>("WalkInHoldbackMinutes")
                                 .ValueGeneratedOnAdd()

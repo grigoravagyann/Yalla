@@ -45,9 +45,12 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
     private const long TableCompAmd = 150L;
 
     // A waiter's order is placed and sent to the kitchen in one commit (2026-10-20), so each of the
-    // waiter's three orders is followed by its OrderStatusChanged; the phones' two are not.
+    // waiter's three orders is followed by its OrderStatusChanged; the phones' two are not. The host scanned
+    // with no proved number, so the waiter's first order is also what lets the table in (TabAdmitted, before
+    // it) - an event every reader gets whole.
     private static readonly TabEventType[] TheEvening =
     [
+        TabEventType.TabAdmitted,
         TabEventType.OrderPlaced,
         TabEventType.OrderStatusChanged,
         TabEventType.ParticipantJoined,

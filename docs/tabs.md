@@ -203,6 +203,55 @@ as if it had scanned first; anyone after that joins pending as usual. Without th
 land pending on a tab nobody could ever approve. Two phones racing for the role meet on the tab's row
 version, and the loser comes back round the open loop as an ordinary guest.
 
+## 2b. Admission: a scan with no proved number waits for a waiter
+
+Decided 2026-10-20. A QR code can be photographed and scanned from home; an anonymous phantom tab would
+flood the rail and order on a table nobody sits at. The waiter physically sees who is seated, so the gate is
+**at the tab, not per order** - no per-order approval beyond the existing send-to-kitchen.
+
+| Tab opened by | `Tabs.Admission` | `AdmittedBecause` |
+| --- | --- | --- |
+| A scan with no diner token, or a token whose account number is not proved | **1 AwaitingAdmission** | - |
+| A scan by an account with a proved number (`PhoneVerifiedAtUtc`, read from the row) | 2 Admitted | 2 VerifiedHost |
+| `open-by-booking` (the gate proved the number) | 2 Admitted | 4 Booker |
+| Staff `open-tab` | 2 Admitted | 3 OpenedByStaff (by that waiter) |
+| Tabs from before admission | 2 Admitted | - |
+
+Later admission: a waiter's tap (`POST /api/tabs/{tabId}/admit`, reason 1), **a waiter's own order** on
+the tab (`staff-orders`, reason 5 - the waiter keyed it standing at the table, and the tablet's offline
+queue replays orders, so refusing them would turn a queued round into a conflict), or the **booker joining
+their own booking's sitting** (reason 4).
+
+**While waiting** the phones read the tab and the menu, the host approves joiners, invitations work, and a
+waiter can be called (service requests - the per-tab limit bounds a phantom). Phone orders are **409
+`tab-awaiting-admission`** (`context.tabId`), from the ordering service rather than the policy: the
+participant's flags are fine, the table is not let in yet, and "a waiter will be with you" is an answer, not
+a 403. A request for `TheBill` is the same 409. `canOrderNow` is false for everybody
+(`TabPermissions.TakesOrders`). After admission nothing changes from section 4: approved guests with
+`canOrder` order, a joiner waits for the host, a phone's order waits at New for a waiter.
+
+**Reject** (`POST /api/tabs/{tabId}/reject`): the tab closes (`Status` Closed, `Admission` Rejected), its
+live invitation is revoked and its open calls acknowledged by the rejecting waiter. When **the scan seated the table** - the sitting
+is a walk-in with no waiter and no booking behind it - the table is freed by the state machine's own free
+transition, in the same transaction (audit row Occupied→Free, the reason given, the waiter as actor,
+`signal` 3); a table the scan took from `Held` goes to Free, not back to Held. Otherwise the party is really
+there: the sitting stays and lets go of the tab (`TableSession.TabId` cleared; `UX_Tabs_TableSessionId` is
+filtered `[Admission] <> 3`, so the sitting's one tab slot is free), and the party's own scan opens a new tab.
+Admitting a rejected tab, or rejecting an admitted one, is **409 `tab-admission-decided`**.
+
+**Who**: `WaiterOrAbove` + `BranchScoped` on the tab's branch, and the stored staff row's branch
+(`StaffBranchGuard`). Who and when are on the tab (`AdmissionDecidedByStaffId`, `AdmissionDecidedAtUtc`).
+**Idempotent**: naturally (admit an admitted tab, reject a rejected one: 200 as it is, no event) and on
+`clientCommandId` through `ProcessedCommands` (`tab.admit`, `tab.reject`): the same id on another tab or
+command is `409 client-command-id-in-use`. **Online only**, like opening a tab and closing it.
+
+**Live**: tab events 21 `TabAdmitted` `{ admittedBecause, byStaffId, atUtc }` and 22 `TabAdmissionRejected`
+`{ byStaffId, atUtc, tableFreed }`, whole for every reader (7.4). Branch change stream: a `signal` row
+(`TableStateChanges.Signal`, with `tabId`) - 1 when an awaiting tab opens (same commit as the tab), 2 on
+admission, 3 on rejection. The floor carries `openTabAwaitingAdmission`; the rail reads
+`GET /api/branches/{branchId}/tabs/awaiting-admission` (oldest first, `sittingSeatedByScan` says whether a
+reject frees the table). Rejected tabs are left out of the revenue reports. Pinned by `TabAdmissionTests`.
+
 ## 3. Inviting others
 
 The host invites; nobody types a code.
@@ -379,6 +428,7 @@ booking slots.
 | `/api/tabs/open-by-booking` | `VerifiedDiner`, on a group of its own - the scan's is `AllowAnonymous` | the booking must be the caller's (else 404 `booking-not-found`, identical to an unknown code) and its table theirs now; `clientCommandId` required |
 | `/api/tabs/{tabId}` and the participant actions | `TabParticipant` — the token's `tabId` claim must equal the route, and the participant must not be removed | Host-only actions check the host **inside the service**, so the rule holds for every caller and not only HTTP |
 | `/api/tabs/{tabId}/reassign-host`, `/closing`, `/participants` | `WaiterOrAbove` + `BranchScoped` — the branch is resolved from the tab in the route | The service re-checks the actor is staff |
+| `/api/tabs/{tabId}/admit`, `/reject`, `/api/branches/{branchId}/tabs/awaiting-admission` | `WaiterOrAbove` + `BranchScoped` | and the stored staff row's branch (section 2b) |
 
 A participant token for tab A gets **403** on tab B. The comparison is between the claim and the
 route value, made once in the policy handler, before any handler runs.
@@ -561,6 +611,8 @@ them.
 | 18 | `TabClosing` | `atUtc` | | | |
 | 19 | `TabClosed` | `closedAtUtc`, `tableSessionClosed` | | `totalAmd` | |
 | 20 | `TabAbandoned` | `reason`, `byStaffId` | | `writtenOffAmd` | |
+| 21 | `TabAdmitted` | `admittedBecause`, `byStaffId`, `atUtc` | | | |
+| 22 | `TabAdmissionRejected` | `byStaffId`, `atUtc`, `tableFreed` | | | |
 
 Participant ids, staff ids and the event's `actorId` stay for everyone: they are opaque, the
 projection shows a pending reader `hostParticipantId` already, and the clients key on them.

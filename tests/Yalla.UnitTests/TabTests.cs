@@ -52,12 +52,66 @@ public class TabTests
         Assert.Equal(SettlementMode.EveryonePaysOwnItems, tab.SettlementMode);
     }
 
+    [Fact]
+    public void A_scan_with_no_proved_number_waits_and_a_waiter_admits_it_once()
+    {
+        var tab = AwaitingTab();
+        var waiter = Guid.CreateVersion7();
+
+        Assert.Equal(TabAdmission.AwaitingAdmission, tab.Admission);
+        Assert.False(tab.IsAdmitted);
+
+        Assert.True(tab.Admit(OpenedAt.AddMinutes(2), TabAdmissionReason.Waiter, waiter));
+        Assert.False(tab.Admit(OpenedAt.AddMinutes(3), TabAdmissionReason.WaiterOrder, Guid.CreateVersion7()));
+
+        Assert.Equal(TabAdmission.Admitted, tab.Admission);
+        Assert.Equal(TabAdmissionReason.Waiter, tab.AdmittedBecause);
+        Assert.Equal(waiter, tab.AdmissionDecidedByStaffId);
+        Assert.Equal(OpenedAt.AddMinutes(2), tab.AdmissionDecidedAtUtc);
+
+        Assert.Throws<TabAdmissionDecidedException>(() => tab.RejectAdmission(OpenedAt.AddMinutes(4), waiter));
+    }
+
+    [Fact]
+    public void Turning_a_waiting_tab_away_closes_it_and_it_cannot_be_admitted_after()
+    {
+        var tab = AwaitingTab();
+        var waiter = Guid.CreateVersion7();
+
+        Assert.True(tab.RejectAdmission(OpenedAt.AddMinutes(5), waiter));
+        Assert.False(tab.RejectAdmission(OpenedAt.AddMinutes(6), waiter));
+
+        Assert.Equal(TabAdmission.Rejected, tab.Admission);
+        Assert.Equal(TabStatus.Closed, tab.Status);
+        Assert.Equal(OpenedAt.AddMinutes(5), tab.ClosedAtUtc);
+        Assert.Throws<TabAdmissionDecidedException>(() => tab.Admit(OpenedAt.AddMinutes(7), TabAdmissionReason.Waiter, waiter));
+    }
+
+    [Fact]
+    public void A_tab_opened_with_a_reason_is_admitted_from_the_start()
+    {
+        var tab = NewTab();
+
+        Assert.Equal(TabAdmission.Admitted, tab.Admission);
+        Assert.Equal(TabAdmissionReason.OpenedByStaff, tab.AdmittedBecause);
+        Assert.Equal(OpenedAt, tab.AdmissionDecidedAtUtc);
+    }
+
+    private static Tab AwaitingTab() => new(
+        branchId: Guid.CreateVersion7(),
+        diningTableId: Guid.CreateVersion7(),
+        tableSessionId: Guid.CreateVersion7(),
+        openedAtUtc: OpenedAt,
+        serviceChargePercentSnapshot: 10m,
+        admittedBecause: null);
+
     private static Tab NewTab() => new(
         branchId: Guid.CreateVersion7(),
         diningTableId: Guid.CreateVersion7(),
         tableSessionId: Guid.CreateVersion7(),
         openedAtUtc: OpenedAt,
-        serviceChargePercentSnapshot: 10m);
+        serviceChargePercentSnapshot: 10m,
+        admittedBecause: TabAdmissionReason.OpenedByStaff);
 }
 
 public class TabOrderTests

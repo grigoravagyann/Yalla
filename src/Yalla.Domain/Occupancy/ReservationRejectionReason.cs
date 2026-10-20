@@ -78,4 +78,10 @@ public enum ReservationRejectionReason
     /// answered.
     /// </summary>
     EarlierGuestBeingAsked = 13,
+
+    /// <summary>
+    /// The party is larger than the branch takes from a booker whose phone number is not proved
+    /// (<c>ReservationPolicy.UnverifiedMaxPartySize</c>).
+    /// </summary>
+    UnverifiedPartyTooLarge = 14,
 }

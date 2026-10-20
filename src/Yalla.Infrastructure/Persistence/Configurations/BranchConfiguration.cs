@@ -125,6 +125,18 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             // Null means "no limit" / "never", so these two stay nullable.
             policy.Property(p => p.MaxSeatOverhang);
             policy.Property(p => p.ApprovalRequiredAbovePartySize);
+
+            // 2026-10-20, booking without a proved number. Existing branches take the shipped defaults:
+            // such bookings wait for the venue, and a party of six at most.
+            //
+            // No model default on the flag: EF leaves a bool equal to its CLR default (false) out of an
+            // INSERT, so a database default of true would silently turn an owner's "off" back on. The
+            // migration gives existing rows true; every write states the value.
+            policy.Property(p => p.UnverifiedBookingsNeedApproval)
+                .IsRequired();
+            policy.Property(p => p.UnverifiedMaxPartySize)
+                .IsRequired()
+                .HasDefaultValue(Domain.Venues.ReservationPolicy.DefaultUnverifiedMaxPartySize);
         });
 
         builder.Navigation(b => b.ReservationPolicy)

@@ -150,4 +150,53 @@ public enum TabEventType
     TabClosing = 18,
     TabClosed = 19,
     TabAbandoned = 20,
+
+    /// <summary>A waiter let a tab that was waiting for admission order. See <see cref="TabAdmission"/>.</summary>
+    TabAdmitted = 21,
+
+    /// <summary>A waiter turned away a tab that was waiting for admission; the tab is closed.</summary>
+    TabAdmissionRejected = 22,
+}
+
+/// <summary>
+/// Whether the people on a tab may order yet.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A QR code can be photographed and scanned from anywhere, so a tab opened by a scan whose host has no
+/// proved phone number waits for a waiter - who can see whether anybody is sitting there - to let it
+/// order (decided 2026-10-20). A tab whose host proved their number, one opened from a booking, and one
+/// staff opened are admitted on the spot. See <c>docs/tabs.md</c>.
+/// </para>
+/// <para>Persisted as its number: a member keeps it for good.</para>
+/// </remarks>
+public enum TabAdmission
+{
+    /// <summary>Opened by an unverified scan; reading and calling a waiter only, no orders.</summary>
+    AwaitingAdmission = 1,
+
+    /// <summary>May order (the participants' own flags still apply).</summary>
+    Admitted = 2,
+
+    /// <summary>A waiter turned it away: the tab is closed, and it no longer holds its sitting's tab slot.</summary>
+    Rejected = 3,
+}
+
+/// <summary>Why a tab was admitted. Persisted as its number.</summary>
+public enum TabAdmissionReason
+{
+    /// <summary>A waiter tapped Admit.</summary>
+    Waiter = 1,
+
+    /// <summary>The scanner's diner account has a proved phone number.</summary>
+    VerifiedHost = 2,
+
+    /// <summary>Staff opened the tab themselves.</summary>
+    OpenedByStaff = 3,
+
+    /// <summary>The booking's own diner opened it, or joined it, from their booking.</summary>
+    Booker = 4,
+
+    /// <summary>A waiter keyed an order in for the table, standing at it.</summary>
+    WaiterOrder = 5,
 }

@@ -55,7 +55,9 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         Assert.Equal(ParticipantRole.Host, result.Tab.Me.Role);
         Assert.Equal(ParticipantStatus.Approved, result.Tab.Me.Status);
         Assert.Equal(result.Tab.Me.ParticipantId, result.Tab.HostParticipantId);
-        Assert.True(result.Tab.Me.CanOrderNow);
+        // Nobody proved a number, so the tab waits for a waiter before anybody orders (TabAdmissionTests).
+        Assert.False(result.Tab.Me.CanOrderNow);
+        Assert.Equal(TabAdmission.AwaitingAdmission, result.Tab.Admission.Status);
         Assert.True(result.Tab.Me.CanPay);
         Assert.True(result.Tab.TableTotalVisible);
         Assert.Equal("Aram", result.Tab.Me.DisplayName);
@@ -76,9 +78,16 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         Assert.Equal(TabStatus.Open, tab.Status);
         Assert.Equal(commandId, tab.ClientCommandId);
 
-        // The audit row, written by the state machine and carrying the scan's own command id.
+        // The audit row, written by the state machine and carrying the scan's own command id. Beside it, the
+        // branch stream's signal that the tab waits for a waiter - not a transition.
         var audit = Assert.Single(
-            await verify.TableStateChanges.AsNoTracking().Where(c => c.DiningTableId == branch.FirstTableId).ToListAsync());
+            await verify.TableStateChanges.AsNoTracking()
+                .Where(c => c.DiningTableId == branch.FirstTableId && c.Signal == null)
+                .ToListAsync());
+        Assert.Equal(
+            1,
+            await verify.TableStateChanges.CountAsync(
+                c => c.DiningTableId == branch.FirstTableId && c.Signal == TableChangeSignal.TabAwaitingAdmission));
         Assert.Equal(TableStatus.Free, audit.FromStatus);
         Assert.Equal(TableStatus.Occupied, audit.ToStatus);
         Assert.Equal(commandId, audit.ClientCommandId);
@@ -127,7 +136,7 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         Assert.Single(participants, p => p.Status == ParticipantStatus.PendingApproval);
 
         // The table was already occupied, so no second state change and no second audit row.
-        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId));
+        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId && c.Signal == null));
     }
 
     // ------------------------------------------------------------ 3. seated party, no tab yet
@@ -163,7 +172,7 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         Assert.Equal(branch.WaiterId, session.SeatedByStaffId);
 
         // Only the waiter's seating changed table state; the scan did not.
-        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId));
+        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId && c.Signal == null));
     }
 
     [SkippableFact]
@@ -230,7 +239,7 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
 
         Assert.Equal(1, await verify.Tabs.CountAsync(t => t.DiningTableId == tableId));
         Assert.Equal(1, await verify.TableSessions.CountAsync(s => s.DiningTableId == tableId));
-        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId));
+        Assert.Equal(1, await verify.TableStateChanges.CountAsync(c => c.DiningTableId == tableId && c.Signal == null));
 
         var participants = await verify.TabParticipants.AsNoTracking()
             .Where(p => p.TabId == results[0].Tab.TabId).ToListAsync();
@@ -448,6 +457,7 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
 
         // The host is treating and does not want the table reading the total.
         var (tabId, hostId, guestId) = await TabTestData.OpenWithApprovedGuestAsync(service, qr, hideTotalFromGuests: true);
+        await fixture.AdmitTabAsync(clock, tabId);
 
         await TabTestData.AddOrderLineAsync(fixture, clock, branch, tabId, hostId, "Coffee", 2_500L);
         await TabTestData.AddOrderLineAsync(fixture, clock, branch, tabId, guestId, "Tea", 2_400L);
@@ -649,7 +659,9 @@ public sealed class TabServiceTests(SqlServerFixture fixture)
         var hostId = opened.Tab.Me.ParticipantId;
         var invitation = await host.CreateJoinTokenAsync(tabId, hostId);
 
-        Assert.True(opened.Tab.Me.CanOrderNow);
+        // A waiter lets the table order (TabAdmissionTests); this test is about what closing takes away.
+        await fixture.AdmitTabAsync(clock, tabId);
+        Assert.True((await fixture.CreateTabQuery(db).GetForParticipantAsync(tabId, hostId))!.Me.CanOrderNow);
 
         await using (var staffDb = fixture.CreateContext(clock))
         {

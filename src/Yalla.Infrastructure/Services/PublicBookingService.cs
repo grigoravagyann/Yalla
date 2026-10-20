@@ -80,7 +80,16 @@ internal sealed class PublicBookingService(
                 // Waiting on the guest before it to answer in the app, beside the row in the same statement.
                 db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
                                                && q.Status == Domain.Enums.TableShareRequestStatus.Pending
-                                               && q.AsksEarlierGuest)))
+                                               && q.AsksEarlierGuest),
+                r.PhoneUnverified,
+
+                // Whether the link may move the booking: the account it lands on is live with a proved
+                // number - the reschedule's own gate, asked ahead so the page hides a button that would 403.
+                r.DinerUserId != null
+                && db.DinerUsers.Any(d => d.Id == r.DinerUserId
+                                          && d.PhoneVerifiedAtUtc != null
+                                          && d.IsActive
+                                          && d.DeletedAtUtc == null)))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -91,7 +100,7 @@ internal sealed class PublicBookingService(
             throw ManageBookingFailure.Raise();
         }
 
-        return Project(row);
+        return Project(row, clock.UtcNow);
     }
 
     public async Task<PublicBookingView> CancelAsync(
@@ -122,7 +131,7 @@ internal sealed class PublicBookingService(
         return await GetAsync(manageToken, cancellationToken);
     }
 
-    private static PublicBookingView Project(Row row) => new(
+    private static PublicBookingView Project(Row row, DateTime nowUtc) => new(
         row.VenueName,
         row.BranchName,
 
@@ -168,7 +177,17 @@ internal sealed class PublicBookingService(
         // facts the app shows, about nothing but the link holder's own booking. The column is cleared
         // once the booking stops waiting, so it is only ever a live deadline.
         ApprovalExpiresAtUtc: row.ApprovalExpiresAtUtc,
-        DeclinedBecause: row.Status == Domain.Enums.ReservationStatus.CancelledByVenue ? row.DeclineReason : null);
+        DeclinedBecause: row.Status == Domain.Enums.ReservationStatus.CancelledByVenue ? row.DeclineReason : null,
+
+        // Made without a proved number: the page says the venue confirms it, and that changing it means
+        // cancelling and booking again.
+        PhoneUnverified: row.PhoneUnverified,
+
+        // Whether "change" would do anything: still to come, and an account with a proved number to land
+        // on. False for a booking made without an account - those are cancelled and booked again.
+        CanChange: row.AccountCanMove
+                   && row.Status is Domain.Enums.ReservationStatus.Confirmed or Domain.Enums.ReservationStatus.PendingApproval
+                   && row.StartUtc > nowUtc);
 
     private sealed record Row(
         string VenueName,
@@ -193,5 +212,7 @@ internal sealed class PublicBookingService(
         string? RoomName,
         DateTime? ApprovalExpiresAtUtc,
         Domain.Enums.DeclineReason? DeclineReason,
-        bool AsksEarlierGuest);
+        bool AsksEarlierGuest,
+        bool PhoneUnverified,
+        bool AccountCanMove);
 }
