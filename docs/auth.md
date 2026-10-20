@@ -274,7 +274,11 @@ window. `DinerPhoneGate` and the first-password path read the row directly as we
 
 `DELETE /api/diner/me` under `VerifiedDiner`, body `{ "password": string | null, "code": string | null }`.
 An account with a password proves it with `password`; one without proves it with `code`, a one-time
-code from `POST /api/auth/diner/request-code` for the account's own number.
+code from `POST /api/auth/diner/request-code` for the account's own number - or with **nothing, from a
+session that proved the phone in the last ten minutes** (`phone_proved_at` on the token, minted by a
+code or Telegram sign-in; the session must still be live). That last door is `SetPasswordAsync`'s rule
+reused, and it is what keeps deletion possible where codes by SMS are off: the app re-proves the
+number with Telegram and deletes. It never stands in for a password.
 
 - The proof the account needs, missing, is **422 `validation-failed`** naming `password` or `code`
   (bound `required`).
@@ -321,6 +325,17 @@ venue's record. A foreign key will not catch the omission, because the account r
 rather than gone. Favourites (`DinerFavorites`), the notifications feed (`DinerNotifications`) and
 review reports are in the first of the two - review reports above the reviews line, and including the
 reports filed against the diner's own reviews.
+
+### Telegram only, until an SMS provider is chosen (2026-10-20)
+
+The user decided to launch with Telegram as the only phone proof. Outside Development with no
+`IVerificationCodeSender` registered, `POST /api/auth/diner/request-code` answers **503
+`sms-unavailable`** before minting a code - it used to answer 200 and send nothing, which left a guest
+waiting for a message nobody would send. `GET /api/auth/diner/phone-proof` → `{ sms, telegram }` tells
+a client which buttons to offer before it asks (`CredentialDeliveryReport.CodesDeliverNothing`,
+`TelegramOptions.Enabled`). Wiring a provider is one class implementing `IVerificationCodeSender`,
+registered before `AddInfrastructure`'s `TryAdd`; both flags then flip on their own. Pinned by
+`PhoneProofChannelsTests`.
 
 ### Telegram verification
 

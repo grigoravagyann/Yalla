@@ -40,6 +40,7 @@ public class EveryRouteIsAuthorizedTests
     private static readonly Dictionary<string, string> Anonymous = new(StringComparer.Ordinal)
     {
         ["POST /api/auth/diner/request-code"] = "Asking for a sign-in code is how a diner without a token gets one.",
+        ["GET /api/auth/diner/phone-proof"] = "Which ways of proving a number are on is asked before there is a token to ask with.",
         ["POST /api/auth/diner/verify-code"] = "Exchanges the code for the first token.",
         ["POST /api/auth/diner/register"] = "Creates the account the first token belongs to.",
         ["POST /api/auth/diner/login"] = "Exchanges a password for a token.",

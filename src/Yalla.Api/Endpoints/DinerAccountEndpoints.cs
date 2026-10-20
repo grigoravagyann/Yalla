@@ -149,7 +149,10 @@ public static class DinerAccountEndpoints
             .WithSummary("Delete the signed-in diner's account")
             .WithDescription(
                 "Proof first: `password` when the account has one (`hasPassword`), otherwise `code` - a "
-                + "one-time code from `POST /api/auth/diner/request-code` for the account's own number.\n\n"
+                + "one-time code from `POST /api/auth/diner/request-code` for the account's own number - "
+                + "or **nothing, from a session that proved the phone in the last ten minutes** (a Telegram "
+                + "or code sign-in; the token's `phone_proved_at`). That last door is what keeps deletion "
+                + "possible where codes by SMS are off and Telegram is the only proof.\n\n"
                 + "**In one transaction**: the account becomes a tombstone - number, username, email, name, "
                 + "password and verification stamp cleared, so all three can register again; every session "
                 + "ends (access and refresh tokens); push devices, every review by the account and its "
@@ -251,10 +254,19 @@ public static class DinerAccountEndpoints
     private static async Task<IResult> DeleteAccountAsync(
         [FromBody] DeleteDinerAccountRequest? request,
         IDinerProfileService profile,
+        HttpContext http,
         CancellationToken cancellationToken)
     {
+        // An unreadable claim cannot have come from this system; -1 never matches a generation.
+        var generation = YallaClaims.TryReadSessionGeneration(http.User, out var read) ? read : -1;
+
         // A missing body is the same as one with neither field: the service names what is needed.
-        await profile.DeleteAccountAsync(request?.Password, request?.Code, cancellationToken);
+        await profile.DeleteAccountAsync(
+            request?.Password,
+            request?.Code,
+            YallaClaims.ReadPhoneProvedAtUtc(http.User),
+            generation,
+            cancellationToken);
 
         return Results.NoContent();
     }

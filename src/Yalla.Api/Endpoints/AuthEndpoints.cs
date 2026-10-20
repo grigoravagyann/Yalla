@@ -3,6 +3,7 @@ using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
 using Yalla.Application.Auth;
 using Yalla.Infrastructure.Identity;
+using Yalla.Infrastructure.Telegram;
 
 namespace Yalla.Api.Endpoints;
 
@@ -71,12 +72,29 @@ public static class AuthEndpoints
                 + "Codes cost money to send, so an unlimited request endpoint is an invoice "
                 + "generator.\n\n"
                 + "In Development the code comes back in `developmentCode`, so the flow works with "
-                + "no SMS provider wired up. That field is always null anywhere else.")
+                + "no SMS provider wired up. That field is always null anywhere else.\n\n"
+                + "**No SMS provider, no code.** Outside Development with no sender configured this "
+                + "answers **503 `sms-unavailable`** instead of accepting a request it cannot deliver: "
+                + "prove the number with Telegram. `GET /api/auth/diner/phone-proof` says so in advance.")
             .Produces<VerificationCodeRequestResult>()
+            .ProducesProblemDetails(
+                StatusCodes.Status503ServiceUnavailable,
+                "`sms-unavailable`: no SMS provider is configured. Use Telegram.")
             .ProducesProblemDetails(
                 StatusCodes.Status429TooManyRequests,
                 "Too many codes requested for this number or from this address. Wait, then retry.")
             .RequireRateLimiting(RateLimitingExtensions.CodeRequestPolicy);
+
+        group.MapGet("/diner/phone-proof", GetPhoneProofChannels)
+            .WithName("getPhoneProofChannels")
+            .WithSummary("Which ways of proving a phone number are on")
+            .WithDescription(
+                "Read before offering a choice, so a guest is never handed a button that cannot work. "
+                + "`sms` is false when no SMS provider is configured outside Development - then "
+                + "`request-code` answers 503 `sms-unavailable`. `telegram` is false when the bot is off "
+                + "- then the Telegram routes are not mapped. The same for every caller; nothing here "
+                + "reads a number or an account.")
+            .Produces<PhoneProofChannels>();
 
         group.MapPost("/diner/verify-code", VerifyDinerCodeAsync)
             .WithName("verifyDinerCode")
@@ -356,12 +374,22 @@ public static class AuthEndpoints
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
     }
 
+    private static IResult GetPhoneProofChannels(CredentialDeliveryReport delivery, TelegramOptions telegram) =>
+        Results.Ok(new PhoneProofChannels(Sms: !delivery.CodesDeliverNothing, Telegram: telegram.Enabled));
+
     private static async Task<IResult> RequestDinerCodeAsync(
         RequestDinerCodeRequest request,
         IDinerAuthService service,
+        CredentialDeliveryReport delivery,
         HttpContext http,
         CancellationToken cancellationToken)
     {
+        // Refused before a code is minted or a budget spent: nothing could carry it to the phone.
+        if (delivery.CodesDeliverNothing)
+        {
+            throw new Application.Abstractions.PhoneCodesUnavailableException();
+        }
+
         var result = await service.RequestCodeAsync(
             request.PhoneE164,
             request.LocaleCode ?? http.Request.Headers.AcceptLanguage.ToString(),

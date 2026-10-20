@@ -141,6 +141,13 @@ public static class ErrorCodes
     public const string TooManyAttempts = "too-many-attempts";
 
     /// <summary>
+    /// No SMS provider is configured, so no one-time code can be sent. HTTP 503. Not retryable:
+    /// prove the number with Telegram instead. <c>GET /api/auth/diner/phone-proof</c> says so in
+    /// advance, so a client that reads it never meets this.
+    /// </summary>
+    public const string SmsUnavailable = "sms-unavailable";
+
+    /// <summary>
     /// The account is locked, not the credential wrong. HTTP 403, with <c>lockedUntilUtc</c> in
     /// <c>context</c>. For a staff PIN, the fix is a manager clearing it rather than trying again.
     /// </summary>
@@ -466,6 +473,7 @@ public static class ErrorCodes
         Unauthenticated => "Not authenticated",
         SessionRevoked => "Session revoked",
         TooManyAttempts => "Too many attempts",
+        SmsUnavailable => "Codes by SMS unavailable",
         AccountLocked => "Account locked",
         FeatureNotEnabled => "Feature not enabled for this branch",
         BranchUnavailable => "Branch not open for business",

@@ -198,7 +198,10 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
         var (dinerUserId, token) = await SignInByCodeAsync(anonymous, phone, expectNewAccount: true);
         using var diner = factory.CreateClientWithToken(token);
 
-        // No password on the account, so the code is what it asks for - by name.
+        // No password on the account, and the sign-in's phone proof is past its ten minutes, so the
+        // code is what it asks for - by name.
+        factory.Clock.Advance(TimeSpan.FromMinutes(11));
+
         await AssertProblemAsync(
             await DeleteAccountAsync(diner, new { }), HttpStatusCode.UnprocessableEntity, "validation-failed", field: "code");
 
@@ -226,6 +229,57 @@ public sealed class DinerAccountDeletionTests(SqlServerFixture fixture) : IDispo
         // The number signs in again as somebody new.
         var (newDinerUserId, _) = await SignInByCodeAsync(anonymous, phone, expectNewAccount: true);
         Assert.NotEqual(dinerUserId, newDinerUserId);
+    }
+
+    /// <summary>
+    /// Where codes by SMS are off, Telegram is the only proof a phone-only account can give: the
+    /// sign-in it just made is enough for ten minutes, as it is for setting a password.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_code_only_account_deletes_on_a_fresh_phone_proof_with_nothing_else()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        var phone = NextPhone();
+        var (dinerUserId, token) = await SignInByCodeAsync(anonymous, phone, expectNewAccount: true);
+        using var diner = factory.CreateClientWithToken(token);
+
+        factory.Clock.Advance(TimeSpan.FromMinutes(9));
+
+        Assert.Equal(HttpStatusCode.NoContent, (await DeleteAccountAsync(diner, new { })).StatusCode);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        Assert.NotNull((await db.DinerUsers.AsNoTracking().SingleAsync(d => d.Id == dinerUserId)).DeletedAtUtc);
+    }
+
+    /// <summary>A phone proof stands in for a code, never for a password.</summary>
+    [SkippableFact]
+    public async Task A_fresh_phone_proof_does_not_delete_an_account_that_has_a_password()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        using var anonymous = factory.CreateClient();
+
+        var phone = NextPhone();
+        var registered = await RegisterAsync(anonymous, $"ani{Suffix()}", $"ani{Suffix()}@test.yalla", phone);
+        Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
+        using var holder = factory.CreateClientWithToken(
+            (await registered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!);
+
+        // The holder proves the number from their own app: the password stays, and the session that
+        // comes back carries a fresh phone proof.
+        var code = await RequestCodeAsync(holder, phone);
+        var verified = await holder.PostAsJsonAsync("/api/auth/diner/verify-code", new { phoneE164 = phone, code });
+        Assert.Equal(HttpStatusCode.OK, verified.StatusCode);
+        using var diner = factory.CreateClientWithToken(
+            (await verified.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!);
+
+        await AssertProblemAsync(
+            await DeleteAccountAsync(diner, new { }), HttpStatusCode.UnprocessableEntity, "validation-failed", field: "password");
     }
 
     [SkippableFact]

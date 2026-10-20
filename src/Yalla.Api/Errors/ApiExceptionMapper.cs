@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
@@ -294,6 +295,14 @@ internal static class ApiExceptionMapper
             {
                 ["lockedUntilUtc"] = e.LockedUntilUtc,
             }),
+
+        // No SMS provider: no code can be sent. 503 and not an error in the log - the deployment
+        // chose Telegram-only, and every client that reads /api/auth/diner/phone-proof avoids it.
+        PhoneCodesUnavailableException e => new MappedError(
+            StatusCodes.Status503ServiceUnavailable,
+            ErrorCodes.SmsUnavailable,
+            e.Message,
+            LogAsError: false),
 
         // A one-time credential is out of attempts. 429 rather than 401, because the useful
         // signal to a client is "stop retrying and ask for a new code", not "try again".
