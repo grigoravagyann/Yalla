@@ -733,8 +733,10 @@ person's record. No venue names, no dates, nothing per booking.
 **Where.** Staff reads only, on `ReservationView.guestRecord`, and **only beside a booking that is pending or
 confirmed and today or still to come** (branch calendar) with a proved account behind it (review S3): the console
 list (`GET /api/branches/{id}/reservations`), the floor's awaiting cards (`GET .../reservations/awaiting` →
-`reservation.guestRecord`), the answer to approve, and the console overview (`GET /api/branches/{id}/overview` →
-`todayBookings[].guestRecord`). Never beside a past, finished or cancelled booking - the reject, no-show and
+`reservation.guestRecord`), the answer to approve, the console overview (`GET /api/branches/{id}/overview` →
+`todayBookings[].guestRecord`), and the floor (`GET /api/branches/{id}/tables/floor` →
+`tables[].nextReservationGuestRecord`, and `sittingGuestRecord` for the party seated there on a proved account's
+booking; one extra statement for the whole floor, only when a table has such a guest). Never beside a past, finished or cancelled booking - the reject, no-show and
 release answers included - so a booking a venue once served is no window on the guest's evenings since. Never on a
 diner or public read of a booking. The guest's own: `GET /api/reservations/mine` → top-level `guestRecord`.
 
@@ -814,11 +816,15 @@ review (B1) so that one venue, or one careless waiter, cannot block anybody.
   block answers as the booking, review N7) and again under the account's lock in the writer, so a booking racing
   the third no-show is refused or cancelled with the rest, never left standing. Keyed on the number too, so
   deleting the account and proving the number on a new one does not escape it.
+- **Told to the floor at once:** the answer to the no-show that blocked the guest carries `guestBlockedUntilUtc`
+  (again on its replay). Approving or rejecting a booking the block cancelled is
+  `409 reservation-cancelled-by-block`; the manage link shows `cancelledBecause` 1.
 - **Visible** as `guestRecord.blockedUntilUtc` on every read that carries the record - also when the block holds
   through the number only (a re-registered account, review N1).
 - **Withdrawing a no-show** (review B1c). `POST /api/reservations/{id}/undo-no-show` `{ clientCommandId, reason? }`,
   waiter or above at the branch - the tablet and the console - **until 05:00 the morning after the booking's
-  date**, branch time (`409 no-show-undo-window-closed`, `context.undoableUntilUtc`, after). The booking is
+  service day**, branch time - a start before 05:00 belongs to the evening before, so a 01:00 booking's window closes
+  at 05:00 that same morning (`NoShowBlockRules.ServiceDateOf`, the frontend's rule too) (`409 no-show-undo-window-closed`, `context.undoableUntilUtc`, after). The booking is
   `Confirmed` again; who, when and why are recorded (`NoShowUndoneByStaffId`, `NoShowUndoneAtUtc`,
   `NoShowUndoReason`). Under the same two locks, the guest's block in force is judged again as of when it began; if
   fewer than three venue-days are left, it is **lifted** (`LiftedBecause` 2) - nothing it cancelled comes back -
@@ -832,6 +838,29 @@ review (B1) so that one venue, or one careless waiter, cannot block anybody.
   an account deletion only while the block is in force; the daily feed sweep then clears it
   (`DinerNotificationRetention.ForgetEndedBlockNumbersAsync`, review S7), as deletion does at once for blocks
   already over.
+
+### Booking events on the change stream
+
+Every booking event writes one row on the branch change stream (`GET /api/branches/{id}/tables/changes`) for each
+table it touches, in the same transaction (GR-FE-REVIEW B1): a booking made, or one whose status, table, time or
+party changed - approved, declined (by staff, the guest before it, or the sweep), moved (its old table and its new
+one), cancelled (app, manage link, venue), marked a no-show, a no-show withdrawn. The row is a same-status row on the
+table, `actorType` 3 (system), naming the booking (`reservationId`), with **`signal` 5 `BookingChanged`**. It is
+written by `YallaDbContext.SaveChanges` for every tracked booking that changed, so no path can forget it; a booking a
+block cancelled has its `signal` 4 row instead. A tablet that follows the stream refreshes the table's booking line
+(re-reads the floor) on signal 4 or 5 - it does not fold the row's status, which is only the status the save saw.
+
+**Sequences.** `TableStateChanges.Sequence` is one identity across every branch, with holes (rolled-back inserts, an
+idempotency key refused, a server restart). A client must not expect `lastSequence + 1`: within a page every row has a
+greater sequence than the one before, every row of the branch after `afterSequence` is returned (up to `limit`, with
+`hasMore`), and a gap between two numbers is never missing data.
+
+**The floor and its sequence agree.** `GET .../tables/floor` reads the tables and `maxSequence` in one statement, and
+the database runs with `READ_COMMITTED_SNAPSHOT` - EF turns it on when it creates the database, which is how the
+deploy's migration bundle creates it - so that statement is one consistent snapshot: a change committed during the
+read is in both or in neither. Pinned by
+`GuestRecordTests.The_database_reads_committed_snapshots_so_the_floor_and_its_sequence_agree`. (A database created
+by hand must have it switched on: `ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON`.)
 
 ## 3e. A table's evening: when one booking may follow another
 

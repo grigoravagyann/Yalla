@@ -239,7 +239,7 @@ public interface IReservationService
 
     /// <summary>
     /// Withdraws a no-show marked by mistake (review B1c): waiter or above at the booking's branch, until 05:00 the
-    /// morning after its date, branch time. The booking is confirmed again; if the guest was blocked and fewer than
+    /// morning after its service day (a start before 05:00 is the evening before's), branch time. The booking is confirmed again; if the guest was blocked and fewer than
     /// three no-shows are left to hold the block, it is lifted - nothing it cancelled comes back - and the guest told.
     /// Withdrawing one already withdrawn answers with the booking as it stands.
     /// </summary>

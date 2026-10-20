@@ -81,6 +81,10 @@ public sealed record ReleaseReservationCommand(
 /// rather than the waiter having to remember which button does what.
 /// </param>
 /// <param name="WasReplay">True when the booking had already been released and this is that answer.</param>
+/// <param name="GuestBlockedUntilUtc">
+/// Set when this no-show blocked the guest from booking (three in three days): until when - so the floor can tell
+/// the waiter at once. Absent otherwise, and repeated on a replay of that no-show.
+/// </param>
 public sealed record ReservationReleaseResult(
     ReservationView Reservation,
     ReleaseOutcome Outcome,
@@ -89,7 +93,8 @@ public sealed record ReservationReleaseResult(
     string TableLabel,
     Domain.Enums.TableStatus TableStatus,
     bool CountsTowardNoShowThreshold,
-    bool WasReplay);
+    bool WasReplay,
+    DateTime? GuestBlockedUntilUtc = null);
 
 /// <summary>Withdraw a no-show marked by mistake.</summary>
 /// <param name="ReservationId">The booking.</param>

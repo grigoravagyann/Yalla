@@ -126,4 +126,11 @@ public enum TableChangeSignal
     /// days. A same-status row naming the booking (<c>ReservationId</c>) - refetch the bookings.
     /// </summary>
     BookingCancelledByBlock = 4,
+
+    /// <summary>
+    /// A booking on this table was made, or its status, table, time or party changed - approved, declined, moved
+    /// (both tables get one), cancelled, marked a no-show, a no-show withdrawn. A same-status row naming the booking
+    /// (<c>ReservationId</c>): refresh the table's next booking (re-read the floor); do not fold its status.
+    /// </summary>
+    BookingChanged = 5,
 }

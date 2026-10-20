@@ -156,6 +156,18 @@ public sealed record TableFloorState
     public bool NextReservationPhoneUnverified { get; init; }
 
     /// <summary>
+    /// The next booking's guest record - as on the console's list, and under the same rule: a proved account behind
+    /// it and the booking today or still to come. Absent otherwise. See <see cref="Reservations.GuestRecord"/>.
+    /// </summary>
+    public Reservations.GuestRecord? NextReservationGuestRecord { get; init; }
+
+    /// <summary>
+    /// The guest record of the party sitting here now, when they were seated against a booking a proved account
+    /// made. Absent for a walk-in, a scan, or nobody.
+    /// </summary>
+    public Reservations.GuestRecord? SittingGuestRecord { get; init; }
+
+    /// <summary>
     /// The time the party sitting here now promised to free the table by, when they were seated against
     /// a booking that made such a promise; absent otherwise.
     /// </summary>

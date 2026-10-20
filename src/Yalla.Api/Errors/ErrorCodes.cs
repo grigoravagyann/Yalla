@@ -324,6 +324,12 @@ public static class ErrorCodes
     public const string NoShowUndoWindowClosed = "no-show-undo-window-closed";
 
     /// <summary>
+    /// Approving or rejecting a booking a no-show block cancelled. HTTP 409, <c>context.reservationId</c> and
+    /// <c>cancelledAtUtc</c>. Minted by <c>ReservationCancelledByBlockException</c>.
+    /// </summary>
+    public const string ReservationCancelledByBlock = "reservation-cancelled-by-block";
+
+    /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
     /// 409, <c>context.tabId</c>. Minted by <c>TabAwaitingAdmissionException</c>.
     /// </summary>
@@ -534,6 +540,7 @@ public static class ErrorCodes
         PhoneHasActiveBooking => "This number holds as many bookings as it can",
         BookingBlockedNoShows => "Booking paused after missed bookings",
         NoShowUndoWindowClosed => "Too late to withdraw this no-show",
+        ReservationCancelledByBlock => "Cancelled: the guest is blocked for no-shows",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
         ScanTurnedAway => "Ask a waiter",

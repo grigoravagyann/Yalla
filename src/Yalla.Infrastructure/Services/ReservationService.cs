@@ -2073,6 +2073,13 @@ internal sealed class ReservationService(
         // waits for somebody senior to walk past is one the clock declines.
         var staffId = await RequireStaffForBranchAsync(reservation.BranchId, operation, cancellationToken);
 
+        // The platform cancelled it - its guest was blocked for no-shows: said in so many words, not as an answer
+        // already given.
+        if (reservation.CancelledBecause == CancellationCause.NoShowBlock)
+        {
+            throw new ReservationCancelledByBlockException(reservation.Id, reservation.CancelledAtUtc);
+        }
+
         // Waiting on the guest before it to answer in the app: theirs to answer, not the floor's. A yes
         // here would tell them they had agreed to a time they were never asked about. 409.
         if (await db.TableShareRequests
@@ -2579,9 +2586,18 @@ internal sealed class ReservationService(
                 "Booking {Code} was already released as {Status}; returning that answer.",
                 reservation.Code, reservation.Status);
 
+            // The block this very no-show made, if it made one - its BlockedAtUtc is the instant it was marked.
+            var blockedByThis = reservation is { Status: ReservationStatus.NoShow, DinerUserId: { } blockedAccount }
+                ? await db.BookingBlocks
+                    .AsNoTracking()
+                    .Where(b => b.DinerUserId == blockedAccount && b.BlockedAtUtc == reservation.CancelledAtUtc)
+                    .Select(b => (DateTime?)b.BlockedUntilUtc)
+                    .FirstOrDefaultAsync(cancellationToken)
+                : null;
+
             return await BuildReleaseAsync(
                 reservation, OutcomeOf(reservation.Status), tableFreed: false, table.Id, table.Label,
-                table.Status, wasReplay: true, cancellationToken);
+                table.Status, wasReplay: true, cancellationToken, blockedByThis);
         }
 
         var nowUtc = clock.UtcNow;
@@ -2596,6 +2612,7 @@ internal sealed class ReservationService(
             : null;
 
         IReadOnlyList<Reservation> cancelledByBlock = [];
+        DateTime? blockedUntilUtc = null;
 
         await using (var locked = await LockForNoShowAsync(reservation, table.Label, guest, cancellationToken))
         {
@@ -2651,7 +2668,7 @@ internal sealed class ReservationService(
             // Saved first, so the count reads this one as it reads the others.
             if (guest is { } account)
             {
-                cancelledByBlock = await BlockForNoShowsIfDueAsync(account, releasedFrom, nowUtc, cancellationToken);
+                (cancelledByBlock, blockedUntilUtc) = await BlockForNoShowsIfDueAsync(account, releasedFrom, nowUtc, cancellationToken);
                 await db.SaveChangesAsync(cancellationToken);
             }
 
@@ -2689,7 +2706,7 @@ internal sealed class ReservationService(
 
         return await BuildReleaseAsync(
             reservation, command.Outcome, freed, table.Id, table.Label, tableStatus,
-            wasReplay: false, cancellationToken);
+            wasReplay: false, cancellationToken, blockedUntilUtc);
     }
 
     public async Task<ReservationView> UndoNoShowAsync(
@@ -2716,11 +2733,12 @@ internal sealed class ReservationService(
 
         var nowUtc = clock.UtcNow;
 
-        // Until the end of its service day: 05:00 the morning after its date, the branch's wall clock - late
-        // openings included. Past it, the record is settled; a mistake then is support's to put right.
+        // Until the end of its service day, 05:00 the next morning on the branch's wall clock. Past it, the record
+        // is settled; a mistake then is support's to put right.
         var zone = BranchZone.For(branch.TimeZoneId);
         var undoableUntilUtc = zone.ToUtc(
-            reservation.LocalDate.AddDays(1), new TimeOnly(NoShowBlockRules.UndoUntilLocalHourNextDay, 0));
+            NoShowBlockRules.ServiceDateOf(reservation.LocalDate, reservation.LocalStartTime).AddDays(1),
+            new TimeOnly(NoShowBlockRules.UndoUntilLocalHourNextDay, 0));
 
         if (nowUtc >= undoableUntilUtc)
         {
@@ -2838,7 +2856,7 @@ internal sealed class ReservationService(
     /// cancels again (there is nothing left to cancel; the block refused every booking since).
     /// </para>
     /// </remarks>
-    private async Task<IReadOnlyList<Reservation>> BlockForNoShowsIfDueAsync(
+    private async Task<(IReadOnlyList<Reservation> Cancelled, DateTime? BlockedUntilUtc)> BlockForNoShowsIfDueAsync(
         Guid account,
         Branch triggeredAt,
         DateTime nowUtc,
@@ -2848,7 +2866,7 @@ internal sealed class ReservationService(
 
         if (counted < NoShowBlockRules.Threshold)
         {
-            return [];
+            return ([], null);
         }
 
         var proved = await db.DinerUsers
@@ -2860,7 +2878,7 @@ internal sealed class ReservationService(
 
         if (await GuestRecords.BlockedUntilAsync(db, account, phone, nowUtc, cancellationToken) is not null)
         {
-            return [];
+            return ([], null);
         }
 
         var block = new BookingBlock(account, phone, nowUtc);
@@ -2916,7 +2934,7 @@ internal sealed class ReservationService(
             "Diner {DinerUserId} missed bookings at {Days} venue-days in {Hours} hours; blocked until {BlockedUntilUtc} and {Cancelled} bookings cancelled.",
             account, counted, NoShowBlockRules.WindowHours, until, toCancel.Count);
 
-        return toCancel;
+        return (toCancel, until);
     }
 
     /// <summary>
@@ -3071,7 +3089,8 @@ internal sealed class ReservationService(
         string tableLabel,
         TableStatus tableStatus,
         bool wasReplay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTime? guestBlockedUntilUtc = null)
     {
         var branch = await LoadBranchAsync(reservation.BranchId, cancellationToken);
 
@@ -3089,7 +3108,10 @@ internal sealed class ReservationService(
             // Stated rather than implied. A client should be able to tell the waiter "this one goes
             // on their record" without knowing the rule.
             CountsTowardNoShowThreshold: outcome == ReleaseOutcome.NoShow,
-            wasReplay);
+            wasReplay,
+
+            // Set when this no-show blocked the guest, so the floor can say so at once.
+            GuestBlockedUntilUtc: guestBlockedUntilUtc);
     }
 
     /// <summary>

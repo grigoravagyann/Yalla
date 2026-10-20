@@ -634,8 +634,10 @@ public sealed class TableStateServiceTests(SqlServerFixture fixture)
     {
         await using var verify = fixture.CreateContext(new TestClock(Now));
 
+        // The transitions: a booking made on the table also puts a signal-5 row on its stream (2026-10-20), which is
+        // not a transition of the table.
         var audit = await verify.TableStateChanges.AsNoTracking()
-            .Where(c => c.DiningTableId == tableId)
+            .Where(c => c.DiningTableId == tableId && c.Signal != TableChangeSignal.BookingChanged)
             .ToListAsync();
 
         var row = Assert.Single(audit);

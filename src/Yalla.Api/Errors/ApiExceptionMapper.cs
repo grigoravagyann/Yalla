@@ -863,6 +863,18 @@ internal static class ApiExceptionMapper
             LogAsError: false,
             Context: PhoneHasActiveBookingContextOf(e)),
 
+        // The platform cancelled it - a guest's no-show block. Must stay ABOVE DomainStateException.
+        ReservationCancelledByBlockException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ReservationCancelledByBlock,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["cancelledAtUtc"] = e.CancelledAtUtc,
+            }),
+
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.
         NoShowUndoWindowClosedException e => new MappedError(
             StatusCodes.Status409Conflict,

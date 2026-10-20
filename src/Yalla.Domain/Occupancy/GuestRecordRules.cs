@@ -66,10 +66,24 @@ public static class NoShowBlockRules
     public const int BlockDays = 7;
 
     /// <summary>
-    /// A no-show may be withdrawn until this hour, branch time, the morning after the booking's date - the end of its
-    /// service day, late openings included.
+    /// A no-show may be withdrawn until this hour, branch time, the morning after the booking's service day
+    /// (<see cref="ServiceDateOf"/>) - the end of that service day, late openings included.
     /// </summary>
     public const int UndoUntilLocalHourNextDay = 5;
+
+    /// <summary>
+    /// The service day a booking belongs to, for the undo window: a start before 05:00 belongs to the evening before
+    /// (a 01:00 booking on the 22nd is the 21st's, and its window closes at 05:00 on the 22nd, not 28 hours later),
+    /// any later start to its own date (GR-FE-REVIEW S4).
+    /// </summary>
+    /// <remarks>
+    /// The same 05:00 the window closes at, and the rule the frontend applies, so the console and the tablet never
+    /// offer an undo the server refuses. Not the opening hours' <c>OpeningCalendar.ServiceDateOf</c>: that answers
+    /// from the hours in force, so a branch open until 07:00 would put a 06:00 booking on the evening before and close
+    /// its window an hour before it starts; and a booking can outlive the hours it was made under.
+    /// </remarks>
+    public static DateOnly ServiceDateOf(DateOnly localDate, TimeOnly localStartTime) =>
+        localStartTime.Hour < UndoUntilLocalHourNextDay ? localDate.AddDays(-1) : localDate;
 
     /// <summary>What a booking cancelled by a block says, for the venue reading it.</summary>
     public const string CancellationReason = "Cancelled automatically: the guest missed three bookings in three days.";

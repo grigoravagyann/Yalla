@@ -389,11 +389,15 @@ internal sealed class DinerBookingsUnblockedHandler(YallaDbContext db, INotifica
                 notice.DinerUserId,
                 title,
                 body,
-                new Dictionary<string, string> { ["kind"] = "bookings-unblocked" }),
+                new Dictionary<string, string>
+                {
+                    ["kind"] = "bookings-unblocked",
+                    ["liftedBecause"] = ((int?)notice.LiftedBecause ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                }),
             cancellationToken);
     }
 
-    private sealed record UnblockedNotice(Guid DinerUserId);
+    private sealed record UnblockedNotice(Guid DinerUserId, Domain.Occupancy.BookingBlockLiftCause? LiftedBecause = null);
 }
 
 /// <summary>"Marked as a no-show at {venue}" - to the booking's account, every time (review B1d).</summary>

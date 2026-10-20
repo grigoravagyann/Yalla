@@ -482,6 +482,8 @@ public static class ReservationEndpoints
         + "`context` carries `reservationId`, `status`, `startUtc` and `approvalExpiresAtUtc`. Drop the "
         + "request from the panel: the diner is told the venue did not answer in time. "
         + "`conflicting-state`: the booking is not waiting for approval. "
+        + "`reservation-cancelled-by-block` (`context.reservationId`, `cancelledAtUtc`): a no-show block "
+        + "cancelled it - its guest missed three bookings in three days. "
         + "`reservation-awaiting-earlier-guest`: the booking waits on the guest before it on the table to answer "
         + "in the app - theirs to answer, not the floor's (`context`: `reservationId`, `requestId`, `expiresAtUtc`). "
         + "`table-request-not-pending`: approving a booking whose guest before has moved since they were asked.";
@@ -529,7 +531,8 @@ public static class ReservationEndpoints
             .WithSummary("Withdraw a no-show marked by mistake")
             .WithDescription(
                 "For the tablet and the console, waiter or above at the booking's branch, **until 05:00 the "
-                + "morning after the booking's date**, branch time. The booking is `Confirmed` again (seat it, or "
+                + "morning after the booking's service day**, branch time - a booking starting before 05:00 belongs to "
+                + "the evening before, so a 01:00 booking's window closes at 05:00 that same morning. The booking is `Confirmed` again (seat it, or "
                 + "mark it again), and the withdrawal is recorded with who did it and `reason`. If the guest was "
                 + "blocked for no-shows and fewer than three are left to hold the block, it is **lifted** - nothing "
                 + "it cancelled comes back - and the guest is told (`bookings-unblocked`).\n\n"
@@ -566,7 +569,8 @@ public static class ReservationEndpoints
                 + "marked it is recorded. It counts toward a **no-show block** (three in three days, see "
                 + "`docs/reservations.md`) only when marked after the start plus the branch's grace (or the extended "
                 + "hold), and at most one per venue per service day counts. Marked by mistake? "
-                + "`POST /api/reservations/{id}/undo-no-show` until 05:00 the next morning.")
+                + "`POST /api/reservations/{id}/undo-no-show` until 05:00 the next morning. When this no-show "
+                + "blocked the guest, the answer's `guestBlockedUntilUtc` says until when.")
             .Produces<ReservationReleaseResult>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this booking's branch.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")

@@ -520,9 +520,12 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
         DateTime startUtc,
         ReservationStatus status,
         string? guestPhone = null,
-        DateOnly? localDate = null)
+        DateOnly? localDate = null,
+        TimeOnly? localTime = null)
     {
-        await SeedAsync(factory, branch, tableId, dinerUserId, bookerPhone, startUtc, status, guestPhone: guestPhone, localDate: localDate);
+        await SeedAsync(
+            factory, branch, tableId, dinerUserId, bookerPhone, startUtc, status, guestPhone: guestPhone, localDate: localDate,
+            localTime: localTime);
 
         await using var db = fixture.CreateContext(factory.Clock);
 
@@ -593,10 +596,11 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
         bool phoneUnverified = false,
         string? guestPhone = null,
         DateOnly? localDate = null,
-        Seating seating = Seating.ByStaff) =>
+        Seating seating = Seating.ByStaff,
+        TimeOnly? localTime = null) =>
         SeedAsync(
             factory.Clock, branch.BranchId, tableId, dinerUserId, bookerPhone, startUtc, status, lateCancel, declined,
-            phoneUnverified, guestPhone, localDate, seating);
+            phoneUnverified, guestPhone, localDate, seating, localTime);
 
     /// <summary>How a seated or completed booking in the past was seated - what "came" is judged by (review S1).</summary>
     private enum Seating
@@ -625,7 +629,8 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
         bool phoneUnverified = false,
         string? guestPhone = null,
         DateOnly? localDate = null,
-        Seating seating = Seating.ByStaff)
+        Seating seating = Seating.ByStaff,
+        TimeOnly? localTime = null)
     {
         await using var db = fixture.CreateContext(clock);
 
@@ -636,7 +641,7 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
             diningTableId: tableId,
             startUtc: startUtc,
             localDate: localDate ?? DateOnly.FromDateTime(startUtc),
-            localStartTime: TimeOnly.FromDateTime(startUtc),
+            localStartTime: localTime ?? TimeOnly.FromDateTime(startUtc),
             partySize: 2,
             guestName: "History",
             guestPhone: guestPhone ?? "+37411223344",

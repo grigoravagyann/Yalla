@@ -76,6 +76,7 @@ internal sealed class PublicBookingService(
                 r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 r.ApprovalExpiresAtUtc,
                 r.DeclineReason,
+                r.CancelledBecause,
 
                 // Waiting on the guest before it to answer in the app, beside the row in the same statement.
                 db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
@@ -187,7 +188,10 @@ internal sealed class PublicBookingService(
         // on. False for a booking made without an account - those are cancelled and booked again.
         CanChange: row.AccountCanMove
                    && row.Status is Domain.Enums.ReservationStatus.Confirmed or Domain.Enums.ReservationStatus.PendingApproval
-                   && row.StartUtc > nowUtc);
+                   && row.StartUtc > nowUtc,
+
+        // Cancelled by the platform, not the venue: the guest was blocked for no-shows.
+        CancelledBecause: row.CancelledBecause);
 
     private sealed record Row(
         string VenueName,
@@ -212,6 +216,7 @@ internal sealed class PublicBookingService(
         string? RoomName,
         DateTime? ApprovalExpiresAtUtc,
         Domain.Enums.DeclineReason? DeclineReason,
+        Domain.Occupancy.CancellationCause? CancelledBecause,
         bool AsksEarlierGuest,
         bool PhoneUnverified,
         bool AccountCanMove);

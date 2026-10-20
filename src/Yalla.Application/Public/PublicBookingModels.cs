@@ -100,6 +100,9 @@ namespace Yalla.Application.Public;
 /// True when the booking was made without a proved phone number. The venue may confirm it first, and it is
 /// never changed from the link - cancelled and booked again instead.
 /// </param>
+/// <param name="CancelledBecause">
+/// Set when the platform cancelled it - 1, its guest was blocked for three no-shows in three days.
+/// </param>
 /// <param name="CanChange">
 /// Whether <c>POST .../reschedule</c> would be considered at all: the booking is still to come, pending or
 /// confirmed, and its account is live with a proved number. False otherwise - hide "Change".
@@ -128,7 +131,8 @@ public sealed record PublicBookingView(
     DateTime? ApprovalExpiresAtUtc = null,
     DeclineReason? DeclinedBecause = null,
     bool PhoneUnverified = false,
-    bool CanChange = false);
+    bool CanChange = false,
+    Domain.Occupancy.CancellationCause? CancelledBecause = null);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.

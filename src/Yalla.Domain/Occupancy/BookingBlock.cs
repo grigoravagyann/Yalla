@@ -114,6 +114,23 @@ public sealed class NoShowUndoWindowClosedException(DateTime undoableUntilUtc)
     public DateTime UndoableUntilUtc { get; } = undoableUntilUtc;
 }
 
+/// <summary>
+/// A booking a no-show block cancelled cannot be approved or rejected: 409 <c>reservation-cancelled-by-block</c>,
+/// <c>context.reservationId</c> and <c>cancelledAtUtc</c> - not the generic "already answered".
+/// </summary>
+public sealed class ReservationCancelledByBlockException(Guid reservationId, DateTime? cancelledAtUtc)
+    : DomainStateException(
+        "This booking was cancelled automatically: its guest missed three bookings in three days and cannot book for a week.")
+{
+    public const string ErrorCode = "reservation-cancelled-by-block";
+
+    /// <summary>The booking.</summary>
+    public Guid ReservationId { get; } = reservationId;
+
+    /// <summary>When the block cancelled it.</summary>
+    public DateTime? CancelledAtUtc { get; } = cancelledAtUtc;
+}
+
 /// <summary>Why a guest is blocked from booking. Persisted as its number.</summary>
 public enum BookingBlockReason
 {
