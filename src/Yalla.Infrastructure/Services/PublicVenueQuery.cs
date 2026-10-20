@@ -211,6 +211,7 @@ internal sealed class PublicVenueQuery(
             PhoneE164 = live.PhoneE164,
             AcceptsWebBookings = live.AcceptsWebBookings,
             AcceptsAppBookings = live.AcceptsAppBookings,
+            VenueBranchCount = live.VenueBranchCount,
             FloorPlan = plan.Page.FloorPlan with { Tables = tables },
         };
     }
@@ -329,7 +330,11 @@ internal sealed class PublicVenueQuery(
                 // K9: switched on, and a policy somebody at the venue has saved. Live for the same
                 // reason as the switch itself - the reservation service refuses on it live.
                 b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
-                b.FloorPlanVersion))
+                b.FloorPlanVersion,
+
+                // The venue's branches the chooser lists - switched on, the venue being live, which
+                // the filter above has just established. A correlated count on the same statement.
+                b.Venue.Branches.Count(other => other.IsActive)))
             .FirstOrDefaultAsync(cancellationToken);
 
         return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
@@ -340,7 +345,9 @@ internal sealed class PublicVenueQuery(
     /// <param name="AcceptsWebBookings">Bookings switched on.</param>
     /// <param name="AcceptsAppBookings">Switched on, with a reviewed reservation policy.</param>
     /// <param name="FloorPlanVersion">The plan revision now: a cached plan from another one is redrawn.</param>
-    private sealed record LiveBranch(string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings, int FloorPlanVersion);
+    /// <param name="VenueBranchCount">The venue's switched-on branches, as the chooser lists them.</param>
+    private sealed record LiveBranch(
+        string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings, int FloorPlanVersion, int VenueBranchCount);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.

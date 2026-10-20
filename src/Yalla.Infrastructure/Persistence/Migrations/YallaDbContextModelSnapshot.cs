@@ -311,7 +311,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link')");
                         });
                 });
 

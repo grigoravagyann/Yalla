@@ -185,6 +185,51 @@ public static class NotificationText
                   + ", իսկ նախկին ժամն արդեն զբաղված է։ Փորձեք այլ ժամ կամ այլ վայր։"),
         };
 
+    // ---------------------------------------------------------------- done from the manage link
+
+    /// <summary>
+    /// "Your booking was changed" - to the account holder, after somebody holding the booking's link
+    /// moved it.
+    /// </summary>
+    /// <remarks>
+    /// The link goes round group chats, so the person who moved it may not be the diner. The body says
+    /// where the booking stands now - and that it is waiting for the venue, when it is - and how it was
+    /// changed, so a diner who did not do it knows to look before they turn up at the old time.
+    /// </remarks>
+    public static (string Title, string Body) ReservationChangedByLink(
+        string locale, string venue, DateOnly date, TimeOnly at, int partySize, bool waiting) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Ваша бронь изменена",
+                     $"{venue}: теперь {Date(date)} в {Time(at)}, гостей: {partySize}"
+                     + (waiting ? ", ждёт ответа заведения" : string.Empty)
+                     + ". Изменено по ссылке на бронь — если это были не вы, проверьте бронь."),
+            "en" => ("Your booking was changed",
+                     $"{venue}: now {Date(date)} at {Time(at)}, {partySize} guests"
+                     + (waiting ? ", waiting for the venue's answer" : string.Empty)
+                     + ". Changed using the booking link - if that wasn't you, check your booking."),
+            _ => ("Ձեր ամրագրումը փոխվել է",
+                  $"{venue}՝ այժմ {Date(date)} {Time(at)}-ին, {partySize} հյուր"
+                  + (waiting ? ", սպասում է վայրի պատասխանին" : string.Empty)
+                  + "։ Փոխվել է ամրագրման հղումով — եթե դա Դուք չէիք, ստուգեք Ձեր ամրագրումը։"),
+        };
+
+    /// <summary>"Your booking was cancelled" - to the account holder, after somebody holding the link cancelled it.</summary>
+    public static (string Title, string Body) ReservationCancelledByLink(
+        string locale, string venue, DateOnly date, TimeOnly at) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Ваша бронь отменена",
+                     $"{venue}, {Date(date)} в {Time(at)}. Отменено по ссылке на бронь — если это были не вы, "
+                     + "забронируйте снова или позвоните в заведение."),
+            "en" => ("Your booking was cancelled",
+                     $"{venue}, {Date(date)} at {Time(at)}. Cancelled using the booking link - if that wasn't you, "
+                     + "book again or call the venue."),
+            _ => ("Ձեր ամրագրումը չեղարկվել է",
+                  $"{venue}, {Date(date)} {Time(at)}։ Չեղարկվել է ամրագրման հղումով — եթե դա Դուք չէիք, "
+                  + "ամրագրեք կրկին կամ զանգահարեք վայր։"),
+        };
+
     /// <summary>
     /// The guest with the table before this booking said they would not have left in time, so the
     /// booking was declined.
@@ -310,4 +355,7 @@ public static class NotificationText
         };
 
     private static string Time(TimeOnly at) => at.ToString("HH:mm", CultureInfo.InvariantCulture);
+
+    /// <summary>Day and month, as all three languages write them on a phone: 24.10.</summary>
+    private static string Date(DateOnly date) => date.ToString("dd.MM", CultureInfo.InvariantCulture);
 }

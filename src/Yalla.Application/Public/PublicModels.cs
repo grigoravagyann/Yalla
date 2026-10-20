@@ -127,6 +127,12 @@ public sealed record PublicBranchCard(
 /// Whether the diner app may book here: <paramref name="AcceptsWebBookings"/> <b>and</b> a reservation
 /// policy somebody at the venue has saved (K9). Read live, like <paramref name="AcceptsWebBookings"/>.
 /// </param>
+/// <param name="VenueBranchCount">
+/// How many branches the venue's chooser (<c>GET /api/public/venues</c>) lists for this venue - its
+/// branches that are switched on, this one included - so the page can say "All 3 branches" without
+/// downloading every venue to count them. A branch switched off is not listed there and not counted here.
+/// Read live, in the same query as <paramref name="AcceptsWebBookings"/>. At least 1.
+/// </param>
 public sealed record PublicBranchPage(
     string VenueSlug,
     string BranchSlug,
@@ -150,7 +156,8 @@ public sealed record PublicBranchPage(
     PublicReservationPolicy Policy,
     DateTime AsOfUtc,
     Media.PhotoView? CoverPhoto = null,
-    bool AcceptsAppBookings = false);
+    bool AcceptsAppBookings = false,
+    int VenueBranchCount = 1);
 
 /// <summary>
 /// The reservation rules a diner needs in order to book, and nothing else.

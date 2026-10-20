@@ -97,6 +97,39 @@ public class DeployEnvExampleTests
         Assert.StartsWith("https://yalla.am/", settings["Telegram:WebhookPublicUrl"], StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Every manage-link template the API can be given points at the web's token-only page,
+    /// <c>/booking/{token}</c>: the example a server is handed, the local one, and the default.
+    /// </summary>
+    /// <remarks>
+    /// The URL is written into a web booking's reminder when the booking is made and is never
+    /// repairable afterwards, so a template pointing anywhere the web does not route is a dead link
+    /// in every reminder sent from then on. The web serves <c>/booking/:token</c>, and the API reserves
+    /// <c>booking</c> as a slug so no venue can sit under it.
+    /// </remarks>
+    [Fact]
+    public void Every_manage_link_template_points_at_the_webs_token_only_booking_page()
+    {
+        var example = ReadEnvExample()["PublicWeb:ManageBookingUrlTemplate"];
+
+        var development = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(RepositoryRoot(), "src", "Yalla.Api", "appsettings.Development.json")),
+                new System.Text.Json.JsonDocumentOptions { CommentHandling = System.Text.Json.JsonCommentHandling.Skip })
+            .RootElement.GetProperty("PublicWeb").GetProperty("ManageBookingUrlTemplate").GetString()!;
+
+        var fallback = new Yalla.Infrastructure.Services.PublicWebOptions().ManageBookingUrlTemplate;
+
+        foreach (var template in new[] { example, development, fallback })
+        {
+            // The token stands in for itself, so the address parses as the one a reminder carries.
+            var link = new Uri(template.Replace("{token}", "TOKEN", StringComparison.Ordinal));
+
+            Assert.Equal("/booking/TOKEN", link.AbsolutePath);
+            Assert.Equal(string.Empty, link.Query);
+            Assert.Equal(string.Empty, link.Fragment);
+        }
+    }
+
     // ------------------------------------------------------------ reading the file
 
     private static Dictionary<string, string> ReadEnvExample()

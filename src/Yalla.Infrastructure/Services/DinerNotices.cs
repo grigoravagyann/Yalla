@@ -162,6 +162,29 @@ internal static class DinerNotices
                 ["freeByTime"] = freeByLocalTime.ToString("HH:mm", CultureInfo.InvariantCulture),
             });
 
+    /// <summary>
+    /// The booking was changed from its manage link: where it stands now, with <c>status</c> - the
+    /// <c>ReservationStatus</c> number, 1 waiting for the venue or 2 confirmed.
+    /// </summary>
+    public static void BookingChangedByLink(
+        YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>
+        Booking(
+            db,
+            DinerNotificationKinds.BookingChangedByLink,
+            reservation,
+            venueName,
+            branchName,
+            atUtc,
+            new Dictionary<string, string>
+            {
+                ["status"] = ((int)reservation.Status).ToString(CultureInfo.InvariantCulture),
+            });
+
+    /// <summary>The booking was cancelled from its manage link.</summary>
+    public static void BookingCancelledByLink(
+        YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>
+        Booking(db, DinerNotificationKinds.BookingCancelledByLink, reservation, venueName, branchName, atUtc);
+
     /// <summary>An accepted booking the venue let go.</summary>
     public static void BookingCancelledByVenue(
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>

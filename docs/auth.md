@@ -708,7 +708,10 @@ query string.
 `reset-password`, `sign-in`, `staff` and `venue`; the web app boots the console for those and the
 public page for everything else. `SlugText` refuses them as a venue or branch slug, mirroring
 `RESERVED_FIRST_SEGMENTS` in the frontend, so no venue can ever sit unreachable under the address a
-reset link points at.
+reset link points at. `SlugText` also refuses `booking`, the one word that is the **public** page's: the
+manage link every web booking's reminder carries is `/booking/{token}` (see
+[public-surface.md](public-surface.md#the-manage-url-in-the-reminder)). It stays out of
+`RESERVED_FIRST_SEGMENTS`, which would hand the path to the console.
 
 ## Tokens
 

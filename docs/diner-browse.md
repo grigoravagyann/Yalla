@@ -114,6 +114,7 @@ live, per request).
   "acceptsWebBookings": false,
   "acceptsAppBookings": false,               // K9: acceptsWebBookings AND the reservation policy saved
   "recentReviews": [ /* PublicReviewView, the newest 3 published, by when written */ ],
+  "ratingCounts": [1, 1, 0, 1, 3],          // shown reviews per star, ONE star first; sums to listing.reviewCount
   "rooms": [ /* PublicRoom - exactly what GET …/rooms serves */ ],
   "asOfUtc": "2026-09-14T10:00:00Z"
 }
@@ -125,12 +126,18 @@ midnight.
 ### `GET /api/public/branches/{branchId}/reviews?page=1` → `PublicReviewPage`
 
 20 per page, **newest written first** (`createdAtUtc` descending - a revision does not move a review
-up). Hidden reviews are absent, and are left out of `rating` and `reviewCount` too (K8). 400 for
-`page < 1` or a page whose offset would overflow; 404 as above. The aggregate is read live.
+up). Hidden reviews are absent, and are left out of `rating`, `reviewCount` and `ratingCounts` too
+(K8). 400 for `page < 1` or a page whose offset would overflow; 404 as above. The aggregate is read
+live, in one query grouped by star.
+
+`ratingCounts` is the branch's star distribution - the same on every page - for the summary's bars:
+always five numbers, **one star first** (`[1★, 2★, 3★, 4★, 5★]`), zeros included, over exactly the
+reviews `rating` and `reviewCount` are, so they add up to `reviewCount`. The details route carries the
+same five beside `listing.reviewCount`.
 
 ```json
 {
-  "branchId": "guid", "rating": 3.0, "reviewCount": 2, "page": 1, "pageSize": 20,
+  "branchId": "guid", "rating": 3.0, "reviewCount": 2, "ratingCounts": [1, 0, 0, 0, 1], "page": 1, "pageSize": 20,
   "reviews": [
     { "reviewId": "guid", "authorName": "Anahit S.", "rating": 5, "text": "…",   // text absent if stars only
       "createdAtUtc": "…", "updatedAtUtc": "…",
@@ -944,6 +951,8 @@ The user's decision: the feed is built now. As built:
   | `order-ready` | An order moves to Ready at a branch with `NotifyOnOrderReady` on, for the ordering participant's account | `tab.order-ready` |
   | `review-hidden` | The platform or the venue takes down a review that was shown (not again when a hidden review is re-hidden) | none exists - written with the takedown |
   | `review-replied` | The venue first replies to the diner's review (not on an edit). Deleted while unread if the venue removes the reply | none - written with the reply |
+  | `booking-changed-by-link` | Somebody holding the booking's manage link changes it - never the diner's own change in the app. `params` add `status` (the `ReservationStatus` number: 1 waiting for the venue, 2 confirmed); `date`/`time`/`partySize` are where it stands now | `reservation.changed-by-link` |
+  | `booking-cancelled-by-link` | Somebody holding the booking's manage link cancels it - never the app's cancel | `reservation.cancelled-by-link` |
 
   The late nudge and "participant approved" pushes write no entry. Cancelling a booking - by the diner,
   through the manage link, by rejection or by release - deletes its entries that have not appeared yet

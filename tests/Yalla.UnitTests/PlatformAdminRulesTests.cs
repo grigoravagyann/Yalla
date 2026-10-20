@@ -104,6 +104,7 @@ public class PlatformAdminRulesTests
     /// </summary>
     [Theory]
     [InlineData("assets")]
+    [InlineData("booking")]
     [InlineData("dev")]
     [InlineData("fonts")]
     [InlineData("platform")]
@@ -124,6 +125,28 @@ public class PlatformAdminRulesTests
         var existing = new Venue("Lumen", VenueType.Cafe, "lumen-coffee");
         Assert.Throws<ArgumentException>(() => existing.SetSlug(reserved));
         Assert.Equal("lumen-coffee", existing.Slug);
+    }
+
+    /// <summary>
+    /// <c>booking</c> is the first segment of the public manage link every web booking's reminder
+    /// carries (<c>/booking/{token}</c>): a venue slugged so would sit under it, unreachable. A branch's
+    /// slug is held to the same list.
+    /// </summary>
+    [Fact]
+    public void The_manage_links_path_cannot_name_a_venue_or_a_branch()
+    {
+        var venue = new Venue("Lumen", VenueType.Cafe, "lumen-coffee");
+
+        Assert.Throws<ArgumentException>(() => new Venue("Impostor", VenueType.Cafe, "booking"));
+        Assert.Throws<ArgumentException>(() => venue.SetSlug("Booking"));
+        Assert.Equal("lumen-coffee", venue.Slug);
+
+        var refused = Assert.Throws<ArgumentException>(
+            () => new Branch(venue, "Centre", "booking", "1 Abovyan St", 40.18, 44.51, "Asia/Yerevan"));
+        Assert.Equal("slug", refused.ParamName);
+
+        // A word that only starts with it is an ordinary slug.
+        Assert.Equal("booking-house", new Venue("Booking House", VenueType.Cafe, "booking-house").Slug);
     }
 
     [Fact]

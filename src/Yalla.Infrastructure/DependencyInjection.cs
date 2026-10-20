@@ -182,6 +182,8 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, ReservationReminderHandler>();
         services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
         services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
+        services.AddScoped<IOutboxHandler, ReservationChangedByLinkHandler>();
+        services.AddScoped<IOutboxHandler, ReservationCancelledByLinkHandler>();
         services.AddScoped<IOutboxHandler, TableRequestHandler>();
         services.AddScoped<IOutboxHandler, TableRequestDecidedHandler>();
         services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();
