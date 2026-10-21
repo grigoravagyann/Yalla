@@ -80,8 +80,9 @@ public sealed class TabOrder : Entity
         Guid? placedByStaffId,
         DateTime placedAtUtc,
         Guid? onBehalfOfParticipantId = null,
-        Guid? clientCommandId = null)
-        : base(Guid.CreateVersion7())
+        Guid? clientCommandId = null,
+        Guid? id = null)
+        : base(id ?? Guid.CreateVersion7())
     {
         if (onBehalfOfParticipantId is not null && placedByStaffId is null)
         {
@@ -124,6 +125,15 @@ public sealed class TabOrder : Entity
         Guid? clientCommandId = null) =>
         new(tabId, null, Guard.NotEmpty(staffId, nameof(staffId)), placedAtUtc,
             onBehalfOfParticipantId, clientCommandId);
+
+    /// <summary>
+    /// A booking's pre-order arriving on the party's tab: the waiter who sent it to the kitchen placed it, when they
+    /// sent it, and it keeps the pre-order's id - which was already its kitchen ticket's - so the kitchen screen's
+    /// ticket does not change identity when the party sits down.
+    /// </summary>
+    public static TabOrder FromPreOrder(Guid preOrderId, Guid tabId, Guid sentByStaffId, DateTime sentAtUtc) =>
+        new(tabId, null, Guard.NotEmpty(sentByStaffId, nameof(sentByStaffId)), sentAtUtc,
+            id: Guard.NotEmpty(preOrderId, nameof(preOrderId)));
 
     /// <summary>
     /// Who owns the items on this order, or null when it belongs to the table. A line can say

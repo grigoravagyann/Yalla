@@ -199,6 +199,73 @@ internal sealed class ReservationLateNudgeHandler(
 }
 
 /// <summary>
+/// "Are you on your way?", 45 minutes before a booking with a pre-order, with "Yes, on my way" and "Can't come" behind
+/// it - so the waiter knows whether to send the pre-order to the kitchen without phoning.
+/// </summary>
+/// <remarks>
+/// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
+/// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Not
+/// asked when the pre-order was cleared, sent or the party marked not coming, or when the guest already said they are
+/// coming.
+/// </remarks>
+internal sealed class ReservationOnYourWayHandler(
+    YallaDbContext db,
+    INotificationChannel channel,
+    ILogger<ReservationOnYourWayHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.ReservationOnYourWay;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<ReservationNotice>(payloadJson);
+
+        var booking = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.Id == notice.ReservationId)
+            .Select(r => new
+            {
+                r.Status,
+                Answered = r.GuestConfirmedOnWayAtUtc != null,
+                PreOrderWaiting = db.PreOrders.Any(p => p.ReservationId == r.Id
+                                                        && p.SentAtUtc == null
+                                                        && p.NotComingAtUtc == null
+                                                        && p.Lines.Any()),
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var expected = booking is { Status: ReservationStatus.Confirmed };
+
+        if (!expected || booking!.Answered || !booking.PreOrderWaiting)
+        {
+            logger.LogInformation(
+                "Not asking booking {ReservationId} whether they are on their way: it is {Status}, answered {Answered}, "
+                + "pre-order waiting {Waiting}.",
+                notice.ReservationId, booking?.Status, booking?.Answered, booking?.PreOrderWaiting);
+
+            return;
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+        var (title, body) = NotificationText.OnYourWay(locale, notice.VenueName, notice.LocalStartTime);
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string>
+                {
+                    ["kind"] = "reservation-on-your-way",
+                    ["reservationId"] = notice.ReservationId.ToString(),
+                    ["code"] = notice.ReservationCode,
+                    ["actions"] = "on-my-way,cancel",
+                },
+                CategoryId: "on-your-way"),
+            cancellationToken);
+    }
+}
+
+/// <summary>
 /// Staff approved or declined a booking that was waiting - or nobody answered a short-notice one in
 /// time and it was declined for them.
 /// </summary>

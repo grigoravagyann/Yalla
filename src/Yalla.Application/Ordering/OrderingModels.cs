@@ -238,8 +238,11 @@ public sealed record TabSharesView(
     long MaxSequence);
 
 /// <summary>An order on the kitchen queue.</summary>
-/// <param name="OrderId">The order.</param>
-/// <param name="TabId">Its tab.</param>
+/// <param name="OrderId">The order. For a booking's pre-order, the pre-order's id - the same before and after the party sits.</param>
+/// <param name="TabId">
+/// Its tab. <b>Absent</b> on a pre-order sent before the party sat: a held ticket, cooked ahead, on no bill until they
+/// arrive - it then reappears under the same <paramref name="OrderId"/> with the tab.
+/// </param>
 /// <param name="TableLabel">Which table to take it to.</param>
 /// <param name="Status">Where it is on the rail.</param>
 /// <param name="PlacedAtUtc">When it was sent.</param>
@@ -251,16 +254,34 @@ public sealed record TabSharesView(
 /// <b>Absent</b> when a diner ordered from their own phone - the ticket then says it came from the
 /// app. Read as the staff member is now: a rename shows, and a waiter no longer active still sent it.
 /// </param>
+/// <param name="PreOrder">
+/// Set when this is a booking's pre-order - held or on the tab it became: whose, and when they are due, so the kitchen
+/// times the cooking. Absent on every other order.
+/// </param>
 public sealed record KitchenOrderView(
     Guid OrderId,
-    Guid TabId,
+    Guid? TabId,
     string TableLabel,
     TabOrderStatus Status,
     DateTime PlacedAtUtc,
     DateTime? EstimatedReadyAtUtc,
     int WaitingMinutes,
     IReadOnlyList<OrderLineView> Lines,
-    string? PlacedByName);
+    string? PlacedByName,
+    KitchenPreOrder? PreOrder = null);
+
+/// <summary>The booking a kitchen ticket was pre-ordered for.</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="StartUtc">When the party is due.</param>
+/// <param name="LocalStartTime">The same, on the branch's wall clock - "pre-order for 19:30".</param>
+/// <param name="PartySize">How many.</param>
+/// <param name="GuestName">Who booked - a name, never a number.</param>
+public sealed record KitchenPreOrder(
+    Guid ReservationId,
+    DateTime StartUtc,
+    TimeOnly LocalStartTime,
+    int PartySize,
+    string GuestName);
 
 /// <summary>A table asking for something.</summary>
 /// <param name="ServiceRequestId">The request.</param>

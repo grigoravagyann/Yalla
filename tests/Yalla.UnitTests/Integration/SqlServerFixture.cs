@@ -474,6 +474,23 @@ public sealed class SqlServerFixture : IAsyncLifetime
             NullLogger<ReservationService>.Instance);
     }
 
+    /// <summary>Pre-orders over one context: the guest's edits, the floor's rail and actions, the console's settings.</summary>
+    internal PreOrderService CreatePreOrderService(YallaDbContext db, IClock clock, ICurrentActor actor)
+    {
+        EnsureVerifiedDinerRow(clock, actor);
+
+        return new(
+            db,
+            clock,
+            actor,
+            new AuthorizationQueries(db),
+            CreateBranchGuard(db, actor),
+            CreateTableLock(db),
+            CreateOutbox(db, clock),
+            CreateLedger(db, clock, actor),
+            NullLogger<PreOrderService>.Instance);
+    }
+
     /// <summary>
     /// Gives a diner actor with no account row a verified one, so the booking service's phone gate
     /// has something real to read.

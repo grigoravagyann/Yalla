@@ -434,6 +434,18 @@ internal static class ApiExceptionMapper
             InternalErrorMessage,
             LogAsError: true),
 
+        // Dishes a pre-order cannot take, every one named with why, so the app can mark them all. Must stay ABOVE
+        // ArgumentException, which it derives from.
+        PreOrderItemsUnavailableException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.PreOrderItemsUnavailable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["items"] = e.Items.Select(i => new { menuItemId = i.MenuItemId, reason = (int)i.Reason }).ToList(),
+            }),
+
         // A refusal that names its fields. 422 rather than 400: the request was understood and is
         // semantically wrong, which is what the console needs in order to put each message against
         // the input that caused it instead of at the top of the form.
@@ -873,6 +885,62 @@ internal static class ApiExceptionMapper
             {
                 ["reservationId"] = e.ReservationId,
                 ["cancelledAtUtc"] = e.CancelledAtUtc,
+            }),
+
+        // Pre-orders. Each its own code so the app and the tablet say what is true rather than "conflict". Must stay
+        // ABOVE DomainStateException, which they derive from.
+        PreOrderLockedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreOrderLocked,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["lockedAtUtc"] = e.LockedAtUtc,
+            }),
+
+        PreOrderAlreadySentException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreOrderAlreadySent,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["sentAtUtc"] = e.SentAtUtc,
+            }),
+
+        PreOrdersNotAcceptedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreOrdersNotAccepted,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        PreOrderNotSendableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.PreOrderNotSendable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["sendableFromUtc"] = e.SendableFromUtc,
+                ["endUtc"] = e.EndUtc,
+            }),
+
+        OnMyWayNotOpenException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.OnMyWayNotOpen,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["opensAtUtc"] = e.OpensAtUtc,
             }),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.

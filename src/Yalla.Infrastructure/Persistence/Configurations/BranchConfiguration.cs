@@ -79,6 +79,17 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .IsRequired()
             .HasDefaultValue(false);
 
+        // Pre-orders: off and 30 minutes for every branch that predates them. Store defaults with the shipped value
+        // as the sentinel, so an insert that leaves them as shipped does not name the columns at all.
+        builder.Property(b => b.AcceptsPreOrders)
+            .IsRequired()
+            .HasDefaultValue(false);
+
+        builder.Property(b => b.PreOrderMinutesBefore)
+            .IsRequired()
+            .HasDefaultValue(Domain.Occupancy.PreOrderRules.DefaultMinutesBefore)
+            .HasSentinel(Domain.Occupancy.PreOrderRules.DefaultMinutesBefore);
+
         builder.Ignore(b => b.IsPaid);
 
         // The diner app's listing fields. All optional: a venue is usable before anybody writes a

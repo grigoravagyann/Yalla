@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Diners;
 using Yalla.Domain;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Infrastructure.Persistence;
 
@@ -165,8 +166,21 @@ internal sealed class DinerNotificationFeed(YallaDbContext db, IClock clock, ICu
         }
     }
 
+    /// <remarks>
+    /// "Are you on your way?" (<c>booking-on-your-way</c>) is for a confirmed booking: its answer refuses anything
+    /// else. A booking still waiting for the venue's yes when the entry's time comes does not see it until it is
+    /// approved; one declined, expired or cancelled never does (and one cancelled after seeing it no longer does - its
+    /// buttons would only be refused).
+    /// </remarks>
     private IQueryable<DinerNotification> Visible(Guid dinerUserId, DateTime nowUtc) =>
-        db.DinerNotifications.Where(n => n.DinerUserId == dinerUserId && n.CreatedAtUtc <= nowUtc);
+        db.DinerNotifications.Where(n => n.DinerUserId == dinerUserId
+                                         && n.CreatedAtUtc <= nowUtc
+                                         && (n.Kind != DinerNotificationKinds.BookingOnYourWay
+                                             || db.Reservations.Any(r => r.Id == n.ReservationId
+                                                                         && (r.Status == ReservationStatus.Confirmed
+                                                                             || r.Status == ReservationStatus.Seated
+                                                                             || r.Status == ReservationStatus.Completed
+                                                                             || r.Status == ReservationStatus.NoShow))));
 
     private static Task<int> MarkAsync(IQueryable<DinerNotification> entries, DateTime nowUtc, CancellationToken cancellationToken) =>
         entries.ExecuteUpdateAsync(set => set.SetProperty(n => n.ReadAtUtc, (DateTime?)nowUtc), cancellationToken);

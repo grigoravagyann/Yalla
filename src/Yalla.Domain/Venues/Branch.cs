@@ -68,6 +68,32 @@ public sealed class Branch : Entity
     public void SetNotifyOnOrderReady(bool notify) => NotifyOnOrderReady = notify;
 
     /// <summary>
+    /// Whether guests may pre-order dishes on their bookings here. Off by default: a venue that has not looked at the
+    /// feature must not start receiving kitchen tickets for dishes it never agreed to prepare ahead.
+    /// </summary>
+    /// <remarks>
+    /// On the branch rather than in <see cref="ReservationPolicy"/>, deliberately: the policy is replaced whole by
+    /// every save of the reservation form (and by tests and seeders that build one), and a switch living there would be
+    /// silently reset by an edit that never showed it.
+    /// </remarks>
+    public bool AcceptsPreOrders { get; private set; }
+
+    /// <summary>How long before a booking the waiter's pre-order card appears. Default 30; 5 to 120.</summary>
+    public int PreOrderMinutesBefore { get; private set; } = Occupancy.PreOrderRules.DefaultMinutesBefore;
+
+    /// <summary>Switches pre-orders on or off and sets when the waiter sees them. Bounds are the caller's to check.</summary>
+    public void SetPreOrders(bool accepts, int minutesBefore)
+    {
+        if (minutesBefore is < Occupancy.PreOrderRules.MinMinutesBefore or > Occupancy.PreOrderRules.MaxMinutesBefore)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minutesBefore), minutesBefore, "Between 5 and 120 minutes.");
+        }
+
+        AcceptsPreOrders = accepts;
+        PreOrderMinutesBefore = minutesBefore;
+    }
+
+    /// <summary>
     /// The branch's published contact number in E.164, or null when nobody has supplied one.
     /// </summary>
     /// <remarks>

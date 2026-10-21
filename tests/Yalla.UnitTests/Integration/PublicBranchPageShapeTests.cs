@@ -104,8 +104,8 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
             new[]
             {
                 // Booking without a verified number is gone again (2026-10-20, the user's revision), and with it
-                // the three members that described it.
-                "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
+                // the three members that described it. Pre-orders added one (2026-10-21).
+                "acceptsPreOrders", "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes",
             },
             page.GetProperty("policy").EnumerateObject()
                 .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());

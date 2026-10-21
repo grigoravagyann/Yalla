@@ -99,5 +99,6 @@ internal sealed class MenuQuery(YallaDbContext db) : IMenuQuery
             item.IsAvailable,
             item.DisplayOrder,
             IsComplete: true,
-            MissingFields: []);
+            MissingFields: [],
+            AvailableForPreOrder: item.AvailableForPreOrder);
 }

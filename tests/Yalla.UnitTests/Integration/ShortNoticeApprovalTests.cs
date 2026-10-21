@@ -596,8 +596,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
 
         // One statement to check the waiter's own staff row, one for the whole list - however many
         // requests there are and however much of each table's evening comes with them - and one for every
-        // guest's record on it (GuestRecords, 2026-10-20).
-        Assert.Equal(3, counter.Count);
+        // guest's record on it (GuestRecords, 2026-10-20), and one for every request's pre-order (PreOrderReads,
+        // 2026-10-21).
+        Assert.Equal(4, counter.Count);
 
         Assert.Equal([request.Id, later.Id, large.Id], awaiting.Select(a => a.Reservation.Id).ToList());
 

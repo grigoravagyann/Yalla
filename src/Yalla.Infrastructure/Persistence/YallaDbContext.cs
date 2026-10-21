@@ -26,6 +26,9 @@ public sealed class YallaDbContext : DbContext
 {
     private readonly IClock _clock;
 
+    /// <summary>Bookings whose pre-order rail card changed without their pre-order row changing - see <see cref="SignalPreOrderRail"/>.</summary>
+    private readonly HashSet<Guid> _preOrderRailSignals = [];
+
     public YallaDbContext(DbContextOptions<YallaDbContext> options, IClock clock)
         : base(options) => _clock = clock;
 
@@ -56,6 +59,11 @@ public sealed class YallaDbContext : DbContext
 
     /// <summary>Later bookings asking the booking before them to free the table - see <see cref="TableShareRequest"/>.</summary>
     public DbSet<TableShareRequest> TableShareRequests => Set<TableShareRequest>();
+
+    /// <summary>Dishes guests chose ahead of their bookings - see <see cref="PreOrder"/>.</summary>
+    public DbSet<PreOrder> PreOrders => Set<PreOrder>();
+
+    public DbSet<PreOrderLine> PreOrderLines => Set<PreOrderLine>();
 
     public DbSet<TableSession> TableSessions => Set<TableSession>();
 
@@ -157,7 +165,9 @@ public sealed class YallaDbContext : DbContext
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        await VoidHeldPreOrdersOfEndedBookingsAsync(sync: false, cancellationToken);
         await SignalBookingChangesAsync(sync: false, cancellationToken);
+        await SignalPreOrderChangesAsync(sync: false, cancellationToken);
         StampCreationTimes();
         return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
@@ -165,7 +175,9 @@ public sealed class YallaDbContext : DbContext
     /// <inheritdoc cref="SaveChangesAsync(bool, CancellationToken)"/>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        VoidHeldPreOrdersOfEndedBookingsAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
+        SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampCreationTimes();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
@@ -257,6 +269,146 @@ public sealed class YallaDbContext : DbContext
                     branchId, tableId, status, status, "booking changed", ActorType.System, now, Guid.CreateVersion7(),
                     reservationId: reservationId)
                 .WithSignal(TableChangeSignal.BookingChanged));
+        }
+    }
+
+    /// <summary>
+    /// Asks for a signal 6 naming each of these bookings in the next save, for a change that alters their rail card
+    /// without touching their pre-order row - the branch's pre-order settings (when the card appears, which dishes are
+    /// still available).
+    /// </summary>
+    internal void SignalPreOrderRail(IEnumerable<Guid> reservationIds) => _preOrderRailSignals.UnionWith(reservationIds);
+
+    /// <summary>
+    /// Voids the held kitchen ticket of every booking this save ends before its party sat - cancelled by the guest or
+    /// the venue, declined, expired, cancelled by a no-show block - so the kitchen stops cooking for nobody.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Here, beside the signals, for their reason: a booking is ended in six places (the app's and the link's cancel,
+    /// the floor's release, a decline or an expiry, a block, a crowded-out request), and a rule each of them had to
+    /// remember is a rule one of them forgets. The voided ticket is a modified pre-order, so the signal hook below puts
+    /// it on the change stream (signal 6) in the same save; the kitchen's list drops it as it drops any voided ticket.
+    /// </para>
+    /// <para>
+    /// A no-show is not an end here: a sent pre-order followed by a no-show is an ordinary no-show, and its ticket is
+    /// the kitchen's to deal with.
+    /// </para>
+    /// </remarks>
+    private async Task VoidHeldPreOrdersOfEndedBookingsAsync(bool sync, CancellationToken cancellationToken)
+    {
+        var ended = ChangeTracker.Entries<Reservation>()
+            .Where(e => e.State == EntityState.Modified
+                        && e.Entity.Status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue
+                        && e.Property(r => r.Status).OriginalValue != e.Entity.Status)
+            .Select(e => e.Entity.Id)
+            .ToList();
+
+        if (ended.Count == 0)
+        {
+            return;
+        }
+
+        var query = PreOrders.Where(p => ended.Contains(p.ReservationId) && p.SentAtUtc != null && p.TabOrderId == null);
+        var held = sync ? query.ToList() : await query.ToListAsync(cancellationToken);
+        var now = _clock.UtcNow;
+
+        foreach (var preOrder in held)
+        {
+            preOrder.VoidHeldBecauseBookingEnded(now);
+        }
+    }
+
+    /// <summary>
+    /// Puts every pre-order change on its booking's table's change stream - signal
+    /// <see cref="TableChangeSignal.PreOrderChanged"/>, one same-status row per booking per save, naming it - so a tablet
+    /// re-reads its pre-order rail: a pre-order saved, edited or cleared by the guest, sent, marked not coming, put on the
+    /// party's tab, its held ticket moved by the kitchen, or the guest answering "on my way".
+    /// </summary>
+    /// <remarks>
+    /// Here, beside signal 5, for signal 5's reason: a pre-order changes from the app, the manage link, the tablet, the
+    /// kitchen and the seating paths, and a rail that hears about only some of them shows a waiter a card that is wrong.
+    /// </remarks>
+    private async Task SignalPreOrderChangesAsync(bool sync, CancellationToken cancellationToken)
+    {
+        var bookings = new HashSet<Guid>();
+
+        foreach (var entry in ChangeTracker.Entries<PreOrder>())
+        {
+            if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            {
+                bookings.Add(entry.Entity.ReservationId);
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<Reservation>())
+        {
+            if (entry.State == EntityState.Modified && entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified)
+            {
+                bookings.Add(entry.Entity.Id);
+            }
+        }
+
+        bookings.UnionWith(_preOrderRailSignals);
+        _preOrderRailSignals.Clear();
+
+        if (bookings.Count == 0)
+        {
+            return;
+        }
+
+        // Already signalled in this save: a retried save adds none twice.
+        bookings.ExceptWith(ChangeTracker.Entries<TableStateChange>()
+            .Where(e => e.State == EntityState.Added
+                        && e.Entity.Signal == TableChangeSignal.PreOrderChanged
+                        && e.Entity.ReservationId is not null)
+            .Select(e => e.Entity.ReservationId!.Value));
+
+        if (bookings.Count == 0)
+        {
+            return;
+        }
+
+        var ids = bookings.ToList();
+        var query = Reservations.AsNoTracking()
+            .Where(r => ids.Contains(r.Id))
+            .Select(r => new { r.Id, r.BranchId, r.DiningTableId });
+        var rows = sync ? query.ToList() : await query.ToListAsync(cancellationToken);
+
+        // The table the booking is on as this save leaves it: a move in the same save has the tracked value.
+        var tracked = ChangeTracker.Entries<Reservation>().ToDictionary(e => e.Entity.Id, e => e.Entity.DiningTableId);
+        var targets = rows
+            .Select(r => (r.Id, r.BranchId, TableId: tracked.TryGetValue(r.Id, out var moved) ? moved : r.DiningTableId))
+            .ToList();
+
+        var tableIds = targets.Select(t => t.TableId).Distinct().ToList();
+        var statusQuery = DiningTables.AsNoTracking().Where(t => tableIds.Contains(t.Id)).Select(t => new { t.Id, t.Status });
+        var statuses = sync
+            ? statusQuery.ToDictionary(t => t.Id, t => t.Status)
+            : await statusQuery.ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
+
+        // The table's status as this save leaves it: a seating that puts the held ticket on the tab occupies the table
+        // in the same save, and the row read above is from before it. A tablet that does not know signal 6 folds the
+        // row's status into its table, so the row must say what the table is now - never Free beside Free -> Occupied.
+        foreach (var table in ChangeTracker.Entries<DiningTable>().Where(e => tableIds.Contains(e.Entity.Id)))
+        {
+            statuses[table.Entity.Id] = table.Entity.Status;
+        }
+
+        var now = _clock.UtcNow;
+
+        foreach (var (reservationId, branchId, tableId) in targets)
+        {
+            if (!statuses.TryGetValue(tableId, out var status))
+            {
+                continue;
+            }
+
+            TableStateChanges.Add(
+                new TableStateChange(
+                    branchId, tableId, status, status, "pre-order changed", ActorType.System, now, Guid.CreateVersion7(),
+                    reservationId: reservationId)
+                .WithSignal(TableChangeSignal.PreOrderChanged));
         }
     }
 

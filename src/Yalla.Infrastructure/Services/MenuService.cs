@@ -183,8 +183,12 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     {
         var category = await LoadCategoryAsync(branchId, categoryId, cancellationToken);
 
+        // On a pre-order counts as on an order: its lines are the record of what a guest was promised, kept with the
+        // name and price they were ordered at, and the database refuses to orphan them.
         var referenced = await db.TabOrderLines
-            .AnyAsync(l => l.MenuItem.MenuCategoryId == category.Id, cancellationToken);
+                             .AnyAsync(l => l.MenuItem.MenuCategoryId == category.Id, cancellationToken)
+                         || await db.PreOrderLines
+                             .AnyAsync(l => db.MenuItems.Any(m => m.Id == l.MenuItemId && m.MenuCategoryId == category.Id), cancellationToken);
 
         if (referenced)
         {
@@ -320,7 +324,9 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
     {
         var item = await LoadItemAsync(branchId, itemId, cancellationToken);
 
-        if (await db.TabOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken))
+        // A pre-order naming it counts as an order: its line keeps the name and price it was ordered at either way.
+        if (await db.TabOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken)
+            || await db.PreOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken))
         {
             item.SetAvailable(false);
             await db.SaveChangesAsync(cancellationToken);
@@ -464,5 +470,6 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         i.IsAvailable,
         i.DisplayOrder,
         i.IsComplete,
-        MenuItemCompleteness.MissingFields(i));
+        MenuItemCompleteness.MissingFields(i),
+        i.AvailableForPreOrder);
 }

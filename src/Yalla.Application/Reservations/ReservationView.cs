@@ -212,6 +212,22 @@ public sealed record ReservationView
     /// </para>
     /// </remarks>
     public string? ManageToken { get; init; }
+
+    /// <summary>
+    /// The booking's pre-order, with its state (1 editable, 2 locked, 3 sent, 4 not coming, 5 cancelled). Absent when
+    /// it has none. On every read of a booking - the guest's, the floor's and the console's.
+    /// </summary>
+    public PreOrderView? PreOrder { get; init; }
+
+    /// <summary>
+    /// Until when the guest may add or change a pre-order: two hours before the start. Present only where the branch
+    /// takes pre-orders and the booking is pending or confirmed and still to start - offer "Pre-order" while it is in
+    /// the future.
+    /// </summary>
+    public DateTime? PreOrderEditableUntilUtc { get; init; }
+
+    /// <summary>When the guest answered "Yes, on my way". Absent until they do.</summary>
+    public DateTime? GuestConfirmedOnWayAtUtc { get; init; }
 }
 
 /// <summary>

@@ -89,6 +89,26 @@ public static class NotificationText
                   + "պահելու համար։"),
         };
 
+    // ---------------------------------------------------------------- "on your way?", for a pre-order
+
+    /// <summary>
+    /// "Are you on your way?" 45 minutes before a booking with a pre-order: yes tells the kitchen to go ahead, no
+    /// cancels. Formal, as every message here.
+    /// </summary>
+    public static (string Title, string Body) OnYourWay(string locale, string venue, TimeOnly at) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Вы в пути?",
+                     $"{venue} ждёт вас в {Time(at)}, ваш предзаказ готов уйти на кухню. Подтвердите, что придёте, "
+                     + "или отмените бронь."),
+            "en" => ("Are you on your way?",
+                     $"{venue} expects you at {Time(at)} and your pre-order is ready to go to the kitchen. Confirm "
+                     + "you are coming, or cancel the booking."),
+            _ => ("Ճանապարհի՞ն եք",
+                  $"{venue}-ը սպասում է Ձեզ {Time(at)}-ին, և Ձեր նախապատվերը պատրաստ է խոհանոց ուղարկվելու։ "
+                  + "Հաստատեք, որ գալիս եք, կամ չեղարկեք ամրագրումը։"),
+        };
+
     // ---------------------------------------------------------------- the manager's decision
 
     public static (string Title, string Body) ReservationApproved(
