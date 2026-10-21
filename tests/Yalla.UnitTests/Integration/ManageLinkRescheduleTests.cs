@@ -84,12 +84,12 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
         Assert.Equal(before.ClientCommandId, after.ClientCommandId);
         Assert.Equal(before.DinerUserId, after.DinerUserId);
 
-        // The same side effects: the reminder and nudge replaced with ones keyed by the new start, and
-        // one feed entry for the new reminder.
+        // The same side effects: the reminder, the nudge and "are you on your way?" replaced with ones keyed
+        // by the new start, and the feed entries for them.
         Assert.Equal(await ShapeOfOutboxAsync(app.Booked.Id, clock), await ShapeOfOutboxAsync(link.Booked.Id, clock));
         Assert.Equal(await ShapeOfFeedAsync(app.Booked.Id, clock), await ShapeOfFeedAsync(link.Booked.Id, clock));
         Assert.Equal(
-            new[] { "late-nudge:202609131600", "reminder:202609131600" },
+            new[] { "late-nudge:202609131600", "on-your-way:202609131600:30", "reminder:202609131600" },
             await ShapeOfOutboxAsync(link.Booked.Id, clock));
 
         // And one thing more on the link only: the account holder is told it was changed from there.

@@ -208,10 +208,9 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
         {
             var pass = await Dispatcher(nudgePass, clock, channel).RunOnceAsync();
 
-            // Both nudges were handled. Only one of them turned into a push.
-            Assert.Equal(2, pass.Sent);
-            Assert.Equal(0, pass.Failed);
-            Assert.Equal(0, pass.Stale);
+            // Both nudges were handled, and the two "are you on your way?" questions every booking gets, due half
+            // an hour before dinner (the clock jumped past them). Only one nudge turned into a push.
+            Assert.Equal((4, 0, 0), (pass.Sent, pass.Failed, pass.Stale));
         }
 
         var nudge = Assert.Single(channel.OfKind("reservation-late-nudge"));
@@ -751,6 +750,7 @@ public sealed class SchedulerTests(SqlServerFixture fixture, ITestOutputHelper o
             [
                 new ReservationReminderHandler(db, channel, NullLogger<ReservationReminderHandler>.Instance),
                 new ReservationLateNudgeHandler(db, channel, NullLogger<ReservationLateNudgeHandler>.Instance),
+                new ReservationOnYourWayHandler(db, channel, NullLogger<ReservationOnYourWayHandler>.Instance),
             ],
             NullLogger<OutboxDispatcher>.Instance);
 
