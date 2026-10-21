@@ -443,6 +443,28 @@ public class PersistedEnumValueTests
         // The guest record (2026-10-20): a block's cancellation, and any booking event, on the change stream.
         Assert.Equal(4, (int)TableChangeSignal.BookingCancelledByBlock);
         Assert.Equal(5, (int)TableChangeSignal.BookingChanged);
+
+        // Pre-orders (2026-10-21): any pre-order change, and the guest's "on my way".
+        Assert.Equal(6, (int)TableChangeSignal.PreOrderChanged);
+    }
+
+    /// <summary>
+    /// The pre-order's wire enums. <c>PreOrderState</c> is derived rather than stored, and <c>PreOrderItemRefusal</c>
+    /// only ever answered - but a client keys its copy on both numbers, so they are pinned like a stored one.
+    /// <c>PreOrders.KitchenStatus</c> is a <c>TabOrderStatus</c>, pinned above.
+    /// </summary>
+    [Fact]
+    public void Pre_order_values_are_pinned_to_what_clients_read()
+    {
+        Assert.Equal(1, (int)Yalla.Domain.Occupancy.PreOrderState.Editable);
+        Assert.Equal(2, (int)Yalla.Domain.Occupancy.PreOrderState.Locked);
+        Assert.Equal(3, (int)Yalla.Domain.Occupancy.PreOrderState.Sent);
+        Assert.Equal(4, (int)Yalla.Domain.Occupancy.PreOrderState.NotComing);
+        Assert.Equal(5, (int)Yalla.Domain.Occupancy.PreOrderState.Cancelled);
+
+        Assert.Equal(1, (int)Yalla.Domain.Occupancy.PreOrderItemRefusal.NotOnMenu);
+        Assert.Equal(2, (int)Yalla.Domain.Occupancy.PreOrderItemRefusal.SoldOut);
+        Assert.Equal(3, (int)Yalla.Domain.Occupancy.PreOrderItemRefusal.NotForPreOrder);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>

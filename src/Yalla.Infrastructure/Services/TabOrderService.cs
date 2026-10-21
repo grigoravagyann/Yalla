@@ -556,9 +556,20 @@ internal sealed class TabOrderService(
             {
                 Order = o,
                 PlacedByName = o.PlacedByStaff != null ? o.PlacedByStaff.FullName : null,
+                PreOrder = db.PreOrders
+                    .Where(p => p.Id == o.Id)
+                    .Select(p => new KitchenPreOrder(
+                        p.ReservationId, p.Reservation.StartUtc, p.Reservation.LocalStartTime, p.Reservation.PartySize,
+                        p.Reservation.GuestName))
+                    .FirstOrDefault(),
             })
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Not an order on a tab: a booking's pre-order the kitchen is cooking before the party sits, on the same rail.
+        if (loaded is null)
+        {
+            return await MoveHeldPreOrderAsync(orderId, next, staffId, cancellationToken);
+        }
 
         var order = loaded.Order;
 
@@ -641,7 +652,89 @@ internal sealed class TabOrderService(
         logger.LogInformation(
             "Order {OrderId} moved {From} to {To} by staff {StaffId}.", order.Id, from, next, staffId);
 
-        return ToKitchenView(order, order.Tab.DiningTable.Label, loaded.PlacedByName, clock.UtcNow);
+        return ToKitchenView(order, order.Tab.DiningTable.Label, loaded.PlacedByName, clock.UtcNow) with
+        {
+            PreOrder = loaded.PreOrder,
+        };
+    }
+
+    /// <summary>
+    /// Moves a held pre-order ticket along the rail - sent before the party sat, on no tab yet - by the rail's own rules
+    /// and the Kitchen role's one move. No "ready" push: nobody is on a tab to tell. When the party sits it becomes an
+    /// order on their tab with the place on the rail it reached.
+    /// </summary>
+    private async Task<KitchenOrderView> MoveHeldPreOrderAsync(
+        Guid orderId, TabOrderStatus next, Guid staffId, CancellationToken cancellationToken)
+    {
+        var preOrder = await db.PreOrders
+            .FirstOrDefaultAsync(p => p.Id == orderId && p.SentAtUtc != null, cancellationToken)
+            ?? throw new KeyNotFoundException($"Order {orderId} was not found.");
+
+        await branchGuard.RequireAsync(staffId, preOrder.BranchId, "Acting on this tab", "tab", cancellationToken);
+
+        if (!preOrder.IsHeld)
+        {
+            // The party sat between the read above and this one: it is an order on their tab now. Read again.
+            throw new DbUpdateConcurrencyException("This pre-order is on the party's tab now. Read the queue again.");
+        }
+
+        RequireKitchenMayMake(preOrder.KitchenStatus!.Value, next);
+
+        var from = preOrder.KitchenStatus!.Value;
+        preOrder.MoveKitchenStatus(next, clock.UtcNow);
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Held pre-order ticket {OrderId} moved {From} to {To} by staff {StaffId}.", orderId, from, next, staffId);
+
+        return (await HeldTicketsAsync(db.PreOrders.Where(p => p.Id == orderId), cancellationToken)).Single();
+    }
+
+    /// <summary>
+    /// Held pre-order tickets as the kitchen reads them: the pre-order's id, its table, the waiter who sent it, its lines
+    /// at their locked prices - each the table's, as on the tab it will become - and no tab. One statement.
+    /// </summary>
+    private async Task<IReadOnlyList<KitchenOrderView>> HeldTicketsAsync(
+        IQueryable<Domain.Occupancy.PreOrder> preOrders, CancellationToken cancellationToken)
+    {
+        var nowUtc = clock.UtcNow;
+
+        var rows = await preOrders
+            .AsNoTracking()
+            .Where(p => p.SentAtUtc != null && p.TabOrderId == null)
+            .Select(p => new
+            {
+                p.Id,
+                SentAtUtc = p.SentAtUtc!.Value,
+                Status = p.KitchenStatus!.Value,
+                TableLabel = p.Reservation.DiningTable.Label,
+                PlacedByName = db.StaffMembers.Where(s => s.Id == p.SentByStaffId).Select(s => s.FullName).FirstOrDefault(),
+                Marker = new KitchenPreOrder(
+                    p.ReservationId, p.Reservation.StartUtc, p.Reservation.LocalStartTime, p.Reservation.PartySize, p.Reservation.GuestName),
+                Lines = p.Lines
+                    .OrderBy(l => l.Position)
+                    .Select(l => new { l.Id, l.MenuItemId, l.NameSnapshot, l.UnitPriceAmdSnapshot, l.Quantity, l.Note })
+                    .ToList(),
+            })
+            .ToListAsync(cancellationToken);
+
+        return
+        [
+            .. rows.Select(r => new KitchenOrderView(
+                r.Id,
+                null,
+                r.TableLabel,
+                r.Status,
+                r.SentAtUtc,
+                null,
+                (int)Math.Max(0d, (nowUtc - r.SentAtUtc).TotalMinutes),
+                [.. r.Lines.Select(l => new OrderLineView(
+                    l.Id, l.MenuItemId, l.NameSnapshot, l.UnitPriceAmdSnapshot, l.Quantity,
+                    l.UnitPriceAmdSnapshot * l.Quantity, false, true, l.Note, [], null))],
+                r.PlacedByName,
+                r.Marker)),
+        ];
     }
 
     /// <summary>
@@ -726,10 +819,32 @@ internal sealed class TabOrderService(
                 // Who sent it, joined in this one query - never looked up per ticket. The name and
                 // nothing else of the staff row; null for a diner's own order.
                 PlacedByName = o.PlacedByStaff != null ? o.PlacedByStaff.FullName : null,
+
+                // A booking's pre-order that became this order when the party sat - the same marker it had held.
+                PreOrder = db.PreOrders
+                    .Where(p => p.Id == o.Id)
+                    .Select(p => new KitchenPreOrder(
+                        p.ReservationId, p.Reservation.StartUtc, p.Reservation.LocalStartTime, p.Reservation.PartySize,
+                        p.Reservation.GuestName))
+                    .FirstOrDefault(),
             })
             .ToListAsync(cancellationToken);
 
-        return [.. orders.Select(row => ToKitchenView(row.Order, row.TableLabel, row.PlacedByName, nowUtc))];
+        // And the pre-orders sent before their party sat: cooked ahead, on no tab yet, on the same rail.
+        var held = await HeldTicketsAsync(
+            db.PreOrders.Where(p => p.BranchId == branchId
+                                    && (status == null
+                                        ? p.KitchenStatus != TabOrderStatus.Served && p.KitchenStatus != TabOrderStatus.Voided
+                                        : p.KitchenStatus == status)),
+            cancellationToken);
+
+        return
+        [
+            .. orders
+                .Select(row => ToKitchenView(row.Order, row.TableLabel, row.PlacedByName, nowUtc) with { PreOrder = row.PreOrder })
+                .Concat(held)
+                .OrderBy(o => o.PlacedAtUtc),
+        ];
     }
 
     // ---------------------------------------------------------------- helpers

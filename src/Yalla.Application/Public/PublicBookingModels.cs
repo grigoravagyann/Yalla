@@ -103,6 +103,16 @@ namespace Yalla.Application.Public;
 /// <param name="CancelledBecause">
 /// Set when the platform cancelled it - 1, its guest was blocked for three no-shows in three days.
 /// </param>
+/// <param name="PreOrder">The booking's pre-order, with its state. Absent when it has none.</param>
+/// <param name="PreOrderEditableUntilUtc">
+/// Until when a pre-order may be added or changed (two hours before the start). Present only where the branch takes
+/// pre-orders and the booking is pending or confirmed and still to come.
+/// </param>
+/// <param name="GuestConfirmedOnWayAtUtc">When the guest answered "Yes, on my way".</param>
+/// <param name="OnYourWayAsked">
+/// Ask "Are you on your way?" now: from 45 minutes before the start, for a confirmed booking whose pre-order is waiting
+/// (not sent, not marked not coming, not cancelled) and whose guest has not answered.
+/// </param>
 /// <param name="CanChange">
 /// Whether <c>POST .../reschedule</c> would be considered at all: the booking is still to come, pending or
 /// confirmed, and its account is live with a proved number. False otherwise - hide "Change".
@@ -132,7 +142,11 @@ public sealed record PublicBookingView(
     DeclineReason? DeclinedBecause = null,
     bool PhoneUnverified = false,
     bool CanChange = false,
-    Domain.Occupancy.CancellationCause? CancelledBecause = null);
+    Domain.Occupancy.CancellationCause? CancelledBecause = null,
+    Reservations.PreOrderView? PreOrder = null,
+    DateTime? PreOrderEditableUntilUtc = null,
+    DateTime? GuestConfirmedOnWayAtUtc = null,
+    bool OnYourWayAsked = false);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.

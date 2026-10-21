@@ -188,10 +188,15 @@ public sealed record PublicBranchPage(
 /// How long before the start a diner may still cancel freely. On the page because a deadline
 /// nobody was told about is a deadline that produces no-shows rather than cancellations.
 /// </param>
+/// <param name="AcceptsPreOrders">
+/// Whether a booking here can carry a pre-order - dishes chosen ahead, editable until two hours before. Published:
+/// it is an offer to the diner, like the turn time.
+/// </param>
 public sealed record PublicReservationPolicy(
     int TurnTimeMinutes,
     int MinLeadMinutes,
-    int CancellationDeadlineMinutes);
+    int CancellationDeadlineMinutes,
+    bool AcceptsPreOrders = false);
 
 /// <summary>The rooms as a diner sees them: each with its photos, and every table with its pin.</summary>
 /// <param name="Areas">The rooms, lowest <c>displayOrder</c> first, each with its photos in order.</param>

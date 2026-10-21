@@ -46,6 +46,13 @@ internal sealed class MenuItemConfiguration : EntityConfiguration<MenuItem>
 
         builder.Property(i => i.SpiceLevel).IsRequired();
         builder.Property(i => i.IsAvailable).IsRequired();
+
+        // Every dish may be pre-ordered until the venue excludes it - the dishes that predate the column included.
+        // True is the sentinel: an insert of a dish as shipped leaves the column to its default.
+        builder.Property(i => i.AvailableForPreOrder)
+            .IsRequired()
+            .HasDefaultValue(true)
+            .HasSentinel(true);
         builder.Property(i => i.DisplayOrder).IsRequired();
 
         // Cascade: an item has no meaning apart from its category. Note that an item already

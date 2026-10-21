@@ -174,6 +174,13 @@ public static class OutboxMessageTypes
     /// </summary>
     public const string DinerBookingsUnblocked = "diner.bookings-unblocked";
 
+    /// <summary>
+    /// "Are you on your way?" to the guest of a booking with a pre-order, 45 minutes before it. Keyed
+    /// <c>reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}</c>, so a move asks again at the new time and cancelling
+    /// the booking (its prefix) withdraws it.
+    /// </summary>
+    public const string ReservationOnYourWay = "reservation.on-your-way";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

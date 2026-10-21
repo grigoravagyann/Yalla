@@ -61,6 +61,8 @@ public sealed class GeneralManagerMigrationTests(SqlServerFixture fixture)
                 // The fixture branch's manager names the branch. A second person is made a branchless
                 // manager the only way today's entity allows - as somebody else, then rewritten - which
                 // is what the old code wrote for "manages every branch".
+                await LaterColumns.AddPreOrderColumnsAsync(db);
+
                 branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
 
                 var venueWide = new StaffMember(branch.VenueId, "Venue-Wide Manager", "+37455500100", StaffRole.Owner, "hash");

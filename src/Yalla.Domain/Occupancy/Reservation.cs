@@ -388,6 +388,13 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
+    /// When the guest answered "Yes, on my way" (the pre-order's question, 45 minutes before). Null until they do. The
+    /// waiter's card says "Guest confirmed" instead of a number to call. An answer about one start: moving the booking
+    /// to another start forgets it (<see cref="Reschedule"/>, <see cref="KeepConfirmedSlot"/>).
+    /// </summary>
+    public DateTime? GuestConfirmedOnWayAtUtc { get; private set; }
+
+    /// <summary>
     /// Optimistic concurrency token: seating, cancelling and releasing a late booking all race
     /// with each other across the diner and staff apps.
     /// </summary>
@@ -872,6 +879,7 @@ public sealed class Reservation : Entity
         }
 
         DiningTableId = PreviousDiningTableId!.Value;
+        ForgetOnMyWayUnlessStartingAt(PreviousStartUtc!.Value);
         StartUtc = PreviousStartUtc!.Value;
         EndUtc = PreviousEndUtc!.Value;
         LocalDate = PreviousLocalDate ?? LocalDate;
@@ -1178,6 +1186,7 @@ public sealed class Reservation : Entity
         }
 
         DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
+        ForgetOnMyWayUnlessStartingAt(startUtc);
         StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
         EndUtc = promisedFreeByUtc ?? naturalEnd;
         PromisedFreeByUtc = promisedFreeByUtc;
@@ -1196,6 +1205,18 @@ public sealed class Reservation : Entity
         // A new request: whatever an earlier one was declined for is history.
         DeclineReason = null;
         AwaitDecision(status, approvalTrigger, approvalExpiresAtUtc);
+    }
+
+    /// <summary>
+    /// "On my way" was said about the start the booking had: a move to another start forgets it, so the waiter's card
+    /// does not say "Guest confirmed" for a time nobody confirmed, and the question is asked again for the new one.
+    /// </summary>
+    private void ForgetOnMyWayUnlessStartingAt(DateTime startUtc)
+    {
+        if (startUtc != StartUtc)
+        {
+            GuestConfirmedOnWayAtUtc = null;
+        }
     }
 
     /// <summary>Drops the confirmed slot a waiting change could fall back to.</summary>
@@ -1378,5 +1399,35 @@ public sealed class Reservation : Entity
         // No longer waiting for anybody, so nothing for the sweep to find - and nothing to go back to.
         ApprovalExpiresAtUtc = null;
         ForgetConfirmedSlot();
+    }
+
+    /// <summary>
+    /// The guest says they are on their way. Recorded once: a second answer changes nothing and says so.
+    /// </summary>
+    /// <remarks>
+    /// Open from the pre-order's lock (<see cref="PreOrderRules.LockedAtUtc"/>, two hours before the start) until the
+    /// booking's end: an answer given days ahead says nothing about tonight, and the waiter would send food on it.
+    /// </remarks>
+    /// <returns>False when it was already recorded.</returns>
+    /// <exception cref="OnMyWayNotOpenException">
+    /// The booking is not confirmed or seated, it is more than two hours before the start, or it is over.
+    /// </exception>
+    public bool ConfirmOnMyWay(DateTime nowUtc)
+    {
+        if (GuestConfirmedOnWayAtUtc is not null)
+        {
+            return false;
+        }
+
+        var opensAtUtc = PreOrderRules.LockedAtUtc(StartUtc);
+
+        if (Status is not (ReservationStatus.Confirmed or ReservationStatus.Seated) || nowUtc < opensAtUtc || nowUtc >= EndUtc)
+        {
+            throw new OnMyWayNotOpenException(Id, Status, opensAtUtc);
+        }
+
+        GuestConfirmedOnWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        return true;
     }
 }

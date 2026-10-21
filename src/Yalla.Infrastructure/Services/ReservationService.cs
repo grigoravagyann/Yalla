@@ -837,6 +837,16 @@ internal sealed class ReservationService(
         await TableShares.EarlierChangedAsync(
             db, outbox, reservation, branch, nowUtc, cancellationToken);
 
+        // The pre-order moves with the booking - judged against the new start wherever it is read - unless the kitchen
+        // already has it: food cooked for seven cannot be moved to tomorrow (409 pre-order-already-sent). A waiter's
+        // "not coming" was about the old time and goes. The row is saved even when nothing on it changed, so its row
+        // version settles this move against a send racing it under the old table's lock.
+        if (await db.PreOrders.FirstOrDefaultAsync(p => p.ReservationId == reservation.Id, cancellationToken) is { } preOrder)
+        {
+            preOrder.FollowMove(nowUtc);
+            db.Entry(preOrder).State = EntityState.Modified;
+        }
+
         // The account is live: the writer took its lock, inside this transaction, before calling here.
         await ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
 
@@ -902,6 +912,10 @@ internal sealed class ReservationService(
 
         var delivered = messages.Where(m => m.Sent).Select(m => m.IdempotencyKey).ToHashSet(StringComparer.Ordinal);
 
+        // A pre-order the kitchen does not have yet: its question moves with the booking.
+        var askOnYourWay = await db.PreOrders.AnyAsync(
+            p => p.ReservationId == reservation.Id && p.SentAtUtc == null, cancellationToken);
+
         await outbox.CancelAsync(prefix, cancellationToken);
         await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
 
@@ -915,7 +929,8 @@ internal sealed class ReservationService(
             keyVersion: reservation.StartUtc.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture),
             writeFeed: reservation.DinerUserId is not null,
             delivered,
-            nowUtc);
+            nowUtc,
+            askOnYourWay);
     }
 
     /// <summary>
@@ -1505,7 +1520,10 @@ internal sealed class ReservationService(
         // The diner's own record - what venues see beside their bookings - once, beside the lists.
         var record = await GuestRecords.ForAccountAsync(db, dinerUserId, nowUtc, cancellationToken);
 
-        return new MyReservations(upcoming, past, record);
+        // Every booking's pre-order in one go, upcoming and past alike.
+        var all = await PreOrderReads.AttachAsync(db, [.. upcoming, .. past], nowUtc, cancellationToken);
+
+        return new MyReservations([.. all.Take(upcoming.Count)], [.. all.Skip(upcoming.Count)], record);
     }
 
     public async Task<IReadOnlyList<ReservationView>> ListForBranchAsync(
@@ -1558,7 +1576,7 @@ internal sealed class ReservationService(
         var records = await GuestRecords.ForAccountsAsync(
             db, RecordedAccounts(rows.Select(r => (r.Reservation, r.PhoneUnverifiedNow ?? false)), today), nowUtc, cancellationToken);
 
-        return rows
+        var views = rows
             .Select(r => BuildView(
                 r.Reservation,
                 r.BranchName,
@@ -1573,6 +1591,9 @@ internal sealed class ReservationService(
                 GuestRecord = RecordOf(records, r.Reservation, r.PhoneUnverifiedNow ?? false, today),
             })
             .ToList();
+
+        // Each booking's pre-order, for the whole page at once.
+        return await PreOrderReads.AttachAsync(db, views, nowUtc, cancellationToken, forGuest: false);
     }
 
     /// <summary>
@@ -1718,7 +1739,7 @@ internal sealed class ReservationService(
             nowUtc,
             cancellationToken);
 
-        return rows
+        var items = rows
             .Select(row =>
             {
                 var previous = row.Asked ?? row.Previous;
@@ -1757,6 +1778,12 @@ internal sealed class ReservationService(
                 };
             })
             .ToList();
+
+        // Each request's pre-order, for the whole panel at once.
+        var withPreOrders = await PreOrderReads.AttachAsync(
+            db, [.. items.Select(i => i.Reservation)], nowUtc, cancellationToken, forGuest: false);
+
+        return [.. items.Select((item, i) => item with { Reservation = withPreOrders[i] })];
     }
 
     /// <summary>
@@ -2402,8 +2429,10 @@ internal sealed class ReservationService(
                         && reservation.DinerUserId is { } dinerUserId
                         && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
 
+        // A new booking has no pre-order yet, so nothing to ask on its way: saving one asks (PreOrderQuestions).
         EnqueueReminders(
-            db, outbox, reservation, branch, tableLabel, manageUrl, keyVersion: null, writeFeed, NothingDelivered, nowUtc);
+            db, outbox, reservation, branch, tableLabel, manageUrl, keyVersion: null, writeFeed, NothingDelivered, nowUtc,
+            askOnYourWay: false);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -2434,6 +2463,10 @@ internal sealed class ReservationService(
     /// <param name="writeFeed">Whether the account is live, under its lock, so the feed entry may be written.</param>
     /// <param name="delivered">Keys already sent: a message under one of them went out and is not written again.</param>
     /// <param name="nowUtc">Now.</param>
+    /// <param name="askOnYourWay">
+    /// The booking has a pre-order not yet sent: ask "are you on your way?" 45 minutes before - see
+    /// <see cref="PreOrderQuestions"/>.
+    /// </param>
     private static void EnqueueReminders(
         YallaDbContext db,
         IOutbox outbox,
@@ -2444,7 +2477,8 @@ internal sealed class ReservationService(
         string? keyVersion,
         bool writeFeed,
         IReadOnlySet<string> delivered,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        bool askOnYourWay)
     {
         var policy = branch.ReservationPolicy;
 
@@ -2501,6 +2535,12 @@ internal sealed class ReservationService(
                 notice,
                 reservation.StartUtc.AddMinutes(policy.LateNudgeAfterMinutes),
                 nudgeKey);
+        }
+
+        if (askOnYourWay)
+        {
+            PreOrderQuestions.Enqueue(
+                db, outbox, reservation, notice, branch.Venue?.Name ?? branch.Name, branch.Name, writeFeed, delivered, nowUtc);
         }
     }
 
@@ -3124,60 +3164,11 @@ internal sealed class ReservationService(
     /// for saying yes or no to a booking, and for the list of the ones waiting: a short-notice request
     /// is a question about a table only the floor can see, with fifteen minutes to answer it.
     /// </remarks>
-    private async Task<Guid> RequireStaffForBranchAsync(
+    private Task<Guid> RequireStaffForBranchAsync(
         Guid branchId,
         string operation,
-        CancellationToken cancellationToken)
-    {
-        if (actor.Type != ActorType.Staff
-            || actor.StaffMemberId is not { } staffId
-            || actor.Role is not { } tokenRole
-            || !IsFloorStaff(tokenRole))
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
-        }
-
-        var staff = await db.StaffMembers
-            .AsNoTracking()
-            .Where(s => s.Id == staffId)
-            .Select(s => new { s.BranchId, s.VenueId, s.IsActive, s.Role })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (staff is not { IsActive: true })
-        {
-            throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
-        }
-
-        // The stored role, not only the token's: a waiter moved to the kitchen keeps a waiter's token
-        // until it expires, and must not keep a waiter's reach with it - the same rule the manager
-        // guard applies to a demoted manager.
-        if (!IsFloorStaff(staff.Role))
-        {
-            throw new StaffPermissionException(operation, staff.Role, StaffRole.Waiter);
-        }
-
-        if (staff.Role == StaffRole.PlatformAdmin || staff.BranchId == branchId)
-        {
-            return staffId;
-        }
-
-        // An owner or general manager is venue-scoped rather than branch-scoped, which is the point
-        // of those accounts. A branch manager and a waiter are confined to their own branch, which
-        // the line above has already admitted.
-        if (StaffRoleRules.CoversWholeVenue(staff.Role)
-            && staff.VenueId is { } venueId
-            && await authorization.BranchBelongsToVenueAsync(branchId, venueId, cancellationToken))
-        {
-            return staffId;
-        }
-
-        throw new StaffPermissionException(operation, actor.Role, StaffRole.Waiter);
-    }
-
-    /// <summary>A waiter or above: the roles that work the floor - and decide what it can take.</summary>
-    private static bool IsFloorStaff(StaffRole role) =>
-        role is StaffRole.Waiter or StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner
-            or StaffRole.PlatformAdmin;
+        CancellationToken cancellationToken) =>
+        FloorStaffGuard.RequireAtBranchAsync(db, actor, authorization, branchId, operation, cancellationToken);
 
     // ---------------------------------------------------------------- permissions
 
@@ -3321,7 +3312,7 @@ internal sealed class ReservationService(
                                       && await db.DinerUsers.AnyAsync(
                                           d => d.Id == account && d.PhoneVerifiedAtUtc != null, cancellationToken));
 
-        return BuildView(
+        var view = BuildView(
             reservation,
             branch.Name,
             branch.TimeZoneId,
@@ -3333,6 +3324,9 @@ internal sealed class ReservationService(
             incoming,
             awaitsEarlierGuestAnswer,
             phoneUnverifiedNow);
+
+        // Until when the guest may pre-order, on the guest's own answers only.
+        return await PreOrderReads.AttachAsync(db, view, clock.UtcNow, cancellationToken, forGuest: actor.Type == ActorType.Diner);
     }
 
     private static ReservationView ToView(MineRow row) =>
@@ -3431,6 +3425,9 @@ internal sealed class ReservationService(
 
             // The time the guest promised to free the table by, kept on the row (EndUtc is cut to it).
             PromisedFreeByUtc = reservation.PromisedFreeByUtc,
+
+            // "Yes, on my way" - the pre-order's question, 45 minutes before.
+            GuestConfirmedOnWayAtUtc = reservation.GuestConfirmedOnWayAtUtc,
 
             // Only on a booking still holding its table: a cancelled one has nothing to answer about.
             IncomingTableRequest = incoming is not null && ReservationOverlap.Blocks(reservation.Status)

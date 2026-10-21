@@ -314,7 +314,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked', 'booking-on-your-way')");
                         });
                 });
 
@@ -808,6 +808,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<bool>("AvailableForPreOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -962,6 +967,121 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("BookingBlocks", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AttachedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("KitchenStatus")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("NotComingAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("NotComingByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid>("ReservationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("SentAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("SentByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("TabOrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId")
+                        .HasDatabaseName("IX_PreOrders_BranchId_Held")
+                        .HasFilter("[SentAtUtc] IS NOT NULL AND [TabOrderId] IS NULL");
+
+                    b.HasIndex("BranchId", "ReservationId")
+                        .HasDatabaseName("IX_PreOrders_BranchId_ReservationId");
+
+                    b.HasIndex("NotComingByStaffId");
+
+                    b.HasIndex("ReservationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_PreOrders_ReservationId");
+
+                    b.HasIndex("SentByStaffId");
+
+                    b.ToTable("PreOrders", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrderLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("MenuItemId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("NameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("PreOrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("int");
+
+                    b.Property<long>("UnitPriceAmdSnapshot")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MenuItemId");
+
+                    b.HasIndex("PreOrderId", "Position")
+                        .IsUnique();
+
+                    b.ToTable("PreOrderLines", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_PreOrderLines_Price", "[UnitPriceAmdSnapshot] >= 0");
+
+                            t.HasCheckConstraint("CK_PreOrderLines_Quantity", "[Quantity] BETWEEN 1 AND 20");
+                        });
+                });
+
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1026,6 +1146,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("GraceExtensionsUsed")
                         .HasColumnType("int");
+
+                    b.Property<DateTime?>("GuestConfirmedOnWayAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("GuestName")
                         .IsRequired()
@@ -1955,6 +2078,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
+                    b.Property<bool>("AcceptsPreOrders")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("AcceptsWebBookings")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
@@ -2009,6 +2137,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<string>("PhoneE164")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<int>("PreOrderMinutesBefore")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(30);
 
                     b.Property<int?>("PriceLevel")
                         .HasColumnType("int");
@@ -2617,6 +2750,48 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrder", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("NotComingByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Occupancy.Reservation", "Reservation")
+                        .WithMany()
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("SentByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Reservation");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrderLine", b =>
+                {
+                    b.HasOne("Yalla.Domain.Menus.MenuItem", null)
+                        .WithMany()
+                        .HasForeignKey("MenuItemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Occupancy.PreOrder", null)
+                        .WithMany("Lines")
+                        .HasForeignKey("PreOrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Yalla.Domain.Occupancy.Reservation", b =>
                 {
                     b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
@@ -3181,6 +3356,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrder", b =>
+                {
+                    b.Navigation("Lines");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Tabs.Tab", b =>

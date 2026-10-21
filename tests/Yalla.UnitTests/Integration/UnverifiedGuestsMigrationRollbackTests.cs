@@ -51,6 +51,8 @@ public sealed class UnverifiedGuestsMigrationRollbackTests(SqlServerFixture fixt
                     "ALTER TABLE dbo.Branches ADD ReservationPolicy_AutoConfirmGuestsWithGoodRecord bit NOT NULL "
                     + "CONSTRAINT DF_Test_GoodRecord DEFAULT 0;");
 
+                await LaterColumns.AddPreOrderColumnsAsync(db);
+
                 var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
                 var tableId = branch.TableIds[0];
 
