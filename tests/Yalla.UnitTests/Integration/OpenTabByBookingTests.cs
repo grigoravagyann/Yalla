@@ -475,6 +475,61 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// Freeing the table after the bill was settled completes the booking.
+    /// </summary>
+    /// <remarks>
+    /// Settling closes the sitting and leaves the table occupied, so by the time a waiter frees it
+    /// there is no open sitting left. Freeing used to look only for an open one, find none, and leave
+    /// the booking Seated for good - the diner's app kept it under "upcoming" as "at the table".
+    /// Found on a phone, 2026-10-21. The console's "finish this booking's sitting" takes the same path,
+    /// with the booking it expects.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Freeing_the_table_after_the_bill_was_settled_completes_the_booking(bool naming_the_booking)
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await ArrangeAsync(factory);
+        var menu = await MenuAsync(factory, branch);
+
+        using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
+        var booking = await BookAsync(diner, factory, branch, branch.TableIds[0], new TimeOnly(18, 0));
+        await MoveAsync(factory, booking.Id, factory.Clock.UtcNow.AddMinutes(10));
+
+        var opened = await OpenByBookingAsync(diner, booking.Code, "phone-booker");
+        var tabId = (await opened.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("tab").GetProperty("tabId").GetGuid();
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var settled = await SettleAsync(waiter, tabId, await OrderAsync(waiter, tabId, menu.Coffee, quantity: 1));
+
+        Assert.True(settled.GetProperty("tableSessionClosed").GetBoolean());
+
+        // Twenty minutes later the party leaves and the waiter frees the table.
+        var freed = await waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{branch.TableIds[0]}/free",
+            naming_the_booking
+                ? new { clientCommandId = Guid.CreateVersion7(), reservationId = (Guid?)booking.Id }
+                : new { clientCommandId = Guid.CreateVersion7(), reservationId = (Guid?)null });
+
+        Assert.Equal(HttpStatusCode.OK, freed.StatusCode);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+
+        Assert.Equal(
+            ReservationStatus.Completed,
+            (await db.Reservations.AsNoTracking().SingleAsync(r => r.Id == booking.Id)).Status);
+
+        Assert.Equal(
+            TableStatus.Free,
+            (await db.DiningTables.AsNoTracking().SingleAsync(t => t.Id == branch.TableIds[0])).Status);
+    }
+
+    /// <summary>
     /// A seated party is still let back onto their own open sitting after the booked time has run
     /// out.
     /// </summary>
