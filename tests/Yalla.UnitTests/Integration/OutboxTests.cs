@@ -61,11 +61,11 @@ public sealed class OutboxTests(SqlServerFixture fixture)
 
         await using var verify = fixture.CreateContext(clock);
 
-        // The successful booking has its two messages. The refused one has none - not a partial set,
-        // not an orphan reminder for a booking that does not exist.
+        // The successful booking has its three messages - reminder, late nudge and "are you on your way?". The refused
+        // one has none - not a partial set, not an orphan reminder for a booking that does not exist.
         var messages = await verify.OutboxMessages.AsNoTracking().ToListAsync();
 
-        Assert.Equal(2, messages.Count);
+        Assert.Equal(3, messages.Count);
         Assert.All(messages, m => Assert.StartsWith("reservation:", m.IdempotencyKey, StringComparison.Ordinal));
 
         var bookings = await verify.Reservations.CountAsync(r => r.BranchId == branch.BranchId);
@@ -138,8 +138,9 @@ public sealed class OutboxTests(SqlServerFixture fixture)
 
         await using (var check = fixture.CreateContext(clock))
         {
+            // Reminder, late nudge and "are you on your way?".
             Assert.Equal(
-                2,
+                3,
                 await check.OutboxMessages.CountAsync(
                     m => m.IdempotencyKey.StartsWith($"reservation:{bookingId}:")));
         }

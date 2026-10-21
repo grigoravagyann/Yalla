@@ -118,6 +118,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         t.NextReservationStartUtc, row.BufferMinutes),
                     NextReservationPromisedFreeByUtc = t.NextReservationPromisedFreeByUtc,
                     NextReservationPhoneUnverified = t.NextReservationPhoneUnverified,
+                    NextReservationGuestConfirmedOnWayAtUtc = t.NextReservationGuestConfirmedOnWayAtUtc,
                     NextReservationGuestRecord = RecordOf(NextAccount(t)),
                     SittingGuestRecord = RecordOf(t.SittingRecordedAccount),
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
@@ -309,6 +310,16 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                                          && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null))
                             .FirstOrDefault(),
 
+                        // Whether that next booking's guest said they are on their way: the waiter need not call.
+                        NextReservationGuestConfirmedOnWayAtUtc = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.GuestConfirmedOnWayAtUtc)
+                            .FirstOrDefault(),
+
                         // Whose record goes beside the next booking: its account, when that account's number is
                         // proved now - and the booking's date, for the today-or-later rule.
                         NextReservationRecordedAccount = db.Reservations
@@ -405,6 +416,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public bool OpenTabAwaitingAdmission { get; init; }
 
         public bool NextReservationPhoneUnverified { get; init; }
+
+        public DateTime? NextReservationGuestConfirmedOnWayAtUtc { get; init; }
 
         public DateTime? SeatedAtUtc { get; init; }
 

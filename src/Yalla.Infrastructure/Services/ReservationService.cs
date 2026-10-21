@@ -912,9 +912,17 @@ internal sealed class ReservationService(
 
         var delivered = messages.Where(m => m.Sent).Select(m => m.IdempotencyKey).ToHashSet(StringComparer.Ordinal);
 
-        // A pre-order the kitchen does not have yet: its question moves with the booking.
-        var askOnYourWay = await db.PreOrders.AnyAsync(
-            p => p.ReservationId == reservation.Id && p.SentAtUtc == null, cancellationToken);
+        // Every booking is asked "are you on your way?" and the question moves with it: at 45 minutes while a pre-order
+        // waits for the kitchen, at 30 otherwise. Not once the kitchen has the pre-order or the waiter marked the party
+        // not coming - the floor has decided.
+        var preOrder = await db.PreOrders
+            .Where(p => p.ReservationId == reservation.Id)
+            .Select(p => new { Decided = p.SentAtUtc != null || p.NotComingAtUtc != null })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        OnYourWayAsk askOnYourWay = preOrder is null
+            ? OnYourWayAsk.Plain
+            : preOrder.Decided ? OnYourWayAsk.None : OnYourWayAsk.WithPreOrder;
 
         await outbox.CancelAsync(prefix, cancellationToken);
         await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
@@ -2425,14 +2433,15 @@ internal sealed class ReservationService(
         // a deletion that comes after waits for this commit and removes it.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        var writeFeed = ReminderDueAt(reservation, branch.ReservationPolicy) > nowUtc
-                        && reservation.DinerUserId is { } dinerUserId
+        // The reminder's moment may be gone already (a booking made an hour ahead) while the question's is not, so the
+        // account is checked whenever there is a diner; the reminder itself is only written while it is still ahead.
+        var writeFeed = reservation.DinerUserId is { } dinerUserId
                         && await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken);
 
-        // A new booking has no pre-order yet, so nothing to ask on its way: saving one asks (PreOrderQuestions).
+        // A new booking has no pre-order yet: asked at 30 minutes, and saving one moves the question to 45.
         EnqueueReminders(
             db, outbox, reservation, branch, tableLabel, manageUrl, keyVersion: null, writeFeed, NothingDelivered, nowUtc,
-            askOnYourWay: false);
+            OnYourWayAsk.Plain);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -2478,7 +2487,7 @@ internal sealed class ReservationService(
         bool writeFeed,
         IReadOnlySet<string> delivered,
         DateTime nowUtc,
-        bool askOnYourWay)
+        OnYourWayAsk askOnYourWay)
     {
         var policy = branch.ReservationPolicy;
 
@@ -2537,11 +2546,27 @@ internal sealed class ReservationService(
                 nudgeKey);
         }
 
-        if (askOnYourWay)
+        // Pushed to an account only. A booking made on the web has no app to ask; its manage link asks instead, from the
+        // same moment (PublicBookingService, OnYourWayAsked).
+        if (askOnYourWay != OnYourWayAsk.None && reservation.DinerUserId is not null)
         {
             PreOrderQuestions.Enqueue(
-                db, outbox, reservation, notice, branch.Venue?.Name ?? branch.Name, branch.Name, writeFeed, delivered, nowUtc);
+                db, outbox, reservation, notice, branch.Venue?.Name ?? branch.Name, branch.Name, writeFeed, delivered,
+                preOrderWaiting: askOnYourWay == OnYourWayAsk.WithPreOrder, nowUtc);
         }
+    }
+
+    /// <summary>Whether, and when, a booking is asked "are you on your way?" - see <see cref="PreOrderQuestions"/>.</summary>
+    private enum OnYourWayAsk
+    {
+        /// <summary>The floor has decided: the kitchen has the pre-order, or the party was marked not coming.</summary>
+        None,
+
+        /// <summary>At 30 minutes, as every booking.</summary>
+        Plain,
+
+        /// <summary>At 45 minutes, while a pre-order waits for the kitchen.</summary>
+        WithPreOrder,
     }
 
     // ---------------------------------------------------------------- the diner extends their hold

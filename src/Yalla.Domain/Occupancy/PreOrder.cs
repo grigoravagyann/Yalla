@@ -330,8 +330,17 @@ public static class PreOrderRules
     /// </summary>
     public const int EditableUntilHoursBefore = 2;
 
-    /// <summary>"Are you on your way?" is asked this long before the start, of bookings with a pre-order.</summary>
+    /// <summary>
+    /// "Are you on your way?" is asked this long before the start of a booking whose pre-order is still waiting: the
+    /// kitchen needs the answer earlier than the floor does.
+    /// </summary>
     public const int OnYourWayMinutesBefore = 45;
+
+    /// <summary>
+    /// "Are you on your way?" is asked this long before the start of every other confirmed booking (2026-10-21): a
+    /// guest who says yes is not called by the waiter.
+    /// </summary>
+    public const int OnYourWayMinutesBeforeWithoutPreOrder = 30;
 
     public const int DefaultMinutesBefore = 30;
 
@@ -374,8 +383,12 @@ public static class PreOrderRules
     /// <summary>When the waiter's card appears.</summary>
     public static DateTime DueAtUtc(DateTime startUtc, int minutesBefore) => startUtc.AddMinutes(-minutesBefore);
 
-    /// <summary>When "are you on your way?" is asked.</summary>
+    /// <summary>When "are you on your way?" is asked of a booking whose pre-order is still waiting.</summary>
     public static DateTime OnYourWayAtUtc(DateTime startUtc) => startUtc.AddMinutes(-OnYourWayMinutesBefore);
+
+    /// <summary>When "are you on your way?" is asked: earlier while a pre-order waits for the kitchen.</summary>
+    public static DateTime OnYourWayAtUtc(DateTime startUtc, bool preOrderWaiting) =>
+        startUtc.AddMinutes(-(preOrderWaiting ? OnYourWayMinutesBefore : OnYourWayMinutesBeforeWithoutPreOrder));
 
     /// <summary>A booking whose guest may change its pre-order, status-wise (the clock is the other half).</summary>
     public static bool BookingTakesEdits(ReservationStatus status) =>

@@ -41,9 +41,9 @@ internal static class DinerNotices
         Booking(db, DinerNotificationKinds.BookingReminder, reservation, venueName, branchName, dueAtUtc);
 
     /// <summary>
-    /// "Are you on your way?", for a booking with a pre-order, appearing 45 minutes before it with its push. Answered on
-    /// the booking - "on my way", or its cancel - not here. Moving the booking writes it again for the new time;
-    /// clearing the pre-order or cancelling the booking removes it while it has not appeared.
+    /// "Are you on your way?", appearing with its push 30 minutes before a booking, or 45 while a pre-order waits.
+    /// Answered on the booking - "on my way", or its cancel - not here. Moving the booking writes it again for the new
+    /// time, saving or clearing a pre-order moves it, and cancelling the booking removes it while it has not appeared.
     /// </summary>
     public static void BookingOnYourWay(
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime dueAtUtc) =>

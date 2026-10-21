@@ -29,7 +29,7 @@ public static class DinerNotificationFeedEndpoints
                 + "answered the diner's review; `params` as `review-hidden`), `table-request`, "
                 + "`table-request-decided`, `booking-changed-by-link`, `booking-cancelled-by-link`, "
                 + "`bookings-blocked-no-shows`, `booking-no-show`, `bookings-unblocked` or `booking-on-your-way` "
-                + "(\"Are you on your way?\" for a booking with a pre-order - answer with the booking's on-my-way "
+                + "(\"Are you on your way?\" 30 minutes before a booking, 45 while its pre-order waits - answer with the booking's on-my-way "
                 + "or its cancel). **The server sends no prose**: "
                 + "the app writes the text from `kind` and the string values in `params`.\n\n"
                 + "A reminder appears when it is due, not when the booking was made; cancelling the booking "

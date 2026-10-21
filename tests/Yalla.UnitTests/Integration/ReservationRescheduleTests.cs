@@ -539,8 +539,8 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         await using var verify = fixture.CreateContext(clock);
         Assert.Equal(1, await verify.ProcessedCommands.CountAsync(c => c.ClientCommandId == change.ClientCommandId));
 
-        // One reminder and one nudge for the new time - not two of each.
-        Assert.Equal(2, (await OutboxKeysAsync(booked.Id, clock)).Count);
+        // One reminder, one nudge and one "are you on your way?" for the new time - not two of each.
+        Assert.Equal(3, (await OutboxKeysAsync(booked.Id, clock)).Count);
     }
 
     // ---------------------------------------------------------------- races with other writers
@@ -641,10 +641,13 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
 
         var booked = await service.CreateAsync(Booking(branch, branch.TableIds[0], SixPm));
 
+        // Every booking is also asked "are you on your way?" 30 minutes before (2026-10-21), keyed by its start.
         Assert.Equal(
             new[]
             {
                 OutboxMessageTypes.KeyFor("reservation", booked.Id, "late-nudge"),
+                OutboxMessageTypes.KeyFor(
+                    "reservation", booked.Id, $"on-your-way:{booked.StartUtc:yyyyMMddHHmm}:30"),
                 OutboxMessageTypes.KeyFor("reservation", booked.Id, "reminder"),
             },
             await OutboxKeysAsync(booked.Id, clock));
@@ -655,8 +658,9 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
         // sent. 20:00 in Yerevan is 16:00Z.
         var reminderKey = OutboxMessageTypes.KeyFor("reservation", booked.Id, "reminder:202609131600");
         var nudgeKey = OutboxMessageTypes.KeyFor("reservation", booked.Id, "late-nudge:202609131600");
+        var onYourWayKey = OutboxMessageTypes.KeyFor("reservation", booked.Id, "on-your-way:202609131600:30");
 
-        Assert.Equal(new[] { nudgeKey, reminderKey }, await OutboxKeysAsync(booked.Id, clock));
+        Assert.Equal(new[] { nudgeKey, onYourWayKey, reminderKey }, await OutboxKeysAsync(booked.Id, clock));
 
         await using (var verify = fixture.CreateContext(clock))
         {
@@ -668,15 +672,18 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
             Assert.Contains("\"localStartTime\":\"20:00:00\"", reminder.PayloadJson, StringComparison.Ordinal);
             Assert.Contains($"\"reservationCode\":\"{booked.Code}\"", reminder.PayloadJson, StringComparison.Ordinal);
 
-            // The feed: one reminder entry, appearing when the new reminder is due.
+            // The feed: one reminder entry, appearing when the new reminder is due, and the question 30 minutes before.
             var feed = await verify.DinerNotifications.AsNoTracking()
                 .Where(n => n.ReservationId == booked.Id)
                 .ToListAsync();
 
-            var entry = Assert.Single(feed);
-            Assert.Equal(DinerNotificationKinds.BookingReminder, entry.Kind);
+            var entry = Assert.Single(feed, n => n.Kind == DinerNotificationKinds.BookingReminder);
             Assert.Equal(moved.StartUtc.AddHours(-3), entry.CreatedAtUtc);
             Assert.Contains("\"time\":\"20:00\"", entry.ParamsJson, StringComparison.Ordinal);
+
+            var question = Assert.Single(feed, n => n.Kind == DinerNotificationKinds.BookingOnYourWay);
+            Assert.Equal(moved.StartUtc.AddMinutes(-30), question.CreatedAtUtc);
+            Assert.Equal(2, feed.Count);
         }
 
         // The new reminder went out. Moving to another table at the same time writes no second one,
@@ -685,7 +692,7 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
 
         await service.RescheduleAsync(Move(booked.Id, branch.TableIds[2], EightPm));
 
-        Assert.Equal(new[] { nudgeKey, reminderKey }, await OutboxKeysAsync(booked.Id, clock));
+        Assert.Equal(new[] { nudgeKey, onYourWayKey, reminderKey }, await OutboxKeysAsync(booked.Id, clock));
 
         await using (var verify = fixture.CreateContext(clock))
         {

@@ -83,7 +83,8 @@ public static class PreOrderEndpoints
             .WithName("confirmOnMyWay")
             .WithSummary("\"Yes, on my way\"")
             .WithDescription(
-                "The answer to the pre-order's question 45 minutes before - taken from two hours before the start "
+                "The answer to \"are you on your way?\", asked of every booking 30 minutes before (45 while a pre-order "
+                + "waits) - taken from two hours before the start "
                 + "until the booking ends. Recorded once (`guestConfirmedOnWayAtUtc` on the booking; the waiter's card "
                 + "says \"Guest confirmed\"); a second tap answers the first time, `wasReplay: true`. Moving the booking "
                 + "to another start forgets the answer. No body. \"Can't come\" is the booking's ordinary cancel. A "

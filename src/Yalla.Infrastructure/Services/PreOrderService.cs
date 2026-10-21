@@ -182,21 +182,24 @@ internal sealed class PreOrderService(
             note,
             nowUtc);
 
-        var key = PreOrderQuestions.KeyFor(reservation);
-        var asked = await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == key, cancellationToken)
-            ? new HashSet<string>(StringComparer.Ordinal) { key }
-            : [];
+        // Every booking is asked at 30 minutes; a pre-order waiting for the kitchen moves its question to 45. Saved
+        // again, it is already there and stays put.
+        var key = PreOrderQuestions.KeyFor(reservation, preOrderWaiting: true);
 
-        PreOrderQuestions.Enqueue(
-            db,
-            outbox,
-            reservation,
-            await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
-            branch.VenueName,
-            branch.Name,
-            writeFeed: live,
-            asked,
-            nowUtc);
+        if (!await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == key, cancellationToken))
+        {
+            await PreOrderQuestions.AskAgainAsync(
+                db,
+                outbox,
+                reservation,
+                await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
+                branch.VenueName,
+                branch.Name,
+                writeFeed: live,
+                preOrderWaiting: true,
+                nowUtc,
+                cancellationToken);
+        }
 
         Record(clientCommandId, ReplaceCommandType, account, reservation.Id, nowUtc);
 
@@ -214,7 +217,7 @@ internal sealed class PreOrderService(
     }
 
     /// <summary>
-    /// Removes the pre-order and withdraws its question. Under the same window as saving - and allowed whether or not
+    /// Removes the pre-order and moves its question back to the 30 minutes every booking is asked at. Under the same window as saving - and allowed whether or not
     /// the branch still takes pre-orders, so a guest is never stuck with one. Clearing a booking that has none is
     /// answered as done. Under the account's lock, taken before anything is read, as saving is.
     /// </summary>
@@ -222,7 +225,7 @@ internal sealed class PreOrderService(
         Reservation reservation, Guid account, Guid clientCommandId, CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
+        var live = await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
 
         if (await IsReplayAsync(clientCommandId, ClearCommandType, account, reservation.Id, cancellationToken))
         {
@@ -244,7 +247,24 @@ internal sealed class PreOrderService(
             db.PreOrders.Remove(preOrder);
         }
 
-        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
+        // Without a pre-order the booking is still asked, at 30 minutes like every other.
+        var branch = await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == reservation.BranchId)
+            .Select(b => new { b.Name, VenueName = b.Venue.Name })
+            .FirstAsync(cancellationToken);
+
+        await PreOrderQuestions.AskAgainAsync(
+            db,
+            outbox,
+            reservation,
+            await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
+            branch.VenueName,
+            branch.Name,
+            writeFeed: live,
+            preOrderWaiting: false,
+            nowUtc,
+            cancellationToken);
 
         Record(clientCommandId, ClearCommandType, account, reservation.Id, nowUtc);
 

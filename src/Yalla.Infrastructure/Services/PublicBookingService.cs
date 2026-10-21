@@ -118,12 +118,16 @@ internal sealed class PublicBookingService(
                 : null,
             GuestConfirmedOnWayAtUtc = row.GuestConfirmedOnWayAtUtc,
 
-            // The question the push and the feed ask, here for a link holder with no app.
+            // The question the push and the feed ask, here for a link holder with no app: of every booking, at 30
+            // minutes, or 45 while a pre-order waits for the kitchen; not once the kitchen has it or the party was
+            // marked not coming.
             OnYourWayAsked = row.Status == Domain.Enums.ReservationStatus.Confirmed
                              && row.GuestConfirmedOnWayAtUtc is null
-                             && nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc)
                              && nowUtc < row.EndUtc
-                             && preOrder is { State: PreOrderState.Locked or PreOrderState.Editable },
+                             && (preOrder is null
+                                 ? nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: false)
+                                 : preOrder is { State: PreOrderState.Locked or PreOrderState.Editable }
+                                   && nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: true)),
         };
     }
 

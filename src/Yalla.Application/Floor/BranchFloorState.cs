@@ -156,6 +156,12 @@ public sealed record TableFloorState
     public bool NextReservationPhoneUnverified { get; init; }
 
     /// <summary>
+    /// When the next booking's guest answered "yes, I'm on my way" - asked of every booking 30 minutes before (45 while
+    /// a pre-order waits). Set, the waiter does not call; <c>null</c> when they have not said.
+    /// </summary>
+    public DateTime? NextReservationGuestConfirmedOnWayAtUtc { get; init; }
+
+    /// <summary>
     /// The next booking's guest record - as on the console's list, and under the same rule: a proved account behind
     /// it and the booking today or still to come. Absent otherwise. See <see cref="Reservations.GuestRecord"/>.
     /// </summary>

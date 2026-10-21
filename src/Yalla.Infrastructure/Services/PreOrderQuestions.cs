@@ -8,14 +8,16 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// "Are you on your way?" - the push and the feed entry asked 45 minutes before a booking with a pre-order - written,
-/// withdrawn and rewritten in the caller's unit of work.
+/// "Are you on your way?" - the push and the feed entry asked before a confirmed booking - written, withdrawn and
+/// rewritten in the caller's unit of work.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Only bookings with a pre-order are asked.</b> The question exists so the kitchen knows whether to cook; asking
-/// every booking would be a new push to every guest, which nobody decided. Generalising it is the one condition in
-/// <c>ReservationService.EnqueueReminders</c> that passes <c>askOnYourWay</c>.
+/// <b>Every booking is asked</b> (2026-10-21, the owner's decision): a guest who says yes is not called by the waiter.
+/// 30 minutes before the start (<see cref="PreOrderRules.OnYourWayMinutesBeforeWithoutPreOrder"/>), or 45 while a
+/// pre-order waits (<see cref="PreOrderRules.OnYourWayMinutesBefore"/>) - the kitchen needs the answer earlier than the
+/// floor does. Saving a pre-order moves the question to 45 and clearing it moves it back (<see cref="AskAgainAsync"/>);
+/// a pre-order sent to the kitchen or a party marked not coming withdraws it, because the waiter has decided.
 /// </para>
 /// <para>
 /// An outbox message scheduled ahead, like the reminder - not a sweep: its key carries the start it is for
@@ -31,12 +33,21 @@ internal static class PreOrderQuestions
     public static string PrefixFor(Guid reservationId) =>
         OutboxMessageTypes.KeyFor("reservation", reservationId, "on-your-way:");
 
-    /// <summary>The question for the booking's current start.</summary>
-    public static string KeyFor(Reservation reservation) =>
+    /// <summary>Every question for the booking's current start, at either time.</summary>
+    public static string StartPrefixFor(Reservation reservation) =>
         OutboxMessageTypes.KeyFor(
             "reservation",
             reservation.Id,
             $"on-your-way:{reservation.StartUtc.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture)}");
+
+    /// <summary>
+    /// The question for the booking's current start. The pre-order's keeps the key it had before every booking was
+    /// asked; the plain one is told apart by its minutes, so moving between the two is a withdraw and a write.
+    /// </summary>
+    public static string KeyFor(Reservation reservation, bool preOrderWaiting = true) =>
+        preOrderWaiting
+            ? StartPrefixFor(reservation)
+            : $"{StartPrefixFor(reservation)}:{PreOrderRules.OnYourWayMinutesBeforeWithoutPreOrder}";
 
     /// <summary>
     /// Writes the question for the booking's current start - push and, when <paramref name="writeFeed"/>, the feed
@@ -50,6 +61,7 @@ internal static class PreOrderQuestions
     /// <param name="branchName">The branch, as the feed entry names it.</param>
     /// <param name="writeFeed">The account is live, under its lock: the feed entry may be written.</param>
     /// <param name="written">Keys already written - sent or waiting: one under the same key is not written again.</param>
+    /// <param name="preOrderWaiting">A pre-order waits for the kitchen: asked at 45 minutes rather than 30.</param>
     /// <param name="nowUtc">Now.</param>
     public static void Enqueue(
         YallaDbContext db,
@@ -60,14 +72,16 @@ internal static class PreOrderQuestions
         string branchName,
         bool writeFeed,
         IReadOnlySet<string> written,
+        bool preOrderWaiting,
         DateTime nowUtc)
     {
-        var askAt = PreOrderRules.OnYourWayAtUtc(reservation.StartUtc);
-        var key = KeyFor(reservation);
+        var askAt = PreOrderRules.OnYourWayAtUtc(reservation.StartUtc, preOrderWaiting);
+        var key = KeyFor(reservation, preOrderWaiting);
 
-        // A move into the last 45 minutes is not followed by "are you on your way?" seconds later: the guest who just
-        // moved it has said as much. The waiter's card shows the number to call instead.
-        if (askAt <= nowUtc || written.Contains(key))
+        // A booking made or moved inside its last half hour is not followed by "are you on your way?" seconds later:
+        // the guest who just booked it has said as much. The waiter's card shows the number to call instead. Nor is a
+        // question for this start asked twice, at either time.
+        if (askAt <= nowUtc || written.Contains(key) || written.Any(k => k.StartsWith(StartPrefixFor(reservation), StringComparison.Ordinal)))
         {
             return;
         }
@@ -78,6 +92,37 @@ internal static class PreOrderQuestions
         {
             DinerNotices.BookingOnYourWay(db, reservation, venueName, branchName, askAt);
         }
+    }
+
+    /// <summary>
+    /// Asks again at the time the pre-order now calls for - 45 minutes while it waits, 30 once it is cleared - unless the
+    /// question for this start already went out: a guest is not asked twice.
+    /// </summary>
+    public static async Task AskAgainAsync(
+        YallaDbContext db,
+        IOutbox outbox,
+        Reservation reservation,
+        object payload,
+        string venueName,
+        string branchName,
+        bool writeFeed,
+        bool preOrderWaiting,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var forThisStart = StartPrefixFor(reservation);
+
+        if (await db.OutboxMessages.AnyAsync(
+                m => m.IdempotencyKey.StartsWith(forThisStart) && m.SentAtUtc != null, cancellationToken))
+        {
+            return;
+        }
+
+        await WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
+
+        Enqueue(
+            db, outbox, reservation, payload, venueName, branchName, writeFeed, new HashSet<string>(), preOrderWaiting,
+            nowUtc);
     }
 
     /// <summary>Withdraws the booking's unsent question and its feed entry that has not appeared.</summary>
