@@ -452,10 +452,24 @@ internal sealed class TableStateService(
         var session = await db.TableSessions
             .FirstOrDefaultAsync(s => s.DiningTableId == table.Id && s.ClosedAtUtc == null, cancellationToken);
 
+        // A bill paid in full closes its sitting and deliberately leaves the table occupied - a party
+        // that has paid usually sits on - so the sitting being ended here may already be closed. Its
+        // booking is still Seated, and freeing the table is what completes it. Without this the booking
+        // stayed Seated for good, and the diner's app kept it under "upcoming" as "at the table".
+        var settled = session is null
+            ? await db.TableSessions
+                .AsNoTracking()
+                .Where(s => s.DiningTableId == table.Id && s.ClosedAtUtc != null)
+                .OrderByDescending(s => s.ClosedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+        var sittingReservationId = session?.ReservationId ?? settled?.ReservationId;
+
         // The console finishes one booking's sitting, from a row that may be stale: the waiter may have
         // freed the table since and seated somebody else. Free only that booking's sitting, still seated.
         if (command.ExpectedReservationId is { } expected
-            && (session?.ReservationId != expected
+            && (sittingReservationId != expected
                 || !await db.Reservations.AnyAsync(
                     r => r.Id == expected && r.Status == ReservationStatus.Seated, cancellationToken)))
         {
@@ -472,11 +486,18 @@ internal sealed class TableStateService(
 
         if (session is null)
         {
-            // The cache said Occupied but there is no open session. Vacating fixes the cache;
-            // the disagreement itself is worth knowing about.
-            logger.LogWarning(
-                "Table {TableId} was {FromStatus} with no open session. The cached status was stale.",
-                table.Id, fromStatus);
+            if (settled is null)
+            {
+                // The cache said Occupied but there is no sitting at all. Vacating fixes the cache;
+                // the disagreement itself is worth knowing about.
+                logger.LogWarning(
+                    "Table {TableId} was {FromStatus} with no open session. The cached status was stale.",
+                    table.Id, fromStatus);
+            }
+            else if (settled.ReservationId is { } settledReservationId)
+            {
+                await CompleteSeatedAsync(settledReservationId, nowUtc, cancellationToken);
+            }
         }
         else
         {
@@ -484,19 +505,7 @@ internal sealed class TableStateService(
 
             if (session.ReservationId is { } reservationId)
             {
-                var reservation = await db.Reservations
-                    .FirstOrDefaultAsync(r => r.Id == reservationId, cancellationToken);
-
-                // Only from Seated. A booking cancelled mid-service is left as it is rather than
-                // forced through a transition it never made.
-                if (reservation?.Status == ReservationStatus.Seated)
-                {
-                    reservation.MarkCompleted();
-
-                    // Seating already dropped its reminder; a booking seated before that did not, and
-                    // a finished meal is no more a reason to be reminded of it (K12).
-                    await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
-                }
+                await CompleteSeatedAsync(reservationId, nowUtc, cancellationToken);
             }
 
             var tab = await db.Tabs.FirstOrDefaultAsync(
@@ -528,7 +537,7 @@ internal sealed class TableStateService(
         db.TableStateChanges.Add(NewChange(
             table, fromStatus, TableStatus.Free, command.Reason ?? "table freed",
             nowUtc, command.ClientCommandId, staffId,
-            reservationId: session?.ReservationId, tabId: tabId, tableSessionId: session?.Id));
+            reservationId: sittingReservationId, tabId: tabId, tableSessionId: session?.Id ?? settled?.Id));
 
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
@@ -538,12 +547,30 @@ internal sealed class TableStateService(
             command.ClientCommandId,
             () => Success(
                 table, fromStatus, TableStatus.Free, nowUtc, command.ClientCommandId, next,
-                tableSessionId: session?.Id,
-                reservationId: session?.ReservationId,
+                tableSessionId: session?.Id ?? settled?.Id,
+                reservationId: sittingReservationId,
                 tabId: tabId,
                 outstandingAmd: outstandingAmd,
                 warnings: warnings),
             cancellationToken);
+    }
+
+    /// <summary>The booking a sitting came from is over, if it was still seated.</summary>
+    private async Task CompleteSeatedAsync(Guid reservationId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        var reservation = await db.Reservations
+            .FirstOrDefaultAsync(r => r.Id == reservationId, cancellationToken);
+
+        // Only from Seated. A booking cancelled mid-service is left as it is rather than forced
+        // through a transition it never made, and one already completed is not completed twice.
+        if (reservation?.Status == ReservationStatus.Seated)
+        {
+            reservation.MarkCompleted();
+
+            // Seating already dropped its reminder; a booking seated before that did not, and a
+            // finished meal is no more a reason to be reminded of it (K12).
+            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+        }
     }
 
     public async Task<TableStateChangeResult> RecordHoldExtendedAsync(

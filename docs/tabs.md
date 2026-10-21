@@ -146,7 +146,10 @@ reinstalled — gets back onto their own open tab with the booking code at any h
 
 **Settled, but not cleared.** Paying the last of a bill closes the sitting and deliberately leaves the
 table occupied — the party usually sits on for another twenty minutes — and only a waiter freeing the
-table completes the booking. In that window the booking still reads `Seated` with nothing left to join,
+table completes the booking. Freeing finds the sitting even though the settlement already closed it -
+the table's latest closed sitting - and completes its booking if it is still `Seated`; until 2026-10-21 it
+looked only for an open sitting, found none, and the booking stayed `Seated` for good, still listed
+as "at the table" in the diner's upcoming bookings. In that window the booking still reads `Seated` with nothing left to join,
 and the answer is **409 `booking-ended`**. The sticker is no help either: a table that is occupied with
 no open sitting refuses a seating, so anything more goes through a waiter. `TabService` decides this
 rather than letting the seating throw, and that is what keeps the answer in the booking family —
