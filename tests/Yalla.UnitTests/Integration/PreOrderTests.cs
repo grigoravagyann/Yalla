@@ -420,6 +420,53 @@ public partial class PreOrderTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A booking without a pre-order is asked too (2026-10-21): its manage link asks from 30 minutes before, takes the
+    /// answer, and the floor shows the waiter that the guest is coming, so nobody calls.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_booking_without_a_pre_order_is_asked_at_30_minutes_and_the_floor_sees_the_answer()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var x = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        var booking = await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 2));
+        var token = booking.GetProperty("manageToken").GetString()!;
+        var startUtc = booking.GetProperty("startUtc").GetDateTime();
+        using var web = factory.CreateClient();
+
+        // Signed in before the clock moves: a token minted two days ahead is not valid yet.
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, x.Branch));
+
+        factory.Clock.UtcNow = startUtc.AddMinutes(-31);
+        Assert.False((await ReadAsync(web, $"/api/public/bookings/{token}")).GetProperty("onYourWayAsked").GetBoolean());
+
+        factory.Clock.UtcNow = startUtc.AddMinutes(-30);
+        Assert.True((await ReadAsync(web, $"/api/public/bookings/{token}")).GetProperty("onYourWayAsked").GetBoolean());
+
+        var before = (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/changes?afterSequence=0&limit=500"))
+            .GetProperty("maxSequence").GetInt64();
+
+        var answered = await OkAsync(await web.PostAsJsonAsync($"/api/public/bookings/{token}/on-my-way", new { }));
+        Assert.Equal(startUtc.AddMinutes(-30), answered.GetProperty("guestConfirmedOnWayAtUtc").GetDateTime());
+        Assert.False((await ReadAsync(web, $"/api/public/bookings/{token}")).GetProperty("onYourWayAsked").GetBoolean());
+
+        // The answer is a booking change on its table (signal 5), so a tablet re-reads the floor and shows it.
+        var changes = (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/changes?afterSequence={before}&limit=500"))
+            .GetProperty("changes").EnumerateArray().ToList();
+        Assert.Contains(changes, c => c.TryGetProperty("signal", out var signal) && signal.GetInt32() == 5
+                                      && c.GetProperty("reservationId").GetGuid() == booking.GetProperty("id").GetGuid());
+
+        // The waiter's floor: the table's next booking says the guest is on their way.
+        var floor = await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/floor");
+        var table = floor.GetProperty("tables").EnumerateArray()
+            .Single(t => t.TryGetProperty("nextReservationId", out var next)
+                         && next.GetGuid() == booking.GetProperty("id").GetGuid());
+        Assert.Equal(startUtc.AddMinutes(-30), table.GetProperty("nextReservationGuestConfirmedOnWayAtUtc").GetDateTime());
+    }
+
+    /// <summary>
     /// A move carries the pre-order, judged against the new time: to another day it is editable again; into the last
     /// two hours it is kept, locked - never dropped.
     /// </summary>
@@ -504,11 +551,12 @@ public partial class PreOrderTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// Saving schedules "on your way?" at 45 minutes before - push and feed entry - and clearing withdraws both; a
-    /// booking without a pre-order is never asked; a move asks at the new time.
+    /// Every booking is asked "on your way?" 30 minutes before - push and feed entry. Saving a pre-order moves the
+    /// question to 45 minutes, clearing it moves it back to 30, and a move asks at the new time (2026-10-21: every
+    /// booking, so the waiter need not call).
     /// </summary>
     [SkippableFact]
-    public async Task The_on_your_way_question_is_scheduled_with_a_pre_order_only_and_follows_it()
+    public async Task The_on_your_way_question_is_asked_of_every_booking_and_moves_with_its_pre_order()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -518,7 +566,16 @@ public partial class PreOrderTests(SqlServerFixture fixture)
         var booking = await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 2));
         var id = booking.GetProperty("id").GetGuid();
         var startUtc = booking.GetProperty("startUtc").GetDateTime();
-        var bare = (await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 4))).GetProperty("id").GetGuid();
+        var bare = await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 4));
+        var bareId = bare.GetProperty("id").GetGuid();
+
+        // Asked at 30 minutes from the moment it is booked, like every booking.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            var push = await db.OutboxMessages.AsNoTracking()
+                .SingleAsync(m => m.IdempotencyKey.StartsWith($"reservation:{id}:on-your-way"));
+            Assert.Equal(startUtc.AddMinutes(-30), push.ScheduledForUtc);
+        }
 
         await OkAsync(await diner.PutAsJsonAsync($"/api/reservations/{id}/pre-order", new
         {
@@ -537,7 +594,10 @@ public partial class PreOrderTests(SqlServerFixture fixture)
                 .SingleAsync(n => n.ReservationId == id && n.Kind == "booking-on-your-way");
             Assert.Equal(startUtc.AddMinutes(-45), entry.CreatedAtUtc);
 
-            Assert.Equal(0, await db.OutboxMessages.CountAsync(m => m.IdempotencyKey.StartsWith($"reservation:{bare}:on-your-way")));
+            // The booking without a pre-order keeps its 30 minutes.
+            var barePush = await db.OutboxMessages.AsNoTracking()
+                .SingleAsync(m => m.IdempotencyKey.StartsWith($"reservation:{bareId}:on-your-way"));
+            Assert.Equal(bare.GetProperty("startUtc").GetDateTime().AddMinutes(-30), barePush.ScheduledForUtc);
         }
 
         // A second save does not ask twice.
@@ -571,11 +631,17 @@ public partial class PreOrderTests(SqlServerFixture fixture)
         await OkAsync(await diner.PostAsJsonAsync(
             $"/api/reservations/{id}/pre-order/clear", new { clientCommandId = Guid.CreateVersion7() }));
 
-        Assert.Equal(0, await QuestionsQueuedAsync(factory, id));
+        // Without the pre-order it is asked like every booking: back to 30 minutes, push and feed entry.
+        Assert.Equal(1, await QuestionsQueuedAsync(factory, id));
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            Assert.Equal(0, await db.DinerNotifications.CountAsync(n => n.ReservationId == id && n.Kind == "booking-on-your-way"));
+            var push = await db.OutboxMessages.AsNoTracking()
+                .SingleAsync(m => m.IdempotencyKey.StartsWith($"reservation:{id}:on-your-way") && m.SentAtUtc == null);
+            Assert.Equal(newStart.AddMinutes(-30), push.ScheduledForUtc);
+            Assert.Equal(
+                newStart.AddMinutes(-30),
+                (await db.DinerNotifications.AsNoTracking().SingleAsync(n => n.ReservationId == id && n.Kind == "booking-on-your-way")).CreatedAtUtc);
         }
     }
 

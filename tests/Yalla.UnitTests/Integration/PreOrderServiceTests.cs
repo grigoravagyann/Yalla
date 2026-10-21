@@ -28,11 +28,12 @@ public partial class PreOrderTests
     private static readonly DateTime SundayDinnerUtc = new(2026, 9, 13, 15, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// At 45 minutes before, the guest with a pre-order is asked - once. Not the guest who already said they are coming,
-    /// not the one the waiter marked not coming, not a booking without a pre-order, and nobody a minute early.
+    /// At 45 minutes before, the guest with a pre-order is asked - once - and at 30 the guest without one, in words
+    /// that do not mention a kitchen. Not the guest who already said they are coming, not the one the waiter marked not
+    /// coming, and nobody a minute early.
     /// </summary>
     [SkippableFact]
-    public async Task On_your_way_is_asked_at_45_minutes_only_of_a_guest_whose_pre_order_is_still_waiting()
+    public async Task On_your_way_is_asked_at_45_minutes_with_a_waiting_pre_order_and_at_30_without_one()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -100,16 +101,47 @@ public partial class PreOrderTests
 
         await using (var db = fixture.CreateContext(clock))
         {
-            // The feed's entry appears with the push; a booking without a pre-order has none.
+            // The feed's entry appears with the push; the booking without a pre-order has its own, at 30 minutes.
             Assert.Equal(
                 SundayDinnerUtc.AddMinutes(-45),
                 await db.DinerNotifications
                     .Where(n => n.ReservationId == asked && n.Kind == DinerNotificationKinds.BookingOnYourWay)
                     .Select(n => n.CreatedAtUtc)
                     .SingleAsync());
-            Assert.Equal(0, await db.DinerNotifications.CountAsync(
-                n => n.ReservationId == bare && n.Kind == DinerNotificationKinds.BookingOnYourWay));
+            Assert.Equal(
+                SundayDinnerUtc.AddMinutes(-30),
+                await db.DinerNotifications
+                    .Where(n => n.ReservationId == bare && n.Kind == DinerNotificationKinds.BookingOnYourWay)
+                    .Select(n => n.CreatedAtUtc)
+                    .SingleAsync());
         }
+
+        // A minute early, the booking without a pre-order is not asked yet.
+        clock.UtcNow = SundayDinnerUtc.AddMinutes(-31);
+        await using (var db = fixture.CreateContext(clock))
+        {
+            await Dispatcher(db, clock, channel).RunOnceAsync();
+        }
+
+        Assert.Single(channel.OfKind("reservation-on-your-way"));
+
+        clock.UtcNow = SundayDinnerUtc.AddMinutes(-30);
+        await using (var db = fixture.CreateContext(clock))
+        {
+            await Dispatcher(db, clock, channel).RunOnceAsync();
+            await Dispatcher(db, clock, channel).RunOnceAsync();
+        }
+
+        // Asked once more: the bare booking, without a word about a kitchen. Still not the guest who answered, nor the
+        // party the waiter marked not coming.
+        var pushes = channel.OfKind("reservation-on-your-way").ToList();
+        Assert.Equal(2, pushes.Count);
+        var plain = pushes[1];
+        Assert.Equal(bare.ToString(), plain.Data["reservationId"]);
+        Assert.Equal(diners[3].DinerUserId, plain.DinerUserId);
+        Assert.Equal("on-my-way,cancel", plain.Data["actions"]);
+        Assert.DoesNotContain("pre-order", plain.Body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("նախապատվեր", plain.Body, StringComparison.Ordinal);
     }
 
     /// <summary>

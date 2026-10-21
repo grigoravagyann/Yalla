@@ -204,9 +204,9 @@ internal sealed class ReservationLateNudgeHandler(
 /// </summary>
 /// <remarks>
 /// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
-/// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Not
-/// asked when the pre-order was cleared, sent or the party marked not coming, or when the guest already said they are
-/// coming.
+/// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Every
+/// booking is asked (2026-10-21); not once its pre-order was sent or the party marked not coming - the floor has decided
+/// - or when the guest already said they are coming. The wording says whether a pre-order is waiting for the kitchen.
 /// </remarks>
 internal sealed class ReservationOnYourWayHandler(
     YallaDbContext db,
@@ -230,23 +230,27 @@ internal sealed class ReservationOnYourWayHandler(
                                                         && p.SentAtUtc == null
                                                         && p.NotComingAtUtc == null
                                                         && p.Lines.Any()),
+                FloorDecided = db.PreOrders.Any(p => p.ReservationId == r.Id
+                                                     && (p.SentAtUtc != null || p.NotComingAtUtc != null)),
             })
             .FirstOrDefaultAsync(cancellationToken);
 
         var expected = booking is { Status: ReservationStatus.Confirmed };
 
-        if (!expected || booking!.Answered || !booking.PreOrderWaiting)
+        if (!expected || booking!.Answered || booking.FloorDecided)
         {
             logger.LogInformation(
                 "Not asking booking {ReservationId} whether they are on their way: it is {Status}, answered {Answered}, "
-                + "pre-order waiting {Waiting}.",
-                notice.ReservationId, booking?.Status, booking?.Answered, booking?.PreOrderWaiting);
+                + "decided by the floor {Decided}.",
+                notice.ReservationId, booking?.Status, booking?.Answered, booking?.FloorDecided);
 
             return;
         }
 
         var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
-        var (title, body) = NotificationText.OnYourWay(locale, notice.VenueName, notice.LocalStartTime);
+        var (title, body) = booking.PreOrderWaiting
+            ? NotificationText.OnYourWay(locale, notice.VenueName, notice.LocalStartTime)
+            : NotificationText.OnYourWayWithoutPreOrder(locale, notice.VenueName, notice.LocalStartTime);
 
         await channel.SendAsync(
             new NotificationMessage(

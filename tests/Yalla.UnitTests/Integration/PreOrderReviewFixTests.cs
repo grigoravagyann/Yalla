@@ -108,8 +108,9 @@ public partial class PreOrderTests
             await AllOkAsync(Enumerable.Range(0, 4).Select(_ => other.PostAsJsonAsync(
                 $"/api/reservations/{different}/pre-order/clear", new { clientCommandId = Guid.CreateVersion7() })));
 
-            Assert.Equal(0, await QuestionsQueuedAsync(factory, same));
-            Assert.Equal(0, await QuestionsQueuedAsync(factory, different));
+            // Cleared, each is asked like every booking - once, at 30 minutes - however the clears raced.
+            Assert.Equal(1, await QuestionsQueuedAsync(factory, same));
+            Assert.Equal(1, await QuestionsQueuedAsync(factory, different));
         }
 
         static async Task<JsonElement[]> AllOkAsync(IEnumerable<Task<HttpResponseMessage>> requests) =>

@@ -1239,23 +1239,28 @@ against a send racing it under the old table's lock.
 
 ### "Are you on your way?"
 
-**Only bookings with a pre-order are asked**, **45 minutes before the start**
-(`PreOrderRules.OnYourWayMinutesBefore`): the question exists so the kitchen knows whether to cook, and asking every
-booking would be a new push to every guest that nobody decided. Generalising it is one condition in
-`ReservationService.EnqueueReminders`.
+**Every booking is asked** (2026-10-21, the owner's decision: a guest who says yes is not called by the waiter):
+**30 minutes before the start** (`PreOrderRules.OnYourWayMinutesBeforeWithoutPreOrder`), or **45** while a pre-order
+waits for the kitchen (`PreOrderRules.OnYourWayMinutesBefore`) - the kitchen needs the answer earlier than the floor
+does. The push's words say which: the pre-order's mentions the kitchen, the plain one says nobody will need to call.
+It goes to a booking with an account; a web booking's manage link asks from the same moment (`onYourWayAsked`). The
+waiter's floor shows the answer beside the table's next booking (`nextReservationGuestConfirmedOnWayAtUtc`).
 
 A push `reservation.on-your-way` (data `kind: reservation-on-your-way`, `actions: on-my-way,cancel`) and a feed
-entry `booking-on-your-way` appearing when it is due, written **with the first save** of the pre-order - an outbox
-message keyed `reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}`, the reminder's pattern, so it is written once
+entry `booking-on-your-way` appearing when it is due, written **when the booking is made** - an outbox message keyed
+`reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}:30` (without a pre-order) or
+`reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}` (with one), the reminder's pattern, so it is written once
 however often the guest saves, a move asks again at the new time (`ReplaceRemindersAsync`), and a cancel withdraws
-it with the booking's other messages. Clearing the pre-order withdraws it, and so does every way the question becomes
-moot before it is asked: **the guest answering**, **the waiter sending** the pre-order, or **marking the party not
+it with the booking's other messages. Saving a pre-order moves it to 45 minutes and clearing it moves it back to 30
+(`PreOrderQuestions.AskAgainAsync` - never once the question for that start went out). It is withdrawn by every way
+the question becomes moot before it is asked: **the guest answering**, **the waiter sending** the pre-order, or **marking the party not
 coming** - each withdraws the unsent push and the feed entry that has not appeared (`PreOrderQuestions.WithdrawAsync`,
 the reminder's pattern). It is **a confirmed booking's question only**: the handler asks a confirmed booking whose
-pre-order is still waiting - not sent, not marked not coming - and whose guest has not answered; and the feed shows
+pre-order, if it has one, was not sent or marked not coming, and whose guest has not answered; and the feed shows
 `booking-on-your-way` only while its booking is confirmed (or went on from there: seated, completed, a no-show) - a
 booking still waiting for the venue's yes does not see it until it is approved, and one declined, expired or
-cancelled never does. A move into the last 45 minutes asks nothing: the guest who just moved it has said as much.
+cancelled never does. A booking made or moved inside the moment it would be asked asks nothing: the guest who just
+booked it has said as much.
 
 The answers: **"Yes, on my way"** - `POST /api/reservations/{id}/on-my-way` or
 `POST /api/public/bookings/{token}/on-my-way` - records `Reservations.GuestConfirmedOnWayAtUtc` once (a second tap
