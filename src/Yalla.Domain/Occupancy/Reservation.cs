@@ -388,6 +388,12 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
+    /// When the guest answered "Yes, on my way" (the pre-order's question, 45 minutes before). Null until they do. The
+    /// waiter's card says "Guest confirmed" instead of a number to call.
+    /// </summary>
+    public DateTime? GuestConfirmedOnWayAtUtc { get; private set; }
+
+    /// <summary>
     /// Optimistic concurrency token: seating, cancelling and releasing a late booking all race
     /// with each other across the diner and staff apps.
     /// </summary>
@@ -1378,5 +1384,27 @@ public sealed class Reservation : Entity
         // No longer waiting for anybody, so nothing for the sweep to find - and nothing to go back to.
         ApprovalExpiresAtUtc = null;
         ForgetConfirmedSlot();
+    }
+
+    /// <summary>
+    /// The guest says they are on their way. Recorded once: a second answer changes nothing and says so.
+    /// </summary>
+    /// <returns>False when it was already recorded.</returns>
+    /// <exception cref="OnMyWayNotOpenException">The booking is not confirmed or seated, or it is over.</exception>
+    public bool ConfirmOnMyWay(DateTime nowUtc)
+    {
+        if (GuestConfirmedOnWayAtUtc is not null)
+        {
+            return false;
+        }
+
+        if (Status is not (ReservationStatus.Confirmed or ReservationStatus.Seated) || nowUtc >= EndUtc)
+        {
+            throw new OnMyWayNotOpenException(Id, Status);
+        }
+
+        GuestConfirmedOnWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        return true;
     }
 }

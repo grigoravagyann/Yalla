@@ -87,6 +87,10 @@ public sealed record UpdateMenuItemCommand(
 /// <c>ingredients</c>, <c>allergens</c>, <c>portionSize</c>, <c>prepMinutes</c>, in that order. Empty exactly
 /// when <c>isComplete</c> is true - the console's "2 fields missing" and its chips, without a copy of the rule.
 /// </para>
+/// <para>
+/// <b><c>availableForPreOrder</c></b>: guests may put it on a booking's pre-order (the venue excludes dishes through
+/// <c>PUT /api/branches/{branchId}/pre-order-settings</c>). A pre-order offers what is available and not excluded.
+/// </para>
 /// </remarks>
 public sealed record MenuItemView(
     Guid Id,
@@ -103,7 +107,8 @@ public sealed record MenuItemView(
     bool IsAvailable,
     int DisplayOrder,
     bool IsComplete,
-    IReadOnlyList<string> MissingFields);
+    IReadOnlyList<string> MissingFields,
+    bool AvailableForPreOrder = true);
 
 public sealed record MenuCategoryView(Guid Id, string Name, int DisplayOrder, IReadOnlyList<MenuItemView> Items);
 

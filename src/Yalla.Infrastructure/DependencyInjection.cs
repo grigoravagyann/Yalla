@@ -55,6 +55,7 @@ public static class DependencyInjection
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
+        services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
 
@@ -181,6 +182,7 @@ public static class DependencyInjection
 
         services.AddScoped<IOutboxHandler, ReservationReminderHandler>();
         services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
+        services.AddScoped<IOutboxHandler, ReservationOnYourWayHandler>();
         services.AddScoped<IOutboxHandler, ReservationDecidedHandler>();
         services.AddScoped<IOutboxHandler, ReservationChangedByLinkHandler>();
         services.AddScoped<IOutboxHandler, ReservationCancelledByLinkHandler>();

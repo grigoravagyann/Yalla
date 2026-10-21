@@ -90,7 +90,9 @@ internal sealed class PublicBookingService(
                 && db.DinerUsers.Any(d => d.Id == r.DinerUserId
                                           && d.PhoneVerifiedAtUtc != null
                                           && d.IsActive
-                                          && d.DeletedAtUtc == null)))
+                                          && d.DeletedAtUtc == null),
+                r.GuestConfirmedOnWayAtUtc,
+                r.Branch.AcceptsPreOrders))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -101,7 +103,28 @@ internal sealed class PublicBookingService(
             throw ManageBookingFailure.Raise();
         }
 
-        return Project(row, clock.UtcNow);
+        var nowUtc = clock.UtcNow;
+        var preOrder = await PreOrderReads.ForReservationAsync(db, row.ReservationId, nowUtc, cancellationToken);
+
+        // The branch's menu, for pre-ordering, is the branch page's: reached from the slug pair the link already carries,
+        // so the link publishes no id of its own beyond the two changing the booking needs.
+        return Project(row, nowUtc) with
+        {
+            PreOrder = preOrder,
+            PreOrderEditableUntilUtc = row.AcceptsPreOrders
+                                       && PreOrderRules.BookingTakesEdits(row.Status)
+                                       && row.StartUtc > nowUtc
+                ? PreOrderRules.LockedAtUtc(row.StartUtc)
+                : null,
+            GuestConfirmedOnWayAtUtc = row.GuestConfirmedOnWayAtUtc,
+
+            // The question the push and the feed ask, here for a link holder with no app.
+            OnYourWayAsked = row.Status == Domain.Enums.ReservationStatus.Confirmed
+                             && row.GuestConfirmedOnWayAtUtc is null
+                             && nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc)
+                             && nowUtc < row.EndUtc
+                             && preOrder is { State: PreOrderState.Locked or PreOrderState.Editable },
+        };
     }
 
     public async Task<PublicBookingView> CancelAsync(
@@ -219,5 +242,7 @@ internal sealed class PublicBookingService(
         Domain.Occupancy.CancellationCause? CancelledBecause,
         bool AsksEarlierGuest,
         bool PhoneUnverified,
-        bool AccountCanMove);
+        bool AccountCanMove,
+        DateTime? GuestConfirmedOnWayAtUtc,
+        bool AcceptsPreOrders);
 }

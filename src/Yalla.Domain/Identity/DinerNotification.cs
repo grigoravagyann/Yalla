@@ -164,6 +164,13 @@ public static class DinerNotificationKinds
     /// </summary>
     public const string BookingsUnblocked = "bookings-unblocked";
 
+    /// <summary>
+    /// "Are you on your way?" - asked 45 minutes before a booking with a pre-order, appearing then. Answered on the
+    /// booking (<c>POST /api/reservations/{id}/on-my-way</c>, or its cancel); the entry is the question. Params are the
+    /// booking's.
+    /// </summary>
+    public const string BookingOnYourWay = "booking-on-your-way";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
@@ -171,6 +178,6 @@ public static class DinerNotificationKinds
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
         TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
-        BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked,
+        BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked, BookingOnYourWay,
     ];
 }

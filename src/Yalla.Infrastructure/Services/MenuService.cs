@@ -464,5 +464,6 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         i.IsAvailable,
         i.DisplayOrder,
         i.IsComplete,
-        MenuItemCompleteness.MissingFields(i));
+        MenuItemCompleteness.MissingFields(i),
+        i.AvailableForPreOrder);
 }

@@ -133,4 +133,12 @@ public enum TableChangeSignal
     /// (<c>ReservationId</c>): refresh the table's next booking (re-read the floor); do not fold its status.
     /// </summary>
     BookingChanged = 5,
+
+    /// <summary>
+    /// A booking's pre-order changed: saved, edited, cleared, sent to the kitchen, marked not coming, put on the party's
+    /// tab, its held ticket moved by the kitchen - or the guest answered "on my way". A same-status row naming the
+    /// booking (<c>ReservationId</c>): re-read the pre-order rail (<c>GET /api/branches/{id}/pre-orders/due</c>); do not
+    /// fold its status.
+    /// </summary>
+    PreOrderChanged = 6,
 }

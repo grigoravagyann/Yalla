@@ -17,6 +17,12 @@ internal static class DatabaseIndexNames
     public const string OpenSessionPerTable = "UX_TableSessions_OpenPerTable";
 
     /// <summary>
+    /// Unique on the booking: one pre-order per booking. A violation means another save of the same booking's
+    /// first pre-order won the race.
+    /// </summary>
+    public const string PreOrderPerReservation = "UX_PreOrders_ReservationId";
+
+    /// <summary>
     /// Unique on the caller's command id. A violation means the same offline command is being
     /// replayed concurrently with its original.
     /// </summary>

@@ -55,6 +55,8 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
 
                 // Nothing the branch, its tables or its room write changed in this migration, so today's
                 // entities write the schema before it as they are.
+                await LaterColumns.AddPreOrderColumnsAsync(db);
+
                 untouched = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(30, 15));
                 edited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(45, 20));
                 leadEdited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(60, 15));

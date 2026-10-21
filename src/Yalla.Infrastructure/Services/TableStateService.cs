@@ -199,6 +199,12 @@ internal sealed class TableStateService(
         table.Occupy(session.Id);
 
         db.TableSessions.Add(session);
+
+        // A pre-order the kitchen already has goes on their tab as they sit - see PreOrderSittings.
+        await PreOrderSittings.PutHeldOnNewSittingAsync(
+            db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, actorType, actorId, nowUtc,
+            cancellationToken);
+
         db.TableStateChanges.Add(new TableStateChange(
             table.BranchId,
             table.Id,
@@ -269,6 +275,11 @@ internal sealed class TableStateService(
         table.Occupy(session.Id);
 
         db.TableSessions.Add(session);
+
+        // A pre-order the kitchen already has goes on their tab as they sit - see PreOrderSittings.
+        await PreOrderSittings.PutHeldOnNewSittingAsync(
+            db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, ActorType.Staff, staffId, nowUtc,
+            cancellationToken);
         db.TableStateChanges.Add(NewChange(
             table, fromStatus, TableStatus.Occupied,
             command.Reason ?? $"seated reservation {reservation.Code}",
@@ -395,6 +406,15 @@ internal sealed class TableStateService(
         table.Occupy(session.Id);
 
         db.TableSessions.Add(session);
+
+        if (reservation is not null)
+        {
+            // A pre-order the kitchen already has goes on their tab as they sit - see PreOrderSittings.
+            await PreOrderSittings.PutHeldOnNewSittingAsync(
+                db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, ActorType.Staff, staffId,
+                nowUtc, cancellationToken);
+        }
+
         db.TableStateChanges.Add(NewChange(
             table, fromStatus, TableStatus.Occupied, command.Reason ?? "seated held party",
             nowUtc, command.ClientCommandId, staffId,

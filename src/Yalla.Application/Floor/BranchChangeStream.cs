@@ -19,9 +19,11 @@ namespace Yalla.Application.Floor;
 /// <param name="ReservationId">The booking involved, when there was one.</param>
 /// <param name="TabId">The tab involved, when there was one - always on a <paramref name="Signal"/> entry.</param>
 /// <param name="Signal">
-/// Set when the entry is about the table's tab rather than the table: 1 a scan's tab is waiting to be let in,
-/// 2 it was admitted, 3 it was turned away (on the Occupied-to-Free row when that freed the table). Absent
-/// on every ordinary change. A tablet refetches its awaiting-admission list on any of them.
+/// Set when the entry is about more than the table's status: 1 a scan's tab is waiting to be let in, 2 it was
+/// admitted, 3 it was turned away (on the Occupied-to-Free row when that freed the table) - refetch the
+/// awaiting-admission list; 4 a booking the platform cancelled for a no-show block and 5 any other booking event -
+/// re-read the floor; 6 a booking's pre-order changed - re-read the pre-order rail. Absent on every ordinary
+/// change. A same-status row (4 to 6) is never folded.
 /// </param>
 public sealed record BranchChange(
     long Sequence,

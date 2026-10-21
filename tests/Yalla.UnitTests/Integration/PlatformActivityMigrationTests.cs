@@ -62,6 +62,8 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
                     + "ReplyAuthorRole int NULL, ReplyByStaffMemberId uniqueidentifier NULL, RepliedAtUtc datetime2 NULL, "
                     + "ReplyUpdatedAtUtc datetime2 NULL;");
 
+                await LaterColumns.AddPreOrderColumnsAsync(db);
+
                 branch = await TestBranchBuilder.CreateAsync(db);
                 admin = await AuthTestData.CreatePlatformAdminAsync(db);
                 dinerId = await ReviewTestData.SeedDinerAsync(db, "Anahit Authorsurname", at);

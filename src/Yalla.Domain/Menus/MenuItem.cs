@@ -165,6 +165,14 @@ public sealed class MenuItem : Entity
     public void SetAvailable(bool isAvailable) => IsAvailable = isAvailable;
 
     /// <summary>
+    /// Whether guests may put it on a booking's pre-order. True by default; the venue excludes dishes that cannot wait
+    /// or cannot be made ahead (a souffle, the catch of the day).
+    /// </summary>
+    public bool AvailableForPreOrder { get; private set; } = true;
+
+    public void SetAvailableForPreOrder(bool available) => AvailableForPreOrder = available;
+
+    /// <summary>
     /// Takes the photo off the dish. The one descriptive field cleared on its own, because an edit passes null
     /// for "leave it as it was". The dish is then incomplete - <see cref="MenuItemCompleteness"/> - and the picture,
     /// used by nothing, is the orphan sweep's.

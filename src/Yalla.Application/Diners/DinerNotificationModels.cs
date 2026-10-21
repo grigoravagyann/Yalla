@@ -5,7 +5,9 @@ namespace Yalla.Application.Diners;
 /// <param name="Kind">
 /// <c>booking-reminder</c>, <c>booking-confirmed</c>, <c>booking-declined</c>,
 /// <c>booking-cancelled-by-venue</c>, <c>order-ready</c>, <c>review-hidden</c>, <c>review-replied</c>,
-/// <c>table-request</c> or <c>table-request-decided</c>. The app writes the text.
+/// <c>table-request</c>, <c>table-request-decided</c>, <c>booking-changed-by-link</c>,
+/// <c>booking-cancelled-by-link</c>, <c>bookings-blocked-no-shows</c>, <c>booking-no-show</c>,
+/// <c>bookings-unblocked</c> or <c>booking-on-your-way</c>. The app writes the text.
 /// </param>
 /// <param name="Params">
 /// String values the app's text is built from, as they were when the entry was written: for bookings

@@ -330,6 +330,40 @@ public static class ErrorCodes
     public const string ReservationCancelledByBlock = "reservation-cancelled-by-block";
 
     /// <summary>
+    /// The pre-order can no longer be changed by the guest: it is two hours before the start or later. HTTP 409,
+    /// <c>context.reservationId</c> and <c>lockedAtUtc</c>. Minted by <c>PreOrderLockedException</c>.
+    /// </summary>
+    public const string PreOrderLocked = "pre-order-locked";
+
+    /// <summary>
+    /// The kitchen already has the pre-order: it cannot be edited, cleared, marked not coming, or its booking moved.
+    /// HTTP 409, <c>context.reservationId</c> and <c>sentAtUtc</c>. Minted by <c>PreOrderAlreadySentException</c>.
+    /// </summary>
+    public const string PreOrderAlreadySent = "pre-order-already-sent";
+
+    /// <summary>The branch does not take pre-orders. HTTP 409, <c>context.branchId</c>. Minted by <c>PreOrdersNotAcceptedException</c>.</summary>
+    public const string PreOrdersNotAccepted = "pre-orders-not-accepted";
+
+    /// <summary>
+    /// Not the time or the state to send a pre-order to the kitchen, or mark the party not coming. HTTP 409,
+    /// <c>context</c> <c>reservationId</c>, <c>status</c>, <c>sendableFromUtc</c>, <c>endUtc</c>. Minted by
+    /// <c>PreOrderNotSendableException</c>.
+    /// </summary>
+    public const string PreOrderNotSendable = "pre-order-not-sendable";
+
+    /// <summary>
+    /// Dishes that cannot be pre-ordered. HTTP 422, <c>context.items[]</c> = <c>{ menuItemId, reason }</c> (1 not on the
+    /// menu, 2 sold out, 3 excluded from pre-orders). Minted by <c>PreOrderItemsUnavailableException</c>.
+    /// </summary>
+    public const string PreOrderItemsUnavailable = "pre-order-items-unavailable";
+
+    /// <summary>
+    /// "On my way" for a booking that is not confirmed or seated, or is over. HTTP 409, <c>context.reservationId</c>
+    /// and <c>status</c>. Minted by <c>OnMyWayNotOpenException</c>.
+    /// </summary>
+    public const string OnMyWayNotOpen = "on-my-way-not-open";
+
+    /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
     /// 409, <c>context.tabId</c>. Minted by <c>TabAwaitingAdmissionException</c>.
     /// </summary>
@@ -541,6 +575,12 @@ public static class ErrorCodes
         BookingBlockedNoShows => "Booking paused after missed bookings",
         NoShowUndoWindowClosed => "Too late to withdraw this no-show",
         ReservationCancelledByBlock => "Cancelled: the guest is blocked for no-shows",
+        PreOrderLocked => "Pre-order closed",
+        PreOrderAlreadySent => "Pre-order already sent to the kitchen",
+        PreOrdersNotAccepted => "Pre-orders not accepted",
+        PreOrderNotSendable => "Pre-order cannot be sent now",
+        PreOrderItemsUnavailable => "Dishes cannot be pre-ordered",
+        OnMyWayNotOpen => "Booking not expecting you",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
         ScanTurnedAway => "Ask a waiter",
