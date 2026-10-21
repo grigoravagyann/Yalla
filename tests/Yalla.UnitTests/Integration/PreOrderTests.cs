@@ -445,9 +445,18 @@ public partial class PreOrderTests(SqlServerFixture fixture)
         factory.Clock.UtcNow = startUtc.AddMinutes(-30);
         Assert.True((await ReadAsync(web, $"/api/public/bookings/{token}")).GetProperty("onYourWayAsked").GetBoolean());
 
+        var before = (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/changes?afterSequence=0&limit=500"))
+            .GetProperty("maxSequence").GetInt64();
+
         var answered = await OkAsync(await web.PostAsJsonAsync($"/api/public/bookings/{token}/on-my-way", new { }));
         Assert.Equal(startUtc.AddMinutes(-30), answered.GetProperty("guestConfirmedOnWayAtUtc").GetDateTime());
         Assert.False((await ReadAsync(web, $"/api/public/bookings/{token}")).GetProperty("onYourWayAsked").GetBoolean());
+
+        // The answer is a booking change on its table (signal 5), so a tablet re-reads the floor and shows it.
+        var changes = (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/changes?afterSequence={before}&limit=500"))
+            .GetProperty("changes").EnumerateArray().ToList();
+        Assert.Contains(changes, c => c.TryGetProperty("signal", out var signal) && signal.GetInt32() == 5
+                                      && c.GetProperty("reservationId").GetGuid() == booking.GetProperty("id").GetGuid());
 
         // The waiter's floor: the table's next booking says the guest is on their way.
         var floor = await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/tables/floor");

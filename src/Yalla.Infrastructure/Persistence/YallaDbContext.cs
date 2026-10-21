@@ -184,8 +184,9 @@ public sealed class YallaDbContext : DbContext
 
     /// <summary>
     /// Puts every booking event on its table's change stream: a booking made, or one whose status, table, time or
-    /// party changed - approved, declined, moved (both tables), cancelled, marked a no-show, a no-show withdrawn -
-    /// writes one same-status row on each table it touches, naming the booking, with signal
+    /// party changed - approved, declined, moved (both tables), cancelled, marked a no-show, a no-show withdrawn - or
+    /// whose guest answered "on my way" (2026-10-21: the floor shows it beside the table's next booking, so the waiter
+    /// need not call; once per booking, so no flood) - writes one same-status row on each table it touches, naming the booking, with signal
     /// <see cref="TableChangeSignal.BookingChanged"/>, in the same save and so the same transaction.
     /// </summary>
     /// <remarks>
@@ -218,7 +219,8 @@ public sealed class YallaDbContext : DbContext
                      || entry.Property(r => r.DiningTableId).IsModified
                      || entry.Property(r => r.StartUtc).IsModified
                      || entry.Property(r => r.EndUtc).IsModified
-                     || entry.Property(r => r.PartySize).IsModified))
+                     || entry.Property(r => r.PartySize).IsModified
+                     || entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified))
             {
                 continue;
             }
