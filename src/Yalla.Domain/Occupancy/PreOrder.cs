@@ -193,12 +193,43 @@ public sealed class PreOrder : Entity
         UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
     }
 
+    /// <summary>Sent before the party sat, still on no tab, and voided on the rail: nothing to put on a tab.</summary>
+    public bool IsVoidedHeld => IsHeld && KitchenStatus == TabOrderStatus.Voided;
+
+    /// <summary>
+    /// The booking ended before the party sat - cancelled by the guest or the venue, declined, expired, cancelled by a
+    /// no-show block: the held ticket the kitchen is cooking from is voided, so it leaves the kitchen screen as any
+    /// voided ticket does. A ticket already served or voided, or one already on a tab, is left as it is.
+    /// </summary>
+    /// <remarks>
+    /// Not by the rail's own rules: a <c>Ready</c> ticket is voided too, because nobody is coming to eat it. A no-show
+    /// does not come here - a sent pre-order followed by a no-show is an ordinary no-show.
+    /// </remarks>
+    /// <returns>True when it voided the ticket.</returns>
+    public bool VoidHeldBecauseBookingEnded(DateTime nowUtc)
+    {
+        if (!IsHeld || KitchenStatus is TabOrderStatus.Voided or TabOrderStatus.Served)
+        {
+            return false;
+        }
+
+        KitchenStatus = TabOrderStatus.Voided;
+        UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        return true;
+    }
+
     /// <summary>It is now the order with the same id on the party's tab.</summary>
     public void MarkAttached(DateTime nowUtc)
     {
         if (!IsHeld)
         {
             throw new DomainStateException("Only a sent pre-order not yet on a tab can be put on one.");
+        }
+
+        if (IsVoidedHeld)
+        {
+            throw new DomainStateException("A held ticket the kitchen voided is never put on a tab, nor billed.");
         }
 
         TabOrderId = Id;
@@ -421,7 +452,8 @@ public static class PreOrderRules
             }
         }
 
-        var total = lines.Sum(l => Math.Max(0, l.Quantity));
+        // In long: two lines of int.MaxValue are a 422 naming the bound, not an overflow.
+        var total = lines.Sum(l => (long)Math.Max(0, l.Quantity));
 
         if (lines.Count is > 0 and <= MaxLines && total > MaxTotalQuantity)
         {
@@ -497,15 +529,22 @@ public sealed class PreOrderNotSendableException(
     public DateTime EndUtc { get; } = endUtc;
 }
 
-/// <summary>"On my way" for a booking that is not confirmed or seated, or is over: 409 <c>on-my-way-not-open</c>.</summary>
-public sealed class OnMyWayNotOpenException(Guid reservationId, ReservationStatus status)
-    : DomainStateException("This booking is not expecting you any more.")
+/// <summary>
+/// "On my way" for a booking that is not confirmed or seated, is more than two hours away, or is over: 409
+/// <c>on-my-way-not-open</c>, <c>context</c> <c>reservationId</c>, <c>status</c>, <c>opensAtUtc</c> (start - 2 h).
+/// </summary>
+public sealed class OnMyWayNotOpenException(Guid reservationId, ReservationStatus status, DateTime opensAtUtc)
+    : DomainStateException(
+        "You can say you are on your way from two hours before the booking, while it is confirmed and not over.")
 {
     public const string ErrorCode = "on-my-way-not-open";
 
     public Guid ReservationId { get; } = reservationId;
 
     public ReservationStatus Status { get; } = status;
+
+    /// <summary>From when the answer is taken: two hours before the start.</summary>
+    public DateTime OpensAtUtc { get; } = opensAtUtc;
 }
 
 /// <summary>

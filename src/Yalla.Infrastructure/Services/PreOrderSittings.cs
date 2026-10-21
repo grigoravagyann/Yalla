@@ -33,7 +33,7 @@ internal static class PreOrderSittings
 
     /// <summary>
     /// When the booking being seated has a held pre-order: opens the new sitting's tab and puts it on, in the caller's
-    /// unit of work. Does nothing otherwise.
+    /// unit of work. Does nothing otherwise - nor for a held ticket the kitchen voided, which is never billed.
     /// </summary>
     /// <returns>The tab opened, or null when there was nothing to put on one.</returns>
     public static async Task<Guid?> PutHeldOnNewSittingAsync(
@@ -50,7 +50,9 @@ internal static class PreOrderSittings
             .Include(p => p.Lines)
             .FirstOrDefaultAsync(p => p.ReservationId == reservation.Id, cancellationToken);
 
-        if (preOrder is not { IsHeld: true } || session.TabId is not null)
+        // A held ticket the kitchen voided before the party sat is not food anybody will eat or pay for: the party
+        // sits with nothing on a tab, as any booking without a pre-order does.
+        if (preOrder is not { IsHeld: true, IsVoidedHeld: false } || session.TabId is not null)
         {
             return null;
         }

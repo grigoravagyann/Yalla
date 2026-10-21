@@ -1214,12 +1214,25 @@ can be pre-ordered in the same read.
 A link holder's edit is recorded against the booking's account, as the app's is; the account is not told (unlike a
 move or a cancel from the link), because nothing about the booking itself changed.
 
+**Two saves at once are serialised by the account's lock** (`DinerAccountLock`), taken - inside the save's
+transaction - **before** the replay check and every read. The second of a double tap waits for the first to commit,
+then reads what it wrote: the same `clientCommandId` is a clean replay, a new one edits the pre-order the first
+created and does not write the question twice. Clearing takes the same lock. A unique key that still fires (the
+command's, `UX_PreOrders_ReservationId`, the question's outbox key) is answered as the replay or a `409
+concurrent-update` - never a 500. `PreOrderTests.Concurrent_saves_and_clears_of_one_booking_never_answer_500`.
+
+**A dish a pre-order names is never hard-deleted.** Deleting it marks it unavailable instead, as for a dish on an
+order; deleting its category is refused the same way. The pre-order's lines keep the name and price they were ordered
+at either way (`PreOrderLines.MenuItemId` is a restricting key: they are the record of what was promised).
+
 ### A move carries it
 
 A rescheduled booking is the same row, so its pre-order goes with it and every rule is judged against the **new**
 start. Moved to another day it is editable again; moved into the last two hours it is **kept, locked** - neither
 dropped (the guest ordered in time) nor refused (the move would trap them); the waiter still decides. A waiter's
-"not coming" was about the old time and is cleared. **A booking whose pre-order was sent cannot move**:
+"not coming" was about the old time and is cleared, and so is the guest's **"on my way"** - an answer about the old
+start (`Reservation.Reschedule`, and the return to the confirmed slot when a waiting change is declined, both forget
+it whenever the start changes). **A booking whose pre-order was sent cannot move**:
 `409 pre-order-already-sent` - food cooked for seven cannot be moved to tomorrow; cancelling stays possible.
 The check is inside the move's lock, and the move saves the pre-order's row, so its row version settles a move
 against a send racing it under the old table's lock.
@@ -1235,15 +1248,21 @@ A push `reservation.on-your-way` (data `kind: reservation-on-your-way`, `actions
 entry `booking-on-your-way` appearing when it is due, written **with the first save** of the pre-order - an outbox
 message keyed `reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}`, the reminder's pattern, so it is written once
 however often the guest saves, a move asks again at the new time (`ReplaceRemindersAsync`), and a cancel withdraws
-it with the booking's other messages. Clearing the pre-order withdraws it. Its handler asks only a confirmed booking
-(or a pending one with no short-notice window) whose pre-order is still waiting - not sent, not marked not coming -
-and whose guest has not answered. A move into the last 45 minutes asks nothing: the guest who just moved it has said
-as much.
+it with the booking's other messages. Clearing the pre-order withdraws it, and so does every way the question becomes
+moot before it is asked: **the guest answering**, **the waiter sending** the pre-order, or **marking the party not
+coming** - each withdraws the unsent push and the feed entry that has not appeared (`PreOrderQuestions.WithdrawAsync`,
+the reminder's pattern). It is **a confirmed booking's question only**: the handler asks a confirmed booking whose
+pre-order is still waiting - not sent, not marked not coming - and whose guest has not answered; and the feed shows
+`booking-on-your-way` only while its booking is confirmed (or went on from there: seated, completed, a no-show) - a
+booking still waiting for the venue's yes does not see it until it is approved, and one declined, expired or
+cancelled never does. A move into the last 45 minutes asks nothing: the guest who just moved it has said as much.
 
 The answers: **"Yes, on my way"** - `POST /api/reservations/{id}/on-my-way` or
 `POST /api/public/bookings/{token}/on-my-way` - records `Reservations.GuestConfirmedOnWayAtUtc` once (a second tap
-answers the first, `wasReplay`), any time before the booking ends; a booking not confirmed or seated is
-`409 on-my-way-not-open`. The waiter's card then says "Guest confirmed". **"Can't come"** is the booking's ordinary
+answers the first, `wasReplay`), **from two hours before the start** (`PreOrderRules.LockedAtUtc`, the pre-order's
+lock) **until the booking ends**: an answer given days ahead says nothing about tonight, and the waiter would send food
+on it. Earlier, later, or a booking not confirmed or seated is `409 on-my-way-not-open` with `context.opensAtUtc`.
+A move to another start forgets the answer (above). The waiter's card then says "Guest confirmed". **"Can't come"** is the booking's ordinary
 cancel, with its ordinary rules: one cancel path, one late-cancel rule. The manage link's read says when to ask
 (`onYourWayAsked`).
 
@@ -1262,8 +1281,15 @@ cards, two for the pre-orders, one for the records, whatever their number.
 answers `nextDueAtUtc` - when the next card appears - and the tablet reads again then. Every pre-order change rides
 the change stream as **signal 6 `PreOrderChanged`** (`YallaDbContext.SignalPreOrderChangesAsync`, beside signal
 5): saved, edited, cleared, sent, marked not coming, put on the tab, its held ticket moved by the kitchen, a move
-clearing "not coming", the guest's "on my way". Its own number because signal 5 means "re-read the floor" and this
-means "re-read the rail".
+clearing "not coming", the guest's "on my way" (or a move forgetting it), a held ticket voided because its booking
+ended - and **a save of the branch's pre-order settings**, which changes cards without touching a pre-order row: one
+row for every booking whose card is or could be on a rail now (a pre-order on a confirmed booking starting within
+120 minutes and not over, or a seated one not yet on its tab) and one for the next booking after those, so every
+tablet re-reads the rail and its `nextDueAtUtc` (`YallaDbContext.SignalPreOrderRail`). A dish selling out still
+writes none: its `availableNow` reaches the card at the next re-read. Its own number because signal 5 means "re-read
+the floor" and this means "re-read the rail". **Its row carries the table's status as the save leaves it** (the
+tracked table's, when the same save changed it): a tablet that does not know signal 6 folds the row's status into
+the table, so the seating that attaches a held ticket writes Occupied, never the Free it read before.
 
 ### Send to kitchen, before and after the party sits
 
@@ -1290,19 +1316,36 @@ tab, through the ledger like any order (a closing tab is `409 tab-not-accepting-
 
 **Send takes the table's lock**, the one every seating takes. A send that finds the party not seated and a seating
 that finds the pre-order not sent cannot both be right, so they take turns, and whichever goes second puts the
-pre-order on the tab. `PreOrderTests.A_send_racing_the_seating_still_ends_on_the_tab` races them.
+pre-order on the tab. `PreOrderTests.A_send_racing_the_seating_still_ends_on_the_tab` races them. The table is
+**the booking's as read under the lock**: a booking moved to another table between the send's first read and its lock
+is sent again under the new table's lock, the one its seating takes
+(`PreOrderTests.A_send_follows_a_booking_moved_to_another_table_under_that_tables_lock`). A phone's scan or a
+waiter's "Open tab" gives a sitting its tab without that lock; a send that loses that race to the one-tab-per-sitting
+key puts the pre-order on the tab that won. A booking with no pre-order is 404. A seating that races the kitchen
+moving the held ticket it attaches is `409 concurrent-update` (nothing saved; seat them again), not the
+`table-state-conflict` a moved table earns - the table did not change.
 
 **Not coming / no answer** - `POST /api/reservations/{id}/pre-order/not-coming` - records who and when, sends
-nothing, keeps the card (state 4); **send stays possible** until the booking ends. A party that was sent a
-pre-order and never comes is marked a no-show as today - nothing extra; the held ticket stays on the kitchen screen
+nothing, keeps the card (state 4); **send stays possible** until the booking ends. One that loses to a send from
+another tablet is `409 pre-order-already-sent`, never a `wasReplay` for something it did not do. A party that was sent
+a pre-order and never comes is marked a no-show as today - nothing extra; the held ticket stays on the kitchen screen
 until the kitchen voids or serves it. (Seated as a walk-in instead of on the booking, a held ticket is not attached:
 seat the booking, or void it.)
+
+**A booking that ends before its party sits takes its held ticket with it.** Cancelled by the guest (app or link) or
+the venue (a release as "they let us know"), declined, expired, or cancelled by a no-show block: a held ticket still
+on the rail (`InKitchen` or `Ready`, on no tab) is **voided** in the same save (`YallaDbContext`'s hook beside the
+signals, so none of the six places a booking ends has to remember it) - it leaves the kitchen screen as any voided
+ticket does, and signal 6 tells the rail. A no-show is not such an end. **A held ticket voided before the party sits
+is never put on their tab** - no order, nothing owed - and a seated party's leaves the rail.
 
 ### Venue settings
 
 `GET/PUT /api/branches/{id}/pre-order-settings` (manager or above at the branch): `acceptsPreOrders` (**off by
 default**: a venue that has not looked at the feature must not receive tickets for dishes it never agreed to prepare
-ahead), `minutesBefore` (5 to 120, default 30), `excludedMenuItemIds`. The switch and the minutes live on the
+ahead), `minutesBefore` (5 to 120, default 30), `excludedMenuItemIds`. **All three are required** on a save: one
+left out is `422 validation-failed` naming it, never a silent "off" or every dish back on. A save signals the rail
+(signal 6, above). The switch and the minutes live on the
 **branch, not in `ReservationPolicy`**: the policy is replaced whole by every save of the reservation form, and a
 switch living there would be reset by an edit that never showed it.
 
@@ -1310,8 +1353,9 @@ switch living there would be reset by an edit that never showed it.
 
 `preOrder` (and `preOrderEditableUntilUtc`, present where the branch takes pre-orders and the booking may still
 have one; and `guestConfirmedOnWayAtUtc`) on every `ReservationView` - `/mine`, the console list, the awaiting cards,
-every booking answer - attached for a whole page in at most three statements (`PreOrderReads`); on the manage link
-(`branchId` too, for the menu); `availableForPreOrder` on menu items; `policy.acceptsPreOrders` on the public
+every booking answer - attached for a whole page in at most three statements (`PreOrderReads`); on the manage link,
+which deliberately carries **no `branchId`** (it publishes no id beyond `reservationId`/`tableId`: the menu is read
+through the branch page its `venueSlug`/`branchSlug` name); `availableForPreOrder` on menu items; `policy.acceptsPreOrders` on the public
 branch page. Reports do not count pre-orders yet.
 
 ## 4. The rules, and why none of them is a number in code
@@ -1663,7 +1707,7 @@ facts under `context`:
 | saving a pre-order at a branch that does not take them | 409 | `pre-orders-not-accepted`, with `context.branchId` |
 | dishes a pre-order cannot take | 422 | `pre-order-items-unavailable`, with `context.items[]` `{ menuItemId, reason }` |
 | sending a pre-order, or marking "not coming", outside its window or state | 409 | `pre-order-not-sendable`, with `context.reservationId`, `status`, `sendableFromUtc`, `endUtc` |
-| "on my way" for a booking not confirmed or seated, or over | 409 | `on-my-way-not-open`, with `context.reservationId`, `status` |
+| "on my way" for a booking not confirmed or seated, more than two hours before its start, or over | 409 | `on-my-way-not-open`, with `context.reservationId`, `status`, `opensAtUtc` (start - 2 h) |
 
 ---
 

@@ -203,9 +203,10 @@ internal sealed class ReservationLateNudgeHandler(
 /// it - so the waiter knows whether to send the pre-order to the kitchen without phoning.
 /// </summary>
 /// <remarks>
-/// Re-reads the state that decides whether to ask at all, as every handler here does. Not asked when the booking is no
-/// longer expected (cancelled, seated, waiting on a short-notice answer), when the pre-order was cleared, sent or the
-/// party marked not coming, or when the guest already said they are coming.
+/// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
+/// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Not
+/// asked when the pre-order was cleared, sent or the party marked not coming, or when the guest already said they are
+/// coming.
 /// </remarks>
 internal sealed class ReservationOnYourWayHandler(
     YallaDbContext db,
@@ -224,7 +225,6 @@ internal sealed class ReservationOnYourWayHandler(
             .Select(r => new
             {
                 r.Status,
-                AwaitsShortNoticeAnswer = r.ApprovalExpiresAtUtc != null,
                 Answered = r.GuestConfirmedOnWayAtUtc != null,
                 PreOrderWaiting = db.PreOrders.Any(p => p.ReservationId == r.Id
                                                         && p.SentAtUtc == null
@@ -233,9 +233,7 @@ internal sealed class ReservationOnYourWayHandler(
             })
             .FirstOrDefaultAsync(cancellationToken);
 
-        var expected = booking is not null
-                       && (booking.Status == ReservationStatus.Confirmed
-                           || (booking.Status == ReservationStatus.PendingApproval && !booking.AwaitsShortNoticeAnswer));
+        var expected = booking is { Status: ReservationStatus.Confirmed };
 
         if (!expected || booking!.Answered || !booking.PreOrderWaiting)
         {

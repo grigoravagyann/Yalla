@@ -358,8 +358,9 @@ public static class ErrorCodes
     public const string PreOrderItemsUnavailable = "pre-order-items-unavailable";
 
     /// <summary>
-    /// "On my way" for a booking that is not confirmed or seated, or is over. HTTP 409, <c>context.reservationId</c>
-    /// and <c>status</c>. Minted by <c>OnMyWayNotOpenException</c>.
+    /// "On my way" for a booking that is not confirmed or seated, is more than two hours away, or is over. HTTP 409,
+    /// <c>context.reservationId</c>, <c>status</c> and <c>opensAtUtc</c> (start - 2 h). Minted by
+    /// <c>OnMyWayNotOpenException</c>.
     /// </summary>
     public const string OnMyWayNotOpen = "on-my-way-not-open";
 

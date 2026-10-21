@@ -84,12 +84,23 @@ internal sealed class PreOrderService(
     /// Saves the whole pre-order the guest sent - the app's and the link's one path, as moving a booking is.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>The account's lock first, then every read.</b> A double tap, or a retry racing its own first try, is two
+    /// saves of the same booking at once. With the lock taken before the replay check, the pre-order and the question
+    /// are read, the second save waits for the first to commit and then reads what it wrote: the same command id is a
+    /// clean replay, a new one edits the pre-order the first created and does not ask the question twice. A unique key
+    /// that still fires - the command's, the pre-order's, the question's - is answered as a replay or a 409
+    /// <c>concurrent-update</c>, never a 500. The lock is also the feed entry's: a deletion that comes after waits for
+    /// this commit and removes it - the reminder's rule.
+    /// </para>
+    /// <para>
     /// In this order, each refusal before anything is written: a replay (answered as the pre-order stands); the booking
     /// still to come (409 <c>reservation-not-changeable</c>); not already with the kitchen (409
     /// <c>pre-order-already-sent</c>); before the lock two hours ahead (409 <c>pre-order-locked</c>); the branch taking
     /// pre-orders (409 <c>pre-orders-not-accepted</c>); the shape (422, every field named); the dishes (422
     /// <c>pre-order-items-unavailable</c>, every dish named). The "on your way" question is written with the first
     /// save and not again; the command is recorded in the same save.
+    /// </para>
     /// </remarks>
     private async Task<PreOrderResult> ReplaceCoreAsync(
         Reservation reservation,
@@ -101,10 +112,16 @@ internal sealed class PreOrderService(
     {
         ArgumentNullException.ThrowIfNull(lines);
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var live = await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
+
         if (await IsReplayAsync(clientCommandId, ReplaceCommandType, account, reservation.Id, cancellationToken))
         {
             return await AnswerAsync(reservation.Id, wasReplay: true, cancellationToken);
         }
+
+        // As it stands now that this save has its turn: read before the lock, it may have moved or ended since.
+        await db.Entry(reservation).ReloadAsync(cancellationToken);
 
         var nowUtc = clock.UtcNow;
         RequireBookingTakesEdits(reservation, nowUtc);
@@ -165,10 +182,6 @@ internal sealed class PreOrderService(
             note,
             nowUtc);
 
-        // The account's lock, held to the save: the feed entry is the person's, and a deletion that comes after waits
-        // for this commit and removes it - the reminder's rule.
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
         var key = PreOrderQuestions.KeyFor(reservation);
         var asked = await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == key, cancellationToken)
             ? new HashSet<string>(StringComparer.Ordinal) { key }
@@ -181,7 +194,7 @@ internal sealed class PreOrderService(
             await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
             branch.VenueName,
             branch.Name,
-            writeFeed: await DinerAccountLock.IsLiveAsync(db, account, cancellationToken),
+            writeFeed: live,
             asked,
             nowUtc);
 
@@ -203,15 +216,20 @@ internal sealed class PreOrderService(
     /// <summary>
     /// Removes the pre-order and withdraws its question. Under the same window as saving - and allowed whether or not
     /// the branch still takes pre-orders, so a guest is never stuck with one. Clearing a booking that has none is
-    /// answered as done.
+    /// answered as done. Under the account's lock, taken before anything is read, as saving is.
     /// </summary>
     private async Task<PreOrderResult> ClearCoreAsync(
         Reservation reservation, Guid account, Guid clientCommandId, CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
+
         if (await IsReplayAsync(clientCommandId, ClearCommandType, account, reservation.Id, cancellationToken))
         {
             return await AnswerAsync(reservation.Id, wasReplay: true, cancellationToken);
         }
+
+        await db.Entry(reservation).ReloadAsync(cancellationToken);
 
         var nowUtc = clock.UtcNow;
         RequireBookingTakesEdits(reservation, nowUtc);
@@ -235,6 +253,8 @@ internal sealed class PreOrderService(
             return await AnswerAsync(reservation.Id, wasReplay: true, cancellationToken);
         }
 
+        await transaction.CommitAsync(cancellationToken);
+
         logger.LogInformation("Pre-order for booking {Code} cleared.", reservation.Code);
 
         return new PreOrderResult(reservation.Id, null, WasReplay: false);
@@ -251,13 +271,20 @@ internal sealed class PreOrderService(
     public async Task<OnMyWayResult> ConfirmOnMyWayByManageTokenAsync(string token, CancellationToken cancellationToken = default) =>
         await ConfirmOnMyWayCoreAsync(await ByManageTokenAsync(token, cancellationToken), cancellationToken);
 
-    /// <summary>"Yes, on my way": recorded once, and the waiter's card says "Guest confirmed".</summary>
+    /// <summary>
+    /// "Yes, on my way": recorded once, and the waiter's card says "Guest confirmed". The question is answered, so its
+    /// push and feed entry that have not gone out yet are withdrawn.
+    /// </summary>
     private async Task<OnMyWayResult> ConfirmOnMyWayCoreAsync(Reservation reservation, CancellationToken cancellationToken)
     {
-        if (!reservation.ConfirmOnMyWay(clock.UtcNow))
+        var nowUtc = clock.UtcNow;
+
+        if (!reservation.ConfirmOnMyWay(nowUtc))
         {
             return new OnMyWayResult(reservation.Id, reservation.GuestConfirmedOnWayAtUtc!.Value, WasReplay: true);
         }
+
+        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
 
         try
         {
@@ -298,7 +325,8 @@ internal sealed class PreOrderService(
         var dueBy = nowUtc.AddMinutes(minutes);
 
         // On the rail: a confirmed booking from its card's time until its end, or a seated one whose pre-order is not on
-        // their tab yet (sent before they sat and somehow not attached, or not sent - the waiter can still send it).
+        // their tab yet (sent before they sat and somehow not attached, or not sent - the waiter can still send it). A
+        // held ticket the kitchen voided before they sat is never put on the tab, so a seated party's leaves the rail.
         var due = db.PreOrders
             .Where(p => p.BranchId == branchId && p.Lines.Any())
             .Where(p => (p.Reservation.Status == ReservationStatus.Confirmed
@@ -306,6 +334,7 @@ internal sealed class PreOrderService(
                          && p.Reservation.EndUtc > nowUtc)
                         || (p.Reservation.Status == ReservationStatus.Seated
                             && p.TabOrderId == null
+                            && p.KitchenStatus != TabOrderStatus.Voided
                             && db.TableSessions.Any(s => s.ReservationId == p.ReservationId && s.ClosedAtUtc == null)));
 
         var cards = await CardsAsync(due, minutes, nowUtc, wasReplay: false, cancellationToken);
@@ -327,35 +356,111 @@ internal sealed class PreOrderService(
 
         var (booking, staffId) = await RequireFloorForBookingAsync(command.ReservationId, "Send a pre-order to the kitchen", cancellationToken);
 
+        if (!await db.PreOrders.AsNoTracking().AnyAsync(p => p.ReservationId == command.ReservationId, cancellationToken))
+        {
+            throw new KeyNotFoundException("This booking has no pre-order.");
+        }
+
         // Two tablets, one ticket: already sent is answered as done, whoever sent it and under whatever command id.
         if (await SentAlreadyAsync(command.ReservationId, cancellationToken))
         {
             return await CardAsync(command.ReservationId, wasReplay: true, cancellationToken);
         }
 
-        Guid? recomputeTab = null;
+        var table = (Id: booking.DiningTableId, Label: booking.TableLabel);
 
+        for (var attempt = 1; ; attempt++)
+        {
+            var outcome = await SendUnderTableLockAsync(command.ReservationId, staffId, table.Id, table.Label, cancellationToken);
+
+            switch (outcome)
+            {
+                case SendOutcome.AlreadySent:
+                    return await CardAsync(command.ReservationId, wasReplay: true, cancellationToken);
+
+                case SendOutcome.Sent sent:
+                    if (sent.RecomputeTabId is { } recompute)
+                    {
+                        await ledger.RecomputeTotalsAsync(recompute, cancellationToken);
+                    }
+
+                    logger.LogInformation(
+                        "Pre-order of booking {ReservationId} sent to the kitchen by staff {StaffId}.", command.ReservationId, staffId);
+
+                    return await CardAsync(command.ReservationId, wasReplay: false, cancellationToken);
+
+                case SendOutcome.Again again when attempt < MaxSendAttempts:
+                    table = (again.TableId, again.TableLabel);
+                    continue;
+
+                default:
+                    throw new DbUpdateConcurrencyException(
+                        "This booking's table kept changing while its pre-order was being sent. Read the rail again.");
+            }
+        }
+    }
+
+    /// <summary>A send moved on by a table that changed under it - the booking's, or the sitting's tab - at most this often.</summary>
+    private const int MaxSendAttempts = 3;
+
+    /// <summary>
+    /// One try at sending, under the table's lock - the one every seating takes: a send that finds the party not seated
+    /// and a seating that finds the pre-order not sent cannot both be right, so they take turns, and whichever goes
+    /// second puts the pre-order on the tab.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The table is the booking's as read under the lock.</b> It was read before the lock was taken; a guest who
+    /// moved the booking to another table in between is seated under <i>that</i> table's lock, so this one would not
+    /// keep them apart. A booking found on another table is tried again under that table's lock.
+    /// </para>
+    /// <para>
+    /// <b>A tab opened at the same moment.</b> A phone's scan and a waiter's "Open tab" give a sitting its tab without
+    /// the table's lock; the database's one-tab-per-sitting key settles it. A send that loses is tried again, finds the
+    /// tab that won and puts the pre-order on it.
+    /// </para>
+    /// </remarks>
+    private async Task<SendOutcome> SendUnderTableLockAsync(
+        Guid reservationId, Guid staffId, Guid tableId, string tableLabel, CancellationToken cancellationToken)
+    {
         try
         {
-            // The table's lock, the one every seating takes: a send that finds the party not seated and a seating that
-            // finds the pre-order not sent cannot both be right, so they take turns - and whichever goes second puts the
-            // pre-order on the tab.
-            await using var locked = await tableLock.AcquireAsync(booking.DiningTableId, booking.TableLabel, cancellationToken);
+            await using var locked = await tableLock.AcquireAsync(tableId, tableLabel, cancellationToken);
 
-            var reservation = await db.Reservations.FirstAsync(r => r.Id == command.ReservationId, cancellationToken);
+            var reservation = await db.Reservations.FirstAsync(r => r.Id == reservationId, cancellationToken);
+
+            if (reservation.DiningTableId != tableId)
+            {
+                var moved = await db.DiningTables
+                    .AsNoTracking()
+                    .Where(t => t.Id == reservation.DiningTableId)
+                    .Select(t => t.Label)
+                    .FirstAsync(cancellationToken);
+
+                db.ChangeTracker.Clear();
+
+                return new SendOutcome.Again(reservation.DiningTableId, moved);
+            }
+
             var preOrder = await db.PreOrders
                 .Include(p => p.Lines)
-                .FirstAsync(p => p.ReservationId == command.ReservationId, cancellationToken);
+                .FirstOrDefaultAsync(p => p.ReservationId == reservationId, cancellationToken)
+                ?? throw new KeyNotFoundException("This booking has no pre-order.");
 
             if (preOrder.IsSent)
             {
-                return await CardAsync(command.ReservationId, wasReplay: true, cancellationToken);
+                return new SendOutcome.AlreadySent();
             }
 
             var nowUtc = clock.UtcNow;
             var session = await RequireSendableAsync(reservation, nowUtc, cancellationToken);
 
             preOrder.MarkSent(staffId, nowUtc);
+
+            // Sent: "are you on your way?" has nothing left to decide - its push and feed entry not yet out are withdrawn.
+            await PreOrderQuestions.WithdrawAsync(db, outbox, reservationId, nowUtc, cancellationToken);
+
+            Guid? recomputeTab = null;
 
             if (session is null)
             {
@@ -378,10 +483,31 @@ internal sealed class PreOrderService(
 
                 PreOrderSittings.OpenTabWithOrder(
                     db, preOrder, session, serviceCharge, TabAdmissionReason.OpenedByStaff, staffId, nowUtc);
-                await db.SaveChangesAsync(cancellationToken);
+
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabPerSession))
+                {
+                    // A scan or a waiter's "Open tab" gave the sitting its tab first, without this lock. Try again:
+                    // the sitting now has a tab, and the pre-order goes on it.
+                    logger.LogInformation(
+                        "Sending the pre-order of booking {ReservationId} lost the tab race on session {SessionId}; "
+                        + "putting it on the tab that won.",
+                        reservationId,
+                        session.Id);
+
+                    db.ChangeTracker.Clear();
+                    ledger.DiscardPending();
+
+                    return new SendOutcome.Again(tableId, tableLabel);
+                }
             }
 
             await locked.CommitAsync(cancellationToken);
+
+            return new SendOutcome.Sent(recomputeTab);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -389,22 +515,13 @@ internal sealed class PreOrderService(
             db.ChangeTracker.Clear();
             ledger.DiscardPending();
 
-            if (await SentAlreadyAsync(command.ReservationId, cancellationToken))
+            if (await SentAlreadyAsync(reservationId, cancellationToken))
             {
-                return await CardAsync(command.ReservationId, wasReplay: true, cancellationToken);
+                return new SendOutcome.AlreadySent();
             }
 
             throw;
         }
-
-        if (recomputeTab is { } recompute)
-        {
-            await ledger.RecomputeTotalsAsync(recompute, cancellationToken);
-        }
-
-        logger.LogInformation("Pre-order of booking {ReservationId} sent to the kitchen by staff {StaffId}.", command.ReservationId, staffId);
-
-        return await CardAsync(command.ReservationId, wasReplay: false, cancellationToken);
     }
 
     public async Task<DuePreOrder> MarkNotComingAsync(PreOrderStaffCommand command, CancellationToken cancellationToken = default)
@@ -439,13 +556,35 @@ internal sealed class PreOrderService(
 
         preOrder.MarkNotComing(staffId, nowUtc);
 
+        // The waiter has called and decided: the guest is not asked "are you on your way?" on top.
+        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
+            // Lost to another tablet. Read what won: a send is 409 pre-order-already-sent - this tap achieved nothing
+            // and must not say it did; another "not coming" is a replay; anything else is the concurrent update it is.
             db.ChangeTracker.Clear();
+
+            var current = await db.PreOrders
+                .AsNoTracking()
+                .Where(p => p.ReservationId == command.ReservationId)
+                .Select(p => new { p.SentAtUtc, p.NotComingAtUtc })
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new KeyNotFoundException("This booking has no pre-order.");
+
+            if (current.SentAtUtc is { } sentAtUtc)
+            {
+                throw new PreOrderAlreadySentException(command.ReservationId, sentAtUtc);
+            }
+
+            if (current.NotComingAtUtc is null)
+            {
+                throw;
+            }
 
             return await CardAsync(command.ReservationId, wasReplay: true, cancellationToken);
         }
@@ -512,6 +651,11 @@ internal sealed class PreOrderService(
             item.SetAvailableForPreOrder(!excluded.Contains(item.Id));
         }
 
+        // The tablets' rails change with this - when a card appears, its "sold out now" flags, the next card's time -
+        // and nothing about a pre-order row did. Signal 6 for every card that is or could be on a rail now, and for the
+        // next one after them, so every tablet re-reads the rail and its nextDueAtUtc.
+        db.SignalPreOrderRail(await RailBookingsAsync(branchId, cancellationToken));
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -519,6 +663,35 @@ internal sealed class PreOrderService(
             branchId, settings.AcceptsPreOrders ? "on" : "off", settings.MinutesBefore, excluded.Count);
 
         return await SettingsViewAsync(branchId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The bookings a settings change reaches on the rail: every one whose card could show under any setting now (a
+    /// pre-order on a confirmed booking starting within the longest <c>minutesBefore</c> and not over, or a seated one
+    /// not yet on its tab), and the first confirmed one after those - the rail's <c>nextDueAtUtc</c>.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> RailBookingsAsync(Guid branchId, CancellationToken cancellationToken)
+    {
+        var nowUtc = clock.UtcNow;
+        var horizon = nowUtc.AddMinutes(PreOrderRules.MaxMinutesBefore);
+
+        var withPreOrders = db.PreOrders.AsNoTracking().Where(p => p.BranchId == branchId && p.Lines.Any());
+
+        var onRail = await withPreOrders
+            .Where(p => (p.Reservation.Status == ReservationStatus.Confirmed
+                         && p.Reservation.StartUtc <= horizon
+                         && p.Reservation.EndUtc > nowUtc)
+                        || (p.Reservation.Status == ReservationStatus.Seated && p.TabOrderId == null))
+            .Select(p => p.ReservationId)
+            .ToListAsync(cancellationToken);
+
+        var next = await withPreOrders
+            .Where(p => p.Reservation.Status == ReservationStatus.Confirmed && p.Reservation.StartUtc > horizon)
+            .OrderBy(p => p.Reservation.StartUtc)
+            .Select(p => (Guid?)p.ReservationId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return next is { } first ? [.. onRail, first] : onRail;
     }
 
     private async Task<PreOrderSettingsView> SettingsViewAsync(Guid branchId, CancellationToken cancellationToken)
@@ -801,12 +974,18 @@ internal sealed class PreOrderService(
                 ? true
                 : throw new ClientCommandIdAlreadyUsedException(clientCommandId);
         }
-        catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.PreOrderPerReservation))
+        catch (DbUpdateException ex)
+            when (UniqueViolation.IsOn(ex, DatabaseIndexNames.PreOrderPerReservation)
+                  || UniqueViolation.IsOn(ex, DatabaseIndexNames.OutboxIdempotency))
         {
+            // The account's lock makes these unreachable for two saves of one booking; kept as the backstop. The same
+            // command that committed first is a replay; anything else is a concurrent update - never a 500.
             db.ChangeTracker.Clear();
 
-            throw new DbUpdateConcurrencyException(
-                "Another change to this pre-order was saved at the same moment. Read it again and retry.", ex);
+            return await IsReplayAsync(clientCommandId, commandType, account, reservationId, cancellationToken)
+                ? true
+                : throw new DbUpdateConcurrencyException(
+                    "Another change to this pre-order was saved at the same moment. Read it again and retry.", ex);
         }
     }
 
@@ -865,6 +1044,19 @@ internal sealed class PreOrderService(
             : throw new UnauthorizedAccessException($"{operation} requires a verified diner account.");
 
     private sealed record BookingFacts(Guid BranchId, Guid DiningTableId, string TableLabel);
+
+    /// <summary>How one try at sending ended.</summary>
+    private abstract record SendOutcome
+    {
+        /// <summary>Somebody sent it first.</summary>
+        public sealed record AlreadySent : SendOutcome;
+
+        /// <summary>Sent; the tab whose totals to recompute after the commit, when it went onto an open one.</summary>
+        public sealed record Sent(Guid? RecomputeTabId) : SendOutcome;
+
+        /// <summary>Nothing was written: try again under this table's lock.</summary>
+        public sealed record Again(Guid TableId, string TableLabel) : SendOutcome;
+    }
 
     /// <summary>What a guest's command recorded: which booking - never the pre-order itself.</summary>
     private sealed record PreOrderRecord(Guid ReservationId);

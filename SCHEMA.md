@@ -205,8 +205,9 @@ and `SentByStaffId` (a waiter sent it to the kitchen), `KitchenStatus` (a `TabOr
 on the rail until the party sits), `TabOrderId` and `AttachedAtUtc` (it became the order **with the same id** on the
 party's tab - a plain column, not a key), `NotComingAtUtc` and `NotComingByStaffId`, and `RowVersion`. Its
 **state is derived** from those, the booking's status and the clock, never stored. A filtered index on
-`SentAtUtc IS NOT NULL AND TabOrderId IS NULL` holds the held tickets. `PreOrderLines` (cascade from the
-pre-order): `Position`, `MenuItemId` (Restrict), `NameSnapshot` and `UnitPriceAmdSnapshot` - the price locked when
+`SentAtUtc IS NOT NULL AND TabOrderId IS NULL` holds the held tickets; `IX_PreOrders_BranchId_ReservationId` serves
+the rail's reads (a branch's pre-orders with their bookings). `PreOrderLines` (cascade from the
+pre-order): `Position`, `MenuItemId` (Restrict - a dish a pre-order names is marked unavailable, never deleted), `NameSnapshot` and `UnitPriceAmdSnapshot` - the price locked when
 the dish first entered the pre-order - `Quantity` (CHECK 1..20) and `Note`. Beside them:
 `Branches.AcceptsPreOrders` (default 0) and `PreOrderMinutesBefore` (default 30), `MenuItems.AvailableForPreOrder`
 (default 1), `Reservations.GuestConfirmedOnWayAtUtc`. See `docs/reservations.md` §3h.

@@ -83,13 +83,15 @@ public static class PreOrderEndpoints
             .WithName("confirmOnMyWay")
             .WithSummary("\"Yes, on my way\"")
             .WithDescription(
-                "The answer to the pre-order's question 45 minutes before - or any time before the booking ends. "
-                + "Recorded once (`guestConfirmedOnWayAtUtc` on the booking; the waiter's card says \"Guest "
-                + "confirmed\"); a second tap answers the first time, `wasReplay: true`. No body. \"Can't come\" is the "
-                + "booking's ordinary cancel. A booking not confirmed or seated, or over: **409 `on-my-way-not-open`**.")
+                "The answer to the pre-order's question 45 minutes before - taken from two hours before the start "
+                + "until the booking ends. Recorded once (`guestConfirmedOnWayAtUtc` on the booking; the waiter's card "
+                + "says \"Guest confirmed\"); a second tap answers the first time, `wasReplay: true`. Moving the booking "
+                + "to another start forgets the answer. No body. \"Can't come\" is the booking's ordinary cancel. A "
+                + "booking not confirmed or seated, more than two hours away, or over: **409 `on-my-way-not-open`** "
+                + "(`context`: `reservationId`, `status`, `opensAtUtc`).")
             .Produces<OnMyWayResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking of yours.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody.");
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody, or not yet (`context.opensAtUtc`).");
     }
 
     // ---------------------------------------------------------------- the guest, from the manage link
@@ -131,7 +133,7 @@ public static class PreOrderEndpoints
                 + "cancel.")
             .Produces<OnMyWayResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "The link is not valid.")
-            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody.");
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody, or not yet (`context.opensAtUtc`).");
     }
 
     // ---------------------------------------------------------------- the floor tablet
@@ -219,7 +221,10 @@ public static class PreOrderEndpoints
                 + "default 30 - never earlier than the guest's two-hour edit lock) and `excludedMenuItemIds`, the "
                 + "**whole** list of this branch's dishes guests may not pre-order (every other dish may be). Out of "
                 + "bounds, or a dish not on this branch's menu: 422 `validation-failed` naming `minutesBefore` or "
-                + "`excludedMenuItemIds`. Switching off keeps existing pre-orders working; guests may still clear them.")
+                + "`excludedMenuItemIds`. All three are required: one left out is 422 `validation-failed` naming it, "
+                + "never a silent reset. Switching off keeps existing pre-orders working; guests may still clear them. "
+                + "A save puts signal 6 on the change stream for the bookings whose rail card it reaches, so tablets "
+                + "re-read `pre-orders/due`.")
             .Produces<PreOrderSettingsView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`context.fields` names each.");
@@ -305,7 +310,7 @@ public static class PreOrderEndpoints
 
         return Results.Ok(await preOrders.SaveSettingsAsync(
             branchId,
-            new PreOrderSettings(request.AcceptsPreOrders, request.MinutesBefore, request.ExcludedMenuItemIds ?? []),
+            new PreOrderSettings(request.AcceptsPreOrders!.Value, request.MinutesBefore!.Value, request.ExcludedMenuItemIds!),
             cancellationToken));
     }
 
@@ -331,8 +336,13 @@ public sealed record PreOrderLineRequest(Guid MenuItemId, int Quantity, string? 
 /// <summary>Body of the pre-order's other commands: clear, send, not coming.</summary>
 public sealed record PreOrderCommandRequest([Required] Guid ClientCommandId) : IClientCommandRequest;
 
-/// <summary>Body of <c>PUT /api/branches/{branchId}/pre-order-settings</c>.</summary>
+/// <summary>Body of <c>PUT /api/branches/{branchId}/pre-order-settings</c>. All three are required.</summary>
+/// <param name="AcceptsPreOrders">Whether guests may pre-order.</param>
+/// <param name="MinutesBefore">When the waiter's card appears, 5 to 120 minutes before the start.</param>
+/// <param name="ExcludedMenuItemIds">The whole list of dishes guests may not pre-order; empty for none.</param>
 public sealed record PreOrderSettingsRequest(
-    bool AcceptsPreOrders,
-    int MinutesBefore,
-    IReadOnlyList<Guid>? ExcludedMenuItemIds);
+    // Nullable so [Required] can fire: a missing bool binds false and a missing list binds empty, and either would
+    // silently switch pre-orders off or put every dish back on - a 422 naming the field instead.
+    [Required] bool? AcceptsPreOrders,
+    [Required] int? MinutesBefore,
+    [Required] IReadOnlyList<Guid>? ExcludedMenuItemIds);

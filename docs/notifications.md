@@ -40,7 +40,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 |---|---|---|---|
 | `reservation.reminder` | A booking is created | `StartUtc − ReminderHoursBefore` (default 3h) | The diner |
 | `reservation.late-nudge` | A booking is created | `StartUtc + LateNudgeAfterMinutes` (default 10m) | The diner |
-| `reservation.on-your-way` | A booking's pre-order is first saved (and again when the booking moves) | `StartUtc − 45m` | The diner - only a booking with a pre-order still waiting; see [reservations.md](reservations.md#3h-pre-orders) |
+| `reservation.on-your-way` | A booking's pre-order is first saved (and again when the booking moves) | `StartUtc − 45m` | The diner - only a confirmed booking with a pre-order still waiting; withdrawn once the guest answers, the waiter sends it or marks them not coming; see [reservations.md](reservations.md#3h-pre-orders) |
 | `reservation.decided` | Staff (a waiter or above) approve or decline a pending booking, the guest before it on the table says yes or no, or the approval sweep declines one nobody answered | Immediately | The diner |
 | `reservation.changed-by-link` | Somebody holding a booking's manage link changes it (not a retry, and never the diner's own change in the app) | Immediately | The booking's account |
 | `reservation.cancelled-by-link` | Somebody holding a booking's manage link cancels it (not an already-cancelled one, never the app's cancel) | Immediately | The booking's account |
@@ -184,8 +184,10 @@ that slot. A decline because of the guest before carries `declinedBecause` `"3"`
 guest's feed gets **`table-request`** when they are asked in the app (`requestId`, `requestedTime`,
 `freeByTime` beside the booking's own `date` and `time`) and **`table-request-decided`** when their
 answer takes effect (`accepted` `"true"`/`"false"`, the same times). **`booking-on-your-way`** sits beside
-`reservation.on-your-way` and, like a reminder, appears only when it is due; clearing the pre-order or cancelling
-the booking deletes it while unshown. Two entries have no push beside them - a
+`reservation.on-your-way` and, like a reminder, appears only when it is due; clearing the pre-order, cancelling
+the booking, the guest answering "on my way", or the waiter sending the pre-order or marking them not coming deletes
+it while unshown. It shows only while its booking is confirmed (or went on from there) - a booking still waiting for
+the venue's yes does not see it until approved. Two entries have no push beside them - a
 booking the venue lets go, and a review moderation takes down - and are written with that change. The
 late nudge, the participant approval and the join request write none. Rows older than 90 days are
 deleted by this loop's host, `OutboxHostedService`, about hourly.

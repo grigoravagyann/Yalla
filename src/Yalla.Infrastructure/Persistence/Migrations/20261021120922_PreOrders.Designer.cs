@@ -1024,6 +1024,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_PreOrders_BranchId_Held")
                         .HasFilter("[SentAtUtc] IS NOT NULL AND [TabOrderId] IS NULL");
 
+                    b.HasIndex("BranchId", "ReservationId")
+                        .HasDatabaseName("IX_PreOrders_BranchId_ReservationId");
+
                     b.HasIndex("NotComingByStaffId");
 
                     b.HasIndex("ReservationId")

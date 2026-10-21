@@ -22,6 +22,9 @@ internal static class DatabaseIndexNames
     /// </summary>
     public const string PreOrderPerReservation = "UX_PreOrders_ReservationId";
 
+    /// <summary>A branch's pre-orders with their bookings: the pre-order rail's reads.</summary>
+    public const string PreOrdersByBranch = "IX_PreOrders_BranchId_ReservationId";
+
     /// <summary>
     /// Unique on the caller's command id. A violation means the same offline command is being
     /// replayed concurrently with its original.

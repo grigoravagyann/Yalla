@@ -940,6 +940,7 @@ internal static class ApiExceptionMapper
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
+                ["opensAtUtc"] = e.OpensAtUtc,
             }),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.

@@ -773,6 +773,20 @@ internal sealed class TableStateService(
             // below, which will never succeed no matter how often it is repeated.
             throw new TableLockTimeoutException(locked.TableId, locked.TableLabel, locked.TimeoutMilliseconds);
         }
+        catch (DbUpdateConcurrencyException ex) when (ex.Entries.Any(e => e.Entity is PreOrder))
+        {
+            // Not the table: the kitchen moved the booking's held pre-order ticket at the same moment the party was
+            // seated with it. Nothing was saved, and "the table changed" would send the waiter looking for a change
+            // that is not there - this is the concurrent update it is, and seating again puts the ticket on their tab
+            // where the kitchen left it.
+            logger.LogInformation(
+                "Seating at table {TableId} ({TableLabel}) raced the kitchen moving its held pre-order; nothing saved.",
+                table.Id,
+                table.Label);
+
+            throw new DbUpdateConcurrencyException(
+                "The kitchen moved this booking's pre-order at the same moment. Seat the party again.", ex);
+        }
         catch (DbUpdateConcurrencyException)
         {
             // The table's RowVersion moved: somebody else changed this table first.

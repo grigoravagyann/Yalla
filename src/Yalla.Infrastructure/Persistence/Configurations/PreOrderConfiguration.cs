@@ -60,6 +60,11 @@ internal sealed class PreOrderConfiguration : EntityConfiguration<PreOrder>
         builder.HasIndex(p => p.BranchId)
             .HasFilter("[SentAtUtc] IS NOT NULL AND [TabOrderId] IS NULL")
             .HasDatabaseName("IX_PreOrders_BranchId_Held");
+
+        // The rail's reads - the due list and the next card's time - and a settings save's: a branch's pre-orders, each
+        // joined to its booking, without driving from the bookings.
+        builder.HasIndex(p => new { p.BranchId, p.ReservationId })
+            .HasDatabaseName(DatabaseIndexNames.PreOrdersByBranch);
     }
 }
 

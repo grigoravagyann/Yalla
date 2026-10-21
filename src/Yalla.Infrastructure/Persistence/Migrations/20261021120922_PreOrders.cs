@@ -150,6 +150,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 filter: "[SentAtUtc] IS NOT NULL AND [TabOrderId] IS NULL");
 
             migrationBuilder.CreateIndex(
+                name: "IX_PreOrders_BranchId_ReservationId",
+                table: "PreOrders",
+                columns: new[] { "BranchId", "ReservationId" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_PreOrders_NotComingByStaffId",
                 table: "PreOrders",
                 column: "NotComingByStaffId");

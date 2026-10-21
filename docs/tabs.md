@@ -210,7 +210,9 @@ screen, on no tab, owing nothing. When the party is seated **on the booking** (a
 held party, or the booker opens it with the booking code), the seating opens the sitting's tab as "Open tab" does -
 nobody on it, admitted, the first phone its host - and the pre-order becomes its first order, **with the same id**,
 the locked prices and the kitchen's progress. So the booker's open-by-booking lands on a tab that already exists
-and becomes its host. See [reservations.md](reservations.md#3h-pre-orders).
+and becomes its host. A held ticket the kitchen voided before they sat is never put on the tab (nothing is owed for
+it), and one whose booking is cancelled, declined or expired before they sit is voided with it. See
+[reservations.md](reservations.md#3h-pre-orders).
 
 ## 2b. Admission: a scan with no proved number waits for a waiter
 
