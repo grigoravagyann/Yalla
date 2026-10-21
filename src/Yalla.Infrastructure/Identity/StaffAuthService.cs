@@ -74,7 +74,7 @@ internal sealed class StaffAuthService(
         CancellationToken cancellationToken = default)
     {
         var nowUtc = clock.UtcNow;
-        var hash = Secrets.Hash(code ?? string.Empty);
+        var hash = Secrets.Hash(Secrets.NormalizeEnrolmentCode(code));
 
         var enrolment = await db.StaffEnrolmentCodes
             .FirstOrDefaultAsync(c => c.CodeHash == hash, cancellationToken);

@@ -47,6 +47,35 @@ internal static class Secrets
         RandomNumberGenerator.GetString(ReadableAlphabet, 10);
 
     /// <summary>
+    /// An enrolment code as it was issued: upper case, letters and digits only.
+    /// </summary>
+    /// <remarks>
+    /// The code is stored as a hash, so the comparison is exact. A person types it off a screen,
+    /// and "h7kq2-mxp9d" from a keyboard without caps lock, or a pasted code with a space or a
+    /// line break, is the same code. Anything that is not a letter or a digit is formatting;
+    /// a letter outside the readable alphabet is kept, so a mistyped code still fails as one.
+    /// </remarks>
+    public static string NormalizeEnrolmentCode(string? code)
+    {
+        if (string.IsNullOrEmpty(code))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(code.Length);
+
+        foreach (var c in code)
+        {
+            if (char.IsAsciiLetterOrDigit(c))
+            {
+                builder.Append(char.ToUpperInvariant(c));
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
     /// A uniformly random decimal code of <paramref name="digits"/> digits, leading zeros kept.
     /// </summary>
     /// <remarks>
