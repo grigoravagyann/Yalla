@@ -57,6 +57,34 @@ public class StaffAuthTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_code_typed_in_lower_case_with_its_dash_enrols()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await SeedBranchAsync(factory);
+
+        var managerToken = await SignInManagerAsync(factory, branch);
+        using var manager = factory.CreateClientWithToken(managerToken);
+
+        var created = await manager.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/devices/enrolment-codes", new { });
+        var code = (await created.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("code").GetString()!;
+
+        // As a person types it off the console: no caps lock, and the dash the console shows.
+        var typed = $"{code[..5]}-{code[5..]}".ToLowerInvariant();
+
+        using var tablet = factory.CreateClient();
+
+        var enrolled = await tablet.PostAsJsonAsync(
+            "/api/auth/staff/enrol",
+            new { code = typed, deviceId = $"browser-{Guid.NewGuid():N}", deviceName = "Terrace" });
+
+        Assert.Equal(HttpStatusCode.OK, enrolled.StatusCode);
+    }
+
+    [SkippableFact]
     public async Task A_pin_exchanges_the_device_token_for_a_staff_session()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);

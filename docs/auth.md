@@ -441,7 +441,11 @@ tablet redeems it once and gets a long-lived **device token** carrying `branchId
 The code is single use because it will be read out across a bar and overheard; a second redemption
 is refused, and the manager then sees a tablet in the branch's device list they did not enrol. The
 `RedeemedAtUtc` column is an EF concurrency token, so two tablets racing for the same code cannot
-both win.
+both win. The code is ten characters of a readable alphabet (no I, L, O, U, 0 or 1) and is
+compared by hash, so the server brings what was typed back to the issued spelling first - upper
+case, letters and digits only - and "h7kq2-mxp9d" from a keyboard without caps lock is the same
+code as `H7KQ2MXP9D`. An expired code is refused as `enrolment-code-expired`, apart from a
+mistyped one (`enrolment-code-invalid`), because retyping it never helps.
 
 Enrolled devices live in `StaffDevice`, with a name, a last-seen timestamp and a revoked flag. **A
 lost tablet is revocable from the admin panel and stops working on its next request** - not when
