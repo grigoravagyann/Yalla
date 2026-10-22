@@ -153,12 +153,22 @@ public enum CancellationCause
 /// The guest is blocked from booking until <see cref="BlockedUntilUtc"/> - three no-shows in three days.
 /// 403 <c>booking-blocked-no-shows</c>, <c>context.blockedUntilUtc</c>.
 /// </summary>
-public sealed class BookingBlockedForNoShowsException(DateTime blockedUntilUtc)
+/// <remarks>
+/// Also the refusal of a takeaway order while the guest is blocked (a takeaway order not collected counts toward the
+/// block): the same code and context, so the app says the same thing at the takeaway checkout as at a booking.
+/// </remarks>
+public sealed class BookingBlockedForNoShowsException(DateTime blockedUntilUtc, string? message = null)
     : Exception(
-        $"You can't book until {blockedUntilUtc:yyyy-MM-dd HH:mm} UTC: three of your bookings in three days were "
+        message
+        ?? $"You can't book until {blockedUntilUtc:yyyy-MM-dd HH:mm} UTC: three of your bookings in three days were "
         + "missed without cancelling.")
 {
     public const string ErrorCode = "booking-blocked-no-shows";
+
+    /// <summary>The sentence for a takeaway order refused by the block.</summary>
+    public static string TakeawayMessage(DateTime blockedUntilUtc) =>
+        $"You can't order until {blockedUntilUtc:yyyy-MM-dd HH:mm} UTC: three of your bookings or takeaway orders in "
+        + "three days were missed.";
 
     /// <summary>When the guest may book again.</summary>
     public DateTime BlockedUntilUtc { get; } = blockedUntilUtc;

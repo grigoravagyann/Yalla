@@ -16,15 +16,16 @@ public static class GuestRecordRules
     /// <summary>
     /// Whether a record is good enough for a venue that auto-confirms guests with a good record
     /// (<c>ReservationPolicy.AutoConfirmGuestsWithGoodRecord</c>): came at least
-    /// <see cref="GoodRecordMinimumCame"/> times, never missed a booking, never cancelled late.
+    /// <see cref="GoodRecordMinimumCame"/> times, never missed a booking, never cancelled late - and never left a takeaway
+    /// order uncollected, which counts toward the no-show block as a missed booking does.
     /// </summary>
     /// <remarks>
     /// Strict on purpose. The setting skips a venue's own look at a booking; the cost of being wrong is a table
     /// held for somebody who does not come, while the cost of being too strict is only that the venue looks at
     /// the booking as it would have anyway.
     /// </remarks>
-    public static bool IsGood(int came, int noShows, int lateCancellations) =>
-        came >= GoodRecordMinimumCame && noShows == 0 && lateCancellations == 0;
+    public static bool IsGood(int came, int noShows, int lateCancellations, int takeawayNoShows) =>
+        came >= GoodRecordMinimumCame && noShows == 0 && lateCancellations == 0 && takeawayNoShows == 0;
 }
 
 /// <summary>Limits on what one proved phone number may hold, at every venue.</summary>

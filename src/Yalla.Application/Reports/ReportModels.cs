@@ -207,12 +207,14 @@ public sealed record ReservationReport(
 // ------------------------------------------------------------------ revenue
 
 /// <param name="LocalDate">The branch's own day.</param>
-/// <param name="RevenueAmd">Taken that day, in whole dram.</param>
+/// <param name="RevenueAmd">Taken that day, in whole dram: the hall's closed tabs and the takeaway orders collected.</param>
 /// <param name="Tabs">How many tabs closed.</param>
-public sealed record DailyRevenue(DateOnly LocalDate, long RevenueAmd, int Tabs);
+/// <param name="TakeawayAmd">Of <paramref name="RevenueAmd"/>, taken for takeaway orders collected that day.</param>
+/// <param name="TakeawayOrders">How many takeaway orders were collected.</param>
+public sealed record DailyRevenue(DateOnly LocalDate, long RevenueAmd, int Tabs, long TakeawayAmd, int TakeawayOrders);
 
 /// <param name="Hour">Local hour of day.</param>
-/// <param name="RevenueAmd">Taken in that hour, in whole dram.</param>
+/// <param name="RevenueAmd">Taken in that hour, in whole dram - a tab at its close, a takeaway order when collected.</param>
 public sealed record HourlyRevenue(int Hour, long RevenueAmd);
 
 /// <param name="Reason">What the manager typed.</param>
@@ -230,13 +232,16 @@ public sealed record AdjustmentLine(
     long TotalAmd);
 
 /// <param name="Scope">What was asked for.</param>
-/// <param name="TotalAmd">Taken in the period.</param>
-/// <param name="ServiceChargeAmd">Of which service charge.</param>
-/// <param name="AverageTabAmd">Per tab.</param>
-/// <param name="AveragePerHeadAmd">Per person on a tab. A different question from per tab, and the one a menu is priced against.</param>
+/// <param name="TotalAmd">
+/// Taken in the period: <paramref name="HallAmd"/> + <paramref name="TakeawayAmd"/> - the hall's closed tabs and the
+/// takeaway orders collected at the counter.
+/// </param>
+/// <param name="ServiceChargeAmd">Of which service charge (the hall's; a takeaway order has none).</param>
+/// <param name="AverageTabAmd">Per tab - the hall's bills only.</param>
+/// <param name="AveragePerHeadAmd">Per person on a tab. A different question from per tab, and the one a menu is priced against. The hall only: a takeaway order has no party.</param>
 /// <param name="ByDay">Day by day, in local dates: every date of the range, zero days included.</param>
 /// <param name="ByHour">Hour by hour, in local hours.</param>
-/// <param name="CashAmd">Taken in cash.</param>
+/// <param name="CashAmd">Taken in cash: at the hall's tabs and at the takeaway counter.</param>
 /// <param name="InAppAmd">Taken in the app. Zero until there is a wallet rail; the column is here so the day it exists nothing has to change.</param>
 /// <param name="Adjustments">Comps and discounts, with who authorised them.</param>
 /// <param name="AdjustmentsTotalAmd">What they came to altogether.</param>
@@ -244,6 +249,17 @@ public sealed record AdjustmentLine(
 /// <param name="PreviousByDay">
 /// The previous equivalent period, day by day - the chart's dashed line. Like <paramref name="ByDay"/> it has one entry
 /// for every local date of its period, zero days included, so the two have the same length and pair by index.
+/// </param>
+/// <param name="CardAmd">
+/// Taken by card at the venue's own terminal - the takeaway counter's card payments (a tab's are not recorded by
+/// method yet, and anything not cash on a tab is <paramref name="InAppAmd"/>). Cash + card + in-app is the total.
+/// </param>
+/// <param name="HallAmd">Taken at the hall's tabs - the "Hall" half of the split; its count is <paramref name="Tabs"/>.</param>
+/// <param name="TakeawayAmd">Taken for takeaway orders collected in the period, at the counter - the "Takeaway" half.</param>
+/// <param name="TakeawayOrders">Takeaway orders collected in the period.</param>
+/// <param name="TakeawayNotCollected">
+/// Takeaway orders the venue made and nobody came for (marked not collected in the period). No money: nothing is
+/// charged in the app.
 /// </param>
 public sealed record RevenueReport(
     ReportScope Scope,
@@ -258,7 +274,12 @@ public sealed record RevenueReport(
     IReadOnlyList<AdjustmentLine> Adjustments,
     Compared AdjustmentsTotalAmd,
     Compared Tabs,
-    IReadOnlyList<DailyRevenue> PreviousByDay);
+    IReadOnlyList<DailyRevenue> PreviousByDay,
+    Compared CardAmd,
+    Compared HallAmd,
+    Compared TakeawayAmd,
+    Compared TakeawayOrders,
+    Compared TakeawayNotCollected);
 
 // ------------------------------------------------------------------ menu
 

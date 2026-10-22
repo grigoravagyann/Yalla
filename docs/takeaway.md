@@ -91,7 +91,7 @@ Sent ──accept──▶ Accepted ──ready──▶ Ready ──collect─�
 | cancel | the guest | Only while Sent - after that the venue is cooking, and it is a phone call. |
 | ready | **the Kitchen role**, or the floor | Only while Accepted. The guest is told "ready, come and pick it up". |
 | collect `{ method }` | waiter or above | Only while Ready. `method` 1 Cash or 2 Card; the amount recorded is the total. Not a fiscal receipt: the venue's own register issues that. |
-| no-show | waiter or above | Only while Ready, and from **30 minutes after ready** - the later of the promised time and the kitchen's "ready", since the guest was told when it was. |
+| no-show | waiter or above | Only while Ready, and from **30 minutes after ready** - the later of the promised time and the kitchen's "ready", since the guest was told when it was. Counts in the guest record and toward the no-show block (§6a). Cannot be withdrawn. |
 
 Each move refuses a state it is not for with `409 takeaway-status-conflict` (`context.status`: where the order is now -
 redraw it). The move already made is answered 200 `wasReplay: true` - two tablets, one answer; a save that loses a race
@@ -124,11 +124,32 @@ come first.
 (`takeaway-accepted`, `takeaway-ready`, `takeaway-declined`, `orderId` set). An auto-accepted order writes the feed entry
 and no push.
 
+## 6a. The guest record, the no-show block and the reports
+
+Added 2026-10-23 (Yalla#61's follow-up).
+
+- **Guest record.** `guestRecord.takeawayNoShows`: the account's takeaway orders marked not collected whose promised
+  ready time is in the last 365 days - its own count, beside the bookings and in none of them (`isNewGuest` stays about
+  bookings). Wherever the record is shown. A guest with one is not a **good record** (`GuestRecordRules.IsGood`), so a
+  venue confirming good records at once looks at their booking. See [reservations.md](reservations.md#guest-record).
+- **No-show block.** A takeaway no-show counts toward the block exactly as a missed booking does: one venue-day per
+  venue per service day (the order's `LocalDate`; a missed booking and an uncollected order at one venue on one day are
+  one), over the promised ready time - when the guest failed to come - inside the 72 hours, after the last block ended
+  or was lifted. Marked under the guest's account lock and judged in the same transaction (`NoShowBlocks`, shared with
+  the booking's no-show); the third blocks the guest and cancels their bookings still to come, as a booking's would.
+- **A blocked guest orders nothing.** `POST /api/diner/takeaway-orders` answers **`403 booking-blocked-no-shows`**,
+  `context.blockedUntilUtc` - the booking's own refusal, under the account's lock, before anything about the branch is
+  asked. Account or number, as for a booking. Lifting the block (the platform's list) lifts this too.
+- **Reports.** Collected orders are revenue, counted when collected, split from the hall - see
+  [reports.md](reports.md#takeaway-in-the-revenue-report).
+
 ## 6. What it does not do
 
 - **No payment in the app**, and no deposit. A no-show costs the venue the food; the venue's protection is the proved
-  number and the five-minute answer. A takeaway no-show is recorded on the order; it does **not** count toward the
-  booking no-show block or the guest record, which are about tables.
+  number, the five-minute answer, and the guest record and no-show block below.
+- **No withdrawing a takeaway no-show.** A booking's no-show can be withdrawn until 05:00 after its service day; a
+  takeaway one cannot - it is marked only thirty minutes after the guest was told it was ready, and the order is final.
+  A mistake is put right by a platform admin lifting the block it made.
 - **No delivery.** The guest comes to the counter.
 - **One day.** Slots are today's (the open block's); there is no ordering for tomorrow.
 - **No editing** an order once sent: cancel while Sent, and order again.

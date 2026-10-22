@@ -55,6 +55,7 @@ public static class DependencyInjection
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
+        services.AddScoped<NoShowBlocks>();
         services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
         services.AddScoped<Yalla.Application.Takeaway.ITakeawayService, TakeawayService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();

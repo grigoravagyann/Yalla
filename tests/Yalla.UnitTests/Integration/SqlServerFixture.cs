@@ -456,6 +456,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
     {
         EnsureVerifiedDinerRow(clock, actor);
 
+        var tableState = CreateService(db, clock, actor);
+        var outbox = CreateOutbox(db, clock);
+
         return new(
             db,
             clock,
@@ -465,8 +468,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateBranchGuard(db, actor),
             noShowPolicy ?? new NoShowPolicy(),
             CreateReservationWriter(db, clock, lockOptions),
-            CreateService(db, clock, actor),
-            CreateOutbox(db, clock),
+            tableState,
+            new NoShowBlocks(db, outbox, tableState, NullLogger<NoShowBlocks>.Instance),
+            outbox,
 
             // The manage-link template. Its default is the local dev page, which is all a test
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.

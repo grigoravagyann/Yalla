@@ -213,7 +213,7 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
         var record = overview.TodayBookings.Single(b => b.Id == booked.Id).GuestRecord!;
 
         Assert.Equal(
-            new GuestRecord(Booked: 2, Came: 1, NoShows: 1, LateCancellations: 0, Unmarked: 0, IsNewGuest: false), record);
+            new GuestRecord(Booked: 2, Came: 1, NoShows: 1, LateCancellations: 0, Unmarked: 0, IsNewGuest: false, TakeawayNoShows: 0), record);
     }
 
     // ---------------------------------------------------------------- auto-confirm a good record

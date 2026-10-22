@@ -123,6 +123,29 @@ A booking cancelled because its guest was blocked for three no-shows in three da
 venue's: the reservation report counts it in **`systemCancelled`** and leaves it out of `cancelled`, the
 cancellation rate and `lateCancellations` (2026-10-20, review S8). The CSV has the same row.
 
+### Takeaway in the revenue report
+
+Takeaway orders ([takeaway.md](takeaway.md)) are paid at the counter - cash or the venue's own card terminal - and that
+money is the venue's revenue as much as a tab's (2026-10-23). The revenue report reads them beside the tabs:
+
+- **Counted when collected** (`CollectedAtUtc`), as a tab is counted on close: that is when the money was in the
+  drawer. What was taken is the amount recorded at the counter (`PaidAmountAmd`, the order's total). Local dates and
+  hours, as everything here.
+- **`totalAmd` = `hallAmd` + `takeawayAmd`.** `hallAmd` is the closed tabs (`tabs` of them); `takeawayAmd` the collected
+  orders, `takeawayOrders` of them - the console's "Hall / Takeaway" split, each with its comparison.
+- **`byDay`** (and `previousByDay`): a day's `revenueAmd` includes its takeaway, which is also on the day as
+  `takeawayAmd` and `takeawayOrders`; `tabs` stays the hall's. **`byHour`** puts an order in the hour it was collected.
+- **How it was paid.** `cashAmd` includes the counter's cash; **`cardAmd`** is the counter's card payments (a tab's
+  payments are not recorded by card today, and anything not cash on a tab stays `inAppAmd`). Cash + card + in-app is
+  the total.
+- **`takeawayNotCollected`**: orders made and never collected, counted when marked so (`NoShowAtUtc`). They took no
+  money - nothing is charged in the app - so they are in no amount; they are what a no-show costs the venue in food.
+- **The hall's own numbers stay the hall's**: `averageTabAmd`, `averagePerHeadAmd` (a takeaway order has no party),
+  `serviceChargeAmd` (it has none), `tabs`, adjustments.
+- **CSV.** The server's `?format=csv` day rows gain `hallAmd`, `takeawayAmd`, `takeawayOrders` beside `revenueAmd` and
+  `tabs`. The console's file adds the same day columns and a `source` table - one row `hall`, one `takeaway`, with the
+  amount, the count and the payment split - so which is which is a column, not a guess.
+
 ## 5. What is not built, and why
 
 ### No per-waiter leaderboard
@@ -177,6 +200,7 @@ Added for the range scans these reports do:
 | `IX_Tabs_BranchId_ClosedAtUtc`, filtered to closed tabs | Revenue. An open tab has no revenue to report and no reason to be in the index. |
 | `IX_TabOrders_PlacedAtUtc` | Orders are the bridge between a date range and the lines it contains. |
 | `IX_TabOrderLines_MenuItemId_TabOrderId_Reporting` — includes `Quantity`, `UnitPriceAmdSnapshot`, `VoidedAtUtc` | The menu group-by, from the line side. |
+| `IX_TakeawayOrders_BranchId_CollectedAtUtc_Reporting` — filtered to collected orders (`Status` 4), includes `PaidAmountAmd`, `PaymentMethod` | Revenue's takeaway half: a range seek that answers without a lookup per order (migration `TakeawayRecordAndReports`). |
 
 `IReportQuery.GetMenuReportSql` returns the menu report's SQL, for the same reason the availability
 query exposes its own: "is this still a range seek" is worth being able to answer without attaching

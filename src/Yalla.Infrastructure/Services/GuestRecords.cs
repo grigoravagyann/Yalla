@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
+using Yalla.Domain.Takeaway;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -23,6 +24,12 @@ namespace Yalla.Infrastructure.Services;
 /// so nobody can spoil another person's record. What each count means - "came" only what the venue vouched for,
 /// late cancellations only of confirmed bookings made before the deadline, the rest of the bookings whose time came
 /// "unmarked" - is on <see cref="GuestRecord"/>.
+/// </para>
+/// <para>
+/// <b>Takeaway orders not collected</b> are read beside the bookings, in the same statement, as their own count
+/// (<see cref="GuestRecord.TakeawayNoShows"/>, a seek on <c>IX_TakeawayOrders_DinerUserId_CreatedAtUtc</c>), and count
+/// toward the no-show block as a booking's no-show does (<see cref="BlockingNoShowDaysAsync"/>). A takeaway order is
+/// always placed by a proved account, so there is no stranger's order to leave out.
 /// </para>
 /// </remarks>
 internal static class GuestRecords
@@ -87,6 +94,12 @@ internal static class GuestRecords
                                                     && r.EndUtc <= nowUtc
                                                     && r.Status == ReservationStatus.Confirmed),
 
+                // Over the promised ready time - when the guest failed to come, as a booking's start is.
+                TakeawayNoShows = db.TakeawayOrders.Count(o => o.DinerUserId == d.Id
+                                                               && o.Status == TakeawayStatus.NoShow
+                                                               && o.ReadyAtUtc > fromUtc
+                                                               && o.ReadyAtUtc <= nowUtc),
+
                 // The account's block, or one holding its number - a re-registered account still sees it (N1).
                 BlockedUntil = db.BookingBlocks
                     .Where(b => (b.DinerUserId == d.Id || (d.PhoneE164 != null && b.PhoneE164 == d.PhoneE164))
@@ -105,7 +118,7 @@ internal static class GuestRecords
             var booked = row.Came + row.NoShows + row.Late + unmarked;
 
             records[row.Account] = new GuestRecord(
-                booked, row.Came, row.NoShows, row.Late, unmarked, booked == 0, row.BlockedUntil);
+                booked, row.Came, row.NoShows, row.Late, unmarked, booked == 0, row.TakeawayNoShows, row.BlockedUntil);
         }
 
         // An id with no account row (none in practice) is a new guest.
@@ -127,13 +140,23 @@ internal static class GuestRecords
 
     /// <summary>
     /// The no-shows of an account that count toward a block as of <paramref name="referenceUtc"/>, as the distinct
-    /// (venue, service day) pairs they fall on - at most one per venue per day counts (review B1b).
+    /// (venue, service day) pairs they fall on - at most one per venue per day counts (review B1b). Takeaway orders
+    /// not collected count exactly as bookings missed do, in the same pairs: a missed booking and an uncollected order
+    /// at one venue on one day are one.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Counted: the account's own bookings made with a proved number, marked no-show after the guest's grace
     /// (<c>NoShowCountsTowardBlock</c>, review B1a), not withdrawn, whose start is in the
     /// <see cref="NoShowBlockRules.WindowHours"/> hours before the reference - and after the account's last block
     /// ended or was lifted (review S4), so no-shows a lifted block was made of never block again.
+    /// </para>
+    /// <para>
+    /// And the account's takeaway orders marked not collected, whose <b>promised ready time</b> is in the same window -
+    /// the time the guest failed to come, as a booking's start is. A takeaway no-show can only be marked thirty minutes
+    /// after that (<c>TakeawayRules.NoShowFromUtc</c>), which is its grace; it cannot be withdrawn. Its service day is
+    /// the order's <c>LocalDate</c>.
+    /// </para>
     /// </remarks>
     public static async Task<int> BlockingNoShowDaysAsync(
         YallaDbContext db,
@@ -150,7 +173,7 @@ internal static class GuestRecords
 
         var sinceUtc = lastEndedUtc is { } ended && ended > windowStartUtc ? ended : windowStartUtc;
 
-        return await db.Reservations
+        var bookings = await db.Reservations
             .AsNoTracking()
             .Where(r => r.DinerUserId == account
                         && !r.PhoneUnverified
@@ -160,7 +183,22 @@ internal static class GuestRecords
                         && r.StartUtc <= referenceUtc)
             .Select(r => new { r.Branch.VenueId, r.LocalDate })
             .Distinct()
-            .CountAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        var takeaway = await db.TakeawayOrders
+            .AsNoTracking()
+            .Where(o => o.DinerUserId == account
+                        && o.Status == TakeawayStatus.NoShow
+                        && o.ReadyAtUtc > sinceUtc
+                        && o.ReadyAtUtc <= referenceUtc)
+            .Join(db.Branches, o => o.BranchId, b => b.Id, (o, b) => new { b.VenueId, o.LocalDate })
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return bookings
+            .Select(d => (d.VenueId, d.LocalDate))
+            .Union(takeaway.Select(d => (d.VenueId, d.LocalDate)))
+            .Count();
     }
 
     /// <summary>
