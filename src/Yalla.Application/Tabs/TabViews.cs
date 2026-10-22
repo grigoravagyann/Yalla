@@ -227,6 +227,12 @@ public sealed record TabParticipantSummary(
 /// Where this line's order is on the kitchen rail, so a diner watches their own dish move to the
 /// kitchen and out to the floor rather than watching nothing happen.
 /// </param>
+/// <param name="OrderedAtUtc">
+/// When it was ordered: the <c>placedAtUtc</c> of the order it came in on, so the bill can say who
+/// and when under each dish ("Ani · 19:08"). Every line of a round shares it. A booking's pre-order
+/// keeps the time the waiter sent it to the kitchen, not the time the party sat down. UTC; the
+/// client shows it in the tab's <c>timeZoneId</c>.
+/// </param>
 /// <param name="IsShared">True when the item belongs to the table and is split across those present.</param>
 /// <param name="SharedWithCount">
 /// How many people a shared line is split between. <b>From the line's own participant snapshot, not
@@ -264,6 +270,7 @@ public sealed record TabLineView(
     long LineTotalAmd,
     string? Note,
     TabOrderStatus OrderStatus,
+    DateTime OrderedAtUtc,
     bool IsShared,
     int SharedWithCount,
     bool IsVoided,

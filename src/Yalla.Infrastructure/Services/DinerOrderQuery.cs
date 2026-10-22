@@ -285,6 +285,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                             l.Quantity,
                             l.Note,
                             r.Status,
+                            r.PlacedAtUtc,
                             l.IsShared,
                             IsVoided: l.VoidedAtUtc is not null,
                             l.VoidedAtUtc,

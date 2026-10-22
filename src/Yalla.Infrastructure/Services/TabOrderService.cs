@@ -112,6 +112,7 @@ internal sealed class TabOrderService(
                 quantity = l.Quantity,
                 isShared = l.IsShared,
                 isTableAttributed = l.IsTableAttributed,
+                orderedAtUtc = order.PlacedAtUtc,
 
                 // Each line's guest, as the tab reads it: its own when the waiter named one for it,
                 // otherwise the order's, and nobody's on a shared line. A phone catching up

@@ -174,6 +174,11 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     ? null
                     : l.OnBehalfOfParticipantId ?? l.TabOrder.OnBehalfOfParticipantId,
                 OrderStatus = l.TabOrder.Status,
+
+                // When the line was ordered is when its order was placed. A pre-order that arrives on
+                // the tab when the party sits keeps the time it was sent (TabOrder.FromPreOrder). The
+                // order is already joined for its status, so this costs no query.
+                OrderedAtUtc = l.TabOrder.PlacedAtUtc,
                 l.NameSnapshot,
                 l.UnitPriceAmdSnapshot,
                 l.Quantity,
@@ -273,6 +278,7 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     l.Quantity,
                     l.Note,
                     l.OrderStatus,
+                    l.OrderedAtUtc,
                     l.IsShared,
                     IsVoided: l.VoidedAtUtc is not null,
                     l.VoidedAtUtc,

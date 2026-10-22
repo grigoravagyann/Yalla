@@ -649,7 +649,7 @@ them.
 | 7 | `ParticipantRenamed` | `participantId` | | | `displayName` |
 | 8 | `HostReassigned` | `fromParticipantId`, `toParticipantId` | | | |
 | 9 | `SettlementModeChanged` | `settlementMode`, `lockedAtUtc` | | | |
-| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each line on their `myLines` (7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`, `onBehalfOfParticipantId` - the line's guest, else the order's) | every other line, **whole** - the menu is public, so a name and a quantity are a price - and so every table-attributed line | |
+| 10 | `OrderPlaced` | `orderId`, `placedByParticipantId`, `placedByStaffId`, `onBehalfOfParticipantId`, `estimatedReadyAtUtc`, and `lines` (filtered) | each line on their `myLines` (7.1), whole (`lineId`, `name`, `unitPriceAmd`, `quantity`, `isShared`, `isTableAttributed`, `onBehalfOfParticipantId` - the line's guest, else the order's, `orderedAtUtc` - the order's placed time, 7.6) | every other line, **whole** - the menu is public, so a name and a quantity are a price - and so every table-attributed line | |
 | 11 | `OrderStatusChanged` | `orderId`, `fromStatus`, `toStatus`, `byStaffId` | | | |
 | 12 | `LineVoided` | `lineId`, `orderId`, `voidedByStaffId` | `name`, `reason` | | |
 | 13 | `AdjustmentAdded` | `adjustmentId`, `tabOrderLineId` | `kind`, `percent`, `amountAmd`, `reason` (an adjustment on their own line) | all four, off the whole tab or another person's line | |
@@ -691,6 +691,29 @@ Pinned by `TabEventRedactorTests` (each type, each audience, failing closed), `T
 (whose line, which adjustments), `TabEventReadPathTests` (what a poll reads, and the tier) and
 `TabEventVisibilityTests` (a whole evening over HTTP, read by the host, a hidden-total guest and a
 pending stranger, through the stream, the tab, the order answers and `/shares`).
+
+### 7.6 When each line was ordered (2026-10-22)
+
+Every line on the wire carries `orderedAtUtc`, so the diner's bill can say who and when under each
+dish ("Աննա · 19:08"). It is the `placedAtUtc` of the order the line came in on - every line of a
+round shares it - and it is UTC; the client formats it in the tab's `timeZoneId`.
+
+- **Where.** `myLines` and `tableLines` on `GET /api/tabs/{tabId}`, `lines` on the staff view
+  (`GET /api/tabs/{tabId}/participants`), and each line of an `OrderPlaced` payload, so a phone
+  catching up from the stream does not need the tab to know it. It travels with the line, so it is
+  shown exactly where the line is and hidden exactly where the line is (7.1, 7.4).
+- **A pre-order** that arrives on the tab when the party sits keeps the time the waiter **sent** it
+  to the kitchen - `TabOrder.FromPreOrder` places the order at the pre-order's `sentAtUtc` - not the
+  time the party sat down or opened the tab.
+- **A waiter's line** carries its round's time like any other; who keyed it in changes nothing.
+- **No extra query.** `TabQuery` already joins each line's order for its status; the time comes off
+  the same join.
+
+Pinned by `TabProjectionTests.Every_line_carries_the_time_its_order_was_placed`,
+`TabLineTimeTests` (a phone's order and a waiter's round three minutes later, through the tab, the
+staff view and the stream, against the rows) and
+`PreOrderTests.Opened_with_the_booking_code_the_tab_carries_the_sent_pre_order` (sent 25 minutes
+before the start, opened 15 minutes later: the line says when it was sent).
 
 ## Out of scope here
 

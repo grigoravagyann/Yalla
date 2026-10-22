@@ -130,6 +130,10 @@ public sealed record TabParticipantSnapshot(
 /// <param name="Quantity">How many.</param>
 /// <param name="Note">The kitchen note, e.g. "no onions".</param>
 /// <param name="OrderStatus">Where the order is on the kitchen rail.</param>
+/// <param name="OrderedAtUtc">
+/// When the order it came in on was placed - <c>TabOrder.PlacedAtUtc</c>. A booking's pre-order keeps the time the
+/// waiter sent it to the kitchen, not the time the party sat down.
+/// </param>
 /// <param name="IsShared">True when the item belongs to the table and is split across those present.</param>
 /// <param name="IsVoided">True once staff took it off the bill.</param>
 /// <param name="VoidedAtUtc">When.</param>
@@ -159,6 +163,7 @@ public sealed record TabLineSnapshot(
     int Quantity,
     string? Note,
     TabOrderStatus OrderStatus,
+    DateTime OrderedAtUtc,
     bool IsShared,
     bool IsVoided,
     DateTime? VoidedAtUtc,
