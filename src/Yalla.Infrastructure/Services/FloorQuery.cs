@@ -119,6 +119,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     NextReservationPromisedFreeByUtc = t.NextReservationPromisedFreeByUtc,
                     NextReservationPhoneUnverified = t.NextReservationPhoneUnverified,
                     NextReservationGuestConfirmedOnWayAtUtc = t.NextReservationGuestConfirmedOnWayAtUtc,
+                    NextReservationGuestRunningLateMinutes = t.NextReservationGuestRunningLateMinutes,
+                    NextReservationStaffAskedOnMyWayAtUtc = t.NextReservationStaffAskedOnMyWayAtUtc,
                     NextReservationGuestRecord = RecordOf(NextAccount(t)),
                     SittingGuestRecord = RecordOf(t.SittingRecordedAccount),
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
@@ -320,6 +322,24 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                             .Select(r => r.GuestConfirmedOnWayAtUtc)
                             .FirstOrDefault(),
 
+                        // "Running late" and the venue's last "are you coming?" on that next booking.
+                        NextReservationGuestRunningLateMinutes = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.GuestRunningLateMinutes)
+                            .FirstOrDefault(),
+                        NextReservationStaffAskedOnMyWayAtUtc = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => r.StaffAskedOnMyWayAtUtc)
+                            .FirstOrDefault(),
+
                         // Whose record goes beside the next booking: its account, when that account's number is
                         // proved now - and the booking's date, for the today-or-later rule.
                         NextReservationRecordedAccount = db.Reservations
@@ -418,6 +438,10 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public bool NextReservationPhoneUnverified { get; init; }
 
         public DateTime? NextReservationGuestConfirmedOnWayAtUtc { get; init; }
+
+        public int? NextReservationGuestRunningLateMinutes { get; init; }
+
+        public DateTime? NextReservationStaffAskedOnMyWayAtUtc { get; init; }
 
         public DateTime? SeatedAtUtc { get; init; }
 

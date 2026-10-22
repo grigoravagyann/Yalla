@@ -327,7 +327,131 @@ internal sealed class PreOrderService(
         return new OnMyWayResult(reservation.Id, reservation.GuestConfirmedOnWayAtUtc!.Value, WasReplay: false);
     }
 
+    public async Task<RunningLateResult> ReportRunningLateAsync(
+        Guid reservationId, int minutes, CancellationToken cancellationToken = default)
+    {
+        var dinerUserId = RequireDiner("Say you are running late");
+        var reservation = await OwnBookingAsync(reservationId, dinerUserId, cancellationToken);
+
+        return await ReportRunningLateCoreAsync(reservation, minutes, cancellationToken);
+    }
+
+    public async Task<RunningLateResult> ReportRunningLateByManageTokenAsync(
+        string token, int minutes, CancellationToken cancellationToken = default) =>
+        await ReportRunningLateCoreAsync(await ByManageTokenAsync(token, cancellationToken), minutes, cancellationToken);
+
+    /// <summary>
+    /// "I'm running late": recorded, overwriting an earlier answer, and - an answer to the question - the question's push
+    /// and feed entry not yet out are withdrawn, as "on my way" withdraws them.
+    /// </summary>
+    private async Task<RunningLateResult> ReportRunningLateCoreAsync(
+        Reservation reservation, int minutes, CancellationToken cancellationToken, bool retried = false)
+    {
+        var nowUtc = clock.UtcNow;
+        reservation.ReportRunningLate(minutes, nowUtc);
+
+        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException) when (!retried)
+        {
+            // The booking changed under the answer - another tap, a waiter. Read it again and answer once more: the latest
+            // answer is the one that stands, or the refusal the booking now earns.
+            db.ChangeTracker.Clear();
+            var current = await db.Reservations.FirstAsync(r => r.Id == reservation.Id, cancellationToken);
+
+            return await ReportRunningLateCoreAsync(current, minutes, cancellationToken, retried: true);
+        }
+
+        logger.LogInformation("Booking {Code}: the guest is running {Minutes} minutes late.", reservation.Code, minutes);
+
+        return new RunningLateResult(
+            reservation.Id, minutes, reservation.GuestRunningLateAtUtc!.Value, reservation.StartUtc.AddMinutes(minutes));
+    }
+
     // ---------------------------------------------------------------- the floor
+
+    /// <summary>
+    /// "Ask: are you coming?" from the tablet: the automatic question's push and feed entry, now. The booking's rules
+    /// (<see cref="Reservation.RecordStaffAskOnMyWay"/>) refuse it before anything is written. Under the account's lock
+    /// for the feed entry, as the question always is.
+    /// </summary>
+    public async Task<AskOnMyWayResult> AskOnMyWayAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        await RequireFloorForBookingAsync(reservationId, "Ask a guest whether they are coming", cancellationToken);
+
+        var reservation = await db.Reservations.FirstAsync(r => r.Id == reservationId, cancellationToken);
+        var nowUtc = clock.UtcNow;
+
+        reservation.RecordStaffAskOnMyWay(nowUtc);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var notified = false;
+
+        if (reservation.DinerUserId is { } account && await DinerAccountLock.IsLiveAsync(db, account, cancellationToken))
+        {
+            var branch = await db.Branches
+                .AsNoTracking()
+                .Where(b => b.Id == reservation.BranchId)
+                .Select(b => new { b.Name, VenueName = b.Venue.Name })
+                .FirstAsync(cancellationToken);
+
+            var tableLabel = await db.DiningTables
+                .AsNoTracking()
+                .Where(t => t.Id == reservation.DiningTableId)
+                .Select(t => t.Label)
+                .FirstAsync(cancellationToken);
+
+            outbox.Enqueue(
+                OutboxMessageTypes.ReservationOnYourWay,
+                new
+                {
+                    reservationId = reservation.Id,
+                    dinerUserId = account,
+                    venueName = branch.VenueName,
+                    branchName = branch.Name,
+                    tableLabel,
+                    localStartTime = reservation.LocalStartTime,
+                    reservationCode = reservation.Code,
+                    staffAsked = true,
+                },
+                nowUtc,
+                OutboxMessageTypes.KeyFor(
+                    "reservation",
+                    reservation.Id,
+                    $"on-your-way:asked:{nowUtc.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture)}"));
+
+            DinerNotices.BookingOnYourWayAskedByVenue(db, reservation, branch.VenueName, branch.Name, nowUtc);
+            notified = true;
+        }
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another tablet asked, or the guest answered, in the same moment. Read what won and refuse as it now earns.
+            db.ChangeTracker.Clear();
+            var current = await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == reservationId, cancellationToken);
+            current.RecordStaffAskOnMyWay(nowUtc);
+
+            throw;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Booking {Code}: the venue asked whether the guest is coming ({Notified}).",
+            reservation.Code,
+            notified ? "pushed" : "no account to push to");
+
+        return new AskOnMyWayResult(
+            reservation.Id, nowUtc, PreOrderRules.NextStaffAskAtUtc(nowUtc), notified);
+    }
 
     public async Task<DuePreOrders> ListDueAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
@@ -866,6 +990,9 @@ internal sealed class PreOrderService(
                 GuestName = p.Reservation.GuestName,
                 GuestPhone = p.Reservation.GuestPhone,
                 GuestConfirmedOnWayAtUtc = p.Reservation.GuestConfirmedOnWayAtUtc,
+                GuestRunningLateMinutes = p.Reservation.GuestRunningLateMinutes,
+                GuestRunningLateAtUtc = p.Reservation.GuestRunningLateAtUtc,
+                StaffAskedOnMyWayAtUtc = p.Reservation.StaffAskedOnMyWayAtUtc,
                 DinerUserId = p.Reservation.DinerUserId,
                 PhoneUnverified = p.Reservation.PhoneUnverified,
 
@@ -916,6 +1043,9 @@ internal sealed class PreOrderService(
                 r.SentByName,
                 r.NotComingByName,
                 r.TabId,
+                r.GuestRunningLateMinutes,
+                r.GuestRunningLateAtUtc,
+                r.StaffAskedOnMyWayAtUtc,
                 wasReplay)),
         ];
 
@@ -1110,6 +1240,12 @@ internal sealed class PreOrderService(
         public string GuestPhone { get; init; } = string.Empty;
 
         public DateTime? GuestConfirmedOnWayAtUtc { get; init; }
+
+        public int? GuestRunningLateMinutes { get; init; }
+
+        public DateTime? GuestRunningLateAtUtc { get; init; }
+
+        public DateTime? StaffAskedOnMyWayAtUtc { get; init; }
 
         public Guid? DinerUserId { get; init; }
 

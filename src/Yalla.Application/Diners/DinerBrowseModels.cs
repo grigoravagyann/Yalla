@@ -85,9 +85,10 @@ public interface IBranchReviewService
 /// The diner app's order statuses, and how the kitchen rail maps onto them.
 /// </summary>
 /// <remarks>
-/// The rail is <c>New → InKitchen → Ready → Served</c>, with <c>Voided</c> off the first two. The app
-/// has one more status, <c>inProgress</c>, for a takeaway on its way; there is no takeaway in the
-/// domain, so it is never produced.
+/// The rail is <c>New → InKitchen → Ready → Served</c>, with <c>Voided</c> off the first two. A takeaway order maps
+/// onto the same words (<see cref="FromTakeaway"/>): <c>inProgress</c> while it waits for the venue's answer,
+/// <c>preparing</c> once accepted, <c>ready</c>, <c>completed</c> once collected, and <c>cancelled</c> for every end
+/// that is not a pickup - declined, cancelled by the guest, or not collected.
 /// </remarks>
 public static class DinerOrderStatuses
 {
@@ -111,6 +112,16 @@ public static class DinerOrderStatuses
         TabOrderStatus.Served => Completed,
         TabOrderStatus.Voided => Cancelled,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Not a kitchen status."),
+    };
+
+    /// <summary>A takeaway order's status in the app's words.</summary>
+    public static string FromTakeaway(Yalla.Domain.Takeaway.TakeawayStatus status) => status switch
+    {
+        Yalla.Domain.Takeaway.TakeawayStatus.Sent => InProgress,
+        Yalla.Domain.Takeaway.TakeawayStatus.Accepted => Preparing,
+        Yalla.Domain.Takeaway.TakeawayStatus.Ready => Ready,
+        Yalla.Domain.Takeaway.TakeawayStatus.Collected => Completed,
+        _ => Cancelled,
     };
 
     /// <summary>Still moving: the kitchen has not served or voided it.</summary>
@@ -144,27 +155,32 @@ public sealed record DinerOrderTimelineEntry(string Status, DateTime AtUtc);
 /// One order the diner is on, receipt-shaped, for the Orders tab.
 /// </summary>
 /// <param name="OrderId">The order's id.</param>
-/// <param name="TabId">The tab it was placed against.</param>
+/// <param name="TabId">The tab it was placed against. <b>Absent</b> on a takeaway order, which has no tab.</param>
 /// <param name="BranchId">The app's <c>placeId</c>.</param>
 /// <param name="VenueName">The brand name.</param>
 /// <param name="BranchName">Which location.</param>
 /// <param name="CoverPhoto">The branch's cover, or absent.</param>
-/// <param name="Kind">Always <c>"dineIn"</c>: every order in the domain is placed against a table's tab.</param>
+/// <param name="Kind"><c>"dineIn"</c> for an order on a table's tab, <c>"takeaway"</c> for a takeaway order.</param>
 /// <param name="Status">App status - see <see cref="DinerOrderStatuses"/>.</param>
-/// <param name="KitchenStatus">The raw rail: 1 New, 2 InKitchen, 3 Ready, 4 Served, 5 Voided.</param>
-/// <param name="TableLabel">The table's label.</param>
-/// <param name="PartySize">The seated party's size.</param>
+/// <param name="KitchenStatus">
+/// The raw rail: 1 New, 2 InKitchen, 3 Ready, 4 Served, 5 Voided. A takeaway order maps Sent to New, Accepted to
+/// InKitchen, Ready to Ready, Collected to Served and every other end to Voided; <c>takeaway.status</c> is exact.
+/// </param>
+/// <param name="TableLabel">The table's label. Empty on a takeaway order.</param>
+/// <param name="PartySize">The seated party's size. 0 on a takeaway order.</param>
 /// <param name="PlacedAtUtc">When it was sent to the kitchen.</param>
 /// <param name="EstimatedReadyAtUtc">The kitchen's estimate, or absent.</param>
 /// <param name="TotalAmd">Sum of the non-voided lines, whole dram, before service charge.</param>
 /// <param name="Items">Every line, voided ones included.</param>
 /// <param name="Timeline">Oldest first; the last entry is the current status.</param>
 /// <param name="CanCancel">
-/// Always false. Voiding an order is a staff action on the kitchen rail; a diner has no cancel.
+/// False on a dine-in order: voiding it is a staff action on the kitchen rail. True on a takeaway order while the venue
+/// has not answered it - <c>POST /api/diner/takeaway-orders/{id}/cancel</c>.
 /// </param>
+/// <param name="Takeaway">The takeaway order's own facts - code, exact status, pickup and ready times. Absent on dine-in.</param>
 public sealed record DinerOrderView(
     Guid OrderId,
-    Guid TabId,
+    Guid? TabId,
     Guid BranchId,
     string VenueName,
     string BranchName,
@@ -179,12 +195,28 @@ public sealed record DinerOrderView(
     long TotalAmd,
     IReadOnlyList<DinerOrderItem> Items,
     IReadOnlyList<DinerOrderTimelineEntry> Timeline,
-    bool CanCancel);
+    bool CanCancel,
+    DinerTakeawaySummary? Takeaway = null);
+
+/// <summary>A takeaway order on the Orders tab - the card's code, status and times. The whole order is <c>getDinerTakeawayOrder</c>.</summary>
+/// <param name="Code">"T-482".</param>
+/// <param name="Status">1 Sent, 2 Accepted, 3 Ready, 4 Collected, 5 Declined, 6 Cancelled, 7 NoShow.</param>
+/// <param name="PickupAsap">Ordered for as soon as possible.</param>
+/// <param name="RequestedPickupUtc">When the guest asked for it.</param>
+/// <param name="ReadyAtUtc">When the venue promised it. Absent until accepted.</param>
+/// <param name="ItemCount">How many dishes in all - "4 items".</param>
+public sealed record DinerTakeawaySummary(
+    string Code,
+    Yalla.Domain.Takeaway.TakeawayStatus Status,
+    bool PickupAsap,
+    DateTime RequestedPickupUtc,
+    DateTime? ReadyAtUtc,
+    int ItemCount);
 
 /// <summary>The signed-in diner's orders.</summary>
 public interface IDinerOrderQuery
 {
-    /// <summary>Newest first, at most 100.</summary>
+    /// <summary>Active orders first, then newest first, at most 100 - dine-in and takeaway together.</summary>
     /// <param name="status"><c>active</c>, <c>history</c>, or null for both.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     /// <exception cref="ArgumentException">An unknown <paramref name="status"/>.</exception>

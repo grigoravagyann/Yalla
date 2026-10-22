@@ -6,6 +6,7 @@ using Yalla.Application.Media;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Takeaway;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -39,11 +40,14 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             throw new ArgumentException("status is 'active' or 'history'.", nameof(status));
         }
 
-        var mine = await MineAsync(RequireDiner(), cancellationToken);
+        var dinerUserId = RequireDiner();
+        var mine = await MineAsync(dinerUserId, cancellationToken);
+
+        var takeaway = await TakeawayAsync(dinerUserId, filter, null, cancellationToken);
 
         if (mine is null)
         {
-            return [];
+            return Merge([], takeaway);
         }
 
         var orders = mine.Orders;
@@ -62,20 +66,154 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             _ => orders,
         };
 
-        return await LoadAsync(
-            orders.OrderByDescending(o => o.PlacedAtUtc).Take(MaxOrders), mine.Seats, cancellationToken);
+        return Merge(
+            await LoadAsync(orders.OrderByDescending(o => o.PlacedAtUtc).Take(MaxOrders), mine.Seats, cancellationToken),
+            takeaway);
     }
+
+    /// <summary>
+    /// Dine-in and takeaway on one list: the ones still moving first - an order being cooked is what the Orders tab is
+    /// opened for - then newest first, at most <see cref="MaxOrders"/>.
+    /// </summary>
+    private static List<DinerOrderView> Merge(IReadOnlyList<Loaded> dineIn, IReadOnlyList<Loaded> takeaway) =>
+    [
+        .. dineIn.Concat(takeaway)
+            .OrderByDescending(o => o.Active)
+            .ThenByDescending(o => o.View.PlacedAtUtc)
+            .Take(MaxOrders)
+            .Select(o => o.View),
+    ];
+
+    /// <summary>
+    /// The diner's takeaway orders as Orders-tab entries: <c>active</c> is Sent, Accepted and Ready; <c>history</c> every
+    /// end. One statement for the orders, one for their lines.
+    /// </summary>
+    private async Task<List<Loaded>> TakeawayAsync(
+        Guid dinerUserId, string? filter, Guid? orderId, CancellationToken cancellationToken)
+    {
+        var orders = db.TakeawayOrders.AsNoTracking().Where(o => o.DinerUserId == dinerUserId);
+
+        if (orderId is { } id)
+        {
+            orders = orders.Where(o => o.Id == id);
+        }
+
+        orders = filter switch
+        {
+            DinerOrderStatuses.ActiveFilter => orders.Where(o =>
+                o.Status == TakeawayStatus.Sent || o.Status == TakeawayStatus.Accepted || o.Status == TakeawayStatus.Ready),
+            DinerOrderStatuses.HistoryFilter => orders.Where(o =>
+                o.Status != TakeawayStatus.Sent && o.Status != TakeawayStatus.Accepted && o.Status != TakeawayStatus.Ready),
+            _ => orders,
+        };
+
+        var rows = await orders
+            .OrderByDescending(o => o.CreatedAtUtc)
+            .Take(MaxOrders)
+            .Select(o => new
+            {
+                Order = o,
+                Lines = o.Lines.OrderBy(l => l.Position).ToList(),
+                Branch = db.Branches
+                    .Where(b => b.Id == o.BranchId)
+                    .Select(b => new
+                    {
+                        b.Name,
+                        VenueName = b.Venue.Name,
+                        b.CoverPhotoId,
+                        CoverIsExternal = (bool?)b.CoverPhoto!.IsExternallyHosted,
+                        CoverThumbnailPath = b.CoverPhoto!.ThumbnailPath,
+                        CoverCardPath = b.CoverPhoto!.CardPath,
+                        CoverFullPath = b.CoverPhoto!.FullPath,
+                        CoverWidth = b.CoverPhoto!.Width,
+                        CoverHeight = b.CoverPhoto!.Height,
+                    })
+                    .First(),
+            })
+            .AsSplitQuery()
+            .ToListAsync(cancellationToken);
+
+        return
+        [
+            .. rows.Select(r =>
+            {
+                var o = r.Order;
+                var items = r.Lines
+                    .Select(l => new DinerOrderItem(
+                        l.Id, l.NameSnapshot, l.Quantity, l.UnitPriceAmdSnapshot, l.LineTotalAmd, null, false))
+                    .ToList();
+
+                var timeline = new List<DinerOrderTimelineEntry> { new(DinerOrderStatuses.InProgress, o.CreatedAtUtc) };
+
+                Step(timeline, DinerOrderStatuses.Preparing, o.AcceptedAtUtc);
+                Step(timeline, DinerOrderStatuses.Ready, o.MarkedReadyAtUtc);
+                Step(timeline, DinerOrderStatuses.Completed, o.CollectedAtUtc);
+                Step(timeline, DinerOrderStatuses.Cancelled, o.DeclinedAtUtc ?? o.CancelledAtUtc ?? o.NoShowAtUtc);
+
+                var view = new DinerOrderView(
+                    o.Id,
+                    null,
+                    o.BranchId,
+                    r.Branch.VenueName,
+                    r.Branch.Name,
+                    r.Branch.CoverPhotoId is { } photoId
+                        ? PhotoView.From(
+                            photoId, r.Branch.CoverIsExternal == true, r.Branch.CoverThumbnailPath!, r.Branch.CoverCardPath!,
+                            r.Branch.CoverFullPath!, r.Branch.CoverWidth, r.Branch.CoverHeight)
+                        : null,
+                    Kind: "takeaway",
+                    DinerOrderStatuses.FromTakeaway(o.Status),
+                    o.Status switch
+                    {
+                        TakeawayStatus.Sent => TabOrderStatus.New,
+                        TakeawayStatus.Accepted => TabOrderStatus.InKitchen,
+                        TakeawayStatus.Ready => TabOrderStatus.Ready,
+                        TakeawayStatus.Collected => TabOrderStatus.Served,
+                        _ => TabOrderStatus.Voided,
+                    },
+                    TableLabel: string.Empty,
+                    PartySize: 0,
+                    o.CreatedAtUtc,
+                    o.ReadyAtUtc ?? o.RequestedPickupUtc,
+                    items.Sum(i => i.LineTotalAmd),
+                    items,
+                    timeline,
+                    CanCancel: o.Status == TakeawayStatus.Sent,
+                    new DinerTakeawaySummary(
+                        o.Code, o.Status, o.PickupAsap, o.RequestedPickupUtc, o.ReadyAtUtc, items.Sum(i => i.Quantity)));
+
+                return new Loaded(view, TakeawayRules.IsActive(o.Status));
+            }),
+        ];
+
+        static void Step(List<DinerOrderTimelineEntry> timeline, string status, DateTime? atUtc)
+        {
+            if (atUtc is { } at)
+            {
+                timeline.Add(new DinerOrderTimelineEntry(status, at));
+            }
+        }
+    }
+
+    /// <summary>An order for the list, and whether it is still moving - active orders go first.</summary>
+    private sealed record Loaded(DinerOrderView View, bool Active);
 
     public async Task<DinerOrderView> GetAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
-        var mine = await MineAsync(RequireDiner(), cancellationToken);
+        var dinerUserId = RequireDiner();
+        var mine = await MineAsync(dinerUserId, cancellationToken);
 
         var found = mine is null
             ? []
             : await LoadAsync(mine.Orders.Where(o => o.Id == orderId), mine.Seats, cancellationToken);
 
+        if (found.Count == 0)
+        {
+            found = await TakeawayAsync(dinerUserId, null, orderId, cancellationToken);
+        }
+
         // Somebody else's order and no order at all answer the same.
-        return found.Count == 1 ? found[0] : throw new KeyNotFoundException($"Order {orderId} was not found.");
+        return found.Count == 1 ? found[0].View : throw new KeyNotFoundException($"Order {orderId} was not found.");
     }
 
     private Guid RequireDiner() =>
@@ -188,7 +326,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
     /// coffee, price and all. An order with nothing of theirs left on it is not listed.
     /// </para>
     /// </remarks>
-    private async Task<List<DinerOrderView>> LoadAsync(
+    private async Task<List<Loaded>> LoadAsync(
         IQueryable<TabOrder> orders,
         IReadOnlyList<Seat> seats,
         CancellationToken cancellationToken)
@@ -209,6 +347,7 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                 CoverWidth = o.Tab.Branch.CoverPhoto!.Width,
                 CoverHeight = o.Tab.Branch.CoverPhoto!.Height,
                 o.Status,
+                TabStatus = o.Tab.Status,
                 TableLabel = o.Tab.DiningTable.Label,
                 o.Tab.TableSession.PartySize,
                 o.PlacedAtUtc,
@@ -311,7 +450,8 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                     return null;
                 }
 
-                return new DinerOrderView(
+                return new Loaded(
+                    new DinerOrderView(
                     r.Id,
                     r.TabId,
                     r.BranchId,
@@ -332,8 +472,10 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                     items.Sum(i => i.LineTotalAmd),
                     items,
                     [new DinerOrderTimelineEntry(DinerOrderStatuses.Confirmed, r.PlacedAtUtc), .. steps[r.Id]],
-                    CanCancel: false);
-            }).OfType<DinerOrderView>(),
+                    CanCancel: false),
+                    DinerOrderStatuses.IsActive(r.Status)
+                    && (r.TabStatus == TabStatus.Open || r.TabStatus == TabStatus.Closing));
+            }).OfType<Loaded>(),
         ];
     }
 

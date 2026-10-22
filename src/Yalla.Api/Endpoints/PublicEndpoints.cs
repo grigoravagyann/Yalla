@@ -329,7 +329,9 @@ public static class PublicEndpoints
                 + "`ratingCounts` (shown reviews per star, **one star first**: always five numbers, adding up "
                 + "to `listing.reviewCount`) and "
                 + "`rooms` - the rooms with their photos and the live pins on them, exactly as "
-                + "`GET /api/public/branches/{branchId}/rooms` serves them.\n\n"
+                + "`GET /api/public/branches/{branchId}/rooms` serves them. `takeaway` (`enabled`, `prepMinutes`) says "
+                + "whether to show \"Order to take away\"; whether it is open for takeaway now is "
+                + "`GET /api/diner/branches/{branchId}/takeaway`.\n\n"
                 + "A branch that is inactive or whose venue is suspended or deleted is **404**, read live. "
                 + "`listing.rating` and `listing.reviewCount` are read live too; the other live numbers "
                 + "share the list's fifteen seconds.")

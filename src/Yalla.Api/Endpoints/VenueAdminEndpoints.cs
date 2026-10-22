@@ -651,7 +651,9 @@ public static class VenueAdminEndpoints
                 + "`categoryId`.\n\n"
                 + "A field left out is left alone, including one that was never filled in, so a "
                 + "half-entered item can be saved again without the edit insisting on the half that "
-                + "is missing.")
+                + "is missing.\n\n"
+                + "`availableForTakeaway` switches the dish's \"for takeaway\" toggle: false keeps it to the hall - the "
+                + "diner's takeaway menu greys it out and a takeaway order naming it is refused. True by default.")
             .Produces<MenuItemView>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such item at this branch.")
             .ProducesProblem<ValidationFailedProblem>(

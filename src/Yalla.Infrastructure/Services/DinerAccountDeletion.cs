@@ -198,6 +198,12 @@ internal static class DinerAccountDeletion
                         .SetProperty(r => r.BookerPhoneE164, (string?)null),
                     cancellationToken),
 
+            // A takeaway order is the venue's record of what it cooked and was paid, as a booking is. The name and number on
+            // it are what the venue was given for that order and stay with it; the link to the person goes.
+            ["takeawayOrders"] = await db.TakeawayOrders
+                .Where(o => o.DinerUserId == dinerUserId)
+                .ExecuteUpdateAsync(set => set.SetProperty(o => o.DinerUserId, (Guid?)null), cancellationToken),
+
             // A no-show block is the record of why bookings were cancelled, and stays. The number on it goes
             // once the block no longer refuses anything; a block still in force keeps it until it ends, so that
             // deleting the account and proving the number on a new one does not escape the week.

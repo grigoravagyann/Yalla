@@ -34,7 +34,8 @@ internal sealed record ReservationNotice(
     DeclineReason? DeclinedBecause = null,
     DateOnly? LocalDate = null,
     int PartySize = 0,
-    ReservationStatus? Status = null);
+    ReservationStatus? Status = null,
+    bool StaffAsked = false);
 
 /// <summary>A later guest's request for a booking's table, as the earlier guest is told about it.</summary>
 /// <param name="RequestId">The request.</param>
@@ -206,7 +207,9 @@ internal sealed class ReservationLateNudgeHandler(
 /// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
 /// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Every
 /// booking is asked (2026-10-21); not once its pre-order was sent or the party marked not coming - the floor has decided
-/// - or when the guest already said they are coming. The wording says whether a pre-order is waiting for the kitchen.
+/// - or when the guest already said they are coming or running late. The wording says whether a pre-order is waiting
+/// for the kitchen. The same message carries the venue's "Ask: are you coming?" (<c>staffAsked</c>), sent at once and
+/// whatever the floor decided; the automatic question is not asked on top of one the venue already asked.
 /// </remarks>
 internal sealed class ReservationOnYourWayHandler(
     YallaDbContext db,
@@ -225,7 +228,8 @@ internal sealed class ReservationOnYourWayHandler(
             .Select(r => new
             {
                 r.Status,
-                Answered = r.GuestConfirmedOnWayAtUtc != null,
+                Answered = r.GuestConfirmedOnWayAtUtc != null || r.GuestRunningLateAtUtc != null,
+                StaffAsked = r.StaffAskedOnMyWayAtUtc != null,
                 PreOrderWaiting = db.PreOrders.Any(p => p.ReservationId == r.Id
                                                         && p.SentAtUtc == null
                                                         && p.NotComingAtUtc == null
@@ -237,7 +241,11 @@ internal sealed class ReservationOnYourWayHandler(
 
         var expected = booking is { Status: ReservationStatus.Confirmed };
 
-        if (!expected || booking!.Answered || booking.FloorDecided)
+        // The venue's own "ask now" goes whatever the floor decided about a pre-order - somebody tapped it a moment ago.
+        // The automatic question is not asked on top of the venue's: the guest has been asked already.
+        if (!expected
+            || booking!.Answered
+            || (!notice.StaffAsked && (booking.FloorDecided || booking.StaffAsked)))
         {
             logger.LogInformation(
                 "Not asking booking {ReservationId} whether they are on their way: it is {Status}, answered {Answered}, "
@@ -723,6 +731,116 @@ internal sealed class OrderReadyHandler(
                 }),
             cancellationToken);
     }
+}
+
+/// <summary>A takeaway order's news, as its guest is told it.</summary>
+/// <param name="OrderId">The order - where a tap lands.</param>
+/// <param name="DinerUserId">Who is told.</param>
+/// <param name="VenueName">The venue, as named when the message was written.</param>
+/// <param name="BranchName">The branch.</param>
+/// <param name="Code">"T-482".</param>
+/// <param name="ReadyAtLocalTime">When it will be ready, on the branch's wall clock. Accepted only.</param>
+/// <param name="Reason">What the venue said, declining. Null when it said nothing.</param>
+/// <param name="NoAnswer">Declined because nobody at the venue answered in time.</param>
+internal sealed record TakeawayNotice(
+    Guid OrderId,
+    Guid DinerUserId,
+    string VenueName,
+    string BranchName,
+    string Code,
+    TimeOnly? ReadyAtLocalTime = null,
+    string? Reason = null,
+    bool NoAnswer = false);
+
+/// <summary>
+/// A takeaway order moved on: accepted, ready or declined. Sent only while the order is still where the message says it
+/// is - an "accepted" push for an order the guest has since collected says nothing true.
+/// </summary>
+internal abstract class TakeawayHandler(YallaDbContext db, INotificationChannel channel) : IOutboxHandler
+{
+    public abstract string MessageType { get; }
+
+    /// <summary>The <c>kind</c> in the data - the feed entry's kind too.</summary>
+    protected abstract string Kind { get; }
+
+    /// <summary>The statuses in which the message is still true.</summary>
+    protected abstract IReadOnlyList<Domain.Takeaway.TakeawayStatus> SendWhile { get; }
+
+    protected abstract (string Title, string Body) Text(string locale, TakeawayNotice notice);
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<TakeawayNotice>(payloadJson);
+
+        var status = await db.TakeawayOrders
+            .AsNoTracking()
+            .Where(o => o.Id == notice.OrderId)
+            .Select(o => (Domain.Takeaway.TakeawayStatus?)o.Status)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (status is not { } current || !SendWhile.Contains(current))
+        {
+            return;
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+        var (title, body) = Text(locale, notice);
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                new Dictionary<string, string>
+                {
+                    ["kind"] = Kind,
+                    ["orderId"] = notice.OrderId.ToString(),
+                    ["code"] = notice.Code,
+                }),
+            cancellationToken);
+    }
+}
+
+/// <summary>"Order accepted - ready at 19:10."</summary>
+internal sealed class TakeawayAcceptedHandler(YallaDbContext db, INotificationChannel channel)
+    : TakeawayHandler(db, channel)
+{
+    public override string MessageType => OutboxMessageTypes.TakeawayAccepted;
+
+    protected override string Kind => "takeaway-accepted";
+
+    protected override IReadOnlyList<Domain.Takeaway.TakeawayStatus> SendWhile => [Domain.Takeaway.TakeawayStatus.Accepted];
+
+    protected override (string Title, string Body) Text(string locale, TakeawayNotice notice) =>
+        NotificationText.TakeawayAccepted(locale, notice.VenueName, notice.Code, notice.ReadyAtLocalTime ?? default);
+}
+
+/// <summary>"Your order is ready - come and pick it up."</summary>
+internal sealed class TakeawayReadyHandler(YallaDbContext db, INotificationChannel channel)
+    : TakeawayHandler(db, channel)
+{
+    public override string MessageType => OutboxMessageTypes.TakeawayReady;
+
+    protected override string Kind => "takeaway-ready";
+
+    protected override IReadOnlyList<Domain.Takeaway.TakeawayStatus> SendWhile => [Domain.Takeaway.TakeawayStatus.Ready];
+
+    protected override (string Title, string Body) Text(string locale, TakeawayNotice notice) =>
+        NotificationText.TakeawayReady(locale, notice.VenueName, notice.Code);
+}
+
+/// <summary>"Order declined" - with the venue's reason, or the apology for nobody answering.</summary>
+internal sealed class TakeawayDeclinedHandler(YallaDbContext db, INotificationChannel channel)
+    : TakeawayHandler(db, channel)
+{
+    public override string MessageType => OutboxMessageTypes.TakeawayDeclined;
+
+    protected override string Kind => "takeaway-declined";
+
+    protected override IReadOnlyList<Domain.Takeaway.TakeawayStatus> SendWhile => [Domain.Takeaway.TakeawayStatus.Declined];
+
+    protected override (string Title, string Body) Text(string locale, TakeawayNotice notice) =>
+        NotificationText.TakeawayDeclined(locale, notice.VenueName, notice.Code, notice.Reason, notice.NoAnswer);
 }
 
 /// <summary>Shared bits every handler needs.</summary>

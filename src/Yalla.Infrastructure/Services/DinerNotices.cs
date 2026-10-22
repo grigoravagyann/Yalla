@@ -49,6 +49,49 @@ internal static class DinerNotices
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime dueAtUtc) =>
         Booking(db, DinerNotificationKinds.BookingOnYourWay, reservation, venueName, branchName, dueAtUtc);
 
+    /// <summary>
+    /// "Are you coming?" asked now by somebody at the venue from the tablet - the same entry as the automatic question,
+    /// with <c>askedByVenue</c> <c>"true"</c> so the app can say who is asking.
+    /// </summary>
+    public static void BookingOnYourWayAskedByVenue(
+        YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>
+        Booking(
+            db,
+            DinerNotificationKinds.BookingOnYourWay,
+            reservation,
+            venueName,
+            branchName,
+            atUtc,
+            new Dictionary<string, string> { ["askedByVenue"] = "true" });
+
+    /// <summary>A takeaway order moved on: accepted, ready or declined - <paramref name="kind"/> says which.</summary>
+    public static void Takeaway(
+        YallaDbContext db,
+        string kind,
+        Guid dinerUserId,
+        Guid branchId,
+        Guid orderId,
+        string venueName,
+        string branchName,
+        string code,
+        DateTime atUtc,
+        Dictionary<string, string>? extra = null)
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["venueName"] = venueName,
+            ["branchName"] = branchName,
+            ["code"] = code,
+        };
+
+        foreach (var (key, value) in extra ?? [])
+        {
+            values[key] = value;
+        }
+
+        db.DinerNotifications.Add(new DinerNotification(dinerUserId, kind, Params(values), atUtc, branchId, orderId: orderId));
+    }
+
     /// <summary>A pending booking approved or declined.</summary>
     /// <remarks>
     /// <para>

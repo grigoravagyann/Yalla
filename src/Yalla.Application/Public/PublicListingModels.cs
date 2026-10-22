@@ -89,6 +89,10 @@ public sealed record PublicBranchListing(
 /// The rooms a diner picks from, each with its photos and the live pins on them - the same payload as
 /// <c>GET /api/public/branches/{id}/rooms</c>.
 /// </param>
+/// <param name="Takeaway">
+/// Whether the place takes takeaway orders from the app, and its preparation time - the "Order to take away" button
+/// and the info card. Whether it is open for takeaway right now is <c>GET /api/diner/branches/{branchId}/takeaway</c>.
+/// </param>
 /// <param name="AsOfUtc">When the live half was read.</param>
 public sealed record PublicBranchDetail(
     PublicBranchListing Listing,
@@ -105,7 +109,13 @@ public sealed record PublicBranchDetail(
     IReadOnlyList<PublicReviewView> RecentReviews,
     IReadOnlyList<int> RatingCounts,
     IReadOnlyList<PublicRoom> Rooms,
+    PublicTakeawayInfo Takeaway,
     DateTime AsOfUtc);
+
+/// <summary>A place's takeaway, as the place page shows it.</summary>
+/// <param name="Enabled">The venue takes takeaway orders from the app.</param>
+/// <param name="PrepMinutes">"Ready in about 20 minutes".</param>
+public sealed record PublicTakeawayInfo(bool Enabled, int PrepMinutes);
 
 /// <summary>One published review.</summary>
 /// <param name="ReviewId">The review's id.</param>

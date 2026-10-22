@@ -53,6 +53,11 @@ internal sealed class MenuItemConfiguration : EntityConfiguration<MenuItem>
             .IsRequired()
             .HasDefaultValue(true)
             .HasSentinel(true);
+
+        builder.Property(i => i.AvailableForTakeaway)
+            .IsRequired()
+            .HasDefaultValue(true)
+            .HasSentinel(true);
         builder.Property(i => i.DisplayOrder).IsRequired();
 
         // Cascade: an item has no meaning apart from its category. Note that an item already

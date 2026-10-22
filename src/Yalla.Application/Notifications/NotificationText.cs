@@ -434,6 +434,44 @@ public static class NotificationText
             _ => ("Պատվերը պատրաստ է", $"Սեղան {tableLabel}։"),
         };
 
+    // ---------------------------------------------------------------- takeaway
+
+    /// <summary>"Order accepted - ready at 19:10": the venue took the guest's takeaway order. Pay at pickup.</summary>
+    public static (string Title, string Body) TakeawayAccepted(string locale, string venue, string code, TimeOnly readyAt) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Заказ принят", $"{venue}: заказ {code} будет готов к {Time(readyAt)}. Оплата при получении."),
+            "en" => ("Order accepted", $"{venue}: {code} will be ready at {Time(readyAt)}. Pay when you pick it up."),
+            _ => ("Պատվերն ընդունված է", $"{venue}. {code} պատվերը պատրաստ կլինի {Time(readyAt)}-ին։ Վճարում եք վերցնելիս։"),
+        };
+
+    /// <summary>"Your order is ready - come and pick it up."</summary>
+    public static (string Title, string Body) TakeawayReady(string locale, string venue, string code) =>
+        Normalise(locale) switch
+        {
+            "ru" => ("Заказ готов", $"{venue}: заказ {code} готов, можно забирать."),
+            "en" => ("Your order is ready", $"{venue}: {code} is ready - come and pick it up."),
+            _ => ("Պատվերը պատրաստ է", $"{venue}. {code} պատվերը պատրաստ է, կարող եք գալ և վերցնել։"),
+        };
+
+    /// <summary>
+    /// A takeaway order declined: by the venue, with the reason it gave, or because nobody answered in time - an apology,
+    /// not the venue's "no".
+    /// </summary>
+    public static (string Title, string Body) TakeawayDeclined(string locale, string venue, string code, string? reason, bool noAnswer) =>
+        (Normalise(locale), noAnswer, string.IsNullOrWhiteSpace(reason)) switch
+        {
+            ("ru", true, _) => ("Заказ не принят", $"{venue} не ответил вовремя, заказ {code} отменён. Ничего не списано."),
+            ("ru", false, true) => ("Заказ отклонён", $"{venue} не может принять заказ {code}. Попробуйте другое время."),
+            ("ru", false, false) => ("Заказ отклонён", $"{venue} не может принять заказ {code}: {reason}"),
+            ("en", true, _) => ("Order not accepted", $"{venue} did not answer in time, so {code} was cancelled. Nothing was charged."),
+            ("en", false, true) => ("Order declined", $"{venue} could not take {code}. Try another time."),
+            ("en", false, false) => ("Order declined", $"{venue} could not take {code}: {reason}"),
+            (_, true, _) => ("Պատվերը չի ընդունվել", $"{venue}-ը ժամանակին չպատասխանեց, {code} պատվերը չեղարկվեց։ Ոչինչ չի գանձվել։"),
+            (_, false, true) => ("Պատվերը մերժվել է", $"{venue}-ը չի կարող ընդունել {code} պատվերը։ Փորձեք այլ ժամի։"),
+            _ => ("Պատվերը մերժվել է", $"{venue}-ը չի կարող ընդունել {code} պատվերը՝ {reason}"),
+        };
+
     private static string Time(TimeOnly at) => at.ToString("HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>Day and month, as all three languages write them on a phone: 24.10.</summary>

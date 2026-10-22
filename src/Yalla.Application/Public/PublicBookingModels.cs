@@ -113,6 +113,9 @@ namespace Yalla.Application.Public;
 /// Ask "Are you on your way?" now: from 45 minutes before the start, for a confirmed booking whose pre-order is waiting
 /// (not sent, not marked not coming, not cancelled) and whose guest has not answered.
 /// </param>
+/// <param name="GuestRunningLateMinutes">"I'm running late": 10, 15 or 30 minutes, the guest's latest answer.</param>
+/// <param name="StaffAskedOnMyWayAtUtc">When the venue last asked "are you coming?" from its tablet.</param>
+/// <param name="OnMyWayOpensAtUtc">From when "on my way" and "running late" are taken: two hours before the start.</param>
 /// <param name="CanChange">
 /// Whether <c>POST .../reschedule</c> would be considered at all: the booking is still to come, pending or
 /// confirmed, and its account is live with a proved number. False otherwise - hide "Change".
@@ -146,7 +149,10 @@ public sealed record PublicBookingView(
     Reservations.PreOrderView? PreOrder = null,
     DateTime? PreOrderEditableUntilUtc = null,
     DateTime? GuestConfirmedOnWayAtUtc = null,
-    bool OnYourWayAsked = false);
+    bool OnYourWayAsked = false,
+    int? GuestRunningLateMinutes = null,
+    DateTime? StaffAskedOnMyWayAtUtc = null,
+    DateTime? OnMyWayOpensAtUtc = null);
 
 /// <summary>
 /// The one answer every unanswerable manage link gets.
