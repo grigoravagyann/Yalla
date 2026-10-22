@@ -1271,6 +1271,44 @@ A move to another start forgets the answer (above). The waiter's card then says 
 cancel, with its ordinary rules: one cancel path, one late-cancel rule. The manage link's read says when to ask
 (`onYourWayAsked`).
 
+### "I'm running late" and the venue's "Ask: are you coming?"
+
+Added 2026-10-22 (the "I'm coming" artboard). Both live beside "on my way" and are forgotten with it by a move to
+another start (`Reservation.ForgetOnMyWayUnlessStartingAt`).
+
+**Running late (the guest).** `POST /api/reservations/{id}/running-late` or `POST /api/public/bookings/{token}/running-late`
+with `{ "minutes": 10 | 15 | 30 }` (anything else: 422 `validation-failed` naming `minutes`). Under the window "on my
+way" is taken in - from two hours before the start until the booking ends - for a **confirmed** booking: a seated
+party is not late (`409 on-my-way-not-open` otherwise). It records `GuestRunningLateMinutes` and
+`GuestRunningLateAtUtc`; **a later answer overwrites an earlier one**: late 10 then late 30 is 30; "on my way" after
+"late" is on time after all and clears the late answer (and stamps "on my way" again); "late" after "on my way" is
+recorded beside it. On-my-way and running-late are both **"the guest answered"**: either withdraws the unsent question
+and its unshown feed entry, the handler does not ask a guest who answered, and the venue's ask is refused. The answer
+returns `expectedArrivalUtc` (start + minutes). It does **not** hold the table any longer - the grace and the late
+release are the policy's, as before. **"Not coming"** is the booking's ordinary cancel; the app asks for confirmation
+first.
+
+**Ask now (the venue).** `POST /api/reservations/{id}/ask-on-my-way` (waiter or above at the booking's branch, no body)
+sends the automatic question's push (`reservation.on-your-way`, keyed `reservation:{id}:on-your-way:asked:{now}`,
+payload `staffAsked: true`) and feed entry (`booking-on-your-way`, params `askedByVenue: "true"`) **now**, and records
+`StaffAskedOnMyWayAtUtc`. Allowed for a **confirmed** booking, **from two hours before its start until its start**, while
+the guest **has not answered**, and **at most once every 15 minutes** (`PreOrderRules.StaffAskIntervalMinutes`). Each
+refusal is its own 409: `ask-on-my-way-too-early` (`context.opensAtUtc`), `ask-on-my-way-not-open` (not confirmed, or
+started: `status`, `startUtc`), `guest-already-answered` (`answeredAtUtc`, and `runningLateMinutes` when that was the
+answer), `ask-on-my-way-asked-recently` (`askedAtUtc`, `nextAllowedAtUtc`). The answer says `notified: false` when no
+live account stands behind the booking (a web booking without one, a deleted account) - call instead. The venue's
+ask goes whatever the floor decided about a pre-order (somebody tapped it a moment ago); **the automatic question is
+then not asked on top** - the handler skips it once `StaffAskedOnMyWayAtUtc` is set. Cancelling the booking withdraws an
+unsent ask with the booking's other messages.
+
+**Exposed.** Every booking read (`ReservationView` - the diner's `/mine` and every staff list) carries
+`guestConfirmedOnWayAtUtc`, `guestRunningLateMinutes`, `guestRunningLateAtUtc`, `staffAskedOnMyWayAtUtc` and
+`onMyWayOpensAtUtc` (start - 2 h: when the app shows "I'm coming"). The manage link's read carries the same, and its
+`onYourWayAsked` is also true once the venue asked. The pre-order rail's cards (`pre-orders/due`) carry
+`guestRunningLateMinutes`, `guestRunningLateAtUtc` and `staffAskedOnMyWayAtUtc` beside `guestConfirmedOnWayAtUtc`; the
+floor's tables carry `nextReservationGuestRunningLateMinutes` and `nextReservationStaffAskedOnMyWayAtUtc` beside
+`nextReservationGuestConfirmedOnWayAtUtc`. Each change rides the change stream as signals 5 and 6, as "on my way" does.
+
 ### The waiter's card
 
 `GET /api/branches/{id}/pre-orders/due` (waiter or above at the branch, from the stored staff row - the floor's
@@ -1644,6 +1682,8 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `GET /api/branches/{branchId}/pre-orders/due` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch, from the stored row - the pre-order rail, see [3h](#3h-pre-orders) |
 | `POST /api/reservations/{id}/pre-order/send` · `/not-coming` | `WaiterOrAbove` | a waiter or above at the booking's **branch**, from the stored row - see [3h](#3h-pre-orders) |
 | `GET/PUT /api/branches/{branchId}/pre-order-settings` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only |
+| `POST /api/reservations/{id}/running-late` · `POST /api/public/bookings/{token}/running-late` | `VerifiedDiner` · `AllowAnonymous` | the guest's own booking, or the manage link - see [3h](#3h-pre-orders) |
+| `POST /api/reservations/{id}/ask-on-my-way` | `WaiterOrAbove` | a waiter or above at the booking's **branch**, from the stored row - see [3h](#3h-pre-orders) |
 
 Availability - one slot or one day - is the only anonymous endpoint here outside the sign-in flows
 and the manage link, whose token is its credential. Browsing needs no account: somebody deciding
@@ -1713,6 +1753,11 @@ facts under `context`:
 | dishes a pre-order cannot take | 422 | `pre-order-items-unavailable`, with `context.items[]` `{ menuItemId, reason }` |
 | sending a pre-order, or marking "not coming", outside its window or state | 409 | `pre-order-not-sendable`, with `context.reservationId`, `status`, `sendableFromUtc`, `endUtc` |
 | "on my way" for a booking not confirmed or seated, more than two hours before its start, or over | 409 | `on-my-way-not-open`, with `context.reservationId`, `status`, `opensAtUtc` (start - 2 h) |
+| "running late" for a booking not confirmed, more than two hours before its start, or over | 409 | `on-my-way-not-open`, as above |
+| "Ask: are you coming?" more than two hours before the start | 409 | `ask-on-my-way-too-early`, with `context.reservationId`, `opensAtUtc` |
+| "Ask: are you coming?" for a booking not confirmed, or started | 409 | `ask-on-my-way-not-open`, with `context.reservationId`, `status`, `startUtc` |
+| "Ask: are you coming?" once the guest answered | 409 | `guest-already-answered`, with `context.reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) |
+| "Ask: are you coming?" within 15 minutes of the last | 409 | `ask-on-my-way-asked-recently`, with `context.reservationId`, `askedAtUtc`, `nextAllowedAtUtc` |
 
 ---
 

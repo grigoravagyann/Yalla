@@ -34,7 +34,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 
 ---
 
-## 2. The ten message types
+## 2. The message types
 
 | Type | Written when | Due at | Sent to |
 |---|---|---|---|
@@ -52,6 +52,9 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 | `tab.participant-approved` | The host lets a pending joiner onto the tab | Immediately | The joiner |
 | `tab.join-requested` | Somebody joins a tab and lands pending | Immediately | The host |
 | `tab.order-ready` | An order moves to `Ready` | Immediately | Whoever ordered it |
+| `takeaway.accepted` | Staff accept a takeaway order (or the sweep accepts one for a branch now on auto-accept) | Immediately | The order's guest - "ready at 19:10, pay at pickup" |
+| `takeaway.ready` | A takeaway order is marked ready (kitchen or floor) | Immediately | The order's guest - "come and pick it up" |
+| `takeaway.declined` | Staff decline a takeaway order, or the sweep declines one nobody answered within five minutes | Immediately | The order's guest - the reason, or the apology |
 
 Both reservation messages are written when the booking is made, hours before either is due. A
 reminder whose moment has **already passed** is not written at all: a booking made an hour before it
@@ -192,6 +195,26 @@ booking the venue lets go, and a review moderation takes down - and are written 
 late nudge, the participant approval and the join request write none. Rows older than 90 days are
 deleted by this loop's host, `OutboxHostedService`, about hourly.
 
+### Takeaway: `takeaway.accepted`, `takeaway.ready`, `takeaway.declined`
+
+To a takeaway order's guest ([takeaway.md](takeaway.md)), each written with the step that causes it, under the account's
+lock, with a feed entry beside it: **`takeaway-accepted`** and **`takeaway-ready`** (params `venueName`, `branchName`,
+`code`, `readyTime` `HH:mm` and `readyAtUtc`) and **`takeaway-declined`** (`code`, `noAnswer` `"true"`/`"false"`, `reason`
+when staff gave one). Each row carries the order in `orderId` - where a tap lands. Push data: `kind` =
+`takeaway-accepted` / `takeaway-ready` / `takeaway-declined`, `orderId`, `code`. The handler sends only while the order
+is still where the message says (an "accepted" push for an order collected since says nothing true). An order a
+branch **accepts automatically** writes its feed entry and **no push**: the answer to the guest's own tap says it.
+Words in Armenian, Russian or English by the account's device (`NotificationText.Takeaway*`); a decline for nobody
+answering is an apology, not the venue's "no".
+
+### The venue's "Ask: are you coming?"
+
+The automatic question's message type, `reservation.on-your-way`, sent now when somebody at the venue taps "Ask" on
+the tablet - payload `staffAsked: true`, feed entry `booking-on-your-way` with `askedByVenue: "true"`. The handler sends
+it to a confirmed booking whose guest has not answered (on my way **or running late**), whatever the floor decided
+about a pre-order; the automatic question is not asked on top of one the venue already asked. See
+[reservations.md](reservations.md#3h-pre-orders).
+
 ### These are not tab events
 
 `OutboxMessages` is its own table with its own string type names. **None of them is a
@@ -234,6 +257,8 @@ reservation:{reservationId}:rejected:{yyyyMMddHHmmssfff}          (a second decl
 participant:{participantId}:approved
 participant:{participantId}:join-requested
 order:{orderId}:ready
+reservation:{reservationId}:on-your-way:asked:{yyyyMMddHHmmss}    (the venue's "Ask: are you coming?")
+takeaway:{orderId}:accepted   (or :ready, :declined)
 ```
 
 It is **unique across the table**, enforced by an index rather than by a check in a service — two
