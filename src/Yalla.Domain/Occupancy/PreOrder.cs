@@ -342,6 +342,18 @@ public static class PreOrderRules
     /// </summary>
     public const int OnYourWayMinutesBeforeWithoutPreOrder = 30;
 
+    /// <summary>
+    /// The venue's "Ask: are you coming?" may be repeated this often and no more: the push is the same as the automatic
+    /// question, and a guest asked by two tablets in a minute switches the notifications off.
+    /// </summary>
+    public const int StaffAskIntervalMinutes = 15;
+
+    /// <summary>The running-late answers a guest may give, in minutes.</summary>
+    public static readonly IReadOnlyList<int> RunningLateChoices = [10, 15, 30];
+
+    /// <summary>When the venue may ask again after asking at <paramref name="askedAtUtc"/>.</summary>
+    public static DateTime NextStaffAskAtUtc(DateTime askedAtUtc) => askedAtUtc.AddMinutes(StaffAskIntervalMinutes);
+
     public const int DefaultMinutesBefore = 30;
 
     public const int MinMinutesBefore = 5;

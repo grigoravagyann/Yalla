@@ -173,6 +173,14 @@ public sealed class MenuItem : Entity
     public void SetAvailableForPreOrder(bool available) => AvailableForPreOrder = available;
 
     /// <summary>
+    /// Whether guests may order it to take away. True by default; the venue switches off dishes served in the hall only
+    /// (a khashlama, a flambé) - the diner's takeaway menu greys them out, and an order naming one is refused.
+    /// </summary>
+    public bool AvailableForTakeaway { get; private set; } = true;
+
+    public void SetAvailableForTakeaway(bool available) => AvailableForTakeaway = available;
+
+    /// <summary>
     /// Takes the photo off the dish. The one descriptive field cleared on its own, because an edit passes null
     /// for "leave it as it was". The dish is then incomplete - <see cref="MenuItemCompleteness"/> - and the picture,
     /// used by nothing, is the orphan sweep's.

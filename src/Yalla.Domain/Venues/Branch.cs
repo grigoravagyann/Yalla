@@ -94,6 +94,44 @@ public sealed class Branch : Entity
     }
 
     /// <summary>
+    /// Whether guests may order from the app to take away. Off by default, for the pre-order switch's reason: a venue
+    /// that has not looked at the feature must not start receiving orders it never agreed to cook.
+    /// </summary>
+    /// <remarks>On the branch rather than in <see cref="ReservationPolicy"/>, for the reason <see cref="AcceptsPreOrders"/> is.</remarks>
+    public bool TakeawayEnabled { get; private set; }
+
+    /// <summary>
+    /// Orders are accepted without anybody tapping "Accept", ready at the time the guest asked for. Off by default: staff
+    /// accept on the tablet, and an order nobody accepts within five minutes is declined.
+    /// </summary>
+    public bool TakeawayAutoAccept { get; private set; }
+
+    /// <summary>The earliest an "as soon as possible" order is ready: 5 to 90 minutes, in fives. Default 20.</summary>
+    public int TakeawayPrepMinutes { get; private set; } = Takeaway.TakeawayRules.DefaultPrepMinutes;
+
+    /// <summary>Ordering stops this long before closing: 0 to 120 minutes, in fifteens. Default 30.</summary>
+    public int TakeawayLastOrderMinutes { get; private set; } = Takeaway.TakeawayRules.DefaultLastOrderMinutes;
+
+    /// <summary>How many takeaway orders may be sent or accepted at once: 1 to 30. Default 5.</summary>
+    public int TakeawayMaxInProgress { get; private set; } = Takeaway.TakeawayRules.DefaultMaxInProgress;
+
+    /// <summary>Saves the takeaway settings together. Out of bounds or off a step is refused, every field named.</summary>
+    /// <exception cref="FieldValidationException">A setting out of its bounds or off its step.</exception>
+    public void SetTakeaway(bool enabled, bool autoAccept, int prepMinutes, int lastOrderMinutes, int maxInProgress)
+    {
+        if (Takeaway.TakeawayRules.CheckSettings(prepMinutes, lastOrderMinutes, maxInProgress) is { Count: > 0 } violations)
+        {
+            throw new FieldValidationException(violations);
+        }
+
+        TakeawayEnabled = enabled;
+        TakeawayAutoAccept = autoAccept;
+        TakeawayPrepMinutes = prepMinutes;
+        TakeawayLastOrderMinutes = lastOrderMinutes;
+        TakeawayMaxInProgress = maxInProgress;
+    }
+
+    /// <summary>
     /// The branch's published contact number in E.164, or null when nobody has supplied one.
     /// </summary>
     /// <remarks>

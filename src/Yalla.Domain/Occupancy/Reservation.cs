@@ -395,6 +395,24 @@ public sealed class Reservation : Entity
     public DateTime? GuestConfirmedOnWayAtUtc { get; private set; }
 
     /// <summary>
+    /// "I'm running late": 10, 15 or 30 minutes, the guest's latest answer. Null until they say it, and again once they
+    /// say "on my way" after it. Like "on my way", an answer about one start - a move forgets it.
+    /// </summary>
+    public int? GuestRunningLateMinutes { get; private set; }
+
+    /// <summary>When the guest said they are running late (their latest answer). Null with <see cref="GuestRunningLateMinutes"/>.</summary>
+    public DateTime? GuestRunningLateAtUtc { get; private set; }
+
+    /// <summary>
+    /// When somebody at the venue last asked "are you coming?" from the tablet - the same push and feed entry as the
+    /// automatic question, asked now. Null until they do; a move forgets it.
+    /// </summary>
+    public DateTime? StaffAskedOnMyWayAtUtc { get; private set; }
+
+    /// <summary>The guest answered the question - on my way, or running late.</summary>
+    public bool GuestAnsweredOnMyWay => GuestConfirmedOnWayAtUtc is not null || GuestRunningLateAtUtc is not null;
+
+    /// <summary>
     /// Optimistic concurrency token: seating, cancelling and releasing a late booking all race
     /// with each other across the diner and staff apps.
     /// </summary>
@@ -1216,6 +1234,9 @@ public sealed class Reservation : Entity
         if (startUtc != StartUtc)
         {
             GuestConfirmedOnWayAtUtc = null;
+            GuestRunningLateMinutes = null;
+            GuestRunningLateAtUtc = null;
+            StaffAskedOnMyWayAtUtc = null;
         }
     }
 
@@ -1414,7 +1435,8 @@ public sealed class Reservation : Entity
     /// </exception>
     public bool ConfirmOnMyWay(DateTime nowUtc)
     {
-        if (GuestConfirmedOnWayAtUtc is not null)
+        // Said already, and not overtaken by "running late" since: the first answer stands.
+        if (GuestConfirmedOnWayAtUtc is not null && GuestRunningLateAtUtc is null)
         {
             return false;
         }
@@ -1426,8 +1448,88 @@ public sealed class Reservation : Entity
             throw new OnMyWayNotOpenException(Id, Status, opensAtUtc);
         }
 
+        // A later answer overwrites an earlier one: "running late" and then "on my way" is on time after all.
         GuestConfirmedOnWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+        GuestRunningLateMinutes = null;
+        GuestRunningLateAtUtc = null;
 
         return true;
+    }
+
+    /// <summary>
+    /// The guest says they are running late by <paramref name="minutes"/> (10, 15 or 30). Under the window "on my way" is
+    /// taken in, for a confirmed booking - a seated party is not late. A later answer overwrites an earlier one; it is
+    /// an answer to "are you coming?" as "on my way" is.
+    /// </summary>
+    /// <exception cref="FieldValidationException">Not 10, 15 or 30 minutes - naming <c>minutes</c>.</exception>
+    /// <exception cref="OnMyWayNotOpenException">Not confirmed, more than two hours before the start, or over.</exception>
+    public void ReportRunningLate(int minutes, DateTime nowUtc)
+    {
+        if (!PreOrderRules.RunningLateChoices.Contains(minutes))
+        {
+            throw new FieldValidationException(
+            [
+                new FieldViolation(
+                    "minutes",
+                    "Running late is 10, 15 or 30 minutes.",
+                    FieldBounds.Range,
+                    Min: 10,
+                    Max: 30,
+                    Value: minutes),
+            ]);
+        }
+
+        var opensAtUtc = PreOrderRules.LockedAtUtc(StartUtc);
+
+        if (Status != ReservationStatus.Confirmed || nowUtc < opensAtUtc || nowUtc >= EndUtc)
+        {
+            throw new OnMyWayNotOpenException(Id, Status, opensAtUtc);
+        }
+
+        GuestRunningLateMinutes = minutes;
+        GuestRunningLateAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+    }
+
+    /// <summary>
+    /// Somebody at the venue asks "are you coming?" now, rather than waiting for the automatic question. Records when;
+    /// the caller sends the push and the feed entry in the same save.
+    /// </summary>
+    /// <remarks>
+    /// A confirmed booking only, from two hours before its start until its start, while the guest has not answered,
+    /// and at most once every <see cref="PreOrderRules.StaffAskIntervalMinutes"/> minutes - a guest asked twice in a
+    /// minute by two tablets is a guest who switches the notifications off.
+    /// </remarks>
+    /// <exception cref="AskOnMyWayNotOpenException">Not confirmed, or already started.</exception>
+    /// <exception cref="AskOnMyWayTooEarlyException">More than two hours before the start.</exception>
+    /// <exception cref="GuestAlreadyAnsweredException">The guest said on my way, or running late.</exception>
+    /// <exception cref="AskOnMyWayAskedRecentlyException">Asked within the last fifteen minutes.</exception>
+    public void RecordStaffAskOnMyWay(DateTime nowUtc)
+    {
+        if (Status != ReservationStatus.Confirmed || nowUtc >= StartUtc)
+        {
+            throw new AskOnMyWayNotOpenException(Id, Status, StartUtc);
+        }
+
+        var opensAtUtc = PreOrderRules.LockedAtUtc(StartUtc);
+
+        if (nowUtc < opensAtUtc)
+        {
+            throw new AskOnMyWayTooEarlyException(Id, opensAtUtc);
+        }
+
+        if (GuestAnsweredOnMyWay)
+        {
+            throw new GuestAlreadyAnsweredException(
+                Id,
+                GuestRunningLateAtUtc ?? GuestConfirmedOnWayAtUtc!.Value,
+                GuestRunningLateMinutes);
+        }
+
+        if (StaffAskedOnMyWayAtUtc is { } asked && nowUtc < PreOrderRules.NextStaffAskAtUtc(asked))
+        {
+            throw new AskOnMyWayAskedRecentlyException(Id, asked, PreOrderRules.NextStaffAskAtUtc(asked));
+        }
+
+        StaffAskedOnMyWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
     }
 }
