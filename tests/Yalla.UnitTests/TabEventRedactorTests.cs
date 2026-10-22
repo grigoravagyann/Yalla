@@ -726,6 +726,7 @@ public class TabEventRedactorTests
             Quantity: 1,
             Note: null,
             OrderStatus: TabOrderStatus.New,
+            OrderedAtUtc: Opened.AddMinutes(8),
             IsShared: false,
             IsVoided: false,
             VoidedAtUtc: null,

@@ -271,6 +271,7 @@ public static class TabProjection
             l.LineTotalAmd,
             l.Note,
             l.OrderStatus,
+            l.OrderedAtUtc,
             l.IsShared,
 
             // The line's own snapshot, not the current roster. A shared line records who was

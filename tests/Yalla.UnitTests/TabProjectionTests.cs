@@ -70,6 +70,32 @@ public class TabProjectionTests
         Assert.Equal(2_400L, view.MyItemsSubtotalAmd);
     }
 
+    /// <summary>
+    /// Every line says when it was ordered - its order's placed time, carried from the snapshot as it
+    /// is, on the viewer's own lines, the table's and the staff view alike.
+    /// </summary>
+    [Fact]
+    public void Every_line_carries_the_time_its_order_was_placed()
+    {
+        var coffeeAt = Opened.AddMinutes(4);
+        var teaAt = Opened.AddMinutes(11);
+        var tab = Tab() with
+        {
+            Lines =
+            [
+                Line(HostId, "Coffee", 2_500L) with { OrderedAtUtc = coffeeAt },
+                Line(AniId, "Tea", 2_400L) with { OrderedAtUtc = teaAt },
+            ],
+        };
+
+        var host = TabProjection.Project(tab, HostId)!;
+        Assert.Equal(coffeeAt, Assert.Single(host.MyLines).OrderedAtUtc);
+        Assert.Equal([coffeeAt, teaAt], host.TableLines!.Select(l => l.OrderedAtUtc));
+
+        Assert.Equal(teaAt, Assert.Single(TabProjection.Project(tab, AniId)!.MyLines).OrderedAtUtc);
+        Assert.Equal([coffeeAt, teaAt], TabProjection.ProjectForStaff(tab).Lines.Select(l => l.OrderedAtUtc));
+    }
+
     /// <summary>Test case 7, the read half: a pending participant sees only their own state.</summary>
     [Fact]
     public void A_pending_participant_sees_only_themselves()
@@ -585,6 +611,7 @@ public class TabProjectionTests
             Quantity: 1,
             Note: "no onions",
             OrderStatus: TabOrderStatus.New,
+            OrderedAtUtc: Opened.AddMinutes(8),
             IsShared: false,
             IsVoided: false,
             VoidedAtUtc: null,

@@ -194,6 +194,7 @@ internal static class PreOrderSittings
                 quantity = l.Quantity,
                 isShared = l.IsShared,
                 isTableAttributed = l.IsTableAttributed,
+                orderedAtUtc = order.PlacedAtUtc,
                 onBehalfOfParticipantId = (Guid?)null,
             }),
         });

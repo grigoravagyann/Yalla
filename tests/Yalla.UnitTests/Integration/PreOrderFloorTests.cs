@@ -196,6 +196,22 @@ public partial class PreOrderTests
         var host = await db.Tabs.Where(t => t.Id == tabId).Select(t => t.HostParticipantId).SingleAsync();
         Assert.Equal(token.GetProperty("participantId").GetGuid(), host);
         Assert.Equal(TestMenu.WineAmd, (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId)).SubtotalAmd);
+
+        // The bill says when it was ordered: when the waiter sent it to the kitchen, 25 minutes before the start - not
+        // when the party opened the tab fifteen minutes later. Read through the staff view, which projects the same
+        // lines as the diner's tab (the participant token here is minted two days ahead of the real clock), and off the
+        // stored stream, which is what every phone reads.
+        var sentAtUtc = startUtc.AddMinutes(-25);
+        var line = (await ReadAsync(waiter, $"/api/tabs/{tabId}/participants")).GetProperty("lines").EnumerateArray()
+            .Single(l => l.GetProperty("orderId").GetGuid() == preOrderId);
+        Assert.Equal(sentAtUtc, line.GetProperty("orderedAtUtc").GetDateTime());
+
+        var placed = await db.TabEvents.AsNoTracking()
+            .Where(e => e.TabId == tabId && e.Type == TabEventType.OrderPlaced)
+            .Select(e => e.PayloadJson)
+            .SingleAsync();
+        using var payload = JsonDocument.Parse(placed);
+        Assert.Equal(sentAtUtc, payload.RootElement.GetProperty("lines")[0].GetProperty("orderedAtUtc").GetDateTime());
     }
 
     /// <summary>Not sent before they sit: sending afterwards puts it straight on their tab.</summary>
