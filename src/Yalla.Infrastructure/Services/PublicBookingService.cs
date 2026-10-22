@@ -92,7 +92,9 @@ internal sealed class PublicBookingService(
                                           && d.IsActive
                                           && d.DeletedAtUtc == null),
                 r.GuestConfirmedOnWayAtUtc,
-                r.Branch.AcceptsPreOrders))
+                r.Branch.AcceptsPreOrders,
+                r.GuestRunningLateMinutes,
+                r.StaffAskedOnMyWayAtUtc))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -117,17 +119,22 @@ internal sealed class PublicBookingService(
                 ? PreOrderRules.LockedAtUtc(row.StartUtc)
                 : null,
             GuestConfirmedOnWayAtUtc = row.GuestConfirmedOnWayAtUtc,
+            GuestRunningLateMinutes = row.GuestRunningLateMinutes,
+            StaffAskedOnMyWayAtUtc = row.StaffAskedOnMyWayAtUtc,
+            OnMyWayOpensAtUtc = PreOrderRules.LockedAtUtc(row.StartUtc),
 
             // The question the push and the feed ask, here for a link holder with no app: of every booking, at 30
             // minutes, or 45 while a pre-order waits for the kitchen; not once the kitchen has it or the party was
             // marked not coming.
             OnYourWayAsked = row.Status == Domain.Enums.ReservationStatus.Confirmed
                              && row.GuestConfirmedOnWayAtUtc is null
+                             && row.GuestRunningLateMinutes is null
                              && nowUtc < row.EndUtc
-                             && (preOrder is null
-                                 ? nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: false)
-                                 : preOrder is { State: PreOrderState.Locked or PreOrderState.Editable }
-                                   && nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: true)),
+                             && (row.StaffAskedOnMyWayAtUtc is not null
+                                 || (preOrder is null
+                                     ? nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: false)
+                                     : preOrder is { State: PreOrderState.Locked or PreOrderState.Editable }
+                                       && nowUtc >= PreOrderRules.OnYourWayAtUtc(row.StartUtc, preOrderWaiting: true))),
         };
     }
 
@@ -248,5 +255,7 @@ internal sealed class PublicBookingService(
         bool PhoneUnverified,
         bool AccountCanMove,
         DateTime? GuestConfirmedOnWayAtUtc,
-        bool AcceptsPreOrders);
+        bool AcceptsPreOrders,
+        int? GuestRunningLateMinutes,
+        DateTime? StaffAskedOnMyWayAtUtc);
 }

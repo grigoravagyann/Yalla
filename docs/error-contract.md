@@ -295,6 +295,27 @@ answers those first. Past, cancelled, completed and no-show bookings are history
 deactivation. A conflict rather than a 422: the request is well formed; the bookings are in the
 way. Minted by `TableHasFutureBookingsException`.
 
+### Takeaway and "I'm coming"
+
+Each refusal has its own code (2026-10-22), so the app and the tablet say what is true rather than "conflict":
+
+| Code | Status | `context` | When |
+|---|---|---|---|
+| `takeaway-not-accepted` | 409 | `branchId` | the branch does not take takeaway |
+| `takeaway-closed` | 409 | `branchId`, `opensAtUtc`, `opensAt` (local `HH:mm`) when it opens again within a week | shut now, or past the last order |
+| `takeaway-busy` | 409 | `branchId`, `maxInProgress` | ASAP while the kitchen has as many orders sent or accepted as the venue allows |
+| `takeaway-slot-unavailable` | 409 | `branchId`, `at`, `slots` (on offer now) | the pickup time asked for is not one on offer |
+| `takeaway-items-unavailable` | 422 | `items[]` = `{ menuItemId, reason }` (1 NotOnMenu, 2 SoldOut, 3 NotForTakeaway) | dishes that cannot be ordered to take away, every one |
+| `takeaway-status-conflict` | 409 | `orderId`, `status` (where the order is now) | a move the order is not in the state for - cancel after the venue answered, accept a cancelled order |
+| `takeaway-no-show-too-early` | 409 | `orderId`, `noShowFromUtc` | "no-show" less than thirty minutes after ready |
+| `ask-on-my-way-too-early` | 409 | `reservationId`, `opensAtUtc` | the venue asks more than two hours before the start |
+| `ask-on-my-way-not-open` | 409 | `reservationId`, `status`, `startUtc` | the venue asks about a booking not confirmed, or started |
+| `guest-already-answered` | 409 | `reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) | the guest said on my way or running late |
+| `ask-on-my-way-asked-recently` | 409 | `reservationId`, `askedAtUtc`, `nextAllowedAtUtc` | asked within the last 15 minutes |
+
+The shape refusals are ordinary 422 `validation-failed` naming their fields: `lines`, `lines[i].quantity`, `note`,
+`pickup`, `pickup.at`, `readyAt`, `reason`, `method`, `prepMinutes`, `lastOrderMinutes`, `maxInProgress`, `minutes`.
+
 ### Which status, and why
 
 **422, collecting every violation** — the rule §2 already states. A refusal that can report all the

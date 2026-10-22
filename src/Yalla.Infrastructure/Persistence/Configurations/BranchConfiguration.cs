@@ -90,6 +90,24 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasDefaultValue(Domain.Occupancy.PreOrderRules.DefaultMinutesBefore)
             .HasSentinel(Domain.Occupancy.PreOrderRules.DefaultMinutesBefore);
 
+        builder.Property(b => b.TakeawayEnabled).IsRequired().HasDefaultValue(false);
+        builder.Property(b => b.TakeawayAutoAccept).IsRequired().HasDefaultValue(false);
+
+        builder.Property(b => b.TakeawayPrepMinutes)
+            .IsRequired()
+            .HasDefaultValue(Domain.Takeaway.TakeawayRules.DefaultPrepMinutes)
+            .HasSentinel(Domain.Takeaway.TakeawayRules.DefaultPrepMinutes);
+
+        builder.Property(b => b.TakeawayLastOrderMinutes)
+            .IsRequired()
+            .HasDefaultValue(Domain.Takeaway.TakeawayRules.DefaultLastOrderMinutes)
+            .HasSentinel(Domain.Takeaway.TakeawayRules.DefaultLastOrderMinutes);
+
+        builder.Property(b => b.TakeawayMaxInProgress)
+            .IsRequired()
+            .HasDefaultValue(Domain.Takeaway.TakeawayRules.DefaultMaxInProgress)
+            .HasSentinel(Domain.Takeaway.TakeawayRules.DefaultMaxInProgress);
+
         builder.Ignore(b => b.IsPaid);
 
         // The diner app's listing fields. All optional: a venue is usable before anybody writes a

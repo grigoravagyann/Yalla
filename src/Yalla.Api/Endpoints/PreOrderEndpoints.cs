@@ -93,6 +93,22 @@ public static class PreOrderEndpoints
             .Produces<OnMyWayResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking of yours.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody, or not yet (`context.opensAtUtc`).");
+
+        group.MapPost("/{reservationId:guid}/running-late", RunningLateAsync)
+            .WithName("reportRunningLate")
+            .WithSummary("\"I'm running late\" - by 10, 15 or 30 minutes")
+            .WithDescription(
+                "Another answer to \"are you coming?\", under the window `on-my-way` is taken in (from `onMyWayOpensAtUtc`, "
+                + "two hours before the start, until the booking ends) for a **confirmed** booking - a seated party is not "
+                + "late. `minutes` is 10, 15 or 30 (anything else: 422 `validation-failed` naming `minutes`). Recorded as "
+                + "`guestRunningLateMinutes` / `guestRunningLateAtUtc` on the booking; a later answer overwrites it, and "
+                + "\"on my way\" after it clears it. Like \"on my way\" it withdraws the question not yet sent. The table "
+                + "is not held any longer for it. Outside the window: **409 `on-my-way-not-open`**. \"Not coming\" is the "
+                + "booking's ordinary cancel.")
+            .Produces<RunningLateResult>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking of yours.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open` (`context.opensAtUtc`).")
+            .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`minutes` is not 10, 15 or 30.");
     }
 
     // ---------------------------------------------------------------- the guest, from the manage link
@@ -135,6 +151,15 @@ public static class PreOrderEndpoints
             .Produces<OnMyWayResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "The link is not valid.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open`: the booking is not expecting anybody, or not yet (`context.opensAtUtc`).");
+
+        group.MapPost("/bookings/{token}/running-late", RunningLateByLinkAsync)
+            .WithName("reportPublicBookingRunningLate")
+            .WithSummary("\"I'm running late\" from the manage link")
+            .WithDescription("As `reportRunningLate`.")
+            .Produces<RunningLateResult>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "The link is not valid.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "`on-my-way-not-open` (`context.opensAtUtc`).")
+            .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`minutes` is not 10, 15 or 30.");
     }
 
     // ---------------------------------------------------------------- the floor tablet
@@ -184,6 +209,29 @@ public static class PreOrderEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking, or it has no pre-order.")
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "`pre-order-not-sendable` or `tab-not-accepting-orders`.")
             .ProducesProblem<Errors.LockTimeoutProblem>(StatusCodes.Status503ServiceUnavailable, "The table is busy; retry.");
+
+        // No body and no clientCommandId: asking twice within fifteen minutes is refused by the rule, not deduplicated.
+        app.MapPost("/api/reservations/{reservationId:guid}/ask-on-my-way", AskOnMyWayAsync)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .WithName("askOnMyWay")
+            .WithSummary("\"Ask: are you coming?\" now")
+            .WithDescription(
+                "Sends the guest the automatic question's push (`reservation.on-your-way`, data `kind` "
+                + "`reservation-on-your-way`) and feed entry (`booking-on-your-way`, params `askedByVenue` `\"true\"`) now, "
+                + "and records `staffAskedOnMyWayAtUtc` on the booking. The automatic question is then not asked on top. "
+                + "A **confirmed** booking only, from two hours before its start until its start, while the guest has not "
+                + "answered, at most once every 15 minutes. Refusals, each its own code: **409 `ask-on-my-way-too-early`** "
+                + "(`context.opensAtUtc`), **409 `ask-on-my-way-not-open`** (not confirmed, or started: `context.status`, "
+                + "`startUtc`), **409 `guest-already-answered`** (`context.answeredAtUtc`, and `runningLateMinutes` when "
+                + "late), **409 `ask-on-my-way-asked-recently`** (`context.askedAtUtc`, `nextAllowedAtUtc`). `notified` false: "
+                + "no live account behind the booking - call. Waiter or above at the booking's branch. No body.")
+            .Produces<AskOnMyWayResult>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not floor staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`ask-on-my-way-too-early`, `ask-on-my-way-not-open`, `guest-already-answered` or `ask-on-my-way-asked-recently`.");
 
         group.MapPost("/{reservationId:guid}/pre-order/not-coming", NotComingAsync)
             .WithName("markPreOrderNotComing")
@@ -254,6 +302,26 @@ public static class PreOrderEndpoints
     private static async Task<IResult> OnMyWayAsync(
         Guid reservationId, IPreOrderService preOrders, CancellationToken cancellationToken) =>
         Results.Ok(await preOrders.ConfirmOnMyWayAsync(reservationId, cancellationToken));
+
+    private static async Task<IResult> RunningLateAsync(
+        Guid reservationId, RunningLateRequest request, IPreOrderService preOrders, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await preOrders.ReportRunningLateAsync(reservationId, request.Minutes!.Value, cancellationToken));
+    }
+
+    private static async Task<IResult> RunningLateByLinkAsync(
+        string token, RunningLateRequest request, IPreOrderService preOrders, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await preOrders.ReportRunningLateByManageTokenAsync(token, request.Minutes!.Value, cancellationToken));
+    }
+
+    private static async Task<IResult> AskOnMyWayAsync(
+        Guid reservationId, IPreOrderService preOrders, CancellationToken cancellationToken) =>
+        Results.Ok(await preOrders.AskOnMyWayAsync(reservationId, cancellationToken));
 
     private static async Task<IResult> ReplaceByLinkAsync(
         string token, ReplacePreOrderRequest request, IPreOrderService preOrders, CancellationToken cancellationToken)
@@ -333,6 +401,10 @@ public sealed record ReplacePreOrderRequest(
 /// <param name="Quantity">1 to 20.</param>
 /// <param name="Note">For the kitchen, at most 200 characters.</param>
 public sealed record PreOrderLineRequest(Guid MenuItemId, int Quantity, string? Note = null);
+
+/// <summary>Body of <c>POST .../running-late</c>.</summary>
+/// <param name="Minutes">10, 15 or 30.</param>
+public sealed record RunningLateRequest([Required] int? Minutes);
 
 /// <summary>Body of the pre-order's other commands: clear, send, not coming.</summary>
 public sealed record PreOrderCommandRequest([Required] Guid ClientCommandId) : IClientCommandRequest;

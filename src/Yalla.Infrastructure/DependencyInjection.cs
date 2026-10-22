@@ -56,6 +56,7 @@ public static class DependencyInjection
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
         services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
+        services.AddScoped<Yalla.Application.Takeaway.ITakeawayService, TakeawayService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
 
@@ -180,6 +181,10 @@ public static class DependencyInjection
         services.AddScoped<ApprovalExpirySweep>();
         services.AddHostedService<ApprovalExpiryHostedService>();
 
+        // Takeaway orders nobody answered within five minutes, on the same interval and the same switch.
+        services.AddScoped<TakeawayExpirySweep>();
+        services.AddHostedService<TakeawayExpiryHostedService>();
+
         services.AddScoped<IOutboxHandler, ReservationReminderHandler>();
         services.AddScoped<IOutboxHandler, ReservationLateNudgeHandler>();
         services.AddScoped<IOutboxHandler, ReservationOnYourWayHandler>();
@@ -195,6 +200,9 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, ParticipantApprovedHandler>();
         services.AddScoped<IOutboxHandler, JoinRequestedHandler>();
         services.AddScoped<IOutboxHandler, OrderReadyHandler>();
+        services.AddScoped<IOutboxHandler, TakeawayAcceptedHandler>();
+        services.AddScoped<IOutboxHandler, TakeawayReadyHandler>();
+        services.AddScoped<IOutboxHandler, TakeawayDeclinedHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges

@@ -65,6 +65,10 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<PreOrderLine> PreOrderLines => Set<PreOrderLine>();
 
+    public DbSet<Yalla.Domain.Takeaway.TakeawayOrder> TakeawayOrders => Set<Yalla.Domain.Takeaway.TakeawayOrder>();
+
+    public DbSet<Yalla.Domain.Takeaway.TakeawayOrderLine> TakeawayOrderLines => Set<Yalla.Domain.Takeaway.TakeawayOrderLine>();
+
     public DbSet<TableSession> TableSessions => Set<TableSession>();
 
     public DbSet<Tab> Tabs => Set<Tab>();
@@ -220,7 +224,9 @@ public sealed class YallaDbContext : DbContext
                      || entry.Property(r => r.StartUtc).IsModified
                      || entry.Property(r => r.EndUtc).IsModified
                      || entry.Property(r => r.PartySize).IsModified
-                     || entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified))
+                     || entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified
+                     || entry.Property(r => r.GuestRunningLateAtUtc).IsModified
+                     || entry.Property(r => r.StaffAskedOnMyWayAtUtc).IsModified))
             {
                 continue;
             }
@@ -345,7 +351,10 @@ public sealed class YallaDbContext : DbContext
 
         foreach (var entry in ChangeTracker.Entries<Reservation>())
         {
-            if (entry.State == EntityState.Modified && entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified)
+            if (entry.State == EntityState.Modified
+                && (entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified
+                    || entry.Property(r => r.GuestRunningLateAtUtc).IsModified
+                    || entry.Property(r => r.StaffAskedOnMyWayAtUtc).IsModified))
             {
                 bookings.Add(entry.Entity.Id);
             }

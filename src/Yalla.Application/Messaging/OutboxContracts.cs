@@ -181,6 +181,18 @@ public static class OutboxMessageTypes
     /// </summary>
     public const string ReservationOnYourWay = "reservation.on-your-way";
 
+    /// <summary>To a takeaway order's guest: the venue accepted it, ready at a time. Keyed <c>takeaway:{id}:accepted</c>.</summary>
+    public const string TakeawayAccepted = "takeaway.accepted";
+
+    /// <summary>To a takeaway order's guest: it is ready to pick up. Keyed <c>takeaway:{id}:ready</c>.</summary>
+    public const string TakeawayReady = "takeaway.ready";
+
+    /// <summary>
+    /// To a takeaway order's guest: declined - by the venue, with its reason when it gave one, or because nobody answered
+    /// within five minutes. Keyed <c>takeaway:{id}:declined</c>.
+    /// </summary>
+    public const string TakeawayDeclined = "takeaway.declined";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

@@ -171,6 +171,21 @@ public static class DinerNotificationKinds
     /// </summary>
     public const string BookingOnYourWay = "booking-on-your-way";
 
+    /// <summary>
+    /// The venue accepted a takeaway order. Params <c>venueName</c>, <c>branchName</c>, <c>code</c>, <c>readyTime</c>
+    /// (<c>HH:mm</c>, branch wall clock) and <c>readyAtUtc</c>; <c>orderId</c> is the takeaway order's.
+    /// </summary>
+    public const string TakeawayAccepted = "takeaway-accepted";
+
+    /// <summary>A takeaway order is ready to pick up. Params as <see cref="TakeawayAccepted"/>.</summary>
+    public const string TakeawayReady = "takeaway-ready";
+
+    /// <summary>
+    /// A takeaway order was declined. Params <c>venueName</c>, <c>branchName</c>, <c>code</c>, <c>noAnswer</c>
+    /// (<c>"true"</c> when nobody at the venue answered in time) and <c>reason</c> when staff gave one.
+    /// </summary>
+    public const string TakeawayDeclined = "takeaway-declined";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
@@ -178,6 +193,7 @@ public static class DinerNotificationKinds
     [
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
         TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
-        BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked, BookingOnYourWay,
+        BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked, BookingOnYourWay, TakeawayAccepted, TakeawayReady,
+        TakeawayDeclined,
     ];
 }

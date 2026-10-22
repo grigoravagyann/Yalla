@@ -135,6 +135,8 @@ internal sealed class PublicListingQuery(
                 // K9: the app books only where bookings are switched on AND somebody at the venue has
                 // saved the reservation policy, rather than the defaults a new branch ships with.
                 AcceptsAppBookings = b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
+                b.TakeawayEnabled,
+                b.TakeawayPrepMinutes,
             })
             .FirstAsync(cancellationToken);
 
@@ -175,6 +177,7 @@ internal sealed class PublicListingQuery(
             recent,
             summary.RatingCounts,
             rooms,
+            new PublicTakeawayInfo(extra.TakeawayEnabled, extra.TakeawayPrepMinutes),
             clock.UtcNow);
     }
 

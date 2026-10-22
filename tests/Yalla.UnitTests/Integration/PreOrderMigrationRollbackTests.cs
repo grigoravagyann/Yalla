@@ -42,6 +42,10 @@ public sealed class PreOrderMigrationRollbackTests(SqlServerFixture fixture)
             {
                 await db.GetService<IMigrator>().MigrateAsync(PreOrdersMigration);
 
+                // TakeawayAndRunningLate sorts after this migration, but today's Branch, MenuItem and Reservation write its
+                // columns, so they are put in place for the fixture to find.
+                await LaterColumns.AddTakeawayColumnsAsync(db);
+
                 branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1)).BranchId;
                 await TestMenuBuilder.CreateAsync(db, branchId);
                 const string paramsJson = "{\"venueName\":\"Cafe\"}";

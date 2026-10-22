@@ -7,6 +7,7 @@ using Yalla.Domain.Media;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Takeaway;
 using Yalla.Domain.Venues;
 
 namespace Yalla.Api.Errors;
@@ -439,6 +440,17 @@ internal static class ApiExceptionMapper
         PreOrderItemsUnavailableException e => new MappedError(
             StatusCodes.Status422UnprocessableEntity,
             ErrorCodes.PreOrderItemsUnavailable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["items"] = e.Items.Select(i => new { menuItemId = i.MenuItemId, reason = (int)i.Reason }).ToList(),
+            }),
+
+        // Dishes a takeaway order cannot take, every one named with why. Must stay ABOVE ArgumentException.
+        TakeawayItemsUnavailableException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.TakeawayItemsUnavailable,
             e.Message,
             LogAsError: false,
             Context: new Dictionary<string, object?>
@@ -941,6 +953,127 @@ internal static class ApiExceptionMapper
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
                 ["opensAtUtc"] = e.OpensAtUtc,
+            }),
+
+        // "Ask: are you coming?" refused - each its own code, so the tablet says why. Must stay ABOVE DomainStateException.
+        AskOnMyWayNotOpenException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.AskOnMyWayNotOpen,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["status"] = (int)e.Status,
+                ["startUtc"] = e.StartUtc,
+            }),
+
+        AskOnMyWayTooEarlyException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.AskOnMyWayTooEarly,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["opensAtUtc"] = e.OpensAtUtc,
+            }),
+
+        AskOnMyWayAskedRecentlyException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.AskOnMyWayAskedRecently,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["reservationId"] = e.ReservationId,
+                ["askedAtUtc"] = e.AskedAtUtc,
+                ["nextAllowedAtUtc"] = e.NextAllowedAtUtc,
+            }),
+
+        GuestAlreadyAnsweredException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.GuestAlreadyAnswered,
+            e.Message,
+            LogAsError: false,
+            Context: e.RunningLateMinutes is { } late
+                ? new Dictionary<string, object?>
+                {
+                    ["reservationId"] = e.ReservationId,
+                    ["answeredAtUtc"] = e.AnsweredAtUtc,
+                    ["runningLateMinutes"] = late,
+                }
+                : new Dictionary<string, object?>
+                {
+                    ["reservationId"] = e.ReservationId,
+                    ["answeredAtUtc"] = e.AnsweredAtUtc,
+                }),
+
+        // Takeaway. Each its own code, so the app and the tablet say what is true. Must stay ABOVE DomainStateException.
+        TakeawayNotAcceptedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawayNotAccepted,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        TakeawayClosedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawayClosed,
+            e.Message,
+            LogAsError: false,
+            Context: e.OpensAtUtc is { } opensAtUtc
+                ? new Dictionary<string, object?>
+                {
+                    ["branchId"] = e.BranchId,
+                    ["opensAtUtc"] = opensAtUtc,
+                    ["opensAt"] = e.OpensAtLocal,
+                }
+                : new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        TakeawayBusyException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawayBusy,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["maxInProgress"] = e.MaxInProgress,
+            }),
+
+        TakeawaySlotUnavailableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawaySlotUnavailable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["at"] = e.At,
+                ["slots"] = e.Slots,
+            }),
+
+        TakeawayStatusConflictException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawayStatusConflict,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["orderId"] = e.OrderId,
+                ["status"] = (int)e.Status,
+            }),
+
+        TakeawayNoShowTooEarlyException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TakeawayNoShowTooEarly,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["orderId"] = e.OrderId,
+                ["noShowFromUtc"] = e.NoShowFromUtc,
             }),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.

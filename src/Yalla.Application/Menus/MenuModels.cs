@@ -70,7 +70,8 @@ public sealed record UpdateMenuItemCommand(
     int? PrepMinutes = null,
     SpiceLevel? SpiceLevel = null,
     int? DisplayOrder = null,
-    Guid? CategoryId = null);
+    Guid? CategoryId = null,
+    bool? AvailableForTakeaway = null);
 
 /// <summary>
 /// One menu item as a client reads it.
@@ -91,6 +92,10 @@ public sealed record UpdateMenuItemCommand(
 /// <b><c>availableForPreOrder</c></b>: guests may put it on a booking's pre-order (the venue excludes dishes through
 /// <c>PUT /api/branches/{branchId}/pre-order-settings</c>). A pre-order offers what is available and not excluded.
 /// </para>
+/// <para>
+/// <b><c>availableForTakeaway</c></b>: guests may order it to take away - true by default, switched per dish with
+/// <c>PATCH .../items/{itemId}</c>. The diner's takeaway menu greys out a dish with false: "only in the hall".
+/// </para>
 /// </remarks>
 public sealed record MenuItemView(
     Guid Id,
@@ -108,7 +113,8 @@ public sealed record MenuItemView(
     int DisplayOrder,
     bool IsComplete,
     IReadOnlyList<string> MissingFields,
-    bool AvailableForPreOrder = true);
+    bool AvailableForPreOrder = true,
+    bool AvailableForTakeaway = true);
 
 public sealed record MenuCategoryView(Guid Id, string Name, int DisplayOrder, IReadOnlyList<MenuItemView> Items);
 

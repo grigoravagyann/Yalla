@@ -161,6 +161,12 @@ public sealed record TableFloorState
     /// </summary>
     public DateTime? NextReservationGuestConfirmedOnWayAtUtc { get; init; }
 
+    /// <summary>The next booking's guest said they are running late: 10, 15 or 30 minutes. <c>null</c> when they have not.</summary>
+    public int? NextReservationGuestRunningLateMinutes { get; init; }
+
+    /// <summary>When somebody at the venue last asked the next booking's guest "are you coming?". <c>null</c> until asked.</summary>
+    public DateTime? NextReservationStaffAskedOnMyWayAtUtc { get; init; }
+
     /// <summary>
     /// The next booking's guest record - as on the console's list, and under the same rule: a proved account behind
     /// it and the booking today or still to come. Absent otherwise. See <see cref="Reservations.GuestRecord"/>.

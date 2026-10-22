@@ -108,15 +108,20 @@ public static class DinerBrowseEndpoints
             .WithSummary("The diner's orders, for the Orders tab")
             .WithDescription(
                 "Every order this diner is on: placed from their phone, keyed in by a waiter on their "
-                + "behalf, or keyed in for the whole table on a tab they were approved onto. Newest first, "
-                + "at most 100.\n\n"
+                + "behalf, or keyed in for the whole table on a tab they were approved onto - and their "
+                + "takeaway orders (`kind: takeaway`). **Active ones first**, then newest first, at most 100.\n\n"
                 + "`status=active` is New, InKitchen and Ready; `status=history` is Served and Voided; "
                 + "absent is both. Anything else is `400`.\n\n"
                 + "`status` on each order is the app's word: New `confirmed`, InKitchen `preparing`, "
-                + "Ready `ready`, Served `completed`, Voided `cancelled`. `inProgress` is never produced - "
-                + "there is no takeaway. `kind` is always `dineIn`. `timeline` starts with `confirmed` at "
-                + "`placedAtUtc` and adds each kitchen step as it was recorded. `canCancel` is always "
-                + "false: voiding an order is a staff action.")
+                + "Ready `ready`, Served `completed`, Voided `cancelled`. `kind` is `dineIn` or `takeaway`. A "
+                + "dine-in `timeline` starts with `confirmed` at `placedAtUtc` and adds each kitchen step as it was "
+                + "recorded; `canCancel` is false - voiding an order is a staff action.\n\n"
+                + "**Takeaway** (`kind: takeaway`): `tabId` absent, `tableLabel` empty, `partySize` 0; `status` is "
+                + "`inProgress` while it waits for the venue (Sent), `preparing` (Accepted), `ready`, `completed` "
+                + "(Collected) or `cancelled` (Declined, Cancelled or NoShow); `takeaway` carries the code, the exact "
+                + "status (1 Sent ... 7 NoShow), the pickup and ready times and the item count; `estimatedReadyAtUtc` is "
+                + "the ready time; `timeline` starts with `inProgress` at `placedAtUtc`; `canCancel` is true while Sent. "
+                + "Active for takeaway is Sent, Accepted and Ready. The whole order is `getDinerTakeawayOrder`.")
             .Produces<IReadOnlyList<DinerOrderView>>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`status` is not `active` or `history`.")
             .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "Needs a diner token.");

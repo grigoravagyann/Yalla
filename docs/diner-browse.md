@@ -303,9 +303,16 @@ is where the rail left it; only which list it is on moves.
 ```
 
 Status map (`kitchenStatus` integer → `status`): 1 New → `confirmed`, 2 InKitchen → `preparing`,
-3 Ready → `ready`, 4 Served → `completed`, 5 Voided → `cancelled`. `inProgress` is never produced.
+3 Ready → `ready`, 4 Served → `completed`, 5 Voided → `cancelled`.
 `timeline[0]` is always `confirmed` at `placedAtUtc`; later entries come from the tab's
 `OrderStatusChanged` events.
+
+**Takeaway orders** (2026-10-22, [takeaway.md](takeaway.md)) are on the same list with `kind: "takeaway"`: no
+`tabId`, an empty `tableLabel`, `partySize` 0, and a `takeaway` summary `{ code, status, pickupAsap,
+requestedPickupUtc, readyAtUtc, itemCount }`. Their `status` is `inProgress` while the venue has not answered (Sent),
+`preparing` (Accepted), `ready`, `completed` (Collected) or `cancelled` (Declined, Cancelled, NoShow); `timeline[0]` is
+`inProgress` at `placedAtUtc`; `canCancel` is true while Sent (`POST /api/diner/takeaway-orders/{id}/cancel`). The list
+puts the orders still moving first, then newest first.
 
 **No cancel endpoint.** Voiding is a staff action on the kitchen rail (`POST /api/orders/{id}/status`,
 Kitchen or above); the domain has no diner cancel, so none was invented. `canCancel` is always false.
@@ -1054,7 +1061,7 @@ One entry of `rooms[].photos[].tables[]`; the photo it is drawn on is that entry
 | `placeId` | `branchId` |
 | `placeName` | `venueName` (optionally with `branchName`) |
 | `placePhoto` | `coverPhoto.thumbnailUrl` or `cardUrl`; absent → placeholder |
-| `kind` | `kind` - always `'dineIn'` |
+| `kind` | `kind` - `'dineIn'` or `'takeaway'` |
 | `status` | `status` (already the app's word) |
 | `tableLabel` | `tableLabel` |
 | `partySize` | `partySize` |
@@ -1071,10 +1078,8 @@ window client-side); `getById(id)` → `GET /api/diner/orders/{id}` (404 → `nu
 
 ## Not backed by data, and why
 
-- **The `inProgress` order status and the `takeaway` kind.** The domain has no takeaway; every order is
-  on a table's tab. Never produced.
-- **A diner cancelling an order.** Voiding is a staff action on the kitchen rail. Not invented;
-  `canCancel` is always false and there is no endpoint.
+- **A diner cancelling a dine-in order.** Voiding is a staff action on the kitchen rail. Not invented;
+  `canCancel` is false on every dine-in order. A takeaway order is cancelled while the venue has not answered it.
 - **`TablePhotoMarker.capacityMin`.** Tables have only `seats`.
 - **Markers on a photo other than the cover.** Coordinates are defined against the cover only (the
   app's first photo). Changing the cover takes every table off it; there is no separate floor-photo

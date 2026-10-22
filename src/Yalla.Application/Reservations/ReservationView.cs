@@ -228,6 +228,24 @@ public sealed record ReservationView
 
     /// <summary>When the guest answered "Yes, on my way". Absent until they do.</summary>
     public DateTime? GuestConfirmedOnWayAtUtc { get; init; }
+
+    /// <summary>"I'm running late": 10, 15 or 30 minutes - the guest's latest answer. Absent unless they said it.</summary>
+    public int? GuestRunningLateMinutes { get; init; }
+
+    /// <summary>When the guest said they are running late. Absent with <see cref="GuestRunningLateMinutes"/>.</summary>
+    public DateTime? GuestRunningLateAtUtc { get; init; }
+
+    /// <summary>
+    /// When somebody at the venue last asked "are you coming?" from the tablet. Set, and the guest has not answered, the
+    /// app shows "{venue} is asking: are you coming?". Absent until asked.
+    /// </summary>
+    public DateTime? StaffAskedOnMyWayAtUtc { get; init; }
+
+    /// <summary>
+    /// From when "I'm coming" and "running late" are taken: two hours before the start. The answer is taken until the
+    /// booking ends, while it is confirmed.
+    /// </summary>
+    public DateTime OnMyWayOpensAtUtc { get; init; }
 }
 
 /// <summary>

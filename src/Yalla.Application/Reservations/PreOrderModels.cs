@@ -84,6 +84,24 @@ public sealed record ReplacePreOrderByManageTokenCommand(
 /// <param name="WasReplay">They had said so already; this changed nothing.</param>
 public sealed record OnMyWayResult(Guid ReservationId, DateTime GuestConfirmedOnWayAtUtc, bool WasReplay);
 
+/// <summary>The answer to "I'm running late".</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="GuestRunningLateMinutes">10, 15 or 30 - the answer as it now stands.</param>
+/// <param name="GuestRunningLateAtUtc">When the guest said it.</param>
+/// <param name="ExpectedArrivalUtc">The start plus the minutes: when the venue may expect them.</param>
+public sealed record RunningLateResult(
+    Guid ReservationId, int GuestRunningLateMinutes, DateTime GuestRunningLateAtUtc, DateTime ExpectedArrivalUtc);
+
+/// <summary>The answer to the venue's "Ask: are you coming?".</summary>
+/// <param name="ReservationId">The booking.</param>
+/// <param name="StaffAskedOnMyWayAtUtc">When it was asked - now.</param>
+/// <param name="NextAskAllowedAtUtc">When the venue may ask again, fifteen minutes on, if the guest has not answered.</param>
+/// <param name="Notified">
+/// The guest was sent the push and the feed entry. False for a booking with no live account behind it (made on the web
+/// without one, or the account deleted): call the number instead.
+/// </param>
+public sealed record AskOnMyWayResult(Guid ReservationId, DateTime StaffAskedOnMyWayAtUtc, DateTime NextAskAllowedAtUtc, bool Notified);
+
 /// <summary>One card on the floor tablet's pre-order rail - and the answer to the waiter's two actions.</summary>
 /// <param name="ReservationId">The booking.</param>
 /// <param name="Code">Its door code.</param>
@@ -103,6 +121,9 @@ public sealed record OnMyWayResult(Guid ReservationId, DateTime GuestConfirmedOn
 /// <param name="SentByName">The waiter who sent it, as the PIN roster names them. Absent until sent.</param>
 /// <param name="NotComingByName">The waiter who marked the party not coming. Absent unless marked.</param>
 /// <param name="TabId">The party's tab, once it is an order on it.</param>
+/// <param name="GuestRunningLateMinutes">"Running late": 10, 15 or 30 minutes, the guest's latest answer. Absent unless they said it.</param>
+/// <param name="GuestRunningLateAtUtc">When they said it.</param>
+/// <param name="StaffAskedOnMyWayAtUtc">When somebody at the venue last asked "are you coming?" from the tablet. Absent until asked.</param>
 /// <param name="WasReplay">On an action's answer: it had been done already, and nothing changed this time.</param>
 public sealed record DuePreOrder(
     Guid ReservationId,
@@ -123,6 +144,9 @@ public sealed record DuePreOrder(
     string? SentByName,
     string? NotComingByName,
     Guid? TabId,
+    int? GuestRunningLateMinutes,
+    DateTime? GuestRunningLateAtUtc,
+    DateTime? StaffAskedOnMyWayAtUtc,
     bool WasReplay = false);
 
 /// <summary>The branch's pre-order rail.</summary>
@@ -169,6 +193,15 @@ public interface IPreOrderService
     Task<OnMyWayResult> ConfirmOnMyWayAsync(Guid reservationId, CancellationToken cancellationToken = default);
 
     Task<OnMyWayResult> ConfirmOnMyWayByManageTokenAsync(string token, CancellationToken cancellationToken = default);
+
+    /// <summary>"I'm running late" by 10, 15 or 30 minutes, under the window "on my way" is taken in.</summary>
+    Task<RunningLateResult> ReportRunningLateAsync(Guid reservationId, int minutes, CancellationToken cancellationToken = default);
+
+    /// <summary>The same, from the manage link.</summary>
+    Task<RunningLateResult> ReportRunningLateByManageTokenAsync(string token, int minutes, CancellationToken cancellationToken = default);
+
+    /// <summary>The venue asks "are you coming?" now: the automatic question's push and feed entry.</summary>
+    Task<AskOnMyWayResult> AskOnMyWayAsync(Guid reservationId, CancellationToken cancellationToken = default);
 
     Task<DuePreOrders> ListDueAsync(Guid branchId, CancellationToken cancellationToken = default);
 

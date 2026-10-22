@@ -258,6 +258,11 @@ public sealed record TabSharesView(
 /// Set when this is a booking's pre-order - held or on the tab it became: whose, and when they are due, so the kitchen
 /// times the cooking. Absent on every other order.
 /// </param>
+/// <param name="Takeaway">
+/// Set when this is a takeaway order the venue accepted - the "TAKEAWAY" band: its code, when it is promised, whose it
+/// is and the guest's note. <paramref name="TableLabel"/> is the code, <paramref name="TabId"/> is absent, and the
+/// kitchen's "Ready" is <c>POST /api/takeaway-orders/{orderId}/ready</c>. Absent on every other order.
+/// </param>
 public sealed record KitchenOrderView(
     Guid OrderId,
     Guid? TabId,
@@ -268,7 +273,21 @@ public sealed record KitchenOrderView(
     int WaitingMinutes,
     IReadOnlyList<OrderLineView> Lines,
     string? PlacedByName,
-    KitchenPreOrder? PreOrder = null);
+    KitchenPreOrder? PreOrder = null,
+    KitchenTakeaway? Takeaway = null);
+
+/// <summary>The takeaway order a kitchen ticket is.</summary>
+/// <param name="Code">"T-482" - what the guest says at the counter.</param>
+/// <param name="ReadyAtUtc">When the venue promised it.</param>
+/// <param name="ReadyAtLocalTime">The same, on the branch's wall clock - "ready 19:10".</param>
+/// <param name="GuestName">Whose it is - a name, never a number.</param>
+/// <param name="Note">The guest's note: "no onion, separate bag". Absent when none.</param>
+public sealed record KitchenTakeaway(
+    string Code,
+    DateTime ReadyAtUtc,
+    TimeOnly ReadyAtLocalTime,
+    string GuestName,
+    string? Note);
 
 /// <summary>The booking a kitchen ticket was pre-ordered for.</summary>
 /// <param name="ReservationId">The booking.</param>

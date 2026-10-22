@@ -188,6 +188,8 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         var referenced = await db.TabOrderLines
                              .AnyAsync(l => l.MenuItem.MenuCategoryId == category.Id, cancellationToken)
                          || await db.PreOrderLines
+                             .AnyAsync(l => db.MenuItems.Any(m => m.Id == l.MenuItemId && m.MenuCategoryId == category.Id), cancellationToken)
+                         || await db.TakeawayOrderLines
                              .AnyAsync(l => db.MenuItems.Any(m => m.Id == l.MenuItemId && m.MenuCategoryId == category.Id), cancellationToken);
 
         if (referenced)
@@ -270,6 +272,12 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
                 command.SpiceLevel ?? item.SpiceLevel);
         }
 
+        // Hall only, or for takeaway too. Takeaway orders already placed keep their lines.
+        if (command.AvailableForTakeaway is { } forTakeaway)
+        {
+            item.SetAvailableForTakeaway(forTakeaway);
+        }
+
         // Existing order lines snapshotted the old price and are untouched by this.
         if (command.PriceAmd is { } price)
         {
@@ -326,7 +334,8 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         // A pre-order naming it counts as an order: its line keeps the name and price it was ordered at either way.
         if (await db.TabOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken)
-            || await db.PreOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken))
+            || await db.PreOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken)
+            || await db.TakeawayOrderLines.AnyAsync(l => l.MenuItemId == item.Id, cancellationToken))
         {
             item.SetAvailable(false);
             await db.SaveChangesAsync(cancellationToken);
@@ -471,5 +480,6 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         i.DisplayOrder,
         i.IsComplete,
         MenuItemCompleteness.MissingFields(i),
-        i.AvailableForPreOrder);
+        i.AvailableForPreOrder,
+        i.AvailableForTakeaway);
 }

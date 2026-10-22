@@ -314,7 +314,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked', 'booking-on-your-way')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked', 'booking-on-your-way', 'takeaway-accepted', 'takeaway-ready', 'takeaway-declined')");
                         });
                 });
 
@@ -813,6 +813,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("bit")
                         .HasDefaultValue(true);
 
+                    b.Property<bool>("AvailableForTakeaway")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -1021,9 +1026,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_PreOrders_BranchId_Held")
                         .HasFilter("[SentAtUtc] IS NOT NULL AND [TabOrderId] IS NULL");
 
-                    b.HasIndex("BranchId", "ReservationId")
-                        .HasDatabaseName("IX_PreOrders_BranchId_ReservationId");
-
                     b.HasIndex("NotComingByStaffId");
 
                     b.HasIndex("ReservationId")
@@ -1031,6 +1033,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_PreOrders_ReservationId");
 
                     b.HasIndex("SentByStaffId");
+
+                    b.HasIndex("BranchId", "ReservationId")
+                        .HasDatabaseName("IX_PreOrders_BranchId_ReservationId");
 
                     b.ToTable("PreOrders", (string)null);
                 });
@@ -1160,6 +1165,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<DateTime?>("GuestRunningLateAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("GuestRunningLateMinutes")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("HoldExpiresAtUtc")
                         .HasColumnType("datetime2");
 
@@ -1236,6 +1247,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("StaffAskedOnMyWayAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<DateTime>("StartUtc")
                         .HasColumnType("datetime2");
@@ -2069,6 +2083,196 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("TabParticipants", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Takeaway.TakeawayOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AcceptDeadlineUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("AcceptedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("AcceptedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ClientCommandId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(5)
+                        .HasColumnType("nvarchar(5)");
+
+                    b.Property<DateTime?>("CollectedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("CollectedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeclineReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("DeclinedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("DeclinedBecause")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("DeclinedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("GuestName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("GuestPhone")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateOnly>("LocalDate")
+                        .HasColumnType("date");
+
+                    b.Property<DateTime?>("MarkedReadyAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("MarkedReadyByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("NoShowAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("NoShowByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<long?>("PaidAmountAmd")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("PaymentMethod")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("PickupAsap")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ReadyAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<TimeOnly>("RequestedPickupLocalTime")
+                        .HasColumnType("time");
+
+                    b.Property<DateTime>("RequestedPickupUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AcceptDeadlineUtc")
+                        .HasDatabaseName("IX_TakeawayOrders_AcceptDeadlineUtc")
+                        .HasFilter("[AcceptDeadlineUtc] IS NOT NULL");
+
+                    b.HasIndex("AcceptedByStaffId");
+
+                    b.HasIndex("ClientCommandId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TakeawayOrders_ClientCommandId");
+
+                    b.HasIndex("CollectedByStaffId");
+
+                    b.HasIndex("DeclinedByStaffId");
+
+                    b.HasIndex("MarkedReadyByStaffId");
+
+                    b.HasIndex("NoShowByStaffId");
+
+                    b.HasIndex("BranchId", "Status")
+                        .HasDatabaseName("IX_TakeawayOrders_BranchId_Status");
+
+                    b.HasIndex("DinerUserId", "CreatedAtUtc")
+                        .HasDatabaseName("IX_TakeawayOrders_DinerUserId_CreatedAtUtc");
+
+                    b.HasIndex("BranchId", "LocalDate", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("UX_TakeawayOrders_BranchId_LocalDate_Code");
+
+                    b.ToTable("TakeawayOrders", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_TakeawayOrders_PaidAmount", "[PaidAmountAmd] IS NULL OR [PaidAmountAmd] >= 0");
+
+                            t.HasCheckConstraint("CK_TakeawayOrders_Status", "[Status] BETWEEN 1 AND 7");
+                        });
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Takeaway.TakeawayOrderLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("MenuItemId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("NameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TakeawayOrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("UnitPriceAmdSnapshot")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MenuItemId");
+
+                    b.HasIndex("TakeawayOrderId", "Position")
+                        .IsUnique();
+
+                    b.ToTable("TakeawayOrderLines", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_TakeawayOrderLines_Price", "[UnitPriceAmdSnapshot] >= 0");
+
+                            t.HasCheckConstraint("CK_TakeawayOrderLines_Quantity", "[Quantity] BETWEEN 1 AND 20");
+                        });
+                });
+
             modelBuilder.Entity("Yalla.Domain.Venues.Branch", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2163,6 +2367,31 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(1);
+
+                    b.Property<bool>("TakeawayAutoAccept")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("TakeawayEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("TakeawayLastOrderMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(30);
+
+                    b.Property<int>("TakeawayMaxInProgress")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(5);
+
+                    b.Property<int>("TakeawayPrepMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(20);
 
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
@@ -3124,6 +3353,60 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("Tab");
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Takeaway.TakeawayOrder", b =>
+                {
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("AcceptedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Venues.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("CollectedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("DeclinedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("MarkedReadyByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("NoShowByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Takeaway.TakeawayOrderLine", b =>
+                {
+                    b.HasOne("Yalla.Domain.Menus.MenuItem", null)
+                        .WithMany()
+                        .HasForeignKey("MenuItemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Takeaway.TakeawayOrder", null)
+                        .WithMany("Lines")
+                        .HasForeignKey("TakeawayOrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Yalla.Domain.Venues.Branch", b =>
                 {
                     b.HasOne("Yalla.Domain.Media.Photo", "CoverPhoto")
@@ -3382,6 +3665,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("Yalla.Domain.Tabs.TabOrderLine", b =>
                 {
                     b.Navigation("Shares");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Takeaway.TakeawayOrder", b =>
+                {
+                    b.Navigation("Lines");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Venues.Branch", b =>

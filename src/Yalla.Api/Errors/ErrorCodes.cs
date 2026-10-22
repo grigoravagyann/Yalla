@@ -365,6 +365,70 @@ public static class ErrorCodes
     public const string OnMyWayNotOpen = "on-my-way-not-open";
 
     /// <summary>
+    /// "Ask: are you coming?" for a booking that is not confirmed, or has started. HTTP 409, <c>context.reservationId</c>,
+    /// <c>status</c>, <c>startUtc</c>. Minted by <c>AskOnMyWayNotOpenException</c>.
+    /// </summary>
+    public const string AskOnMyWayNotOpen = "ask-on-my-way-not-open";
+
+    /// <summary>
+    /// "Ask: are you coming?" more than two hours before the start. HTTP 409, <c>context.reservationId</c> and
+    /// <c>opensAtUtc</c>. Minted by <c>AskOnMyWayTooEarlyException</c>.
+    /// </summary>
+    public const string AskOnMyWayTooEarly = "ask-on-my-way-too-early";
+
+    /// <summary>
+    /// "Ask: are you coming?" within fifteen minutes of the last ask. HTTP 409, <c>context.reservationId</c>,
+    /// <c>askedAtUtc</c>, <c>nextAllowedAtUtc</c>. Minted by <c>AskOnMyWayAskedRecentlyException</c>.
+    /// </summary>
+    public const string AskOnMyWayAskedRecently = "ask-on-my-way-asked-recently";
+
+    /// <summary>
+    /// "Ask: are you coming?" when the guest already said on my way or running late. HTTP 409,
+    /// <c>context.reservationId</c>, <c>answeredAtUtc</c>, <c>runningLateMinutes</c> (absent for "on my way"). Minted by
+    /// <c>GuestAlreadyAnsweredException</c>.
+    /// </summary>
+    public const string GuestAlreadyAnswered = "guest-already-answered";
+
+    /// <summary>The branch does not take takeaway orders. HTTP 409, <c>context.branchId</c>. Minted by <c>TakeawayNotAcceptedException</c>.</summary>
+    public const string TakeawayNotAccepted = "takeaway-not-accepted";
+
+    /// <summary>
+    /// Closed for takeaway now - shut, or past the last order. HTTP 409, <c>context.branchId</c>, <c>opensAtUtc</c> and
+    /// <c>opensAt</c> (local <c>HH:mm</c>) when it opens again within a week. Minted by <c>TakeawayClosedException</c>.
+    /// </summary>
+    public const string TakeawayClosed = "takeaway-closed";
+
+    /// <summary>
+    /// ASAP while the kitchen has as many takeaway orders in progress as the venue allows. HTTP 409,
+    /// <c>context.branchId</c>, <c>maxInProgress</c>. Minted by <c>TakeawayBusyException</c>.
+    /// </summary>
+    public const string TakeawayBusy = "takeaway-busy";
+
+    /// <summary>
+    /// The pickup time is not one on offer. HTTP 409, <c>context.branchId</c>, <c>at</c>, <c>slots</c> (on offer now).
+    /// Minted by <c>TakeawaySlotUnavailableException</c>.
+    /// </summary>
+    public const string TakeawaySlotUnavailable = "takeaway-slot-unavailable";
+
+    /// <summary>
+    /// Dishes that cannot be ordered to take away. HTTP 422, <c>context.items[]</c> = <c>{ menuItemId, reason }</c> (1 not
+    /// on the menu, 2 sold out, 3 hall only). Minted by <c>TakeawayItemsUnavailableException</c>.
+    /// </summary>
+    public const string TakeawayItemsUnavailable = "takeaway-items-unavailable";
+
+    /// <summary>
+    /// The takeaway order is not in the state for that move. HTTP 409, <c>context.orderId</c> and <c>status</c> (where it
+    /// is now). Minted by <c>TakeawayStatusConflictException</c>.
+    /// </summary>
+    public const string TakeawayStatusConflict = "takeaway-status-conflict";
+
+    /// <summary>
+    /// "No-show" before thirty minutes past ready. HTTP 409, <c>context.orderId</c> and <c>noShowFromUtc</c>. Minted by
+    /// <c>TakeawayNoShowTooEarlyException</c>.
+    /// </summary>
+    public const string TakeawayNoShowTooEarly = "takeaway-no-show-too-early";
+
+    /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
     /// 409, <c>context.tabId</c>. Minted by <c>TabAwaitingAdmissionException</c>.
     /// </summary>
@@ -582,6 +646,17 @@ public static class ErrorCodes
         PreOrderNotSendable => "Pre-order cannot be sent now",
         PreOrderItemsUnavailable => "Dishes cannot be pre-ordered",
         OnMyWayNotOpen => "Booking not expecting you",
+        AskOnMyWayNotOpen => "Booking not expecting anybody",
+        AskOnMyWayTooEarly => "Too early to ask",
+        AskOnMyWayAskedRecently => "Asked a moment ago",
+        GuestAlreadyAnswered => "The guest has answered",
+        TakeawayNotAccepted => "Takeaway not offered",
+        TakeawayClosed => "Takeaway closed now",
+        TakeawayBusy => "Kitchen busy",
+        TakeawaySlotUnavailable => "Pickup time unavailable",
+        TakeawayItemsUnavailable => "Dishes not for takeaway",
+        TakeawayStatusConflict => "Order has moved on",
+        TakeawayNoShowTooEarly => "Too early for a no-show",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
         ScanTurnedAway => "Ask a waiter",

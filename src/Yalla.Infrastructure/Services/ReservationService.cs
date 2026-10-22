@@ -3453,6 +3453,10 @@ internal sealed class ReservationService(
 
             // "Yes, on my way" - the pre-order's question, 45 minutes before.
             GuestConfirmedOnWayAtUtc = reservation.GuestConfirmedOnWayAtUtc,
+            GuestRunningLateMinutes = reservation.GuestRunningLateMinutes,
+            GuestRunningLateAtUtc = reservation.GuestRunningLateAtUtc,
+            StaffAskedOnMyWayAtUtc = reservation.StaffAskedOnMyWayAtUtc,
+            OnMyWayOpensAtUtc = PreOrderRules.LockedAtUtc(reservation.StartUtc),
 
             // Only on a booking still holding its table: a cancelled one has nothing to answer about.
             IncomingTableRequest = incoming is not null && ReservationOverlap.Blocks(reservation.Status)

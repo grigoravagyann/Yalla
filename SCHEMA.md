@@ -210,7 +210,24 @@ the rail's reads (a branch's pre-orders with their bookings). `PreOrderLines` (c
 pre-order): `Position`, `MenuItemId` (Restrict - a dish a pre-order names is marked unavailable, never deleted), `NameSnapshot` and `UnitPriceAmdSnapshot` - the price locked when
 the dish first entered the pre-order - `Quantity` (CHECK 1..20) and `Note`. Beside them:
 `Branches.AcceptsPreOrders` (default 0) and `PreOrderMinutesBefore` (default 30), `MenuItems.AvailableForPreOrder`
-(default 1), `Reservations.GuestConfirmedOnWayAtUtc`. See `docs/reservations.md` §3h.
+(default 1), `Reservations.GuestConfirmedOnWayAtUtc`. See `docs/reservations.md` §3h. "I'm coming" adds
+`Reservations.GuestRunningLateMinutes`, `GuestRunningLateAtUtc` and `StaffAskedOnMyWayAtUtc` (all nullable).
+
+### TakeawayOrder and TakeawayOrderLine
+
+An order to pick up later, with no table and nothing paid in the app. `TakeawayOrders`: `BranchId` and `DinerUserId`
+(Restrict; the account link is cut to null when the account is deleted - the order is the venue's record), `Code`
+("T-482", unique per branch per `LocalDate` - the branch's service day - by `UX_TakeawayOrders_BranchId_LocalDate_Code`),
+`GuestName` and `GuestPhone` (as they were when ordered), `PickupAsap`, `RequestedPickupUtc` and
+`RequestedPickupLocalTime`, `Note`, `Status` (CHECK 1..7: Sent, Accepted, Ready, Collected, Declined, Cancelled,
+NoShow), `AcceptDeadlineUtc` (five minutes after sending, cleared on any answer - the sweep's filtered index), the
+promised `ReadyAtUtc`, a timestamp and staff id per step (accepted, marked ready, collected, declined, no-show; staff
+ids Restrict to `StaffMembers`), `DeclinedBecause` and `DeclineReason`, `PaymentMethod` (1 cash, 2 card) and
+`PaidAmountAmd` (the total, at handover), `ClientCommandId` (unique: a retried send finds the first) and `RowVersion`.
+`TakeawayOrderLines` (cascade from the order): `Position`, `MenuItemId` (Restrict - a dish an order names is marked
+unavailable, never deleted), `NameSnapshot`, `UnitPriceAmdSnapshot`, `Quantity` (CHECK 1..20). Beside them: the
+branch's `TakeawayEnabled` (0), `TakeawayAutoAccept` (0), `TakeawayPrepMinutes` (20), `TakeawayLastOrderMinutes` (30) and
+`TakeawayMaxInProgress` (5), and `MenuItems.AvailableForTakeaway` (1). See `docs/takeaway.md`.
 
 ### TableSession
 

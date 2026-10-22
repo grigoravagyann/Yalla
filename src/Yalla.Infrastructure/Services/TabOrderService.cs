@@ -566,6 +566,13 @@ internal sealed class TabOrderService(
             })
             .FirstOrDefaultAsync(cancellationToken);
 
+        // A takeaway ticket has its own move, which tells the guest: not this rail's.
+        if (loaded is null && await db.TakeawayOrders.AnyAsync(t => t.Id == orderId, cancellationToken))
+        {
+            throw new DomainStateException(
+                "This is a takeaway ticket: mark it ready with POST /api/takeaway-orders/{id}/ready.");
+        }
+
         // Not an order on a tab: a booking's pre-order the kitchen is cooking before the party sits, on the same rail.
         if (loaded is null)
         {
@@ -839,12 +846,79 @@ internal sealed class TabOrderService(
                                         : p.KitchenStatus == status)),
             cancellationToken);
 
+        // And the takeaway orders the venue accepted: cooked for the counter, on the same rail with their own band.
+        var takeaway = await TakeawayTicketsAsync(branchId, status, nowUtc, cancellationToken);
+
         return
         [
             .. orders
                 .Select(row => ToKitchenView(row.Order, row.TableLabel, row.PlacedByName, nowUtc) with { PreOrder = row.PreOrder })
                 .Concat(held)
+                .Concat(takeaway)
                 .OrderBy(o => o.PlacedAtUtc),
+        ];
+    }
+
+    /// <summary>
+    /// A branch's takeaway tickets: accepted (InKitchen on the rail) and ready (Ready) - until handed over. The code is the
+    /// ticket's label; one statement.
+    /// </summary>
+    private async Task<IReadOnlyList<KitchenOrderView>> TakeawayTicketsAsync(
+        Guid branchId, TabOrderStatus? status, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        Domain.Takeaway.TakeawayStatus[] wanted = status switch
+        {
+            null => [Domain.Takeaway.TakeawayStatus.Accepted, Domain.Takeaway.TakeawayStatus.Ready],
+            TabOrderStatus.InKitchen => [Domain.Takeaway.TakeawayStatus.Accepted],
+            TabOrderStatus.Ready => [Domain.Takeaway.TakeawayStatus.Ready],
+            _ => [],
+        };
+
+        if (wanted.Length == 0)
+        {
+            return [];
+        }
+
+        var rows = await db.TakeawayOrders
+            .AsNoTracking()
+            .Where(t => t.BranchId == branchId && wanted.Contains(t.Status))
+            .Select(t => new
+            {
+                Order = t,
+                Lines = t.Lines.OrderBy(l => l.Position).ToList(),
+                AcceptedByName = db.StaffMembers.Where(s => s.Id == t.AcceptedByStaffId).Select(s => s.FullName).FirstOrDefault(),
+                TimeZoneId = db.Branches.Where(b => b.Id == t.BranchId).Select(b => b.TimeZoneId).First(),
+            })
+            .AsSplitQuery()
+            .ToListAsync(cancellationToken);
+
+        return
+        [
+            .. rows.Select(r =>
+            {
+                var t = r.Order;
+                var placedAt = t.AcceptedAtUtc ?? t.CreatedAtUtc;
+                var readyAt = t.ReadyAtUtc ?? t.RequestedPickupUtc;
+
+                return new KitchenOrderView(
+                    t.Id,
+                    null,
+                    t.Code,
+                    t.Status == Domain.Takeaway.TakeawayStatus.Ready ? TabOrderStatus.Ready : TabOrderStatus.InKitchen,
+                    placedAt,
+                    readyAt,
+                    (int)Math.Max(0d, (nowUtc - placedAt).TotalMinutes),
+                    [.. r.Lines.Select(l => new OrderLineView(
+                        l.Id, l.MenuItemId, l.NameSnapshot, l.UnitPriceAmdSnapshot, l.Quantity, l.LineTotalAmd,
+                        false, true, null, [], null))],
+                    r.AcceptedByName,
+                    Takeaway: new KitchenTakeaway(
+                        t.Code,
+                        readyAt,
+                        BranchZone.For(r.TimeZoneId).LocalTimeAt(readyAt),
+                        t.GuestName,
+                        t.Note));
+            }),
         ];
     }
 

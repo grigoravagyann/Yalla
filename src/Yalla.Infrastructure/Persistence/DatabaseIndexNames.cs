@@ -25,6 +25,12 @@ internal static class DatabaseIndexNames
     /// <summary>A branch's pre-orders with their bookings: the pre-order rail's reads.</summary>
     public const string PreOrdersByBranch = "IX_PreOrders_BranchId_ReservationId";
 
+    /// <summary>A takeaway order's code: one per branch per service day.</summary>
+    public const string TakeawayCodePerBranchDay = "UX_TakeawayOrders_BranchId_LocalDate_Code";
+
+    /// <summary>A takeaway order per app command: a retried send finds the first one.</summary>
+    public const string TakeawayClientCommand = "UX_TakeawayOrders_ClientCommandId";
+
     /// <summary>
     /// Unique on the caller's command id. A violation means the same offline command is being
     /// replayed concurrently with its original.
