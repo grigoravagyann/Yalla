@@ -78,6 +78,14 @@ internal sealed class TakeawayOrderConfiguration : EntityConfiguration<TakeawayO
         builder.HasIndex(o => new { o.DinerUserId, o.CreatedAtUtc })
             .HasDatabaseName("IX_TakeawayOrders_DinerUserId_CreatedAtUtc");
 
+        // The revenue report: a branch's collected orders by when they were paid at the counter, with what was paid and
+        // how, so the range seek answers without a lookup per order. Filtered to collected orders (status 4): nothing
+        // else has revenue to report.
+        builder.HasIndex(o => new { o.BranchId, o.CollectedAtUtc })
+            .HasFilter("[Status] = 4")
+            .IncludeProperties(o => new { o.PaidAmountAmd, o.PaymentMethod })
+            .HasDatabaseName("IX_TakeawayOrders_BranchId_CollectedAtUtc_Reporting");
+
         // The sweep: the orders still waiting for an answer, by deadline. Small - the column is cleared on any answer.
         builder.HasIndex(o => o.AcceptDeadlineUtc)
             .HasFilter("[AcceptDeadlineUtc] IS NOT NULL")

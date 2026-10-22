@@ -33,6 +33,12 @@ namespace Yalla.Application.Reservations;
 /// visit nor a no-show - most often a venue that does not seat guests in Yalla.
 /// </param>
 /// <param name="IsNewGuest">Nothing booked in the window: show a neutral "new guest", never a warning.</param>
+/// <param name="TakeawayNoShows">
+/// Takeaway orders the guest's account placed whose promised ready time is in the window, made ready by the venue and
+/// never collected (<c>TakeawayStatus.NoShow</c>). Counted apart from the bookings - none of the booking counts above
+/// includes one, and <paramref name="IsNewGuest"/> is about bookings only - but each counts toward the no-show block
+/// like a booking's no-show (<see cref="Domain.Occupancy.NoShowBlockRules"/>). See <c>docs/takeaway.md</c>.
+/// </param>
 /// <param name="BlockedUntilUtc">
 /// While the guest is blocked from booking for no-shows (<see cref="Domain.Occupancy.NoShowBlockRules"/>): when the
 /// block ends. Absent otherwise.
@@ -44,12 +50,14 @@ public sealed record GuestRecord(
     int LateCancellations,
     int Unmarked,
     bool IsNewGuest,
+    int TakeawayNoShows,
     DateTime? BlockedUntilUtc = null)
 {
     /// <summary>A guest with nothing in the window.</summary>
-    public static readonly GuestRecord New = new(0, 0, 0, 0, 0, IsNewGuest: true);
+    public static readonly GuestRecord New = new(0, 0, 0, 0, 0, IsNewGuest: true, TakeawayNoShows: 0);
 
     /// <summary>Whether this record is good enough for a venue's auto-confirm setting - see <see cref="Domain.Occupancy.GuestRecordRules.IsGood"/>.</summary>
     /// <remarks>A method, not a property: it is the server's rule, not part of what the wire carries.</remarks>
-    public bool QualifiesAsGood() => Domain.Occupancy.GuestRecordRules.IsGood(Came, NoShows, LateCancellations);
+    public bool QualifiesAsGood() =>
+        Domain.Occupancy.GuestRecordRules.IsGood(Came, NoShows, LateCancellations, TakeawayNoShows);
 }

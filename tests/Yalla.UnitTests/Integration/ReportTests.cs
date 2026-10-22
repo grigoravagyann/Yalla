@@ -5,9 +5,11 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Reports;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Takeaway;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.UnitTests.Integration;
@@ -395,6 +397,10 @@ public class ReportTests(SqlServerFixture fixture)
 
             await CloseTabAsync(db, test, Local(Tuesday, 20, 0), totalAmd: 12_000L);
             await CloseTabAsync(db, test, Local(Tuesday, 21, 0), totalAmd: 8_500L, tableIndex: 1);
+
+            // And one takeaway order collected at the counter, which the file says apart from the hall.
+            await TakeawayAsync(
+                db, test, await TestMenuBuilder.CreateAsync(db, branch.BranchId), Local(Tuesday, 19, 0), quantity: 1, TakeawayPaymentMethod.Cash);
         }
 
         using var manager = factory.CreateClientWithToken(
@@ -422,7 +428,7 @@ public class ReportTests(SqlServerFixture fixture)
             .Select(l => l.TrimEnd('\r'))
             .ToList();
 
-        Assert.Equal("localDate,revenueAmd,tabs", lines[0]);
+        Assert.Equal("localDate,revenueAmd,tabs,hallAmd,takeawayAmd,takeawayOrders", lines[0]);
 
         var day = json.GetProperty("byDay").EnumerateArray().Single();
 
@@ -431,12 +437,17 @@ public class ReportTests(SqlServerFixture fixture)
                 ',',
                 day.GetProperty("localDate").GetString(),
                 day.GetProperty("revenueAmd").GetInt64().ToString(CultureInfo.InvariantCulture),
-                day.GetProperty("tabs").GetInt32().ToString(CultureInfo.InvariantCulture)),
+                day.GetProperty("tabs").GetInt32().ToString(CultureInfo.InvariantCulture),
+                json.GetProperty("hallAmd").GetProperty("value").GetDecimal().ToString(CultureInfo.InvariantCulture),
+                day.GetProperty("takeawayAmd").GetInt64().ToString(CultureInfo.InvariantCulture),
+                day.GetProperty("takeawayOrders").GetInt32().ToString(CultureInfo.InvariantCulture)),
             lines[1]);
 
-        // And the number is the one the venue counted: two tabs, 20,500 dram.
-        Assert.Equal(20_500L, day.GetProperty("revenueAmd").GetInt64());
-        Assert.Equal(20_500L, json.GetProperty("totalAmd").GetProperty("value").GetDecimal());
+        // And the number is the one the venue counted: two tabs, 20,500 dram, and one order at the counter.
+        Assert.Equal(20_500L + TestMenu.KhachapuriAmd, day.GetProperty("revenueAmd").GetInt64());
+        Assert.Equal(TestMenu.KhachapuriAmd, day.GetProperty("takeawayAmd").GetInt64());
+        Assert.Equal(20_500L + TestMenu.KhachapuriAmd, json.GetProperty("totalAmd").GetProperty("value").GetDecimal());
+        Assert.Equal(20_500L, json.GetProperty("hallAmd").GetProperty("value").GetDecimal());
     }
 
     // ------------------------------------------------------------ the console's Reports screen
@@ -472,6 +483,62 @@ public class ReportTests(SqlServerFixture fixture)
             report.PreviousByDay.Select(d => (d.LocalDate, d.RevenueAmd, d.Tabs)));
 
         Assert.Equal(new Compared(2m, 1m), report.Tabs);
+    }
+
+    /// <summary>
+    /// Takeaway orders collected at the counter are revenue beside the hall's tabs: in the total and in each day, split
+    /// "Hall / Takeaway" with their counts, in the cash or card column by how they were paid, in the hour they were
+    /// collected - and the orders nobody came for counted apart. Collected on the local day, not the UTC one, as a tab
+    /// is; the hall's average bill stays the hall's.
+    /// </summary>
+    [SkippableFact]
+    public async Task Takeaway_orders_collected_are_revenue_split_from_the_hall_by_method_and_hour()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: Yerevan);
+        var menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+
+        await CloseTabAsync(db, branch, Local(Tuesday, 20, 0), totalAmd: 12_000L);
+
+        // Two collected on Tuesday - one cash at lunch, one card at 21:40 - one collected at 00:30 on Wednesday (20:30
+        // UTC on Tuesday: not in a local Tuesday), one nobody came for on Tuesday, and one last Monday for the comparison.
+        await TakeawayAsync(db, branch, menu, Local(Tuesday, 13, 10), quantity: 2, TakeawayPaymentMethod.Cash);
+        await TakeawayAsync(db, branch, menu, Local(Tuesday, 21, 40), quantity: 1, TakeawayPaymentMethod.Card);
+        await TakeawayAsync(db, branch, menu, Local(Tuesday.AddDays(1), 0, 30), quantity: 5, TakeawayPaymentMethod.Cash);
+        await TakeawayAsync(db, branch, menu, Local(Tuesday, 19, 0), quantity: 1, method: null);
+        await TakeawayAsync(db, branch, menu, Local(Tuesday.AddDays(-1), 12, 0), quantity: 1, TakeawayPaymentMethod.Card);
+
+        var reports = SqlServerFixture.CreateReportQuery(db, TestActor.Manager(branch.ManagerId));
+
+        var report = await reports.GetRevenueAsync(new ReportRequest(branch.BranchId, Tuesday, Tuesday));
+
+        const long cash = 2 * TestMenu.KhachapuriAmd;
+        const long card = TestMenu.KhachapuriAmd;
+
+        Assert.Equal(new Compared(12_000m + cash + card, TestMenu.KhachapuriAmd), report.TotalAmd);
+        Assert.Equal(new Compared(12_000m, 0m), report.HallAmd);
+        Assert.Equal(new Compared(cash + card, TestMenu.KhachapuriAmd), report.TakeawayAmd);
+        Assert.Equal(new Compared(2m, 1m), report.TakeawayOrders);
+        Assert.Equal(new Compared(1m, 0m), report.TakeawayNotCollected);
+        Assert.Equal(new Compared(cash, 0m), report.CashAmd);
+        Assert.Equal(new Compared(card, TestMenu.KhachapuriAmd), report.CardAmd);
+        Assert.Equal(0m, report.InAppAmd.Value);
+
+        // The hall's bill stays the hall's.
+        Assert.Equal(new Compared(1m, 0m), report.Tabs);
+        Assert.Equal(12_000m, report.AverageTabAmd.Value);
+
+        var day = Assert.Single(report.ByDay);
+        Assert.Equal((12_000L + cash + card, 1, cash + card, 2), (day.RevenueAmd, day.Tabs, day.TakeawayAmd, day.TakeawayOrders));
+        Assert.Equal(TestMenu.KhachapuriAmd, Assert.Single(report.PreviousByDay).TakeawayAmd);
+
+        Assert.Equal(cash, report.ByHour.Single(h => h.Hour == 13).RevenueAmd);
+        Assert.Equal(12_000L, report.ByHour.Single(h => h.Hour == 20).RevenueAmd);
+        Assert.Equal(card, report.ByHour.Single(h => h.Hour == 21).RevenueAmd);
+        Assert.Equal(report.TotalAmd.Value, report.ByHour.Sum(h => h.RevenueAmd));
     }
 
     /// <summary>
@@ -719,6 +786,54 @@ public class ReportTests(SqlServerFixture fixture)
         await db.SaveChangesAsync();
 
         return tab;
+    }
+
+    /// <summary>
+    /// A takeaway order promised for half an hour before <paramref name="atUtc"/>: collected at <paramref name="atUtc"/>
+    /// and paid by <paramref name="method"/>, or - with no method - marked not collected then. Walked through the order's
+    /// own moves.
+    /// </summary>
+    private static async Task TakeawayAsync(
+        YallaDbContext db,
+        TestBranch branch,
+        TestMenu menu,
+        DateTime atUtc,
+        int quantity,
+        TakeawayPaymentMethod? method)
+    {
+        var guest = new DinerUser($"+3749{Random.Shared.Next(1_000_000, 9_999_999)}", "hy", "Ani");
+        db.DinerUsers.Add(guest);
+
+        var local = Yalla.Domain.Venues.BranchTime.ToLocal(atUtc, Yerevan);
+        var order = new TakeawayOrder(
+            branch.BranchId,
+            guest.Id,
+            $"T-{Random.Shared.Next(100, 1000)}",
+            DateOnly.FromDateTime(local),
+            "Ani",
+            guest.PhoneE164!,
+            pickupAsap: false,
+            atUtc.AddMinutes(-30),
+            TimeOnly.FromDateTime(local.AddMinutes(-30)),
+            note: null,
+            [new TakeawayLineInput(menu.Khachapuri, "Adjarian khachapuri", TestMenu.KhachapuriAmd, quantity)],
+            Guid.CreateVersion7(),
+            atUtc.AddMinutes(-40));
+
+        order.Accept(atUtc.AddMinutes(-30), branch.WaiterId, atUtc.AddMinutes(-39));
+        order.MarkReady(branch.WaiterId, atUtc.AddMinutes(-30));
+
+        if (method is { } paid)
+        {
+            order.Collect(paid, branch.WaiterId, atUtc);
+        }
+        else
+        {
+            order.MarkNoShow(branch.WaiterId, atUtc);
+        }
+
+        db.TakeawayOrders.Add(order);
+        await db.SaveChangesAsync();
     }
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);

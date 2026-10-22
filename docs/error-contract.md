@@ -308,6 +308,7 @@ Each refusal has its own code (2026-10-22), so the app and the tablet say what i
 | `takeaway-items-unavailable` | 422 | `items[]` = `{ menuItemId, reason }` (1 NotOnMenu, 2 SoldOut, 3 NotForTakeaway) | dishes that cannot be ordered to take away, every one |
 | `takeaway-status-conflict` | 409 | `orderId`, `status` (where the order is now) | a move the order is not in the state for - cancel after the venue answered, accept a cancelled order |
 | `takeaway-no-show-too-early` | 409 | `orderId`, `noShowFromUtc` | "no-show" less than thirty minutes after ready |
+| `booking-blocked-no-shows` | 403 | `blockedUntilUtc` | a takeaway order from a guest blocked for no-shows - the booking's own code (2026-10-23), so the app says the same thing at both checkouts |
 | `ask-on-my-way-too-early` | 409 | `reservationId`, `opensAtUtc` | the venue asks more than two hours before the start |
 | `ask-on-my-way-not-open` | 409 | `reservationId`, `status`, `startUtc` | the venue asks about a booking not confirmed, or started |
 | `guest-already-answered` | 409 | `reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) | the guest said on my way or running late |

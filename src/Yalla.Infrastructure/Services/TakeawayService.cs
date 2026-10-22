@@ -28,6 +28,7 @@ internal sealed class TakeawayService(
     IAuthorizationQueries authorization,
     StaffBranchGuard branchGuard,
     IOutbox outbox,
+    NoShowBlocks noShowBlocks,
     ILogger<TakeawayService> logger) : ITakeawayService
 {
     /// <summary>A code taken by a racing order is tried again this often, under the branch's lock it should never be.</summary>
@@ -132,6 +133,22 @@ internal sealed class TakeawayService(
         if (await ReplayAsync(command.ClientCommandId, dinerUserId, cancellationToken) is { } replay)
         {
             return replay;
+        }
+
+        // A guest blocked for no-shows orders nothing either: a takeaway order not collected counts toward the block as a
+        // missed booking does. Under the account's lock, which a no-show takes too, so an order racing the third
+        // no-show is refused rather than slipping in. Keyed on the number too, as a booking is.
+        var phone = await db.DinerUsers
+            .AsNoTracking()
+            .Where(d => d.Id == dinerUserId)
+            .Select(d => d.PhoneE164)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (await GuestRecords.BlockedUntilAsync(
+                db, dinerUserId, ReservationService.BookerPhone(phone), clock.UtcNow, cancellationToken) is { } blockedUntil)
+        {
+            throw new Domain.Occupancy.BookingBlockedForNoShowsException(
+                blockedUntil, Domain.Occupancy.BookingBlockedForNoShowsException.TakeawayMessage(blockedUntil));
         }
 
         await db.Database.ExecuteSqlRawAsync(
@@ -403,15 +420,73 @@ internal sealed class TakeawayService(
             null,
             cancellationToken);
 
-    public Task<StaffTakeawayOrderView> MarkNoShowAsync(Guid orderId, CancellationToken cancellationToken = default) =>
-        StaffActAsync(
-            orderId,
-            "Mark a takeaway order not collected",
-            kitchenMay: false,
-            TakeawayStatus.NoShow,
-            (order, staffId, nowUtc) => order.MarkNoShow(staffId, nowUtc),
-            null,
-            cancellationToken);
+    /// <summary>
+    /// Nobody came for it. Counts toward the guest's no-show block exactly as a missed booking does
+    /// (<see cref="GuestRecords.BlockingNoShowDaysAsync"/>): recorded under the guest's account lock - the lock a
+    /// booking's no-show takes - and judged in the same transaction, so a third no-show is never missed and the block
+    /// never written twice. A block cancels the guest's bookings still to come, and their tables' holds are given back
+    /// after the commit. Unlike a booking's, it cannot be withdrawn.
+    /// </summary>
+    public async Task<StaffTakeawayOrderView> MarkNoShowAsync(Guid orderId, CancellationToken cancellationToken = default)
+    {
+        var order = await db.TakeawayOrders
+                        .Include(o => o.Lines)
+                        .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken)
+                    ?? throw new KeyNotFoundException($"Takeaway order {orderId} was not found.");
+
+        var staffId = await RequireStaffAtAsync(order.BranchId, "Mark a takeaway order not collected", kitchenMay: false, cancellationToken);
+        var nowUtc = clock.UtcNow;
+
+        if (!order.MarkNoShow(staffId, nowUtc))
+        {
+            return await StaffViewAsync(orderId, wasReplay: true, cancellationToken);
+        }
+
+        IReadOnlyList<Domain.Occupancy.Reservation> cancelledByBlock = [];
+
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            if (order.DinerUserId is { } locked)
+            {
+                await DinerAccountLock.IsLiveAsync(db, locked, cancellationToken);
+            }
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                var status = await StatusAfterRaceAsync(orderId, cancellationToken);
+
+                return status == TakeawayStatus.NoShow
+                    ? await StaffViewAsync(orderId, wasReplay: true, cancellationToken)
+                    : throw new TakeawayStatusConflictException(
+                        orderId, status, "Somebody changed this order a moment ago. Read the counter again.");
+            }
+
+            // Saved first, so the count reads this one as it reads the others.
+            if (order.DinerUserId is { } account)
+            {
+                var branch = await db.Branches
+                    .Include(b => b.Venue)
+                    .FirstAsync(b => b.Id == order.BranchId, cancellationToken);
+
+                (cancelledByBlock, _) = await noShowBlocks.BlockIfDueAsync(account, branch, nowUtc, cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        await noShowBlocks.ReleaseHoldsOfAsync(cancelledByBlock, cancellationToken);
+
+        logger.LogInformation(
+            "Takeaway order {Code} at branch {BranchId} was not collected, marked by staff {StaffId}.",
+            order.Code, order.BranchId, staffId);
+
+        return await StaffViewAsync(orderId, wasReplay: false, cancellationToken);
+    }
 
     /// <summary>
     /// One staff action: the caller may act at the order's branch, the order makes the move, the guest is told in the

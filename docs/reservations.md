@@ -708,7 +708,7 @@ What a venue sees beside a booking - `guestRecord` - and the guest sees of thems
 
 ```json
 "guestRecord": { "booked": 9, "came": 6, "noShows": 1, "lateCancellations": 0, "unmarked": 2,
-                 "isNewGuest": false, "blockedUntilUtc": "…" }
+                 "isNewGuest": false, "takeawayNoShows": 0, "blockedUntilUtc": "…" }
 ```
 
 Over the guest's **account**'s bookings made with a proved number whose **start is in the last 365 days and has
@@ -722,6 +722,7 @@ passed** (`GuestRecordRules.WindowDays`), at **every venue**:
 | `unmarked` | the bookings whose time came and went with nobody on the floor settling them (review S5): confirmed and past their **end** with nobody seating or marking them, or seated/completed with nothing vouching for it (above). Neither a visit nor a no-show - most often a venue that does not seat guests in Yalla |
 | `booked` | exactly `came + noShows + lateCancellations + unmarked` - the bookings whose time came |
 | `isNewGuest` | `booked == 0`: a neutral "new guest", never a warning |
+| `takeawayNoShows` | the account's **takeaway orders marked not collected** whose promised ready time is in the window (2026-10-23) - a count of its own, in none of the above and not in `isNewGuest`; each counts toward the no-show block below. See [takeaway.md](takeaway.md#6a-the-guest-record-the-no-show-block-and-the-reports) |
 | `blockedUntilUtc` | while a no-show block is in force (below); absent otherwise |
 
 **Never counted:** a venue's cancellation or decline (`CancelledByVenue`, `NoAnswer` included - the venue's
@@ -762,7 +763,8 @@ months you kept, missed or cancelled late - never where"). The guest sees exactl
 
 `ReservationPolicy.AutoConfirmGuestsWithGoodRecord` (`autoConfirmGuestsWithGoodRecord` on `GET/PUT
 .../reservation-policy`, optional on PUT - omitted keeps the stored value; default **off**; in `/defaults`).
-A **good record** (`GuestRecordRules.IsGood`) is **came ≥ 3, no no-shows, no late cancellations** in the window.
+A **good record** (`GuestRecordRules.IsGood`) is **came ≥ 3, no no-shows, no late cancellations** in the window - and
+no takeaway order left uncollected (2026-10-23).
 
 It matters only when the branch's `autoConfirm` is **off** ("we approve every booking"): then a good-record
 guest skips **exactly one** reason to wait - `ApprovalTrigger.BranchApprovesEveryBooking` (1), the trust
@@ -791,6 +793,12 @@ review (B1) so that one venue, or one careless waiter, cannot block anybody.
   times: the start is when the guest failed to come, the marking time is the venue's business (a batch marked at
   closing blocks nobody; marking late does not let the third slip). Three such venue-days → blocked. One venue can
   therefore never block a guest in one evening, however many of their bookings it holds.
+- **Takeaway orders not collected count alike** (2026-10-23): the account's takeaway orders marked no-show, whose
+  **promised ready time** is in the same window, on the order's service day (`LocalDate`) - in the same venue-day pairs,
+  so a missed booking and an uncollected order at one venue on one day are one. `POST /api/takeaway-orders/{id}/no-show`
+  records it under the guest's account lock and judges the block in the same transaction (`NoShowBlocks`, the writer the
+  booking's no-show uses), with the same effect. It cannot be withdrawn (a takeaway no-show is final; see
+  [takeaway.md](takeaway.md)), and a blocked guest's takeaway order is refused with the same `403`.
 - **Concurrency.** The no-show is recorded under the booking's **table lock** and then the guest's **account
   lock** - the order every booking takes them in - with the lock timeout bounding both (review N9). Two no-shows
   marked at once at two venues are judged one after the other, the second sees the first committed: the third is

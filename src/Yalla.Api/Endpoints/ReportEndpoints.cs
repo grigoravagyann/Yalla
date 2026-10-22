@@ -94,7 +94,14 @@ public static class ReportEndpoints
                 + "counted its drawer.\n\n"
                 + "`byDay` has one entry for every local date of the range, zero days included, and "
                 + "`previousByDay` the same for the previous equivalent period, so the two pair by index. "
-                + "`tabs` is the closed tabs with their comparison.")
+                + "`tabs` is the closed tabs with their comparison.\n\n"
+                + "**Takeaway.** Orders collected at the counter are revenue too, counted when collected: `totalAmd` "
+                + "is `hallAmd` (the closed tabs, `tabs` of them) plus `takeawayAmd` (`takeawayOrders` of them); "
+                + "`byDay` carries each day's `takeawayAmd` and `takeawayOrders` inside its `revenueAmd`, and `byHour` "
+                + "puts an order in the hour it was collected. `cashAmd` includes the counter's cash and `cardAmd` its "
+                + "card payments, so cash + card + in-app is the total. `takeawayNotCollected` counts the orders "
+                + "marked not collected in the period. Average tab, per head and service charge stay the hall's. The "
+                + "CSV's day rows say `hallAmd` and `takeawayAmd` apart.")
             .Produces<RevenueReport>()
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, RangeTooLong);
 
@@ -179,16 +186,20 @@ public static class ReportEndpoints
         var report = await reports.GetRevenueAsync(Request(branchId, from, to, rollUpVenue), ct);
 
         // Day by day, in the branch's own local dates and whole dram - the shape somebody pastes
-        // into a spreadsheet beside their own takings.
+        // into a spreadsheet beside their own takings. The day's total, then the hall's and the
+        // takeaway counter's halves of it, each in a column of its own.
         return IsCsv(format)
             ? Csv(
                 $"revenue-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}",
-                ["localDate", "revenueAmd", "tabs"],
+                ["localDate", "revenueAmd", "tabs", "hallAmd", "takeawayAmd", "takeawayOrders"],
                 report.ByDay.Select(d => new[]
                 {
                     d.LocalDate.ToString("yyyy-MM-dd", Invariant),
                     d.RevenueAmd.ToString(Invariant),
                     d.Tabs.ToString(Invariant),
+                    (d.RevenueAmd - d.TakeawayAmd).ToString(Invariant),
+                    d.TakeawayAmd.ToString(Invariant),
+                    d.TakeawayOrders.ToString(Invariant),
                 }))
             : Results.Ok(report);
     }

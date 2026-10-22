@@ -3,6 +3,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Reports;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Menus;
+using Yalla.Domain.Takeaway;
 using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
@@ -334,26 +335,40 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
 
         var current = await TabsAsync(scope, scope.Range, cancellationToken);
         var previous = await TabsAsync(scope, scope.Range.Previous(), cancellationToken);
+        var takeaway = await TakeawayAsync(scope, scope.Range, cancellationToken);
+        var previousTakeaway = await TakeawayAsync(scope, scope.Range.Previous(), cancellationToken);
         var adjustments = await AdjustmentsAsync(scope, scope.Range, cancellationToken);
         var previousAdjustments = await AdjustmentsAsync(scope, scope.Range.Previous(), cancellationToken);
 
+        var hall = current.Sum(t => t.TotalAmd);
+        var previousHall = previous.Sum(t => t.TotalAmd);
+        var takeawayAmd = takeaway.Collected.Sum(o => o.PaidAmd);
+        var previousTakeawayAmd = previousTakeaway.Collected.Sum(o => o.PaidAmd);
+
         return new RevenueReport(
             scope.AsScope(),
-            Compare(current.Sum(t => t.TotalAmd), previous.Sum(t => t.TotalAmd)),
+            Compare(hall + takeawayAmd, previousHall + previousTakeawayAmd),
             Compare(current.Sum(t => t.ServiceChargeAmd), previous.Sum(t => t.ServiceChargeAmd)),
             Compare(Average(current.Select(t => t.TotalAmd)), Average(previous.Select(t => t.TotalAmd))),
 
             // Per head, not per tab. A table of six spending 30,000 and a couple spending 10,000 are
             // the same average tab and completely different rooms, and a menu is priced per head.
             Compare(PerHead(current), PerHead(previous)),
-            ByDay(current, scope.Range, scope.TimeZoneId),
-            ByHourRevenue(current, scope.TimeZoneId),
-            Compare(current.Sum(t => t.CashAmd), previous.Sum(t => t.CashAmd)),
+            ByDay(current, takeaway.Collected, scope.Range, scope.TimeZoneId),
+            ByHourRevenue(current, takeaway.Collected, scope.TimeZoneId),
+            Compare(
+                current.Sum(t => t.CashAmd) + Paid(takeaway, TakeawayPaymentMethod.Cash),
+                previous.Sum(t => t.CashAmd) + Paid(previousTakeaway, TakeawayPaymentMethod.Cash)),
             Compare(current.Sum(t => t.InAppAmd), previous.Sum(t => t.InAppAmd)),
             adjustments,
             Compare(adjustments.Sum(a => a.TotalAmd), previousAdjustments.Sum(a => a.TotalAmd)),
             Compare(current.Count, previous.Count),
-            ByDay(previous, scope.Range.Previous(), scope.TimeZoneId));
+            ByDay(previous, previousTakeaway.Collected, scope.Range.Previous(), scope.TimeZoneId),
+            Compare(Paid(takeaway, TakeawayPaymentMethod.Card), Paid(previousTakeaway, TakeawayPaymentMethod.Card)),
+            Compare(hall, previousHall),
+            Compare(takeawayAmd, previousTakeawayAmd),
+            Compare(takeaway.Collected.Count, previousTakeaway.Collected.Count),
+            Compare(takeaway.NotCollected, previousTakeaway.NotCollected));
 
         static decimal Average(IEnumerable<long> values)
         {
@@ -368,6 +383,9 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
 
             return heads == 0 ? 0m : Math.Round((decimal)rows.Sum(t => t.TotalAmd) / heads, 0);
         }
+
+        static long Paid(TakeawayRows rows, TakeawayPaymentMethod method) =>
+            rows.Collected.Where(o => o.Method == method).Sum(o => o.PaidAmd);
     }
 
     private sealed record TabRow(
@@ -377,6 +395,12 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         long CashAmd,
         long InAppAmd,
         int PartySize);
+
+    /// <summary>A takeaway order collected: when, what was taken, how.</summary>
+    private sealed record TakeawayRow(DateTime CollectedAtUtc, long PaidAmd, TakeawayPaymentMethod? Method);
+
+    /// <summary>The takeaway orders collected in a range, and how many were not collected.</summary>
+    private sealed record TakeawayRows(List<TakeawayRow> Collected, int NotCollected);
 
     /// <summary>
     /// Tabs that closed inside the range.
@@ -419,32 +443,88 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
     }
 
     /// <summary>
-    /// Every local date of <paramref name="range"/>, zero days included - a chart's line and a spreadsheet's rows
-    /// both need the day nothing was taken, and the previous period's series pairs with this one by index.
+    /// Takeaway orders collected inside the range, and how many were marked not collected in it.
     /// </summary>
-    private static IReadOnlyList<DailyRevenue> ByDay(IReadOnlyList<TabRow> tabs, ReportRange range, string timeZoneId)
+    /// <remarks>
+    /// Counted when they were <b>collected</b> - paid at the counter - for the reason a tab is counted on close: that
+    /// is when the money was in the drawer. What was taken is the amount recorded at the counter, which is the
+    /// order's total. A not-collected order is counted when it was marked so; it took nothing. A range seek on
+    /// <c>IX_TakeawayOrders_BranchId_CollectedAtUtc_Reporting</c>, filtered to collected orders.
+    /// </remarks>
+    private async Task<TakeawayRows> TakeawayAsync(Scope scope, ReportRange range, CancellationToken cancellationToken)
+    {
+        var (fromUtc, toUtc) = BranchTime.RangeToUtc(range.FromLocalDate, range.ToLocalDate, scope.TimeZoneId);
+
+        var collected = await db.TakeawayOrders
+            .AsNoTracking()
+            .Where(o => scope.BranchIds.Contains(o.BranchId)
+                        && o.Status == TakeawayStatus.Collected
+                        && o.CollectedAtUtc >= fromUtc
+                        && o.CollectedAtUtc < toUtc)
+            .Select(o => new TakeawayRow(o.CollectedAtUtc!.Value, o.PaidAmountAmd ?? 0L, o.PaymentMethod))
+            .ToListAsync(cancellationToken);
+
+        var notCollected = await db.TakeawayOrders
+            .AsNoTracking()
+            .CountAsync(
+                o => scope.BranchIds.Contains(o.BranchId)
+                     && o.Status == TakeawayStatus.NoShow
+                     && o.NoShowAtUtc >= fromUtc
+                     && o.NoShowAtUtc < toUtc,
+                cancellationToken);
+
+        return new TakeawayRows(collected, notCollected);
+    }
+
+    /// <summary>
+    /// Every local date of <paramref name="range"/>, zero days included - a chart's line and a spreadsheet's rows
+    /// both need the day nothing was taken, and the previous period's series pairs with this one by index. A day's
+    /// revenue is its closed tabs and its collected takeaway orders, the takeaway part also on its own.
+    /// </summary>
+    private static IReadOnlyList<DailyRevenue> ByDay(
+        IReadOnlyList<TabRow> tabs,
+        IReadOnlyList<TakeawayRow> takeaway,
+        ReportRange range,
+        string timeZoneId)
     {
         var byDate = tabs
             .GroupBy(t => DateOnly.FromDateTime(BranchTime.ToLocal(t.ClosedAtUtc, timeZoneId)))
             .ToDictionary(g => g.Key, g => (Total: g.Sum(t => t.TotalAmd), Count: g.Count()));
 
+        var takeawayByDate = takeaway
+            .GroupBy(o => DateOnly.FromDateTime(BranchTime.ToLocal(o.CollectedAtUtc, timeZoneId)))
+            .ToDictionary(g => g.Key, g => (Total: g.Sum(o => o.PaidAmd), Count: g.Count()));
+
         return
         [
             .. Enumerable.Range(0, range.Days)
                 .Select(offset => range.FromLocalDate.AddDays(offset))
-                .Select(date => byDate.TryGetValue(date, out var day)
-                    ? new DailyRevenue(date, day.Total, day.Count)
-                    : new DailyRevenue(date, 0L, 0)),
+                .Select(date =>
+                {
+                    var hall = byDate.GetValueOrDefault(date);
+                    var away = takeawayByDate.GetValueOrDefault(date);
+
+                    return new DailyRevenue(date, hall.Total + away.Total, hall.Count, away.Total, away.Count);
+                }),
         ];
     }
 
-    private static IReadOnlyList<HourlyRevenue> ByHourRevenue(IReadOnlyList<TabRow> tabs, string timeZoneId)
+    /// <summary>A tab in the local hour it closed, a takeaway order in the hour it was collected.</summary>
+    private static IReadOnlyList<HourlyRevenue> ByHourRevenue(
+        IReadOnlyList<TabRow> tabs,
+        IReadOnlyList<TakeawayRow> takeaway,
+        string timeZoneId)
     {
         var totals = new long[24];
 
         foreach (var tab in tabs)
         {
             totals[BranchTime.ToLocal(tab.ClosedAtUtc, timeZoneId).Hour] += tab.TotalAmd;
+        }
+
+        foreach (var order in takeaway)
+        {
+            totals[BranchTime.ToLocal(order.CollectedAtUtc, timeZoneId).Hour] += order.PaidAmd;
         }
 
         return [.. Enumerable.Range(0, 24).Select(h => new HourlyRevenue(h, totals[h]))];

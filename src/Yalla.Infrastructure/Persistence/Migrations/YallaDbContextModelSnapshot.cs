@@ -2212,6 +2212,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("NoShowByStaffId");
 
+                    b.HasIndex("BranchId", "CollectedAtUtc")
+                        .HasDatabaseName("IX_TakeawayOrders_BranchId_CollectedAtUtc_Reporting")
+                        .HasFilter("[Status] = 4");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("BranchId", "CollectedAtUtc"), new[] { "PaidAmountAmd", "PaymentMethod" });
+
                     b.HasIndex("BranchId", "Status")
                         .HasDatabaseName("IX_TakeawayOrders_BranchId_Status");
 
