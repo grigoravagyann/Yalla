@@ -116,8 +116,9 @@ public class OnMyWayAskTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// The venue's ask is the automatic question's push and feed entry, sent now with <c>askedByVenue</c>; the automatic
-    /// question is then not asked on top at 30 minutes.
+    /// The venue's ask is a message in the booking's thread, pushed now as <c>message.to-guest</c> with the
+    /// <c>venue-ask</c> category and a <c>venue-message</c> feed entry (2026-10-23, guest messages) - not the automatic
+    /// question's push on top; and the automatic question is then not asked at 30 minutes.
     /// </summary>
     [SkippableFact]
     public async Task The_venues_ask_pushes_the_question_now_and_the_automatic_one_is_not_asked_on_top()
@@ -144,16 +145,23 @@ public class OnMyWayAskTests(SqlServerFixture fixture)
         {
             await Dispatcher(db, clock, channel).RunOnceAsync();
 
-            var entry = await db.DinerNotifications
-                .Where(n => n.ReservationId == id && n.Kind == DinerNotificationKinds.BookingOnYourWay)
-                .Select(n => new { n.ParamsJson, n.CreatedAtUtc })
+            var entries = await db.DinerNotifications
+                .Where(n => n.ReservationId == id)
+                .Select(n => new { n.Kind, n.ParamsJson, n.CreatedAtUtc })
                 .ToListAsync();
 
-            Assert.Contains(entry, e => e.ParamsJson.Contains("\"askedByVenue\":\"true\"") && e.CreatedAtUtc == startUtc.AddMinutes(-60));
+            Assert.Contains(entries, e => e.Kind == DinerNotificationKinds.VenueMessage
+                                          && e.ParamsJson.Contains("\"ask\":\"true\"")
+                                          && e.CreatedAtUtc == startUtc.AddMinutes(-60));
+            Assert.DoesNotContain(entries, e => e.Kind == DinerNotificationKinds.BookingOnYourWay
+                                                && e.CreatedAtUtc <= startUtc.AddMinutes(-60));
         }
 
-        var push = Assert.Single(channel.OfKind("reservation-on-your-way"));
+        var push = Assert.Single(channel.OfKind("venue-message"));
         Assert.Equal(id.ToString(), push.Data["reservationId"]);
+        Assert.Equal("true", push.Data["ask"]);
+        Assert.Equal("venue-ask", push.CategoryId);
+        Assert.Empty(channel.OfKind("reservation-on-your-way"));
 
         clock.UtcNow = startUtc.AddMinutes(-30);
 
@@ -163,7 +171,8 @@ public class OnMyWayAskTests(SqlServerFixture fixture)
             await Dispatcher(db, clock, channel).RunOnceAsync();
         }
 
-        Assert.Single(channel.OfKind("reservation-on-your-way"));
+        Assert.Single(channel.OfKind("venue-message"));
+        Assert.Empty(channel.OfKind("reservation-on-your-way"));
     }
 
     private async Task<(AuthBranch Branch, string ManagerToken)> ArrangeAsync(YallaApiFactory factory)
@@ -184,6 +193,9 @@ public class OnMyWayAskTests(SqlServerFixture fixture)
             db,
             clock,
             new OutboxOptions(),
-            [new ReservationOnYourWayHandler(db, channel, NullLogger<ReservationOnYourWayHandler>.Instance)],
+            [
+                new ReservationOnYourWayHandler(db, channel, NullLogger<ReservationOnYourWayHandler>.Instance),
+                new VenueMessageHandler(db, channel, NullLogger<VenueMessageHandler>.Instance),
+            ],
             NullLogger<OutboxDispatcher>.Instance);
 }

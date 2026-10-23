@@ -467,6 +467,24 @@ public class PersistedEnumValueTests
         Assert.Equal(3, (int)Yalla.Domain.Occupancy.PreOrderItemRefusal.NotForPreOrder);
     }
 
+    /// <summary>Guest messages: who wrote, what kind, and the guest's answer - stored as numbers on every message.</summary>
+    [Fact]
+    public void Guest_message_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)Yalla.Domain.Messages.MessageAuthor.Guest);
+        Assert.Equal(2, (int)Yalla.Domain.Messages.MessageAuthor.Venue);
+        Assert.Equal(3, (int)Yalla.Domain.Messages.MessageAuthor.System);
+
+        Assert.Equal(1, (int)Yalla.Domain.Messages.MessageKind.Text);
+        Assert.Equal(2, (int)Yalla.Domain.Messages.MessageKind.AskComing);
+        Assert.Equal(3, (int)Yalla.Domain.Messages.MessageKind.Answer);
+        Assert.Equal(4, (int)Yalla.Domain.Messages.MessageKind.Status);
+
+        Assert.Equal(1, (int)Yalla.Domain.Messages.GuestAnswer.Coming);
+        Assert.Equal(2, (int)Yalla.Domain.Messages.GuestAnswer.Late);
+        Assert.Equal(3, (int)Yalla.Domain.Messages.GuestAnswer.NotComing);
+    }
+
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>
     private static void AssertNothingOccupies<TEnum>(int retiredValue, string retiredName)
         where TEnum : struct, Enum
