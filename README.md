@@ -15,6 +15,8 @@ tablet, and the owner's admin panel.
     orders, account, rate limits, seed data, and the contract changes in progress
   - [`error-contract.md`](docs/error-contract.md) — which refusals name their field
   - [`menu-completeness.md`](docs/menu-completeness.md) — what makes a menu item complete
+  - [`messages.md`](docs/messages.md) — messages between a venue and a guest about one booking or one
+    takeaway order: who writes, when a thread closes, the tablet's inbox, the push
   - [`notifications.md`](docs/notifications.md) — the outbox, what is sent, and what nothing sends
   - [`openapi.md`](docs/openapi.md) — the OpenAPI document, the frontend's committed copy of it, and
     the CI artifact to compare that copy with

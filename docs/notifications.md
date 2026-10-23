@@ -55,6 +55,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 | `takeaway.accepted` | Staff accept a takeaway order (or the sweep accepts one for a branch now on auto-accept) | Immediately | The order's guest - "ready at 19:10, pay at pickup" |
 | `takeaway.ready` | A takeaway order is marked ready (kitchen or floor) | Immediately | The order's guest - "come and pick it up" |
 | `takeaway.declined` | Staff decline a takeaway order, or the sweep declines one nobody answered within five minutes | Immediately | The order's guest - the reason, or the apology |
+| `message.to-guest` | Somebody at the venue writes in a booking's or a takeaway order's thread, or asks "are you coming?" (`ask-on-my-way`) | Immediately | The thread's guest - the venue's name over the text, or the question; see [messages.md](messages.md) |
 
 Both reservation messages are written when the booking is made, hours before either is due. A
 reminder whose moment has **already passed** is not written at all: a booking made an hour before it
@@ -207,12 +208,30 @@ branch **accepts automatically** writes its feed entry and **no push**: the answ
 Words in Armenian, Russian or English by the account's device (`NotificationText.Takeaway*`); a decline for nobody
 answering is an apology, not the venue's "no".
 
+### Guest messages: `message.to-guest`
+
+One per **venue** message in a booking's or a takeaway order's thread ([messages.md](messages.md)) - a typed one, or the
+venue's "Ask: are you coming?" - written in the same transaction as the message, under the account's lock, keyed
+`conversation:{conversationId}:message:{messageId}`. Guest messages push nothing: the tablet polls.
+
+- **Title** the venue's name; **body** the text (at most 140 characters, an ellipsis for the cut) or, for the ask, the
+  question with the booking's time in the guest's language ("Գալի՞ս եք 19:30-ին։", "Вы придёте к 19:30?", "Are you
+  coming at 19:30?"). Never the staff member's name.
+- **Data** `kind` `venue-message`, `conversationId`, `reservationId` or `takeawayOrderId`, `ask` `"true"`/`"false"`.
+- **`categoryId`** `venue-ask` for the ask (the app attaches "I'm coming", "Late 15 min" and a text reply), `venue-message`
+  otherwise (a text reply). `NotificationMessage.CategoryId`, already sent to Expo as `categoryId`.
+- **Feed** entry `venue-message` beside it: params `venueName`, `branchName`, `conversationId`, `subjectKind`
+  (`reservation`/`takeaway`), `ask`, `text` (140 at most; absent for the ask), and the booking's `date`/`time` or the
+  order's `code`; `reservationId` or `orderId` set.
+- **Sent while still true**: the thread still belongs to the account it was written for (an account deletion cuts it),
+  and an ask only while the booking is confirmed and the guest has not answered.
+
 ### The venue's "Ask: are you coming?"
 
-The automatic question's message type, `reservation.on-your-way`, sent now when somebody at the venue taps "Ask" on
-the tablet - payload `staffAsked: true`, feed entry `booking-on-your-way` with `askedByVenue: "true"`. The handler sends
-it to a confirmed booking whose guest has not answered (on my way **or running late**), whatever the floor decided
-about a pre-order; the automatic question is not asked on top of one the venue already asked. See
+Since 2026-10-23 a message in the booking's thread, pushed as `message.to-guest` with `categoryId` `venue-ask` and a
+`venue-message` feed entry - above. (Before, it was the automatic question's `reservation.on-your-way` with
+`staffAsked: true` and a `booking-on-your-way` entry with `askedByVenue: "true"`; the handler still sends such a message
+already queued.) The automatic question is not asked on top of one the venue already asked. See
 [reservations.md](reservations.md#3h-pre-orders).
 
 ### These are not tab events

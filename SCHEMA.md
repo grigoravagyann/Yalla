@@ -229,6 +229,20 @@ unavailable, never deleted), `NameSnapshot`, `UnitPriceAmdSnapshot`, `Quantity` 
 branch's `TakeawayEnabled` (0), `TakeawayAutoAccept` (0), `TakeawayPrepMinutes` (20), `TakeawayLastOrderMinutes` (30) and
 `TakeawayMaxInProgress` (5), and `MenuItems.AvailableForTakeaway` (1). See `docs/takeaway.md`.
 
+### Conversation and ConversationMessage
+
+Guest messages: one thread per booking or takeaway order (2026-10-23). `Conversations`: `BranchId` (Restrict), exactly one
+of `ReservationId` / `TakeawayOrderId` (Restrict; `CK_Conversations_OneSubject`; each unique by a filtered index -
+`UX_Conversations_ReservationId`, `UX_Conversations_TakeawayOrderId`), `DinerUserId` (Restrict; cut to null when the
+account is deleted - the thread is the venue's record), `LastMessageUtc`, `GuestLastReadUtc`, `VenueLastReadUtc`.
+`ConversationMessages` (cascade from the thread): `Author` (CHECK 1..3: Guest, Venue, System), `Kind` (CHECK 1..4: Text,
+AskComing, Answer, Status), `Body` (nvarchar(500); a CHECK keeps it on text messages only), `AnswerKind` (1 Coming, 2
+Late, 3 NotComing) and `LateMinutes` on an answer and its status line, `HeldUntilLocal` (time) on a late answer's status
+line, `StaffMemberId` (Restrict) and `StaffName` (a snapshot) on a venue message, `ClientCommandId` (unique per thread
+and author, filtered), and `Sequence` (identity - the tie-break after `CreatedAtUtc`). Beside them: the branch's
+`GuestsCanMessage` (1), `WaitersCanMessage` (1), `MessageTemplatesJson` (null - the app's default replies) and
+`MessageRemindAfterMinutes` (3), and the `venue-message` feed kind. See `docs/messages.md`.
+
 ### TableSession
 
 One physical occupancy of one table: this party, this table, from this moment until they left.
