@@ -69,6 +69,11 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<Yalla.Domain.Takeaway.TakeawayOrderLine> TakeawayOrderLines => Set<Yalla.Domain.Takeaway.TakeawayOrderLine>();
 
+    /// <summary>Guest messages: one thread per booking or takeaway order. See <c>docs/messages.md</c>.</summary>
+    public DbSet<Yalla.Domain.Messages.Conversation> Conversations => Set<Yalla.Domain.Messages.Conversation>();
+
+    public DbSet<Yalla.Domain.Messages.ConversationMessage> ConversationMessages => Set<Yalla.Domain.Messages.ConversationMessage>();
+
     public DbSet<TableSession> TableSessions => Set<TableSession>();
 
     public DbSet<Tab> Tabs => Set<Tab>();

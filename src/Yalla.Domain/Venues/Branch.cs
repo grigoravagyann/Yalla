@@ -132,6 +132,59 @@ public sealed class Branch : Entity
     }
 
     /// <summary>
+    /// Whether guests may write to the venue in a booking's or an order's thread. On by default; off, the answer buttons
+    /// ("I'm coming", "running late", "not coming") still work and only typed messages are refused.
+    /// </summary>
+    /// <remarks>On the branch rather than in <see cref="ReservationPolicy"/>, for the reason <see cref="AcceptsPreOrders"/> is.</remarks>
+    public bool GuestsCanMessage { get; private set; } = true;
+
+    /// <summary>Whether waiters may write to guests. On by default; managers, the general manager and the owner always may.</summary>
+    public bool WaitersCanMessage { get; private set; } = true;
+
+    /// <summary>
+    /// The venue's quick replies, as a JSON array of strings, or null for the app's default set. At most eight, each 1 to
+    /// 120 characters.
+    /// </summary>
+    public string? MessageTemplatesJson { get; private set; }
+
+    /// <summary>A guest message unanswered this long rings on the tablet: 1 to 15 minutes. Default 3.</summary>
+    public int MessageRemindAfterMinutes { get; private set; } = Messages.ConversationRules.DefaultRemindAfterMinutes;
+
+    /// <summary>The venue's quick replies, or null for the app's default set.</summary>
+    public IReadOnlyList<string>? MessageTemplates => TemplatesFrom(MessageTemplatesJson);
+
+    /// <summary>The quick replies a stored <see cref="MessageTemplatesJson"/> holds, or null for the app's default set.</summary>
+    public static IReadOnlyList<string>? TemplatesFrom(string? templatesJson) =>
+        templatesJson is null ? null : System.Text.Json.JsonSerializer.Deserialize<List<string>>(templatesJson);
+
+    /// <summary>Saves the message settings together. Out of bounds is refused, every field named.</summary>
+    /// <param name="guestsCanMessage">Guests may write.</param>
+    /// <param name="waitersCanMessage">Waiters may write.</param>
+    /// <param name="templates">The quick replies, trimmed and kept in order; null for the app's default set.</param>
+    /// <param name="remindAfterMinutes">1 to 15.</param>
+    /// <exception cref="FieldValidationException">Too many templates, one blank or too long, or the reminder out of bounds.</exception>
+    public void SetMessages(bool guestsCanMessage, bool waitersCanMessage, IReadOnlyList<string?>? templates, int remindAfterMinutes)
+    {
+        if (Messages.ConversationRules.CheckSettings(templates, remindAfterMinutes) is { Count: > 0 } violations)
+        {
+            throw new FieldValidationException(violations);
+        }
+
+        GuestsCanMessage = guestsCanMessage;
+        WaitersCanMessage = waitersCanMessage;
+        MessageTemplatesJson = templates is null
+            ? null
+            : System.Text.Json.JsonSerializer.Serialize(templates.Select(t => t!.Trim()).ToList(), TemplatesJson);
+        MessageRemindAfterMinutes = remindAfterMinutes;
+    }
+
+    /// <summary>Letters in any script kept as they are, so the column holds the Armenian a manager typed.</summary>
+    private static readonly System.Text.Json.JsonSerializerOptions TemplatesJson = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>
     /// The branch's published contact number in E.164, or null when nobody has supplied one.
     /// </summary>
     /// <remarks>

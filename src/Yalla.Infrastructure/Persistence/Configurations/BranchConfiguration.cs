@@ -108,6 +108,20 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasDefaultValue(Domain.Takeaway.TakeawayRules.DefaultMaxInProgress)
             .HasSentinel(Domain.Takeaway.TakeawayRules.DefaultMaxInProgress);
 
+        // Guest messages: on for guests and waiters, the app's own quick replies, a reminder after three minutes - for
+        // every branch that predates them too. The shipped value is the sentinel, as for the takeaway numbers, so an
+        // insert that leaves them as shipped does not name the columns - and a false is written, never defaulted away.
+        builder.Property(b => b.GuestsCanMessage).IsRequired().HasDefaultValue(true).HasSentinel(true);
+        builder.Property(b => b.WaitersCanMessage).IsRequired().HasDefaultValue(true).HasSentinel(true);
+        builder.Property(b => b.MessageTemplatesJson).HasMaxLength(2000);
+
+        builder.Property(b => b.MessageRemindAfterMinutes)
+            .IsRequired()
+            .HasDefaultValue(Domain.Messages.ConversationRules.DefaultRemindAfterMinutes)
+            .HasSentinel(Domain.Messages.ConversationRules.DefaultRemindAfterMinutes);
+
+        builder.Ignore(b => b.MessageTemplates);
+
         builder.Ignore(b => b.IsPaid);
 
         // The diner app's listing fields. All optional: a venue is usable before anybody writes a

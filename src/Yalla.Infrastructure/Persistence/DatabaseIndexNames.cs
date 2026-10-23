@@ -31,6 +31,15 @@ internal static class DatabaseIndexNames
     /// <summary>A takeaway order per app command: a retried send finds the first one.</summary>
     public const string TakeawayClientCommand = "UX_TakeawayOrders_ClientCommandId";
 
+    /// <summary>One guest-message thread per booking.</summary>
+    public const string ConversationPerReservation = "UX_Conversations_ReservationId";
+
+    /// <summary>One guest-message thread per takeaway order.</summary>
+    public const string ConversationPerTakeawayOrder = "UX_Conversations_TakeawayOrderId";
+
+    /// <summary>A message per thread, author and command: a retried send finds the first one.</summary>
+    public const string ConversationMessageClientCommand = "UX_ConversationMessages_ConversationId_Author_ClientCommandId";
+
     /// <summary>
     /// Unique on the caller's command id. A violation means the same offline command is being
     /// replayed concurrently with its original.
