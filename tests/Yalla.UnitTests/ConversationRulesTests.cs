@@ -39,6 +39,21 @@ public class ConversationRulesTests
         Assert.EndsWith("…", cut);
     }
 
+    /// <summary>An emoji straddling the cut goes whole: a lone surrogate is a box on every phone.</summary>
+    [Fact]
+    public void A_preview_never_cuts_an_emoji_in_half()
+    {
+        // 138 letters, then an emoji whose two halves sit at 138 and 139 - the cut falls between them.
+        var cut = ConversationRules.Preview(new string('a', 138) + "\U0001F600" + new string('b', 20));
+
+        Assert.Equal(new string('a', 138) + "…", cut);
+        Assert.DoesNotContain(cut, char.IsSurrogate);
+
+        // An emoji wholly before the cut stays.
+        var kept = ConversationRules.Preview(new string('a', 137) + "\U0001F600" + new string('b', 20));
+        Assert.Equal(new string('a', 137) + "\U0001F600…", kept);
+    }
+
     /// <summary>
     /// A booking's thread closes two hours after its end while it is live, and two hours after it ended otherwise - the
     /// cancellation, the decline, the no-show or the table given back. A guest reads it 30 days more.

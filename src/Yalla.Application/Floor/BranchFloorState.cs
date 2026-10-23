@@ -52,8 +52,8 @@ public sealed record BranchFloorState
 /// same threads as the Messages tab.
 /// </param>
 /// <param name="OldestUnansweredUtc">
-/// The oldest guest message the venue has not answered since, across those threads: ring once it has waited the venue's
-/// <c>remindAfterMinutes</c>. Absent when every thread has the venue's last word.
+/// The oldest guest message the venue has not answered since, across those threads that are still open: ring once it
+/// has waited the venue's <c>remindAfterMinutes</c>. Absent when every open thread has the venue's last word.
 /// </param>
 public sealed record FloorMessages(int UnreadTotal, DateTime? OldestUnansweredUtc);
 

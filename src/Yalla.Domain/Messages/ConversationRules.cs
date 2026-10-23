@@ -85,11 +85,27 @@ public static class ConversationRules
     }
 
     /// <summary>At most <see cref="PreviewLength"/> characters, an ellipsis replacing the cut.</summary>
+    /// <remarks>
+    /// Never cuts an emoji in half: a high surrogate left at the cut goes with its pair, or the push and the feed would
+    /// carry a lone half that a phone draws as a box.
+    /// </remarks>
     public static string Preview(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        return text.Length <= PreviewLength ? text : string.Concat(text.AsSpan(0, PreviewLength - 1).TrimEnd(), "…");
+        if (text.Length <= PreviewLength)
+        {
+            return text;
+        }
+
+        var keep = PreviewLength - 1;
+
+        if (char.IsHighSurrogate(text[keep - 1]))
+        {
+            keep--;
+        }
+
+        return string.Concat(text.AsSpan(0, keep).TrimEnd(), "…");
     }
 
     // ---------------------------------------------------------------- when a thread is open

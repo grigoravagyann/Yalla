@@ -494,6 +494,190 @@ public class GuestMessageTests(SqlServerFixture fixture)
             "conversation-closed");
     }
 
+    /// <summary>
+    /// Who reaches a booking's thread: another diner is told nothing exists; a waiter of another venue, a manager of a
+    /// sibling branch and the kitchen are refused; a platform admin reads without the guest's number, cannot write, and
+    /// their "read" marks nothing. A clientCommandId is a retry of the same words by the same writer - other words, or
+    /// another member of staff, is 409 <c>client-command-id-in-use</c>, never the first message answered in their place.
+    /// </summary>
+    [SkippableFact]
+    public async Task Only_the_guest_and_the_branchs_staff_reach_a_thread_and_a_command_id_is_one_message()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, managerToken) = await ArrangeAsync(factory);
+        AuthBranch otherVenue;
+        PanelAccount siblingManager;
+        PlatformAdminAccount admin;
+        Guid cookId;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            otherVenue = await AuthTestData.CreateBranchAsync(db, tableCount: 1);
+            var siblingBranchId = await AuthTestData.AddBranchAsync(db, branch.VenueId, "Asia/Yerevan", tableCount: 1);
+            siblingManager = await AuthTestData.SeedManagerAsync(db, branch.VenueId, siblingBranchId);
+            admin = await AuthTestData.CreatePlatformAdminAsync(db);
+            cookId = await AuthTestData.SeedKitchenAsync(db, branch);
+        }
+
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var stranger = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        using var manager = factory.CreateClientWithToken(managerToken);
+        using var otherWaiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, otherVenue));
+        using var sibling = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, siblingManager));
+        using var kitchen = factory.CreateClientWithToken(await AuthTestData.SignInKitchenAsync(factory, branch, cookId));
+        using var platform = factory.CreateClientWithToken(await PlatformEndpointTests.SignInPlatformAdminAsync(factory, admin));
+
+        var booking = await CreatedAsync(diner, AppBooking(factory, branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        factory.Clock.UtcNow = booking.GetProperty("startUtc").GetDateTime().AddDays(-1);
+
+        var thread = $"/api/diner/reservations/{id}/conversation";
+        var staffThread = $"/api/reservations/{id}/conversation";
+        var guestCommand = Guid.CreateVersion7();
+
+        await OkAsync(await diner.PostAsJsonAsync($"{thread}/messages", new { text = "Hello", clientCommandId = guestCommand }));
+
+        // Another diner: the booking does not exist for them, to read, write or mark.
+        await ProblemAsync(
+            await stranger.PostAsJsonAsync($"{thread}/messages", new { text = "Hi", clientCommandId = Guid.CreateVersion7() }),
+            HttpStatusCode.NotFound,
+            "not-found");
+        await ProblemAsync(await stranger.PostAsync($"{thread}/read", null), HttpStatusCode.NotFound, "not-found");
+        Assert.Equal(0, (await ReadAsync(stranger, "/api/diner/messages/unread")).GetProperty("total").GetInt32());
+
+        // Staff who are not this branch's floor: refused, reading and writing alike.
+        foreach (var outsider in new[] { otherWaiter, sibling, kitchen })
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, (await outsider.GetAsync(staffThread)).StatusCode);
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await outsider.PostAsJsonAsync(
+                    $"{staffThread}/messages", new { text = "Hi", clientCommandId = Guid.CreateVersion7() })).StatusCode);
+        }
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await sibling.GetAsync($"/api/branches/{branch.BranchId}/conversations")).StatusCode);
+
+        // A platform admin reads - without the guest's number - writes nothing, and their read is nobody's.
+        var looked = await ReadAsync(platform, staffThread);
+        Assert.Equal(string.Empty, looked.GetProperty("guestPhone").GetString());
+        Assert.False(looked.GetProperty("canWrite").GetBoolean());
+        await ProblemAsync(
+            await platform.PostAsJsonAsync($"{staffThread}/messages", new { text = "Hi", clientCommandId = Guid.CreateVersion7() }),
+            HttpStatusCode.Forbidden,
+            "forbidden");
+        Assert.Equal(HttpStatusCode.NoContent, (await platform.PostAsync($"{staffThread}/read", null)).StatusCode);
+        Assert.Equal(1, (await ReadAsync(waiter, staffThread)).GetProperty("unreadCount").GetInt32());
+
+        // The guest's id: the same words are a retry; other words are not.
+        Assert.True((await OkAsync(await diner.PostAsJsonAsync(
+            $"{thread}/messages", new { text = " Hello ", clientCommandId = guestCommand }))).GetProperty("wasReplay").GetBoolean());
+        await ProblemAsync(
+            await diner.PostAsJsonAsync($"{thread}/messages", new { text = "Hello again", clientCommandId = guestCommand }),
+            HttpStatusCode.Conflict,
+            "client-command-id-in-use");
+
+        // The venue's id: the waiter's retry replays; the manager reusing it is another writer, not a retry.
+        var staffCommand = Guid.CreateVersion7();
+        var reply = await OkAsync(await waiter.PostAsJsonAsync(
+            $"{staffThread}/messages", new { text = "Welcome", clientCommandId = staffCommand }));
+        var again = await OkAsync(await waiter.PostAsJsonAsync(
+            $"{staffThread}/messages", new { text = "Welcome", clientCommandId = staffCommand }));
+        Assert.True(again.GetProperty("wasReplay").GetBoolean());
+        Assert.Equal(reply.GetProperty("id").GetGuid(), again.GetProperty("id").GetGuid());
+        await ProblemAsync(
+            await manager.PostAsJsonAsync($"{staffThread}/messages", new { text = "Welcome", clientCommandId = staffCommand }),
+            HttpStatusCode.Conflict,
+            "client-command-id-in-use");
+
+        // Each side's ids are its own: the guest may use the number the venue used.
+        Assert.False((await OkAsync(await diner.PostAsJsonAsync(
+            $"{thread}/messages", new { text = "Thanks", clientCommandId = staffCommand }))).GetProperty("wasReplay").GetBoolean());
+
+        var messages = (await ReadAsync(diner, thread)).GetProperty("messages").EnumerateArray().ToList();
+        Assert.Equal(["Hello", "Welcome", "Thanks"], messages.Select(m => m.GetProperty("text").GetString()!).ToArray());
+    }
+
+    /// <summary>
+    /// A guest message nobody answered rings the tablet while the thread is open - and not once it has closed: after
+    /// that nobody can answer it, and a remind nobody can silence would ring until the thread left the inbox a day later.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_closed_thread_waits_for_no_answer()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, _) = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var booking = await CreatedAsync(diner, AppBooking(factory, branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        var askedAt = booking.GetProperty("startUtc").GetDateTime().AddDays(-1);
+        var floorUrl = $"/api/branches/{branch.BranchId}/tables/floor";
+        var inboxUrl = $"/api/branches/{branch.BranchId}/conversations";
+
+        factory.Clock.UtcNow = askedAt;
+        await OkAsync(await diner.PostAsJsonAsync(
+            $"/api/diner/reservations/{id}/conversation/messages", new { text = "Is there parking?", clientCommandId = Guid.CreateVersion7() }));
+
+        // The guest gives up and cancels; the thread stays open two hours more and the question still waits.
+        var cancelledAt = askedAt.AddMinutes(30);
+        factory.Clock.UtcNow = cancelledAt;
+        await OkAsync(await diner.PostAsJsonAsync($"/api/reservations/{id}/cancel", new { }));
+
+        factory.Clock.UtcNow = cancelledAt.AddHours(1);
+        Assert.Equal(askedAt, (await ReadAsync(waiter, floorUrl)).GetProperty("messages").GetProperty("oldestUnansweredUtc").GetDateTime());
+        var row = Assert.Single((await ReadAsync(waiter, inboxUrl)).GetProperty("items").EnumerateArray());
+        Assert.True(row.GetProperty("open").GetBoolean());
+        Assert.Equal(askedAt, row.GetProperty("oldestUnansweredGuestMessageUtc").GetDateTime());
+
+        // Closed: still in the inbox for the day, but waiting for nobody - nothing to ring about.
+        factory.Clock.UtcNow = cancelledAt.AddHours(2).AddMinutes(1);
+        Assert.False((await ReadAsync(waiter, floorUrl)).GetProperty("messages").TryGetProperty("oldestUnansweredUtc", out _));
+        row = Assert.Single((await ReadAsync(waiter, inboxUrl)).GetProperty("items").EnumerateArray());
+        Assert.False(row.GetProperty("open").GetBoolean());
+        Assert.False(row.TryGetProperty("oldestUnansweredGuestMessageUtc", out _));
+
+        // Unread is another matter: the venue has still not read the question, nor the "not coming" the cancel wrote.
+        Assert.Equal(2, row.GetProperty("unreadFromGuest").GetInt32());
+        Assert.Equal("not-coming", row.GetProperty("lastMessage").GetProperty("answer").GetProperty("kind").GetString());
+    }
+
+    /// <summary>
+    /// Eight quick replies at the longest the bounds allow are saved, whatever they are written in: JSON escapes every
+    /// emoji as twelve characters and a control character as six, so the stored list can be several times the 960
+    /// characters the bounds suggest.
+    /// </summary>
+    [SkippableFact]
+    public async Task Quick_replies_at_their_bounds_are_saved_whatever_they_hold()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, managerToken) = await ArrangeAsync(factory);
+        using var manager = factory.CreateClientWithToken(managerToken);
+
+        // 60 emoji are 120 characters - the longest a quick reply may be.
+        var emoji = string.Concat(Enumerable.Repeat("\U0001F44D", ConversationRules.MaxTemplateLength / 2));
+        var templates = Enumerable.Range(0, ConversationRules.MaxTemplates)
+            .Select(i => i % 2 == 0 ? emoji : "a\u0001" + new string('\u0002', ConversationRules.MaxTemplateLength - 2))
+            .ToArray();
+
+        var saved = await OkAsync(await manager.PutAsJsonAsync($"/api/branches/{branch.BranchId}/message-settings", new
+        {
+            guestsCanWrite = true,
+            waitersCanWrite = true,
+            templates,
+            remindAfterMinutes = 3,
+        }));
+
+        Assert.Equal(templates, saved.GetProperty("templates").EnumerateArray().Select(t => t.GetString()!).ToArray());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);

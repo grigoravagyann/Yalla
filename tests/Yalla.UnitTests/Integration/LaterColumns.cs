@@ -42,6 +42,6 @@ internal static class LaterColumns
         db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE dbo.Branches ADD GuestsCanMessage bit NOT NULL CONSTRAINT DF_Test_GuestsCanMessage DEFAULT 1, "
             + "WaitersCanMessage bit NOT NULL CONSTRAINT DF_Test_WaitersCanMessage DEFAULT 1, "
-            + "MessageTemplatesJson nvarchar(2000) NULL, "
+            + "MessageTemplatesJson nvarchar(max) NULL, "
             + "MessageRemindAfterMinutes int NOT NULL CONSTRAINT DF_Test_MessageRemind DEFAULT 3;");
 }

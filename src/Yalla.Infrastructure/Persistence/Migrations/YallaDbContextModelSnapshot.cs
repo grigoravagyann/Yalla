@@ -2471,8 +2471,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(3);
 
                     b.Property<string>("MessageTemplatesJson")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Name")
                         .IsRequired()

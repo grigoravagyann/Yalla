@@ -37,8 +37,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             migrationBuilder.AddColumn<string>(
                 name: "MessageTemplatesJson",
                 table: "Branches",
-                type: "nvarchar(2000)",
-                maxLength: 2000,
+                type: "nvarchar(max)",
                 nullable: true);
 
             migrationBuilder.AddColumn<bool>(

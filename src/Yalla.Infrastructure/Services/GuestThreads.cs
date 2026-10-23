@@ -543,6 +543,36 @@ internal static class GuestThreads
                                                   || o.Status == TakeawayStatus.Ready))));
     }
 
+    /// <summary>
+    /// Those of <paramref name="threads"/> that still take messages now - <see cref="ConversationRules.ReservationClosesAtUtc"/> and
+    /// <see cref="ConversationRules.TakeawayClosesAtUtc"/> in SQL, for the floor's remind: a guest message in a thread
+    /// nobody can answer any more must not ring the tablet for the rest of the day.
+    /// </summary>
+    public static IQueryable<Conversation> OpenAt(IQueryable<Conversation> threads, YallaDbContext db, DateTime nowUtc)
+    {
+        var endedAfter = nowUtc.AddHours(-ConversationRules.OpenAfterEndHours);
+
+        return threads.Where(c =>
+            (c.ReservationId != null
+             && db.Reservations.Any(r => r.Id == c.ReservationId
+                                         && ((r.Status == ReservationStatus.PendingApproval
+                                              || r.Status == ReservationStatus.Confirmed
+                                              || r.Status == ReservationStatus.Seated)
+                                             ? r.EndUtc > endedAfter
+                                             : ((r.Status == ReservationStatus.Completed
+                                                    ? db.TableSessions
+                                                          .Where(s => s.ReservationId == r.Id)
+                                                          .Max(s => s.ClosedAtUtc) ?? r.CancelledAtUtc
+                                                    : r.CancelledAtUtc) ?? r.EndUtc) > endedAfter)))
+            || (c.TakeawayOrderId != null
+                && db.TakeawayOrders.Any(o => o.Id == c.TakeawayOrderId
+                                              && (o.Status == TakeawayStatus.Sent
+                                                  || o.Status == TakeawayStatus.Accepted
+                                                  || o.Status == TakeawayStatus.Ready
+                                                  || (o.CollectedAtUtc ?? o.NoShowAtUtc ?? o.DeclinedAtUtc ?? o.CancelledAtUtc)
+                                                  > endedAfter))));
+    }
+
     // ---------------------------------------------------------------- the one-line summaries
 
     /// <summary>

@@ -296,7 +296,7 @@ public sealed record InboxSubject(
 /// <param name="AwaitingGuestAnswer">The last message is the venue's "are you coming?" and the guest has not answered.</param>
 /// <param name="OldestUnansweredGuestMessageUtc">
 /// The first guest message since the venue last wrote - the one to remind about after <c>remindAfterMinutes</c>.
-/// Absent when the venue has the last word.
+/// Absent when the venue has the last word, and once the thread has closed - nobody can answer it any more.
 /// </param>
 /// <param name="Open">The thread takes messages now.</param>
 public sealed record InboxItem(

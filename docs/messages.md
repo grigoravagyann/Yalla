@@ -63,7 +63,8 @@ it any time.
   waiting helps; absent once the thread's own limit is spent). Counted under the subject's lock, so it is a real limit.
 - **Idempotent on `clientCommandId`.** A retry answers the message the first try wrote, `wasReplay: true`; nobody is
   told twice. Checked under the lock, before the open, permission and pace checks, so a retry after the thread closed
-  still answers what was written.
+  still answers what was written. The same id with other words - or from another member of staff - is a client bug,
+  not a retry: **409 `client-command-id-in-use`**, rather than the first message answered and the new one dropped.
 - **Read marks.** Writing marks the writer's side read. Any member of staff reading marks it for the venue.
 
 ## 4. The ask and the answers
@@ -147,7 +148,8 @@ StaffMessageResult { conversationId, id, author, kind, text, createdAtUtc, staff
   `label` is the table for a booking and the `T-` code for an order; `localTime` the booking's start or the order's ready
   time. `awaitingGuestAnswer`: the last message is the venue's ask.
 - **Unread** for the venue: guest messages (text and answers) after `VenueLastReadUtc`. **Unanswered**: a guest message
-  with no venue message after it - the remind rings when the oldest has waited `remindAfterMinutes`.
+  with no venue message after it, in a thread still open - the remind rings when the oldest has waited
+  `remindAfterMinutes`. A closed thread cannot be answered, so nothing in it waits or rings (`GuestThreads.OpenAt`).
 - **The floor** (`getBranchFloor`) carries `messages: { unreadTotal, oldestUnansweredUtc? }` over the same threads, and
   each table `nextReservationUnreadMessages` and `sittingUnreadMessages` - folded into its one statement, so the tile,
   the Now rail and the tab's badge need no second read. The tablet polls, as for takeaway: messages write nothing to the

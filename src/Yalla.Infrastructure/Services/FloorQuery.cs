@@ -201,8 +201,11 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
     /// </summary>
     private IQueryable<FloorRow> BuildQuery(Guid branchId, DateTime atUtc)
     {
-        // Guest messages are about now whatever instant the floor is drawn for: the threads the Messages tab shows.
-        var threads = GuestThreads.RelevantAt(db, clock.UtcNow);
+        // Guest messages are about now whatever instant the floor is drawn for: the threads the Messages tab shows - and,
+        // for the remind, those of them that can still be answered.
+        var nowUtc = clock.UtcNow;
+        var threads = GuestThreads.RelevantAt(db, nowUtc);
+        var answerable = GuestThreads.OpenAt(threads, db, nowUtc);
 
         return db.Branches
             .Where(b => b.Id == branchId)
@@ -228,13 +231,13 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
 
                 // The Messages tab's badge and the remind, folded in for the same reason: the tablet badges from the
                 // floor it already polls. Unread is what the guest wrote after the venue last read; unanswered is a
-                // guest message with no venue message after it.
+                // guest message with no venue message after it, in a thread still open - a closed one cannot be answered.
                 MessagesUnreadTotal = threads
                     .Where(c => c.BranchId == b.Id)
                     .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
                                                            && (c.VenueLastReadUtc == null || m.CreatedAtUtc > c.VenueLastReadUtc)))
                     .Count(),
-                MessagesOldestUnansweredUtc = threads
+                MessagesOldestUnansweredUtc = answerable
                     .Where(c => c.BranchId == b.Id)
                     .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
                                                            && !c.Messages.Any(v => v.Author == MessageAuthor.Venue

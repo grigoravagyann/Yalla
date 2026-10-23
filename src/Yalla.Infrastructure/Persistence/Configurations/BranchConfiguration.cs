@@ -113,7 +113,9 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
         // insert that leaves them as shipped does not name the columns - and a false is written, never defaulted away.
         builder.Property(b => b.GuestsCanMessage).IsRequired().HasDefaultValue(true).HasSentinel(true);
         builder.Property(b => b.WaitersCanMessage).IsRequired().HasDefaultValue(true).HasSentinel(true);
-        builder.Property(b => b.MessageTemplatesJson).HasMaxLength(2000);
+        // nvarchar(max): the bounds are on what a manager types (8 x 120), and JSON writes an emoji as twelve characters
+        // and a control character as six - a list inside the bounds can be several times 960 characters.
+        builder.Property(b => b.MessageTemplatesJson).HasColumnType("nvarchar(max)");
 
         builder.Property(b => b.MessageRemindAfterMinutes)
             .IsRequired()

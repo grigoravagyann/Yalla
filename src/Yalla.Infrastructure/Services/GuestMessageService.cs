@@ -4,6 +4,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Messages;
 using Yalla.Application.Messaging;
+using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Staff;
@@ -76,7 +77,7 @@ internal sealed class GuestMessageService(
         var existing = await GuestThreads.FindAsync(db, subject, cancellationToken);
 
         if (existing is not null
-            && await ReplayAsync(existing.Id, MessageAuthor.Guest, clientCommandId, cancellationToken) is { } replay)
+            && await ReplayAsync(existing.Id, MessageAuthor.Guest, null, body, clientCommandId, cancellationToken) is { } replay)
         {
             return GuestResult(replay, wasReplay: true);
         }
@@ -261,7 +262,9 @@ internal sealed class GuestMessageService(
                 row.LatestStatus is { } status ? StatusOf(status) : null,
                 row.UnreadFromGuest,
                 row.Last is { Author: MessageAuthor.Venue, Kind: MessageKind.AskComing },
-                row.OldestUnansweredUtc,
+
+                // A closed thread cannot be answered: nothing in it waits, and nothing rings.
+                open ? row.OldestUnansweredUtc : null,
                 open));
         }
 
@@ -356,7 +359,7 @@ internal sealed class GuestMessageService(
         var existing = await GuestThreads.FindAsync(db, subject, cancellationToken);
 
         if (existing is not null
-            && await ReplayAsync(existing.Id, MessageAuthor.Venue, clientCommandId, cancellationToken) is { } replay)
+            && await ReplayAsync(existing.Id, MessageAuthor.Venue, staffId, body, clientCommandId, cancellationToken) is { } replay)
         {
             return StaffResult(replay, wasReplay: true);
         }
@@ -510,14 +513,37 @@ internal sealed class GuestMessageService(
         }
     }
 
-    /// <summary>The message this author's command already wrote in the thread, or null.</summary>
-    private Task<ConversationMessage?> ReplayAsync(
-        Guid conversationId, MessageAuthor author, Guid clientCommandId, CancellationToken cancellationToken) =>
-        db.ConversationMessages
+    /// <summary>
+    /// The message this author's command already wrote in the thread, or null. A retry is the same words from the same
+    /// writer; the id reused for other words - or by another member of staff - is a client bug, and answering it with the
+    /// first message would drop the new one without a word: 409 <c>client-command-id-in-use</c>.
+    /// </summary>
+    /// <exception cref="ClientCommandIdAlreadyUsedException">The id wrote a different message.</exception>
+    private async Task<ConversationMessage?> ReplayAsync(
+        Guid conversationId,
+        MessageAuthor author,
+        Guid? staffMemberId,
+        string body,
+        Guid clientCommandId,
+        CancellationToken cancellationToken)
+    {
+        var written = await db.ConversationMessages
             .AsNoTracking()
             .FirstOrDefaultAsync(
                 m => m.ConversationId == conversationId && m.Author == author && m.ClientCommandId == clientCommandId,
                 cancellationToken);
+
+        if (written is not null
+            && (!string.Equals(written.Body, body, StringComparison.Ordinal) || written.StaffMemberId != staffMemberId))
+        {
+            throw new ClientCommandIdAlreadyUsedException(
+                clientCommandId,
+                "That clientCommandId already wrote another message. Generate a fresh one per message, and reuse it only "
+                + "when retrying that same message.");
+        }
+
+        return written;
+    }
 
     /// <summary>The subject's thread and its messages in order (written, then the database's tie-break), untracked - or nothing while there is none.</summary>
     private async Task<(Conversation? Thread, IReadOnlyList<ConversationMessage> Messages)> ThreadAsync(

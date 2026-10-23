@@ -25,7 +25,8 @@ public static class MessageEndpoints
 
     private const string SendRefusals =
         "`text` is 1 to 500 characters after trimming (422 `validation-failed` naming `text`). **Idempotent on "
-        + "`clientCommandId`**: a retry answers the message the first try wrote, `wasReplay: true`. A closed thread: "
+        + "`clientCommandId`**: a retry answers the message the first try wrote, `wasReplay: true`; the same id with other "
+        + "words (or from another member of staff) is **409 `client-command-id-in-use`**. A closed thread: "
         + "**409 `conversation-closed`** (`context.subjectKind`, `subjectId`, `closedAtUtc`).";
 
     public static IEndpointRouteBuilder MapMessageEndpoints(this IEndpointRouteBuilder app)
@@ -118,7 +119,8 @@ public static class MessageEndpoints
             .WithSummary("The Messages tab: the branch's threads with guests")
             .WithDescription(
                 "Threads that are open or had a message in the last 24 hours. A guest message the venue has not answered "
-                + "since puts its thread first (`oldestUnansweredGuestMessageUtc` - the longest waiting first); the rest "
+                + "since, in a thread still open, puts its thread first (`oldestUnansweredGuestMessageUtc` - the longest "
+                + "waiting first; absent once the thread closed, as nobody can answer it then); the rest "
                 + "newest first. Each: the subject (`kind`, `id`, `label` - the table or the `T-` code, `guestName`, "
                 + "`localTime`, and `localDate`/`partySize` or `itemCount`/`totalAmd`), `lastMessage` (the last that is "
                 + "not a system status line - the guest's words or answer, or the venue's - with `answer` on an answer and "
