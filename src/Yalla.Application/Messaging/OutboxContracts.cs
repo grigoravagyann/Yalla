@@ -193,6 +193,12 @@ public static class OutboxMessageTypes
     /// </summary>
     public const string TakeawayDeclined = "takeaway.declined";
 
+    /// <summary>
+    /// To a thread's guest: somebody at the venue wrote, or asked "are you coming?". Keyed
+    /// <c>conversation:{conversationId}:message:{messageId}</c>, one per venue message. See <c>docs/messages.md</c>.
+    /// </summary>
+    public const string MessageToGuest = "message.to-guest";
+
     public const string ParticipantApproved = "tab.participant-approved";
 
     /// <summary>Somebody scanned the table and is waiting for the host to let them on.</summary>

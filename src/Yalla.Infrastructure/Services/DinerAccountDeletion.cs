@@ -166,6 +166,14 @@ internal static class DinerAccountDeletion
             ["reviews"] = await db.BranchReviews
                 .Where(r => r.DinerUserId == dinerUserId)
                 .ExecuteDeleteAsync(cancellationToken),
+
+            // What the person typed to venues. Above the threads' detach below, which cuts the link this finds them by;
+            // their answers ("on my way") and the venue's messages are the booking's record and stay with the thread.
+            ["guestMessages"] = await db.ConversationMessages
+                .Where(m => m.Author == Domain.Messages.MessageAuthor.Guest
+                            && m.Kind == Domain.Messages.MessageKind.Text
+                            && db.Conversations.Any(c => c.Id == m.ConversationId && c.DinerUserId == dinerUserId))
+                .ExecuteDeleteAsync(cancellationToken),
         };
 
     /// <summary>The venue's records of what the person did, kept with the link to them cut.</summary>
@@ -203,6 +211,12 @@ internal static class DinerAccountDeletion
             ["takeawayOrders"] = await db.TakeawayOrders
                 .Where(o => o.DinerUserId == dinerUserId)
                 .ExecuteUpdateAsync(set => set.SetProperty(o => o.DinerUserId, (Guid?)null), cancellationToken),
+
+            // A booking's or an order's thread is the venue's record beside it: kept, without the link to the person -
+            // and so without their pushes, which the handler sends only while the thread is still that account's.
+            ["conversations"] = await db.Conversations
+                .Where(c => c.DinerUserId == dinerUserId)
+                .ExecuteUpdateAsync(set => set.SetProperty(c => c.DinerUserId, (Guid?)null), cancellationToken),
 
             // A no-show block is the record of why bookings were cancelled, and stays. The number on it goes
             // once the block no longer refuses anything; a block still in force keeps it until it ends, so that

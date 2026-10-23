@@ -27,7 +27,7 @@ namespace Yalla.Infrastructure.Services;
 /// placed, and every later step is an <c>OrderStatusChanged</c> event with the instant it was written.
 /// </para>
 /// </remarks>
-internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : IDinerOrderQuery
+internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor, IClock clock) : IDinerOrderQuery
 {
     public const int MaxOrders = 100;
 
@@ -133,6 +133,10 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
             .AsSplitQuery()
             .ToListAsync(cancellationToken);
 
+        // Each order's thread with the venue in one line - the card's "1 new".
+        var messages = await GuestThreads.SummariesForTakeawayAsync(
+            db, [.. rows.Select(r => r.Order.Id)], clock.UtcNow, cancellationToken);
+
         return
         [
             .. rows.Select(r =>
@@ -180,7 +184,8 @@ internal sealed class DinerOrderQuery(YallaDbContext db, ICurrentActor actor) : 
                     timeline,
                     CanCancel: o.Status == TakeawayStatus.Sent,
                     new DinerTakeawaySummary(
-                        o.Code, o.Status, o.PickupAsap, o.RequestedPickupUtc, o.ReadyAtUtc, items.Sum(i => i.Quantity)));
+                        o.Code, o.Status, o.PickupAsap, o.RequestedPickupUtc, o.ReadyAtUtc, items.Sum(i => i.Quantity)),
+                    messages.GetValueOrDefault(o.Id));
 
                 return new Loaded(view, TakeawayRules.IsActive(o.Status));
             }),

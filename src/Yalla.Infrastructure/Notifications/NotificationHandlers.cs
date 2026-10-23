@@ -843,6 +843,114 @@ internal sealed class TakeawayDeclinedHandler(YallaDbContext db, INotificationCh
         NotificationText.TakeawayDeclined(locale, notice.VenueName, notice.Code, notice.Reason, notice.NoAnswer);
 }
 
+/// <summary>A venue message, as its thread's guest is told about it.</summary>
+/// <param name="ConversationId">The thread - where a tap lands.</param>
+/// <param name="MessageId">The message.</param>
+/// <param name="DinerUserId">Who is told.</param>
+/// <param name="VenueName">The venue, as named when the message was written - the title.</param>
+/// <param name="ReservationId">The booking, for a booking's thread.</param>
+/// <param name="TakeawayOrderId">The order, for a takeaway order's thread.</param>
+/// <param name="Ask">The venue's "are you coming?" rather than words.</param>
+/// <param name="Preview">The words, at most 140 characters. Null for an ask.</param>
+/// <param name="LocalStartTime">The booking's start on the branch's wall clock, for the ask's "at 19:30".</param>
+internal sealed record VenueMessageNotice(
+    Guid ConversationId,
+    Guid MessageId,
+    Guid DinerUserId,
+    string VenueName,
+    Guid? ReservationId,
+    Guid? TakeawayOrderId,
+    bool Ask,
+    string? Preview,
+    TimeOnly? LocalStartTime);
+
+/// <summary>
+/// "Lava restaurant: Of course, without onion." - somebody at the venue wrote in a booking's or an order's thread, or
+/// asked "are you coming?". The <c>venue-ask</c> category carries "I'm coming", "Late 15 min" and a text reply; the
+/// <c>venue-message</c> category a text reply.
+/// </summary>
+/// <remarks>
+/// Sent while the thread is still the account's it was written for (a deletion cuts the link), and an ask only while it
+/// is still a question: the booking confirmed and the guest not yet answered - "are you coming?" after "I'm on my way"
+/// is the push that teaches a guest to switch them off.
+/// </remarks>
+internal sealed class VenueMessageHandler(
+    YallaDbContext db,
+    INotificationChannel channel,
+    ILogger<VenueMessageHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.MessageToGuest;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<VenueMessageNotice>(payloadJson);
+
+        var standing = await db.Conversations
+            .AsNoTracking()
+            .AnyAsync(c => c.Id == notice.ConversationId && c.DinerUserId == notice.DinerUserId, cancellationToken);
+
+        if (!standing)
+        {
+            logger.LogInformation(
+                "Not telling anybody about message {MessageId}: its thread no longer belongs to the account it was written for.",
+                notice.MessageId);
+
+            return;
+        }
+
+        if (notice.Ask && notice.ReservationId is { } reservationId)
+        {
+            var booking = await db.Reservations
+                .AsNoTracking()
+                .Where(r => r.Id == reservationId)
+                .Select(r => new
+                {
+                    r.Status,
+                    Answered = r.GuestConfirmedOnWayAtUtc != null || r.GuestRunningLateAtUtc != null,
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (booking is not { Status: ReservationStatus.Confirmed, Answered: false })
+            {
+                logger.LogInformation(
+                    "Not asking booking {ReservationId} whether they are coming: it is {Status}, answered {Answered}.",
+                    reservationId, booking?.Status, booking?.Answered);
+
+                return;
+            }
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+        var (title, body) = NotificationText.VenueMessage(locale, notice.VenueName, notice.Preview, notice.Ask, notice.LocalStartTime);
+
+        var data = new Dictionary<string, string>
+        {
+            ["kind"] = "venue-message",
+            ["conversationId"] = notice.ConversationId.ToString(),
+            ["ask"] = notice.Ask ? "true" : "false",
+        };
+
+        if (notice.ReservationId is { } booked)
+        {
+            data["reservationId"] = booked.ToString();
+        }
+
+        if (notice.TakeawayOrderId is { } ordered)
+        {
+            data["takeawayOrderId"] = ordered.ToString();
+        }
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                data,
+                CategoryId: notice.Ask ? "venue-ask" : "venue-message"),
+            cancellationToken);
+    }
+}
+
 /// <summary>Shared bits every handler needs.</summary>
 internal static class Payload
 {

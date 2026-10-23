@@ -1445,7 +1445,17 @@ internal sealed class ReservationService(
             TellDinerDoneFromLink(db, outbox, reservation, branch, changed: false, nowUtc);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        // "Not coming" in the booking's thread, with "booking cancelled" after it - when it answers anybody: the thread
+        // exists, or "are you coming?" is being asked (two hours before the start on). One transaction, under the
+        // booking's lock, so the thread is made once.
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            await GuestThreads.AnswerAsync(
+                db, reservation, Domain.Messages.GuestAnswer.NotComing, null, nowUtc, cancellationToken, onlyWhenAsked: true);
+
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         if (late)
         {
@@ -1529,8 +1539,9 @@ internal sealed class ReservationService(
         // The diner's own record - what venues see beside their bookings - once, beside the lists.
         var record = await GuestRecords.ForAccountAsync(db, dinerUserId, nowUtc, cancellationToken);
 
-        // Every booking's pre-order in one go, upcoming and past alike.
+        // Every booking's pre-order in one go, upcoming and past alike - and its thread with the venue in one line.
         var all = await PreOrderReads.AttachAsync(db, [.. upcoming, .. past], nowUtc, cancellationToken);
+        all = await GuestThreads.AttachToBookingsAsync(db, all, nowUtc, cancellationToken);
 
         return new MyReservations([.. all.Take(upcoming.Count)], [.. all.Skip(upcoming.Count)], record);
     }

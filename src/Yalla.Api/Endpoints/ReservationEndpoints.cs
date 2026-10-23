@@ -468,7 +468,9 @@ public static class ReservationEndpoints
             .WithDescription(
                 "A diner may only cancel their own; anyone else's is 403. Free until the branch's "
                 + "cancellation deadline and still allowed after it - a late cancellation is far "
-                + "better than a no-show - with `cancelledAfterDeadline` recording which it was.")
+                + "better than a no-show - with `cancelledAfterDeadline` recording which it was. It is also the "
+                + "\"Not coming\" answer: when the booking has a thread with the venue, or from two hours before its "
+                + "start, a `not-coming` answer and a `status` line (`cancelled: true`) go into the thread.")
             .Produces<ReservationView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "This booking belongs to somebody else.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")

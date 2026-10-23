@@ -4,6 +4,7 @@ using Yalla.Application.Floor;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Messages;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -81,6 +82,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
             AsOfUtc = atUtc,
+            Messages = new FloorMessages(row.MessagesUnreadTotal, row.MessagesOldestUnansweredUtc),
             Tables = row.Tables
                 .Select(t => new TableFloorState
                 {
@@ -124,6 +126,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     NextReservationGuestRecord = RecordOf(NextAccount(t)),
                     SittingGuestRecord = RecordOf(t.SittingRecordedAccount),
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
+                    NextReservationUnreadMessages = t.NextReservationUnreadMessages,
+                    SittingUnreadMessages = t.SittingUnreadMessages,
                 })
                 // Ordered here rather than in SQL: the client draws by area then label, and
                 // "7" before "10" needs natural ordering that SQL collation will not give.
@@ -195,8 +199,12 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
     /// expression so it becomes a SQL parameter, which keeps the plan cacheable and lets tests
     /// drive the clock.
     /// </summary>
-    private IQueryable<FloorRow> BuildQuery(Guid branchId, DateTime atUtc) =>
-        db.Branches
+    private IQueryable<FloorRow> BuildQuery(Guid branchId, DateTime atUtc)
+    {
+        // Guest messages are about now whatever instant the floor is drawn for: the threads the Messages tab shows.
+        var threads = GuestThreads.RelevantAt(db, clock.UtcNow);
+
+        return db.Branches
             .Where(b => b.Id == branchId)
             .Select(b => new FloorRow
             {
@@ -217,6 +225,23 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 MaxSequence = db.TableStateChanges
                     .Where(c => c.BranchId == b.Id)
                     .Max(c => (long?)c.Sequence) ?? 0L,
+
+                // The Messages tab's badge and the remind, folded in for the same reason: the tablet badges from the
+                // floor it already polls. Unread is what the guest wrote after the venue last read; unanswered is a
+                // guest message with no venue message after it.
+                MessagesUnreadTotal = threads
+                    .Where(c => c.BranchId == b.Id)
+                    .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
+                                                           && (c.VenueLastReadUtc == null || m.CreatedAtUtc > c.VenueLastReadUtc)))
+                    .Count(),
+                MessagesOldestUnansweredUtc = threads
+                    .Where(c => c.BranchId == b.Id)
+                    .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
+                                                           && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
+                                                                                   && (v.CreatedAtUtc > m.CreatedAtUtc
+                                                                                       || (v.CreatedAtUtc == m.CreatedAtUtc
+                                                                                           && v.Sequence > m.Sequence)))))
+                    .Min(m => (DateTime?)m.CreatedAtUtc),
                 Tables = b.DiningTables
                     .Where(t => t.IsActive)
                     .Select(t => new FloorTableRow
@@ -382,9 +407,34 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                                 .Select(r => r.PromisedFreeByUtc)
                                 .FirstOrDefault())
                             .FirstOrDefault(),
+
+                        // Unread guest messages on the next booking's thread and on the sitting's: the tile's badge.
+                        NextReservationUnreadMessages = db.Reservations
+                            .Where(r => r.DiningTableId == t.Id
+                                        && r.EndUtc > atUtc
+                                        && (r.Status == ReservationStatus.Confirmed
+                                            || r.Status == ReservationStatus.PendingApproval))
+                            .OrderBy(r => r.StartUtc)
+                            .Select(r => db.Conversations
+                                .Where(c => c.ReservationId == r.Id)
+                                .Select(c => c.Messages.Count(m => m.Author == MessageAuthor.Guest
+                                                                   && (c.VenueLastReadUtc == null
+                                                                       || m.CreatedAtUtc > c.VenueLastReadUtc)))
+                                .FirstOrDefault())
+                            .FirstOrDefault(),
+                        SittingUnreadMessages = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null && s.ReservationId != null)
+                            .Select(s => db.Conversations
+                                .Where(c => c.ReservationId == s.ReservationId)
+                                .Select(c => c.Messages.Count(m => m.Author == MessageAuthor.Guest
+                                                                   && (c.VenueLastReadUtc == null
+                                                                       || m.CreatedAtUtc > c.VenueLastReadUtc)))
+                                .FirstOrDefault())
+                            .FirstOrDefault(),
                     })
                     .ToList(),
             });
+    }
 
     private sealed class FloorRow
     {
@@ -399,6 +449,10 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public int TurnTimeMinutes { get; init; }
 
         public long MaxSequence { get; init; }
+
+        public int MessagesUnreadTotal { get; init; }
+
+        public DateTime? MessagesOldestUnansweredUtc { get; init; }
 
         public List<FloorTableRow> Tables { get; init; } = [];
     }
@@ -462,5 +516,9 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public DateOnly? NextReservationLocalDate { get; init; }
 
         public Guid? SittingRecordedAccount { get; init; }
+
+        public int NextReservationUnreadMessages { get; init; }
+
+        public int SittingUnreadMessages { get; init; }
     }
 }

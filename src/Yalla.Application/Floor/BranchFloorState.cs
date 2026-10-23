@@ -38,7 +38,24 @@ public sealed record BranchFloorState
     public required long MaxSequence { get; init; }
 
     public required IReadOnlyList<TableFloorState> Tables { get; init; }
+
+    /// <summary>
+    /// The branch's guest messages at a glance - the Messages tab's badge and the remind - so the tablet needs no second
+    /// read to badge. See <c>docs/messages.md</c>.
+    /// </summary>
+    public required FloorMessages Messages { get; init; }
 }
+
+/// <summary>The branch's guest messages on the floor.</summary>
+/// <param name="UnreadTotal">
+/// Guest messages nobody at the venue has read, in threads that are open or had a message in the last 24 hours - the
+/// same threads as the Messages tab.
+/// </param>
+/// <param name="OldestUnansweredUtc">
+/// The oldest guest message the venue has not answered since, across those threads: ring once it has waited the venue's
+/// <c>remindAfterMinutes</c>. Absent when every thread has the venue's last word.
+/// </param>
+public sealed record FloorMessages(int UnreadTotal, DateTime? OldestUnansweredUtc);
 
 /// <summary>
 /// One table's physical state plus the derived reservation overlay.
@@ -184,4 +201,10 @@ public sealed record TableFloorState
     /// a booking that made such a promise; absent otherwise.
     /// </summary>
     public DateTime? SittingPromisedFreeByUtc { get; init; }
+
+    /// <summary>Unread guest messages in the next booking's thread - the table tile's and the Now rail's badge. 0 without one.</summary>
+    public int NextReservationUnreadMessages { get; init; }
+
+    /// <summary>Unread guest messages in the thread of the booking the party sitting here came in on. 0 without one.</summary>
+    public int SittingUnreadMessages { get; init; }
 }

@@ -58,6 +58,7 @@ public static class DependencyInjection
         services.AddScoped<NoShowBlocks>();
         services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
         services.AddScoped<Yalla.Application.Takeaway.ITakeawayService, TakeawayService>();
+        services.AddScoped<Yalla.Application.Messages.IGuestMessageService, GuestMessageService>();
         services.AddScoped<IAvailabilityQuery, AvailabilityQuery>();
         services.AddScoped<IAuthorizationQueries, AuthorizationQueries>();
 
@@ -204,6 +205,7 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, TakeawayAcceptedHandler>();
         services.AddScoped<IOutboxHandler, TakeawayReadyHandler>();
         services.AddScoped<IOutboxHandler, TakeawayDeclinedHandler>();
+        services.AddScoped<IOutboxHandler, VenueMessageHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges

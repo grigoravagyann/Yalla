@@ -246,6 +246,13 @@ public sealed record ReservationView
     /// booking ends, while it is confirmed.
     /// </summary>
     public DateTime OnMyWayOpensAtUtc { get; init; }
+
+    /// <summary>
+    /// The booking's thread with the venue in one line - the "Messages with the venue" card: unread, the last message,
+    /// whether it takes messages. On the guest's own reads (<c>getMyReservations</c>) only; absent elsewhere, and when the
+    /// booking has no thread and takes none. See <c>docs/messages.md</c>.
+    /// </summary>
+    public Yalla.Application.Messages.MessagesSummary? Messages { get; init; }
 }
 
 /// <summary>

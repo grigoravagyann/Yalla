@@ -196,6 +196,7 @@ api.MapAdminDeviceEndpoints();
 api.MapReservationEndpoints();
 api.MapPreOrderEndpoints();
 api.MapTakeawayEndpoints();
+api.MapMessageEndpoints();
 api.MapPlatformEndpoints();
 api.MapVenueAccountEndpoints();
 api.MapVenueAdminEndpoints();
