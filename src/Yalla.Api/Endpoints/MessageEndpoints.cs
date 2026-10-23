@@ -121,7 +121,9 @@ public static class MessageEndpoints
                 + "since puts its thread first (`oldestUnansweredGuestMessageUtc` - the longest waiting first); the rest "
                 + "newest first. Each: the subject (`kind`, `id`, `label` - the table or the `T-` code, `guestName`, "
                 + "`localTime`, and `localDate`/`partySize` or `itemCount`/`totalAmd`), `lastMessage` (the last that is "
-                + "not a status line, with `staffName` on a venue message), `unreadFromGuest`, `awaitingGuestAnswer` (the "
+                + "not a system status line - the guest's words or answer, or the venue's - with `answer` on an answer and "
+                + "`staffName` on a venue message), `latestStatus` (the newest status line's `heldUntilLocal` / "
+                + "`cancelled`), `unreadFromGuest`, `awaitingGuestAnswer` (the "
                 + "last is the venue's \"are you coming?\"), `open`. `unreadTotal` is the tab's badge; ring when a guest "
                 + "message has waited `remindAfterMinutes`. `templates`: the venue's quick replies, absent for the app's "
                 + "default four. `waitersCanWrite`: whether a waiter's composer shows. The floor (`getBranchFloor`) carries "
@@ -147,7 +149,8 @@ public static class MessageEndpoints
                 .WithSummary($"The {noun}'s thread with its guest, as the venue reads it")
                 .WithDescription(
                     "The guest's view plus `staffName` on each venue message (who wrote it, as they were named then), "
-                    + "`guestName` (never the number), `guestLastReadUtc` (a venue message not after it is \"seen\") and "
+                    + "`guestName`, `guestPhone` (the number the booking or order holds, for the Call button - empty for a "
+                    + "platform admin), `guestLastReadUtc` (a venue message not after it is \"seen\") and "
                     + "`canWrite` - open, and the caller a manager, the general manager or the owner, or a waiter while the "
                     + "venue lets waiters write; never a platform admin. `unreadCount`: guest messages since anybody at the "
                     + "venue last read it. Waiter or above at the subject's branch.\n\n" + OpenRule + "\n\n" + MessageShape)

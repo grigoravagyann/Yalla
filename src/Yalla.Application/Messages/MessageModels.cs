@@ -143,7 +143,11 @@ public sealed record DinerConversationView(
 /// <summary>A thread as the venue reads it: the guest's view, plus who wrote each venue message and whether the caller may write.</summary>
 /// <param name="ConversationId">The thread; absent while nobody has written yet.</param>
 /// <param name="Subject">What it is about.</param>
-/// <param name="GuestName">The guest, as the booking or order names them. Never their number - the tablet shows it masked elsewhere.</param>
+/// <param name="GuestName">The guest, as the booking or order names them.</param>
+/// <param name="GuestPhone">
+/// The guest's number as the booking or order holds it, for the Call button - never shown in the thread itself. Empty for
+/// a platform admin: the venue's to call, as on the takeaway counter and the pre-order rail.
+/// </param>
 /// <param name="Open">Takes messages now.</param>
 /// <param name="ClosesAtUtc">When it closes, or closed. Absent while a takeaway order is still moving.</param>
 /// <param name="GuestsCanWrite">Whether the guest may type (the venue's setting).</param>
@@ -161,6 +165,7 @@ public sealed record StaffConversationView(
     Guid? ConversationId,
     ConversationSubjectView Subject,
     string GuestName,
+    string GuestPhone,
     bool Open,
     DateTime? ClosesAtUtc,
     bool GuestsCanWrite,
@@ -282,7 +287,11 @@ public sealed record InboxSubject(
 /// <summary>One thread on the tablet's Messages tab.</summary>
 /// <param name="ConversationId">The thread.</param>
 /// <param name="Subject">What it is about.</param>
-/// <param name="LastMessage">The last message that is not a status line - what the row previews, with who wrote it.</param>
+/// <param name="LastMessage">
+/// The last message that is not a system status line - the guest's words or answer ("late 15"), or the venue's - what the
+/// row previews, with <c>answer</c> on an answer and <c>staffName</c> on a venue message.
+/// </param>
+/// <param name="LatestStatus">The newest system status line in the thread ("held until 19:45", "cancelled"), or absent.</param>
 /// <param name="UnreadFromGuest">What the guest wrote since anybody at the venue last read it.</param>
 /// <param name="AwaitingGuestAnswer">The last message is the venue's "are you coming?" and the guest has not answered.</param>
 /// <param name="OldestUnansweredGuestMessageUtc">
@@ -294,6 +303,7 @@ public sealed record InboxItem(
     Guid ConversationId,
     InboxSubject Subject,
     StaffConversationMessage LastMessage,
+    MessageStatusView? LatestStatus,
     int UnreadFromGuest,
     bool AwaitingGuestAnswer,
     DateTime? OldestUnansweredGuestMessageUtc,

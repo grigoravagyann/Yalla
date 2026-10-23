@@ -214,6 +214,11 @@ internal sealed class GuestMessageService(
                     .OrderByDescending(m => m.CreatedAtUtc)
                     .ThenByDescending(m => m.Sequence)
                     .FirstOrDefault(),
+                LatestStatus = c.Messages
+                    .Where(m => m.Kind == MessageKind.Status)
+                    .OrderByDescending(m => m.CreatedAtUtc)
+                    .ThenByDescending(m => m.Sequence)
+                    .FirstOrDefault(),
                 OldestUnansweredUtc = c.Messages
                     .Where(m => m.Author == MessageAuthor.Guest
                                 && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
@@ -253,6 +258,7 @@ internal sealed class GuestMessageService(
                 row.ConversationId,
                 InboxSubjectOf(facts),
                 StaffMessage(row.Last),
+                row.LatestStatus is { } status ? StatusOf(status) : null,
                 row.UnreadFromGuest,
                 row.Last is { Author: MessageAuthor.Venue, Kind: MessageKind.AskComing },
                 row.OldestUnansweredUtc,
@@ -293,6 +299,9 @@ internal sealed class GuestMessageService(
             thread?.Id,
             facts.View(),
             facts.GuestName,
+
+            // The guests' numbers are the venue's to call, not the platform's to read.
+            role == StaffRole.PlatformAdmin ? string.Empty : facts.GuestPhone,
             open,
             facts.ClosesAtUtc,
             facts.GuestsCanWrite,
@@ -638,6 +647,8 @@ internal sealed class GuestMessageService(
         public required int UnreadFromGuest { get; init; }
 
         public ConversationMessage? Last { get; init; }
+
+        public ConversationMessage? LatestStatus { get; init; }
 
         public DateTime? OldestUnansweredUtc { get; init; }
     }

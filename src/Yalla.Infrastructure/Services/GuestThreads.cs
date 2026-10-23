@@ -82,6 +82,9 @@ internal static class GuestThreads
 
         public required string GuestName { get; init; }
 
+        /// <summary>The number the booking or order holds - the venue's to call.</summary>
+        public required string GuestPhone { get; init; }
+
         public required bool GuestsCanWrite { get; init; }
 
         public required bool WaitersCanWrite { get; init; }
@@ -168,6 +171,7 @@ internal static class GuestThreads
                 r.Branch.WaitersCanMessage,
                 r.DinerUserId,
                 r.GuestName,
+                r.GuestPhone,
                 r.Status,
                 r.StartUtc,
                 r.EndUtc,
@@ -197,6 +201,7 @@ internal static class GuestThreads
                 TimeZoneId = r.TimeZoneId,
                 DinerUserId = r.DinerUserId,
                 GuestName = r.GuestName,
+                GuestPhone = r.GuestPhone,
                 GuestsCanWrite = r.GuestsCanMessage,
                 WaitersCanWrite = r.WaitersCanMessage,
                 ClosesAtUtc = ConversationRules.ReservationClosesAtUtc(
@@ -241,6 +246,7 @@ internal static class GuestThreads
                     .First(),
                 o.DinerUserId,
                 o.GuestName,
+                o.GuestPhone,
                 o.Status,
                 o.Code,
                 o.ReadyAtUtc,
@@ -265,6 +271,7 @@ internal static class GuestThreads
                 TimeZoneId = o.Branch.TimeZoneId,
                 DinerUserId = o.DinerUserId,
                 GuestName = o.GuestName,
+                GuestPhone = o.GuestPhone,
                 GuestsCanWrite = o.Branch.GuestsCanMessage,
                 WaitersCanWrite = o.Branch.WaitersCanMessage,
                 ClosesAtUtc = ConversationRules.TakeawayClosesAtUtc(o.Status, o.EndedAtUtc),

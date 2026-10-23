@@ -33,7 +33,8 @@ append and the summaries other reads carry. Endpoints: `Api/Endpoints/MessageEnd
 ### Who sees what
 
 The guest sees the **venue's name** on the venue's side, never who wrote; staff see `staffName` on each venue message.
-The guest's phone number is never in a thread (the tablet shows it masked elsewhere). Text is plain: 1 to 500 characters
+The guest's phone number is never a message: the staff view carries it beside the thread as `guestPhone` for the
+Call button (empty for a platform admin, as on the takeaway counter). Text is plain: 1 to 500 characters
 after trimming, never linkified, no photos.
 
 ## 2. When a thread is open
@@ -133,9 +134,11 @@ characters.
 ```
 BranchConversations { items[], unreadTotal, remindAfterMinutes, templates?, waitersCanWrite, asOfUtc }
 item     { conversationId, subject: { kind, id, label, guestName, localTime, localDate?, partySize?, itemCount?, totalAmd? },
-           lastMessage (a staff message, not a status line), unreadFromGuest, awaitingGuestAnswer,
+           lastMessage (the last non-system message, with answer? and staffName?), latestStatus?, unreadFromGuest,
+           awaitingGuestAnswer,
            oldestUnansweredGuestMessageUtc?, open }
-StaffConversationView = the diner's view + guestName, canWrite, guestLastReadUtc; messages carry staffName? on venue ones
+StaffConversationView = the diner's view + guestName, guestPhone (empty for a platform admin), canWrite,
+                        guestLastReadUtc; messages carry staffName? on venue ones
 StaffMessageResult { conversationId, id, author, kind, text, createdAtUtc, staffName, wasReplay }
 ```
 

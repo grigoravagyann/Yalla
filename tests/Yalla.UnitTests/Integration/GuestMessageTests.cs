@@ -93,6 +93,7 @@ public class GuestMessageTests(SqlServerFixture fixture)
         Assert.Equal(1, staffView.GetProperty("unreadCount").GetInt32());
         Assert.True(staffView.GetProperty("canWrite").GetBoolean());
         Assert.Equal("Ani App", staffView.GetProperty("guestName").GetString());
+        Assert.Equal("+37411223344", staffView.GetProperty("guestPhone").GetString());
 
         Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsync($"{staffThread}/read", null)).StatusCode);
         floor = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor");
@@ -197,6 +198,8 @@ public class GuestMessageTests(SqlServerFixture fixture)
         row = Assert.Single((await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations")).GetProperty("items").EnumerateArray());
         Assert.False(row.GetProperty("awaitingGuestAnswer").GetBoolean());
         Assert.Equal("answer", row.GetProperty("lastMessage").GetProperty("kind").GetString());
+        Assert.Equal(15, row.GetProperty("lastMessage").GetProperty("answer").GetProperty("lateMinutes").GetInt32());
+        Assert.Equal("18:15", row.GetProperty("latestStatus").GetProperty("heldUntilLocal").GetString());
         Assert.Equal(startUtc.AddMinutes(-58), row.GetProperty("oldestUnansweredGuestMessageUtc").GetDateTime());
 
         // Somebody else's booking is not found - word for word as no booking.
