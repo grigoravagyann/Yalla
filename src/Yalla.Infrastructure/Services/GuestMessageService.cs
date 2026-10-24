@@ -288,6 +288,216 @@ internal sealed class GuestMessageService(
             nowUtc);
     }
 
+    /// <summary>
+    /// The console's Messages page. In this order: manager or above at the branch, from the stored row (403); the branch
+    /// (404); the query (422, every bad field named). One statement for the page - the branch's threads by
+    /// <c>IX_Conversations_BranchId_LastMessageUtc</c>, the window and the cursor its range - then one per kind of subject
+    /// and one for the staff names, whatever the page holds. Reads only: no read mark moves.
+    /// </summary>
+    public async Task<MessageHistoryPage> ListHistoryAsync(
+        Guid branchId, MessageHistoryQuery query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        await branchGuard.RequireAtBranchAsync(branchId, "Read the message history", cancellationToken);
+
+        var timeZoneId = await db.Branches
+                             .AsNoTracking()
+                             .Where(b => b.Id == branchId)
+                             .Select(b => b.TimeZoneId)
+                             .FirstOrDefaultAsync(cancellationToken)
+                         ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        var nowUtc = clock.UtcNow;
+        var zone = BranchZone.For(timeZoneId);
+        var filter = MessageHistoryRules.Check(query, zone.LocalDateAt(nowUtc));
+
+        // The branch's own days: from its midnight to the midnight after the last day, exclusive.
+        var fromUtc = zone.ToUtcLenient(filter.From, TimeOnly.MinValue);
+        var toUtcExclusive = zone.ToUtcLenient(filter.To.AddDays(1), TimeOnly.MinValue);
+
+        var threads = db.Conversations
+            .AsNoTracking()
+            .Where(c => c.BranchId == branchId && c.LastMessageUtc >= fromUtc && c.LastMessageUtc < toUtcExclusive);
+
+        threads = filter.Kind switch
+        {
+            MessageHistoryKind.Reservation => threads.Where(c => c.ReservationId != null),
+            MessageHistoryKind.Takeaway => threads.Where(c => c.TakeawayOrderId != null),
+            _ => threads,
+        };
+
+        if (filter.Search is { } search)
+        {
+            // Lowered on both sides rather than trusting the column's collation to ignore case - Armenian and
+            // Cyrillic names included. The page is already one branch's window, so nothing here needs an index.
+            var lowered = search.ToLowerInvariant();
+            var code = filter.SearchAsTakeawayCode;
+
+            threads = threads.Where(c =>
+                (c.ReservationId != null
+                 && db.Reservations.Any(r => r.Id == c.ReservationId
+                                             && (r.GuestName.ToLower().Contains(lowered)
+                                                 || r.DiningTable.Label.ToLower() == lowered)))
+                || (c.TakeawayOrderId != null
+                    && db.TakeawayOrders.Any(o => o.Id == c.TakeawayOrderId
+                                                  && (o.GuestName.ToLower().Contains(lowered) || o.Code == code))));
+        }
+
+        if (filter.UnansweredOnly)
+        {
+            threads = threads.Where(c => c.Messages.Any(m => m.Author == MessageAuthor.Guest
+                                                             && m.Kind == MessageKind.Text
+                                                             && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
+                                                                                     && (v.CreatedAtUtc > m.CreatedAtUtc
+                                                                                         || (v.CreatedAtUtc == m.CreatedAtUtc
+                                                                                             && v.Sequence > m.Sequence)))));
+        }
+
+        if (filter.Cursor is { } cursor)
+        {
+            var atUtc = cursor.LastMessageUtc;
+            var afterId = cursor.ConversationId;
+
+            // Strictly after the last row shown, in the list's own order - the id breaks a tie of instants, compared as
+            // the database orders it.
+            threads = threads.Where(c => c.LastMessageUtc < atUtc
+                                         || (c.LastMessageUtc == atUtc && c.Id.CompareTo(afterId) < 0));
+        }
+
+        var rows = await threads
+            .OrderByDescending(c => c.LastMessageUtc)
+            .ThenByDescending(c => c.Id)
+            .Take(filter.Limit + 1)
+            .Select(c => new HistoryRow
+            {
+                ConversationId = c.Id,
+                ReservationId = c.ReservationId,
+                TakeawayOrderId = c.TakeawayOrderId,
+                LastMessageUtc = c.LastMessageUtc,
+                CreatedAtUtc = c.CreatedAtUtc,
+                MessageCount = c.Messages.Count(m => m.Author != MessageAuthor.System),
+                FirstAtUtc = c.Messages.Min(m => (DateTime?)m.CreatedAtUtc),
+                Unanswered = c.Messages.Any(m => m.Author == MessageAuthor.Guest
+                                                 && m.Kind == MessageKind.Text
+                                                 && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
+                                                                         && (v.CreatedAtUtc > m.CreatedAtUtc
+                                                                             || (v.CreatedAtUtc == m.CreatedAtUtc
+                                                                                 && v.Sequence > m.Sequence)))),
+            })
+            .ToListAsync(cancellationToken);
+
+        var shown = rows.Take(filter.Limit).ToList();
+
+        var bookings = await GuestThreads.ReservationSubjectsAsync(
+            db, [.. shown.Where(r => r.ReservationId is not null).Select(r => r.ReservationId!.Value)], cancellationToken);
+        var orders = await GuestThreads.TakeawaySubjectsAsync(
+            db, [.. shown.Where(r => r.TakeawayOrderId is not null).Select(r => r.TakeawayOrderId!.Value)], cancellationToken);
+        var staffNames = await StaffNamesAsync([.. shown.Select(r => r.ConversationId)], cancellationToken);
+
+        var items = new List<MessageHistoryItem>(shown.Count);
+
+        foreach (var row in shown)
+        {
+            var facts = row.ReservationId is { } reservationId
+                ? bookings.GetValueOrDefault(reservationId)
+                : orders.GetValueOrDefault(row.TakeawayOrderId!.Value);
+
+            // A thread's subject is never deleted while the thread stands (the foreign keys restrict it).
+            if (facts is null)
+            {
+                continue;
+            }
+
+            items.Add(new MessageHistoryItem(
+                row.ConversationId,
+                HistorySubjectOf(facts, zone),
+                row.MessageCount,
+                row.FirstAtUtc ?? row.CreatedAtUtc,
+                row.LastMessageUtc,
+                zone.ToLocal(row.LastMessageUtc).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture),
+                staffNames.GetValueOrDefault(row.ConversationId) ?? [],
+                row.Unanswered,
+                facts.IsOpenAt(nowUtc)));
+        }
+
+        var next = rows.Count > filter.Limit
+            ? new MessageHistoryCursor(shown[^1].LastMessageUtc, shown[^1].ConversationId).Encode()
+            : null;
+
+        return new MessageHistoryPage(items, next, filter.From, filter.To);
+    }
+
+    /// <summary>
+    /// Who at the venue wrote in each thread, as they were named then - each name once, in the order they first wrote. One
+    /// statement for the page.
+    /// </summary>
+    private async Task<Dictionary<Guid, IReadOnlyList<string>>> StaffNamesAsync(
+        List<Guid> conversationIds, CancellationToken cancellationToken)
+    {
+        if (conversationIds.Count == 0)
+        {
+            return [];
+        }
+
+        var firsts = await db.ConversationMessages
+            .AsNoTracking()
+            .Where(m => conversationIds.Contains(m.ConversationId)
+                        && m.Author == MessageAuthor.Venue
+                        && m.StaffName != null
+                        && m.StaffName != string.Empty)
+            .GroupBy(m => new { m.ConversationId, m.StaffName })
+            .Select(g => new
+            {
+                g.Key.ConversationId,
+                g.Key.StaffName,
+                FirstAtUtc = g.Min(m => m.CreatedAtUtc),
+                FirstSequence = g.Min(m => m.Sequence),
+            })
+            .ToListAsync(cancellationToken);
+
+        return firsts
+            .GroupBy(f => f.ConversationId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<string>)[.. g.OrderBy(f => f.FirstAtUtc).ThenBy(f => f.FirstSequence).Select(f => f.StaffName!)]);
+    }
+
+    private static MessageHistorySubject HistorySubjectOf(GuestThreads.Subject facts, BranchZone zone)
+    {
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+
+        if (facts.Kind == ConversationSubjectKind.Reservation)
+        {
+            return new MessageHistorySubject(
+                ConversationRules.SubjectKinds.Reservation,
+                facts.Id,
+                facts.TableLabel ?? string.Empty,
+                facts.GuestName,
+                facts.LocalDate!.Value.ToString("yyyy-MM-dd", invariant),
+                GuestThreads.Hhmm(facts.LocalStartTime!.Value),
+                facts.PartySize,
+                null,
+                null,
+                facts.Outcome);
+        }
+
+        // An order's day: the day it was ready, or asked for, on the branch's clock.
+        var readyDate = facts.ReadyAtUtc is { } readyAt ? zone.LocalDateAt(readyAt) : (DateOnly?)null;
+
+        return new MessageHistorySubject(
+            ConversationRules.SubjectKinds.Takeaway,
+            facts.Id,
+            facts.TakeawayCode ?? string.Empty,
+            facts.GuestName,
+            readyDate?.ToString("yyyy-MM-dd", invariant) ?? string.Empty,
+            facts.ReadyAtLocal is { } ready ? GuestThreads.Hhmm(ready) : string.Empty,
+            null,
+            facts.ItemCount,
+            facts.TotalAmd,
+            facts.Outcome);
+    }
+
     public async Task<StaffConversationView> GetForStaffAsync(
         ConversationSubject subject, CancellationToken cancellationToken = default)
     {
@@ -304,7 +514,7 @@ internal sealed class GuestMessageService(
 
         return new StaffConversationView(
             thread?.Id,
-            facts.View(),
+            facts.View(withOutcome: true),
             facts.GuestName,
 
             // The guests' numbers are the venue's to call, not the platform's to read.
@@ -679,6 +889,26 @@ internal sealed class GuestMessageService(
         m.CreatedAtUtc,
         m.StaffName,
         wasReplay);
+
+    /// <summary>A thread as the history page reads it, in one statement for the page.</summary>
+    private sealed class HistoryRow
+    {
+        public required Guid ConversationId { get; init; }
+
+        public Guid? ReservationId { get; init; }
+
+        public Guid? TakeawayOrderId { get; init; }
+
+        public required DateTime LastMessageUtc { get; init; }
+
+        public required DateTime CreatedAtUtc { get; init; }
+
+        public required int MessageCount { get; init; }
+
+        public DateTime? FirstAtUtc { get; init; }
+
+        public required bool Unanswered { get; init; }
+    }
 
     /// <summary>A thread as the inbox reads it, in one statement for every thread.</summary>
     private sealed class InboxRow

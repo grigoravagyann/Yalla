@@ -241,7 +241,9 @@ Late, 3 NotComing) and `LateMinutes` on an answer and its status line, `HeldUnti
 line, `StaffMemberId` (Restrict) and `StaffName` (a snapshot) on a venue message, `ClientCommandId` (unique per thread
 and author, filtered), and `Sequence` (identity - the tie-break after `CreatedAtUtc`). Beside them: the branch's
 `GuestsCanMessage` (1), `WaitersCanMessage` (1), `MessageTemplatesJson` (null - the app's default replies) and
-`MessageRemindAfterMinutes` (3), and the `venue-message` feed kind. See `docs/messages.md`.
+`MessageRemindAfterMinutes` (3), and the `venue-message` feed kind. A thread is deleted, its messages with it, 365 days
+after `LastMessageUtc` unless the thread is still open (`ConversationRetention`, daily); the console's history
+reads `IX_Conversations_BranchId_LastMessageUtc`. See `docs/messages.md`.
 
 ### TableSession
 

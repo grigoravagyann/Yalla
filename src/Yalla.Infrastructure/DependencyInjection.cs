@@ -103,6 +103,9 @@ public static class DependencyInjection
         services.AddScoped<IDinerFavoriteService, DinerFavoriteService>();
         services.AddScoped<IDinerNotificationFeed, DinerNotificationFeed>();
         services.AddScoped<DinerNotificationRetention>();
+
+        // Guest-message threads a year quiet, deleted on the same loop's daily pass (docs/messages.md, history).
+        services.AddScoped<ConversationRetention>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 
