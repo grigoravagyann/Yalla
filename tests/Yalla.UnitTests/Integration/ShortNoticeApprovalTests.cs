@@ -991,6 +991,77 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
             (await other.CreateAsync(Booking(branch, branch.TableIds[1], Today, new TimeOnly(21, 0)))).Status);
     }
 
+    /// <summary>
+    /// A confirmed booking whose change the floor declined, released by the venue later: a cancellation, not a decline -
+    /// on the booking, on the guest's link and in the message history - while a booking the floor declined outright
+    /// still reads declined everywhere.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_booking_whose_change_was_declined_and_that_the_venue_then_releases_is_cancelled_not_declined()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(Now.AddDays(-2));
+        await using var db = fixture.CreateContext(clock);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 4);
+        var dinerActor = await DinerWithDeviceAsync(db, clock, "en");
+        var diner = fixture.CreateReservationService(db, clock, dinerActor);
+        var waiter = fixture.CreateReservationService(db, clock, TestActor.Waiter(branch.WaiterId));
+
+        var booked = await diner.CreateAsync(Booking(branch, branch.TableIds[0], Today, new TimeOnly(19, 0)));
+        Assert.Equal(ReservationStatus.Confirmed, booked.Status);
+
+        // Today the diner asks for 21:00 at table 2; the floor says no, so the booking stands at 19:00.
+        clock.UtcNow = Now;
+        await diner.RescheduleAsync(Move(booked.Id, branch.TableIds[1], Today, new TimeOnly(21, 0)));
+
+        clock.Advance(TimeSpan.FromMinutes(3));
+        var kept = await waiter.RejectAsync(new DecideReservationCommand(booked.Id, "Table 2 is taken."));
+        Assert.Equal(ReservationStatus.Confirmed, kept.Status);
+        Assert.Equal(DeclineReason.StaffDeclined, (await StoredAsync(booked.Id, clock)).DeclineReason);
+
+        // Then the venue lets the booking go.
+        clock.Advance(TimeSpan.FromMinutes(30));
+        var released = await waiter.ReleaseAsync(
+            new ReleaseReservationCommand(booked.Id, ReleaseOutcome.CancelledByVenue, Guid.CreateVersion7()));
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, released.Reservation.Status);
+        Assert.Null(released.Reservation.DeclinedBecause);
+
+        var stored = await StoredAsync(booked.Id, clock);
+        Assert.Equal(ReservationStatus.CancelledByVenue, stored.Status);
+        Assert.Null(stored.DeclineReason);
+
+        var link = new PublicBookingService(db, clock, diner);
+        Assert.Null((await link.GetAsync(booked.ManageToken!)).DeclinedBecause);
+
+        // A booking for tonight the floor declines outright: declined, with why.
+        var otherActor = await DinerWithDeviceAsync(db, clock, "en");
+        var other = fixture.CreateReservationService(db, clock, otherActor);
+        var request = await other.CreateAsync(
+            Booking(branch, branch.TableIds[2], Today, new TimeOnly(20, 0), guestPhone: "+37411998877"));
+        Assert.Equal(ReservationStatus.PendingApproval, request.Status);
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var declined = await waiter.RejectAsync(new DecideReservationCommand(request.Id, "Full tonight."));
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, declined.Status);
+        Assert.Equal(DeclineReason.StaffDeclined, declined.DeclinedBecause);
+        Assert.Equal(
+            DeclineReason.StaffDeclined,
+            (await new PublicBookingService(db, clock, other).GetAsync(request.ManageToken!)).DeclinedBecause);
+
+        // The outcome the message history and the staff's conversation header both read.
+        await using (var check = fixture.CreateContext(clock))
+        {
+            var subjects = await GuestThreads.ReservationSubjectsAsync(
+                check, [booked.Id, request.Id], CancellationToken.None);
+
+            Assert.Equal("cancelled", subjects[booked.Id].Outcome);
+            Assert.Equal("declined", subjects[request.Id].Outcome);
+        }
+    }
+
     /// <summary>Approving the change instead moves the booking for good: nothing is kept to go back to.</summary>
     [SkippableFact]
     public async Task An_approved_change_drops_the_slot_it_could_have_gone_back_to()
