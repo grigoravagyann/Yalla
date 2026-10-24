@@ -207,6 +207,8 @@ public class RateLimitPartitionTests(SqlServerFixture fixture)
     private static string Mint(PrincipalType type, Guid subject)
     {
         var options = Microsoft.Extensions.Options.Options.Create(new JwtOptions { SigningKey = SigningKey });
+
+        // The real wall clock, not TestNow: ValidateAsync checks the lifetime against the real one.
         var clock = new TestClock(DateTime.UtcNow);
         var issuer = new TokenIssuer(options, clock);
 

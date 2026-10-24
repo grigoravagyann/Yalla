@@ -35,7 +35,7 @@ public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (branchId, dinerUserId) = await ArrangeAsync(clock);
 
         Task<(DinerReviewView Review, bool Created)>? secondTap = null;
@@ -79,7 +79,7 @@ public sealed class BranchReviewRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (branchId, dinerUserId) = await ArrangeAsync(clock);
 
         Task? secondTap = null;

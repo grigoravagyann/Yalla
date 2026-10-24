@@ -651,13 +651,13 @@ public class TabEndpointTests(SqlServerFixture fixture)
 
         // Two minutes ago and then one, so "longest" is a fact rather than a tie. Back rather than
         // forward: a token is not valid before the instant it says it was issued.
-        factory.Clock.UtcNow = DateTime.UtcNow.AddMinutes(-2);
+        factory.Clock.UtcNow = TestNow.UtcNow.AddMinutes(-2);
 
         using var anonymous = factory.CreateClient();
         var host = await OpenAsync(anonymous, qrTokens[0], "phone-first");
         var earlier = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-second");
 
-        factory.Clock.UtcNow = DateTime.UtcNow.AddMinutes(-1);
+        factory.Clock.UtcNow = TestNow.UtcNow.AddMinutes(-1);
 
         var later = await JoinApprovedAsync(factory, anonymous, host, qrTokens[0], "phone-third");
 
@@ -739,7 +739,7 @@ public class TabEndpointTests(SqlServerFixture fixture)
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = fixture.CreateContext(new TestClock(TestNow.UtcNow));
 
         var collation = await db.Database
             .SqlQueryRaw<string>(
@@ -1096,7 +1096,7 @@ public class TabEndpointTests(SqlServerFixture fixture)
 
     private async Task<TestMenu> MenuAsync(AuthBranch branch)
     {
-        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = fixture.CreateContext(new TestClock(TestNow.UtcNow));
 
         return await TestMenuBuilder.CreateAsync(db, branch.BranchId);
     }

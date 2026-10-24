@@ -19,7 +19,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -75,7 +75,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -114,7 +114,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -135,7 +135,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -155,7 +155,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -183,7 +183,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -239,7 +239,7 @@ public sealed class ReviewReportDismissalTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);

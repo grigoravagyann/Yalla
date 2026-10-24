@@ -24,7 +24,7 @@ namespace Yalla.UnitTests.Integration;
 public class TakeawayTests(SqlServerFixture fixture)
 {
     /// <summary>Tomorrow at 14:00 in Yerevan (UTC+4): inside the test branch's 10:00-23:00 every day.</summary>
-    private static readonly DateTime Afternoon = DateTime.UtcNow.Date.AddDays(1).AddHours(10);
+    private static readonly DateTime Afternoon = TestNow.UtcNow.Date.AddDays(1).AddHours(10);
 
     /// <summary>
     /// The whole way: the place page says takeaway is on, the checkout offers ASAP and slots, the order is sent (and a

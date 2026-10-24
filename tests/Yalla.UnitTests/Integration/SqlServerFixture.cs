@@ -118,7 +118,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             $"Server={_server};Database={_databaseName};{Credentials()}"
             + "TrustServerCertificate=True;MultipleActiveResultSets=True";
 
-        await using var db = CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = CreateContext(new TestClock(TestNow.UtcNow));
         await db.Database.MigrateAsync();
 
         IsAvailable = true;
@@ -589,7 +589,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         }
     }
 
-    internal Task AdmitTabAsync(Guid tabId) => AdmitTabAsync(new TestClock(DateTime.UtcNow), tabId);
+    internal Task AdmitTabAsync(Guid tabId) => AdmitTabAsync(new TestClock(TestNow.UtcNow), tabId);
 
     /// <inheritdoc cref="AdmitTabAsync(Guid)"/>
     internal async Task AdmitTabAsync(IClock clock, Guid tabId)

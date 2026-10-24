@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -175,9 +176,49 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
     /// <remarks>
     /// Replacing <c>IClock</c> is the whole reason it is an injected dependency rather than a
     /// static call. Everything time-dependent in this system - code expiry, session idleness, the
-    /// receipt grace period - is testable through this one property.
+    /// receipt grace period - is testable through this one property. It starts at <see cref="TestNow.UtcNow"/>: the
+    /// wall clock, unless <c>YALLA_TEST_NOW</c> moves it to the time of day a test is being proved at.
     /// </remarks>
-    public TestClock Clock { get; } = new(DateTime.UtcNow);
+    public TestClock Clock { get; } = new(TestNow.UtcNow);
+
+    /// <summary>
+    /// How far this host's "wall clock" is from the real one: <see cref="TestNow.Offset"/>, or what
+    /// <see cref="StartingAt"/> set.
+    /// </summary>
+    private TimeSpan _wallOffset = TestNow.Offset;
+
+    /// <summary>
+    /// Runs this host as if the test had started at <paramref name="utcInstant"/>: the API's clock starts there, and
+    /// the bearer token lifetime check - the one thing in the pipeline that reads the real wall clock - is moved by the
+    /// same amount.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For a test whose rules depend on the time of day - a no-show "an hour ago" that has to still be on today's
+    /// service day, an ASAP takeaway order inside the kitchen's hours. Starting from the real current instant made those
+    /// pass or fail with the hour the suite happened to run at.
+    /// </para>
+    /// <para>
+    /// The lifetime check has to move with it. A token is stamped by <see cref="Clock"/>; the bearer handler checks it
+    /// against <see cref="DateTime.UtcNow"/>. Moved hours apart, every sign-in after the move would answer 401. Moved
+    /// together, this host behaves exactly as an unpinned one does at that time of day - including a test that advances
+    /// <see cref="Clock"/> days ahead and keeps using a token it already holds, as it can on the real wall clock.
+    /// </para>
+    /// <para>Call it before the host is first used.</para>
+    /// </remarks>
+    public YallaApiFactory StartingAt(DateTime utcInstant)
+    {
+        Clock.UtcNow = utcInstant;
+        _wallOffset = Clock.UtcNow - DateTime.UtcNow;
+
+        return this;
+    }
+
+    /// <summary>
+    /// <see cref="StartingAt"/> at <paramref name="yerevanTime"/> on today's Yerevan calendar date - the test
+    /// branches' zone - so a test pins the time of day it relies on and keeps a date near the real one.
+    /// </summary>
+    public YallaApiFactory StartingAtYerevan(TimeOnly yerevanTime) => StartingAt(TestNow.YerevanTodayAt(yerevanTime));
 
     /// <summary>A client that presents <paramref name="accessToken"/> as its bearer token.</summary>
     public HttpClient CreateClientWithToken(string accessToken)
@@ -213,6 +254,24 @@ public sealed class YallaApiFactory : WebApplicationFactory<Program>
         {
             services.AddSingleton<IStartupFilter, RemoteAddressStartupFilter>();
             services.AddSingleton<Yalla.Application.Abstractions.IClock>(Clock);
+
+            if (_wallOffset != TimeSpan.Zero)
+            {
+                // The bearer handler checks a token's lifetime against the wall clock, and the token was stamped by
+                // the clock above. Started somewhere else - YALLA_TEST_NOW, or StartingAt - the two disagree by hours
+                // and every request is a 401, so only then is the lifetime checked against a wall clock moved by the
+                // same amount: exactly what an unmoved host checks against, shifted.
+                var offset = _wallOffset;
+
+                services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+                    options.TokenValidationParameters.LifetimeValidator = (notBefore, expires, _, parameters) =>
+                    {
+                        var now = DateTime.UtcNow + offset;
+
+                        return (notBefore is null || notBefore.Value <= now + parameters.ClockSkew)
+                            && (expires is null || expires.Value >= now - parameters.ClockSkew);
+                    });
+            }
 
             foreach (var configure in _serviceOverrides)
             {

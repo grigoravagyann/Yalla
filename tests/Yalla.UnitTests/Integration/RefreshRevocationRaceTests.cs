@@ -35,7 +35,7 @@ public sealed class RefreshRevocationRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (subjectId, presented) = await SignedInAsync(subject, clock);
 
         // The revocation reads what to end, and has not committed yet.
@@ -64,7 +64,7 @@ public sealed class RefreshRevocationRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (subjectId, presented) = await SignedInAsync(subject, clock);
 
         // The rotation has written the successor, and has not committed yet.

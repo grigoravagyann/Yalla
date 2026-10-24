@@ -35,7 +35,7 @@ public sealed class StaleDeclineReasonMigrationTests(SqlServerFixture fixture)
             InitialCatalog = $"Yalla_StaleDecline_{Guid.NewGuid():N}",
         }.ConnectionString;
 
-        var now = DateTime.UtcNow;
+        var now = TestNow.UtcNow;
 
         try
         {

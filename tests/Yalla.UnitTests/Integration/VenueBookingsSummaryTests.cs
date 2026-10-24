@@ -22,7 +22,7 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
@@ -109,7 +109,7 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
@@ -132,7 +132,7 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
@@ -147,7 +147,7 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
@@ -160,7 +160,7 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
