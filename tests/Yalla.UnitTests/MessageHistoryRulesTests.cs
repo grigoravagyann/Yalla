@@ -52,6 +52,12 @@ public class MessageHistoryRulesTests
         Assert.Equal("from", before.Field);
         Assert.Equal(FieldBounds.Min, before.Violations[0].Bound);
 
+        // That from with today's to is also 367 days long - but only from is wrong, so only from is named.
+        Assert.Equal(["from"], before.Violations.Select(v => v.Field).ToArray());
+        var beforeWithTo = Assert.Throws<FieldValidationException>(
+            () => MessageHistoryRules.Check(new MessageHistoryQuery(From: Iso(Today.AddDays(-366)), To: Iso(Today)), Today));
+        Assert.Equal(["from"], beforeWithTo.Violations.Select(v => v.Field).ToArray());
+
         var tooLong = Assert.Throws<FieldValidationException>(
             () => MessageHistoryRules.Check(new MessageHistoryQuery(From: Iso(Today.AddDays(-365)), To: Iso(Today.AddDays(1))), Today));
         Assert.Equal("to", tooLong.Field);
@@ -111,6 +117,10 @@ public class MessageHistoryRulesTests
         Assert.Equal("Ani", filter.Search);
         Assert.True(filter.UnansweredOnly);
         Assert.Equal(100, filter.Limit);
+
+        // A blank kind is no kind, as every other blank parameter: both kinds.
+        Assert.Equal(MessageHistoryKind.All, MessageHistoryRules.Check(new MessageHistoryQuery(Kind: ""), Today).Kind);
+        Assert.Equal(MessageHistoryKind.All, MessageHistoryRules.Check(new MessageHistoryQuery(Kind: "  "), Today).Kind);
 
         // A blank search is no search; sixty characters is the longest.
         Assert.Null(MessageHistoryRules.Check(new MessageHistoryQuery(Q: "   "), Today).Search);

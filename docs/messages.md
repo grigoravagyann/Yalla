@@ -253,7 +253,9 @@ today's; the staff view's `subject` carries `outcome` (below), the guest's does 
 | `cursor` | The previous page's `nextCursor` |
 
 Every value is read as a string, so one that does not parse is named with the rest: a bad query is one **422
-`validation-failed`** naming every bad field (`from`, `to`, `kind`, `q`, `unansweredOnly`, `cursor`, `limit`).
+`validation-failed`** naming every bad field (`from`, `to`, `kind`, `q`, `unansweredOnly`, `cursor`, `limit`). A blank
+value (`kind=`) is the same as none, its default. A window too long only because `from` is before the oldest day is
+named on `from` alone.
 
 ```
 MessageHistoryPage { items[], nextCursor?, from, to }      // from/to: the dates read, defaults filled in

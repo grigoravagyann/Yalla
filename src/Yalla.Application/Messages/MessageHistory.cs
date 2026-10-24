@@ -230,6 +230,8 @@ public static class MessageHistoryRules
 
         if (datesParsed)
         {
+            var beforeOldest = violations.Count;
+
             if (fromSent is not null && from < oldest)
             {
                 violations.Add(new FieldViolation(
@@ -260,7 +262,9 @@ public static class MessageHistoryRules
                     Max: Iso(to),
                     Value: Iso(from)));
             }
-            else if (from <= to && to.DayNumber - from.DayNumber + 1 > MaxRangeDays)
+            // A window too long only because one end is before the oldest day is named on that end alone - not on a to
+            // nobody may have sent.
+            else if (violations.Count == beforeOldest && from <= to && to.DayNumber - from.DayNumber + 1 > MaxRangeDays)
             {
                 violations.Add(new FieldViolation(
                     Fields.To,
@@ -273,7 +277,8 @@ public static class MessageHistoryRules
 
         var kind = MessageHistoryKind.All;
 
-        if (query.Kind is { } kindText)
+        // Blank is unsent, as for every other parameter: a form that sends "kind=" reads both kinds.
+        if (!string.IsNullOrWhiteSpace(query.Kind) && query.Kind is { } kindText)
         {
             switch (kindText.Trim().ToLowerInvariant())
             {
