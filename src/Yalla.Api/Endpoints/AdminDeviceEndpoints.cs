@@ -1,3 +1,4 @@
+using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
@@ -66,7 +67,8 @@ public static class AdminDeviceEndpoints
                 + "and only their own branch's people. The person must sign in at this branch (at it, or "
                 + "venue-wide) - anybody else is 404 here - and be active.\n\n"
                 + "**Not kitchen staff**: `409 kitchen-phone-not-allowed`. The kitchen stays on its tablet.\n\n"
-                + "Audited as `staff.phone-pairing-issued` (who, for whom, which branch, the expiry - never the code).")
+                + "Audited as `staff.phone-pairing-issued` (who, for whom, which branch, the expiry - never the code). "
+                + "Rate limited like the other credential routes (`auth`).")
             .Produces<PhonePairingCodeResult>(StatusCodes.Status201Created)
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
@@ -75,7 +77,13 @@ public static class AdminDeviceEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status404NotFound, "No such branch, or nobody by that id signs in at it.")
             .ProducesProblemDetails(
-                StatusCodes.Status409Conflict, "`kitchen-phone-not-allowed`, or the person is deactivated.");
+                StatusCodes.Status409Conflict, "`kitchen-phone-not-allowed`, or the person is deactivated.")
+            .ProducesProblemDetails(
+                StatusCodes.Status429TooManyRequests, "Too many codes issued by this caller. Wait, then retry.")
+
+            // A way onto a phone is a credential, so it is limited as one - as issuing a sign-in link is - rather
+            // than by the global budget sized for a busy floor.
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         group.MapPost("/devices/{deviceId:guid}/revoke", RevokeDeviceAsync)
             .WithName("revokeBranchDevice")
