@@ -382,4 +382,51 @@ public class ApiExceptionMapperTests
         Assert.False(mapped.LogAsError);
         Assert.Equal("Table has upcoming bookings", ErrorCodes.TitleFor(mapped.Code));
     }
+
+    /// <summary>
+    /// Guest messages' four refusals, each its own status and code with what the client reads in its context: a closed
+    /// thread (409), guests or waiters not allowed to write (403), and writing too fast (429, with Retry-After while
+    /// waiting helps and without it once the thread's own limit is spent).
+    /// </summary>
+    [Fact]
+    public void Guest_message_refusals_map_to_their_own_codes()
+    {
+        var subjectId = Guid.CreateVersion7();
+        var branchId = Guid.CreateVersion7();
+        var closedAt = new DateTime(2026, 10, 23, 20, 0, 0, DateTimeKind.Utc);
+
+        var closed = ApiExceptionMapper.Map(new Yalla.Domain.Messages.ConversationClosedException("reservation", subjectId, closedAt));
+        Assert.Equal(StatusCodes.Status409Conflict, closed.Status);
+        Assert.Equal("conversation-closed", closed.Code);
+        Assert.Equal("reservation", closed.Context!["subjectKind"]);
+        Assert.Equal(subjectId, closed.Context["subjectId"]);
+        Assert.Equal(closedAt, closed.Context["closedAtUtc"]);
+        Assert.Equal("Conversation closed", ErrorCodes.TitleFor(closed.Code));
+
+        var guests = ApiExceptionMapper.Map(new Yalla.Domain.Messages.GuestsCannotWriteException(branchId));
+        Assert.Equal(StatusCodes.Status403Forbidden, guests.Status);
+        Assert.Equal("guests-cannot-write", guests.Code);
+        Assert.Equal(branchId, guests.Context!["branchId"]);
+
+        var waiters = ApiExceptionMapper.Map(new Yalla.Domain.Messages.WaitersCannotWriteException(branchId));
+        Assert.Equal(StatusCodes.Status403Forbidden, waiters.Status);
+        Assert.Equal("waiters-cannot-write", waiters.Code);
+
+        // The wait is counted on the service's clock, not the machine's: a clock years from today still says 30 s.
+        var conversationId = Guid.CreateVersion7();
+        var refusedAt = new DateTime(2031, 3, 1, 12, 0, 0, DateTimeKind.Utc);
+        var wait = ApiExceptionMapper.Map(
+            new Yalla.Domain.Messages.MessagesTooFastException(conversationId, refusedAt.AddSeconds(29.2), refusedAt));
+        Assert.Equal(StatusCodes.Status429TooManyRequests, wait.Status);
+        Assert.Equal("messages-too-fast", wait.Code);
+        Assert.Equal(5, wait.Context!["perMinute"]);
+        Assert.Equal(60, wait.Context["perConversation"]);
+        Assert.Equal(refusedAt.AddSeconds(29.2), wait.Context["retryAfterUtc"]);
+        Assert.Equal(30, wait.RetryAfterSeconds);
+
+        var spent = ApiExceptionMapper.Map(new Yalla.Domain.Messages.MessagesTooFastException(conversationId, null, refusedAt));
+        Assert.False(spent.Context!.ContainsKey("retryAfterUtc"));
+        Assert.Null(spent.RetryAfterSeconds);
+        Assert.All(new[] { closed, guests, waiters, wait, spent }, m => Assert.False(m.LogAsError));
+    }
 }

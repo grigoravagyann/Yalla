@@ -472,6 +472,31 @@ public static class NotificationText
             _ => ("Պատվերը մերժվել է", $"{venue}-ը չի կարող ընդունել {code} պատվերը՝ {reason}"),
         };
 
+    // ---------------------------------------------------------------- guest messages
+
+    /// <summary>
+    /// A venue message in a booking's or an order's thread: the venue's name over the message itself (at most 140
+    /// characters, already cut), or - for the venue's "are you coming?" - the question with the booking's time. Never who
+    /// at the venue wrote it.
+    /// </summary>
+    public static (string Title, string Body) VenueMessage(string locale, string venue, string? text, bool ask, TimeOnly? at) =>
+        (ask, at) switch
+        {
+            (true, { } time) => (venue, Normalise(locale) switch
+            {
+                "ru" => $"Вы придёте к {Time(time)}?",
+                "en" => $"Are you coming at {Time(time)}?",
+                _ => $"Գալի՞ս եք {Time(time)}-ին։",
+            }),
+            (true, null) => (venue, Normalise(locale) switch
+            {
+                "ru" => "Вы придёте?",
+                "en" => "Are you coming?",
+                _ => "Գալի՞ս եք։",
+            }),
+            _ => (venue, text ?? string.Empty),
+        };
+
     private static string Time(TimeOnly at) => at.ToString("HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>Day and month, as all three languages write them on a phone: 24.10.</summary>

@@ -1297,17 +1297,27 @@ release are the policy's, as before. **"Not coming"** is the booking's ordinary 
 first.
 
 **Ask now (the venue).** `POST /api/reservations/{id}/ask-on-my-way` (waiter or above at the booking's branch, no body)
-sends the automatic question's push (`reservation.on-your-way`, keyed `reservation:{id}:on-your-way:asked:{now}`,
-payload `staffAsked: true`) and feed entry (`booking-on-your-way`, params `askedByVenue: "true"`) **now**, and records
-`StaffAskedOnMyWayAtUtc`. Allowed for a **confirmed** booking, **from two hours before its start until its start**, while
+writes the question into the booking's **thread with the guest** - an `ask-coming` message with the asker's name, the
+thread made if there is none, in the same transaction - and tells the guest **now**: push `message.to-guest` (data
+`kind` `venue-message`, `ask` `"true"`, `categoryId` `venue-ask`) and feed entry `venue-message` (see
+[messages.md](messages.md)); and records `StaffAskedOnMyWayAtUtc`. (Until 2026-10-23 it sent the automatic question's
+push with `staffAsked: true` and a `booking-on-your-way` entry with `askedByVenue`; the handler still sends such a
+message already queued.) Allowed for a **confirmed** booking, **from two hours before its start until its start**, while
 the guest **has not answered**, and **at most once every 15 minutes** (`PreOrderRules.StaffAskIntervalMinutes`). Each
 refusal is its own 409: `ask-on-my-way-too-early` (`context.opensAtUtc`), `ask-on-my-way-not-open` (not confirmed, or
 started: `status`, `startUtc`), `guest-already-answered` (`answeredAtUtc`, and `runningLateMinutes` when that was the
 answer), `ask-on-my-way-asked-recently` (`askedAtUtc`, `nextAllowedAtUtc`). The answer says `notified: false` when no
 live account stands behind the booking (a web booking without one, a deleted account) - call instead. The venue's
 ask goes whatever the floor decided about a pre-order (somebody tapped it a moment ago); **the automatic question is
-then not asked on top** - the handler skips it once `StaffAskedOnMyWayAtUtc` is set. Cancelling the booking withdraws an
-unsent ask with the booking's other messages.
+then not asked on top** - the handler skips it once `StaffAskedOnMyWayAtUtc` is set. The ask's push is not sent to a
+booking that is no longer confirmed or whose guest has answered by the time it goes.
+
+**The answers in the thread.** "On my way", "running late" and "not coming" - by the app, the manage link or the
+notification - each append an `answer` message from the guest and a `status` line after it ("held until 18:15" for late,
+"cancelled" for not coming) to the booking's thread, made if there is none. "Not coming" is the booking's cancel, so it
+writes into the thread only when the booking already has one or the answer window has opened (two hours before the
+start); a booking cancelled next week is a cancellation, not an answer. The automatic question itself (30 or 45 minutes
+before) stays a push and writes nothing.
 
 **Exposed.** Every booking read (`ReservationView` - the diner's `/mine` and every staff list) carries
 `guestConfirmedOnWayAtUtc`, `guestRunningLateMinutes`, `guestRunningLateAtUtc`, `staffAskedOnMyWayAtUtc` and

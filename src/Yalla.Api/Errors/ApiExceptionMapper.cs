@@ -4,6 +4,7 @@ using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Media;
+using Yalla.Domain.Messages;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
@@ -1075,6 +1076,56 @@ internal static class ApiExceptionMapper
                 ["orderId"] = e.OrderId,
                 ["noShowFromUtc"] = e.NoShowFromUtc,
             }),
+
+        // Guest messages. Each its own code, so the app and the tablet say what is true. The closed thread must stay
+        // ABOVE DomainStateException; the other three derive from nothing more general than Exception.
+        ConversationClosedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.ConversationClosed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["subjectKind"] = e.SubjectKind,
+                ["subjectId"] = e.SubjectId,
+                ["closedAtUtc"] = e.ClosedAtUtc,
+            }),
+
+        GuestsCannotWriteException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.GuestsCannotWrite,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        WaitersCannotWriteException e => new MappedError(
+            StatusCodes.Status403Forbidden,
+            ErrorCodes.WaitersCannotWrite,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+
+        // 429 rather than 409, as the table's waiter calls are: the guest should wait, not change what they send.
+        MessagesTooFastException e => new MappedError(
+            StatusCodes.Status429TooManyRequests,
+            ErrorCodes.MessagesTooFast,
+            e.Message,
+            LogAsError: false,
+            Context: e.RetryAfterUtc is { } retryAfterUtc
+                ? new Dictionary<string, object?>
+                {
+                    ["conversationId"] = e.ConversationId,
+                    ["perMinute"] = Domain.Messages.ConversationRules.GuestMessagesPerMinute,
+                    ["perConversation"] = Domain.Messages.ConversationRules.GuestMessagesPerConversation,
+                    ["retryAfterUtc"] = retryAfterUtc,
+                }
+                : new Dictionary<string, object?>
+                {
+                    ["conversationId"] = e.ConversationId,
+                    ["perMinute"] = Domain.Messages.ConversationRules.GuestMessagesPerMinute,
+                    ["perConversation"] = Domain.Messages.ConversationRules.GuestMessagesPerConversation,
+                },
+            RetryAfterSeconds: e.RetryAfter is { } wait ? RetryAfterSeconds(wait) : null),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.
         NoShowUndoWindowClosedException e => new MappedError(

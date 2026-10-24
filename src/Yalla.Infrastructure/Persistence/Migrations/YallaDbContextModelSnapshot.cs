@@ -314,7 +314,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.ToTable("DinerNotifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked', 'booking-on-your-way', 'takeaway-accepted', 'takeaway-ready', 'takeaway-declined')");
+                            t.HasCheckConstraint("CK_DinerNotifications_Kind", "[Kind] IN ('booking-reminder', 'booking-confirmed', 'booking-declined', 'booking-cancelled-by-venue', 'order-ready', 'review-hidden', 'table-request', 'table-request-decided', 'review-replied', 'booking-changed-by-link', 'booking-cancelled-by-link', 'bookings-blocked-no-shows', 'booking-no-show', 'bookings-unblocked', 'booking-on-your-way', 'takeaway-accepted', 'takeaway-ready', 'takeaway-declined', 'venue-message')");
                         });
                 });
 
@@ -868,6 +868,130 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.ToTable("MenuItems", (string)null);
                 });
 
+            modelBuilder.Entity("Yalla.Domain.Messages.Conversation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DinerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("GuestLastReadUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("LastMessageUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ReservationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("TakeawayOrderId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("VenueLastReadUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReservationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Conversations_ReservationId")
+                        .HasFilter("[ReservationId] IS NOT NULL");
+
+                    b.HasIndex("TakeawayOrderId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_Conversations_TakeawayOrderId")
+                        .HasFilter("[TakeawayOrderId] IS NOT NULL");
+
+                    b.HasIndex("BranchId", "LastMessageUtc")
+                        .HasDatabaseName("IX_Conversations_BranchId_LastMessageUtc");
+
+                    b.HasIndex("DinerUserId", "LastMessageUtc")
+                        .HasDatabaseName("IX_Conversations_DinerUserId_LastMessageUtc")
+                        .HasFilter("[DinerUserId] IS NOT NULL");
+
+                    b.ToTable("Conversations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Conversations_OneSubject", "([ReservationId] IS NOT NULL AND [TakeawayOrderId] IS NULL) OR ([ReservationId] IS NULL AND [TakeawayOrderId] IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Messages.ConversationMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("AnswerKind")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Author")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Body")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid?>("ClientCommandId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<TimeOnly?>("HeldUntilLocal")
+                        .HasColumnType("time");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("LateMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<long>("Sequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Sequence"));
+
+                    b.Property<Guid?>("StaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("StaffName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StaffMemberId");
+
+                    b.HasIndex("ConversationId", "Author", "ClientCommandId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ConversationMessages_ConversationId_Author_ClientCommandId")
+                        .HasFilter("[ClientCommandId] IS NOT NULL");
+
+                    b.HasIndex("ConversationId", "CreatedAtUtc", "Sequence")
+                        .HasDatabaseName("IX_ConversationMessages_ConversationId_CreatedAtUtc_Sequence");
+
+                    b.ToTable("ConversationMessages", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ConversationMessages_Author", "[Author] BETWEEN 1 AND 3");
+
+                            t.HasCheckConstraint("CK_ConversationMessages_Body", "([Kind] = 1 AND [Body] IS NOT NULL) OR ([Kind] <> 1 AND [Body] IS NULL)");
+
+                            t.HasCheckConstraint("CK_ConversationMessages_Kind", "[Kind] BETWEEN 1 AND 4");
+
+                            t.HasCheckConstraint("CK_ConversationMessages_LateMinutes", "[LateMinutes] IS NULL OR [LateMinutes] BETWEEN 1 AND 120");
+                        });
+                });
+
             modelBuilder.Entity("Yalla.Domain.Messaging.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1282,6 +1406,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("BookerPhoneE164", "EndUtc")
                         .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active")
                         .HasFilter("[BookerPhoneE164] IS NOT NULL AND [Status] IN (1, 2)");
+
+                    b.HasIndex("BranchId", "EndUtc")
+                        .HasDatabaseName("IX_Reservations_BranchId_EndUtc_Live")
+                        .HasFilter("[Status] IN (1, 2, 4)");
 
                     b.HasIndex("BranchId", "StartUtc");
 
@@ -2327,6 +2455,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("int")
                         .HasDefaultValue(0);
 
+                    b.Property<bool>("GuestsCanMessage")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
 
@@ -2335,6 +2468,14 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<double>("Longitude")
                         .HasColumnType("float");
+
+                    b.Property<int>("MessageRemindAfterMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(3);
+
+                    b.Property<string>("MessageTemplatesJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -2406,6 +2547,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("VenueId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("WaitersCanMessage")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
 
                     b.Property<string>("WebsiteUrl")
                         .HasMaxLength(2048)
@@ -2974,6 +3120,44 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("MenuCategory");
 
                     b.Navigation("Photo");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Messages.Conversation", b =>
+                {
+                    b.HasOne("Yalla.Domain.Venues.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Identity.DinerUser", null)
+                        .WithMany()
+                        .HasForeignKey("DinerUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Occupancy.Reservation", null)
+                        .WithMany()
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Takeaway.TakeawayOrder", null)
+                        .WithMany()
+                        .HasForeignKey("TakeawayOrderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Messages.ConversationMessage", b =>
+                {
+                    b.HasOne("Yalla.Domain.Messages.Conversation", null)
+                        .WithMany("Messages")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("StaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Occupancy.BookingBlock", b =>
@@ -3645,6 +3829,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("Yalla.Domain.Menus.MenuCategory", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Messages.Conversation", b =>
+                {
+                    b.Navigation("Messages");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Occupancy.PreOrder", b =>

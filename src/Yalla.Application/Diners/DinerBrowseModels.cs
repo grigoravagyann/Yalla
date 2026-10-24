@@ -178,6 +178,10 @@ public sealed record DinerOrderTimelineEntry(string Status, DateTime AtUtc);
 /// has not answered it - <c>POST /api/diner/takeaway-orders/{id}/cancel</c>.
 /// </param>
 /// <param name="Takeaway">The takeaway order's own facts - code, exact status, pickup and ready times. Absent on dine-in.</param>
+/// <param name="Messages">
+/// A takeaway order's thread with the venue in one line - unread, the last message, whether it takes messages. Absent on
+/// dine-in, and on an order with no thread that takes none. See <c>docs/messages.md</c>.
+/// </param>
 public sealed record DinerOrderView(
     Guid OrderId,
     Guid? TabId,
@@ -196,7 +200,8 @@ public sealed record DinerOrderView(
     IReadOnlyList<DinerOrderItem> Items,
     IReadOnlyList<DinerOrderTimelineEntry> Timeline,
     bool CanCancel,
-    DinerTakeawaySummary? Takeaway = null);
+    DinerTakeawaySummary? Takeaway = null,
+    Yalla.Application.Messages.MessagesSummary? Messages = null);
 
 /// <summary>A takeaway order on the Orders tab - the card's code, status and times. The whole order is <c>getDinerTakeawayOrder</c>.</summary>
 /// <param name="Code">"T-482".</param>

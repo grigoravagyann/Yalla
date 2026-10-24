@@ -293,7 +293,8 @@ internal sealed class PreOrderService(
 
     /// <summary>
     /// "Yes, on my way": recorded once, and the waiter's card says "Guest confirmed". The question is answered, so its
-    /// push and feed entry that have not gone out yet are withdrawn.
+    /// push and feed entry that have not gone out yet are withdrawn. The answer and the system line after it go into the
+    /// booking's thread (made if there is none) in the same transaction, under the booking's lock.
     /// </summary>
     private async Task<OnMyWayResult> ConfirmOnMyWayCoreAsync(Reservation reservation, CancellationToken cancellationToken)
     {
@@ -306,14 +307,19 @@ internal sealed class PreOrderService(
 
         await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Coming, null, nowUtc, cancellationToken);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
             // Two taps at once, or the booking changed under it. Read it again: the first tap's answer, or the refusal
             // the booking now earns.
+            await transaction.RollbackAsync(cancellationToken);
             db.ChangeTracker.Clear();
             var current = await db.Reservations.FirstAsync(r => r.Id == reservation.Id, cancellationToken);
 
@@ -342,7 +348,8 @@ internal sealed class PreOrderService(
 
     /// <summary>
     /// "I'm running late": recorded, overwriting an earlier answer, and - an answer to the question - the question's push
-    /// and feed entry not yet out are withdrawn, as "on my way" withdraws them.
+    /// and feed entry not yet out are withdrawn, as "on my way" withdraws them. The answer and the system line ("held
+    /// until 19:45") go into the booking's thread, as "on my way"'s do.
     /// </summary>
     private async Task<RunningLateResult> ReportRunningLateCoreAsync(
         Reservation reservation, int minutes, CancellationToken cancellationToken, bool retried = false)
@@ -352,14 +359,20 @@ internal sealed class PreOrderService(
 
         await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
 
+        // The answer and "held until 19:45" into the booking's thread, in the same transaction.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Late, minutes, nowUtc, cancellationToken);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException) when (!retried)
         {
             // The booking changed under the answer - another tap, a waiter. Read it again and answer once more: the latest
             // answer is the one that stands, or the refusal the booking now earns.
+            await transaction.RollbackAsync(cancellationToken);
             db.ChangeTracker.Clear();
             var current = await db.Reservations.FirstAsync(r => r.Id == reservation.Id, cancellationToken);
 
@@ -375,13 +388,14 @@ internal sealed class PreOrderService(
     // ---------------------------------------------------------------- the floor
 
     /// <summary>
-    /// "Ask: are you coming?" from the tablet: the automatic question's push and feed entry, now. The booking's rules
-    /// (<see cref="Reservation.RecordStaffAskOnMyWay"/>) refuse it before anything is written. Under the account's lock
-    /// for the feed entry, as the question always is.
+    /// "Ask: are you coming?" from the tablet: a message in the booking's thread with who asked, and the guest told now -
+    /// push <c>message.to-guest</c> (<c>categoryId</c> <c>venue-ask</c>) and feed <c>venue-message</c>. The booking's
+    /// rules (<see cref="Reservation.RecordStaffAskOnMyWay"/>) refuse it before anything is written. Under the account's
+    /// lock and then the booking's, as every thread write is, in one transaction with the ask's stamp.
     /// </summary>
     public async Task<AskOnMyWayResult> AskOnMyWayAsync(Guid reservationId, CancellationToken cancellationToken = default)
     {
-        await RequireFloorForBookingAsync(reservationId, "Ask a guest whether they are coming", cancellationToken);
+        var (_, staffId) = await RequireFloorForBookingAsync(reservationId, "Ask a guest whether they are coming", cancellationToken);
 
         var reservation = await db.Reservations.FirstAsync(r => r.Id == reservationId, cancellationToken);
         var nowUtc = clock.UtcNow;
@@ -389,44 +403,13 @@ internal sealed class PreOrderService(
         reservation.RecordStaffAskOnMyWay(nowUtc);
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var notified = false;
 
-        if (reservation.DinerUserId is { } account && await DinerAccountLock.IsLiveAsync(db, account, cancellationToken))
+        if (reservation.DinerUserId is { } account)
         {
-            var branch = await db.Branches
-                .AsNoTracking()
-                .Where(b => b.Id == reservation.BranchId)
-                .Select(b => new { b.Name, VenueName = b.Venue.Name })
-                .FirstAsync(cancellationToken);
-
-            var tableLabel = await db.DiningTables
-                .AsNoTracking()
-                .Where(t => t.Id == reservation.DiningTableId)
-                .Select(t => t.Label)
-                .FirstAsync(cancellationToken);
-
-            outbox.Enqueue(
-                OutboxMessageTypes.ReservationOnYourWay,
-                new
-                {
-                    reservationId = reservation.Id,
-                    dinerUserId = account,
-                    venueName = branch.VenueName,
-                    branchName = branch.Name,
-                    tableLabel,
-                    localStartTime = reservation.LocalStartTime,
-                    reservationCode = reservation.Code,
-                    staffAsked = true,
-                },
-                nowUtc,
-                OutboxMessageTypes.KeyFor(
-                    "reservation",
-                    reservation.Id,
-                    $"on-your-way:asked:{nowUtc.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture)}"));
-
-            DinerNotices.BookingOnYourWayAskedByVenue(db, reservation, branch.VenueName, branch.Name, nowUtc);
-            notified = true;
+            await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
         }
+
+        var notified = await GuestThreads.AskAsync(db, outbox, reservation, staffId, nowUtc, cancellationToken);
 
         try
         {
@@ -435,6 +418,7 @@ internal sealed class PreOrderService(
         catch (DbUpdateConcurrencyException)
         {
             // Another tablet asked, or the guest answered, in the same moment. Read what won and refuse as it now earns.
+            await transaction.RollbackAsync(cancellationToken);
             db.ChangeTracker.Clear();
             var current = await db.Reservations.AsNoTracking().FirstAsync(r => r.Id == reservationId, cancellationToken);
             current.RecordStaffAskOnMyWay(nowUtc);

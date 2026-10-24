@@ -87,7 +87,9 @@ public static class PreOrderEndpoints
                 + "waits) - taken from two hours before the start "
                 + "until the booking ends. Recorded once (`guestConfirmedOnWayAtUtc` on the booking; the waiter's card "
                 + "says \"Guest confirmed\"); a second tap answers the first time, `wasReplay: true`. Moving the booking "
-                + "to another start forgets the answer. No body. \"Can't come\" is the booking's ordinary cancel. A "
+                + "to another start forgets the answer. The answer and a `status` line go into the booking's thread with the "
+                + "venue (made if there is none - `getReservationConversation`). No body. \"Can't come\" is the booking's "
+                + "ordinary cancel. A "
                 + "booking not confirmed or seated, more than two hours away, or over: **409 `on-my-way-not-open`** "
                 + "(`context`: `reservationId`, `status`, `opensAtUtc`).")
             .Produces<OnMyWayResult>()
@@ -103,7 +105,9 @@ public static class PreOrderEndpoints
                 + "late. `minutes` is 10, 15 or 30 (anything else: 422 `validation-failed` naming `minutes`). Recorded as "
                 + "`guestRunningLateMinutes` / `guestRunningLateAtUtc` on the booking; a later answer overwrites it, and "
                 + "\"on my way\" after it clears it. Like \"on my way\" it withdraws the question not yet sent. The table "
-                + "is not held any longer for it. Outside the window: **409 `on-my-way-not-open`**. \"Not coming\" is the "
+                + "is not held any longer for it. The answer and a `status` line (`heldUntilLocal`: the start plus the "
+                + "minutes) go into the booking's thread with the venue. Outside the window: **409 `on-my-way-not-open`**. "
+                + "\"Not coming\" is the "
                 + "booking's ordinary cancel.")
             .Produces<RunningLateResult>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking of yours.")
@@ -217,9 +221,12 @@ public static class PreOrderEndpoints
             .WithName("askOnMyWay")
             .WithSummary("\"Ask: are you coming?\" now")
             .WithDescription(
-                "Sends the guest the automatic question's push (`reservation.on-your-way`, data `kind` "
-                + "`reservation-on-your-way`) and feed entry (`booking-on-your-way`, params `askedByVenue` `\"true\"`) now, "
-                + "and records `staffAskedOnMyWayAtUtc` on the booking. The automatic question is then not asked on top. "
+                "Writes the question into the booking's thread with guests - an `ask-coming` message with the asker's name, "
+                + "made in the same transaction (see `getStaffReservationConversation`) - and tells the guest now: push "
+                + "`message.to-guest` (data `kind` `venue-message`, `ask` `\"true\"`, `categoryId` `venue-ask` - or "
+                + "`venue-ask-buttons`, the answers without a Reply, while the venue has `guestsCanWrite` off) and feed "
+                + "entry `venue-message`. Records `staffAskedOnMyWayAtUtc` on the booking; the automatic question is then "
+                + "not asked on top. "
                 + "A **confirmed** booking only, from two hours before its start until its start, while the guest has not "
                 + "answered, at most once every 15 minutes. Refusals, each its own code: **409 `ask-on-my-way-too-early`** "
                 + "(`context.opensAtUtc`), **409 `ask-on-my-way-not-open`** (not confirmed, or started: `context.status`, "

@@ -429,6 +429,31 @@ public static class ErrorCodes
     public const string TakeawayNoShowTooEarly = "takeaway-no-show-too-early";
 
     /// <summary>
+    /// Writing to a guest-message thread that has closed - two hours after its booking or order ended. HTTP 409,
+    /// <c>context.subjectKind</c>, <c>subjectId</c>, <c>closedAtUtc</c>. Minted by <c>ConversationClosedException</c>.
+    /// </summary>
+    public const string ConversationClosed = "conversation-closed";
+
+    /// <summary>
+    /// A guest's typed message where the venue switched them off; the answer buttons still work. HTTP 403,
+    /// <c>context.branchId</c>. Minted by <c>GuestsCannotWriteException</c>.
+    /// </summary>
+    public const string GuestsCannotWrite = "guests-cannot-write";
+
+    /// <summary>
+    /// A waiter writing to a guest where the venue keeps messages to managers. HTTP 403, <c>context.branchId</c>. Minted
+    /// by <c>WaitersCannotWriteException</c>.
+    /// </summary>
+    public const string WaitersCannotWrite = "waiters-cannot-write";
+
+    /// <summary>
+    /// A guest writing more than 5 messages a minute or 60 in one thread. HTTP 429, <c>context.conversationId</c>,
+    /// <c>perMinute</c>, <c>perConversation</c>, and <c>retryAfterUtc</c> (with a <c>Retry-After</c> header) when waiting
+    /// helps. Minted by <c>MessagesTooFastException</c>.
+    /// </summary>
+    public const string MessagesTooFast = "messages-too-fast";
+
+    /// <summary>
     /// The tab was opened by a scan with no proved number and waits for a waiter to let it order. HTTP
     /// 409, <c>context.tabId</c>. Minted by <c>TabAwaitingAdmissionException</c>.
     /// </summary>
@@ -657,6 +682,10 @@ public static class ErrorCodes
         TakeawayItemsUnavailable => "Dishes not for takeaway",
         TakeawayStatusConflict => "Order has moved on",
         TakeawayNoShowTooEarly => "Too early for a no-show",
+        ConversationClosed => "Conversation closed",
+        GuestsCannotWrite => "This venue takes no written messages",
+        WaitersCannotWrite => "Only managers write to guests here",
+        MessagesTooFast => "Messages too fast",
         TabAwaitingAdmission => "Waiting for a waiter",
         TabAdmissionDecided => "Already decided",
         ScanTurnedAway => "Ask a waiter",

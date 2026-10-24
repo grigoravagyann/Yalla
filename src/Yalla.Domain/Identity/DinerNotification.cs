@@ -186,6 +186,15 @@ public static class DinerNotificationKinds
     /// </summary>
     public const string TakeawayDeclined = "takeaway-declined";
 
+    /// <summary>
+    /// Somebody at the venue wrote in a booking's or a takeaway order's thread, or asked "are you coming?". Params
+    /// <c>venueName</c>, <c>branchName</c>, <c>conversationId</c>, <c>subjectKind</c> (<c>reservation</c> or
+    /// <c>takeaway</c>), <c>ask</c> (<c>"true"</c> for the venue's question), <c>text</c> (the message, at most 140
+    /// characters; absent for an ask), and the subject's <c>date</c>/<c>time</c> or <c>code</c>. <c>reservationId</c> or
+    /// <c>orderId</c> is the subject's. Never the staff member's name.
+    /// </summary>
+    public const string VenueMessage = "venue-message";
+
     /// <summary>The column width. The longest slug is well inside it.</summary>
     public const int MaxLength = 40;
 
@@ -194,6 +203,6 @@ public static class DinerNotificationKinds
         BookingReminder, BookingConfirmed, BookingDeclined, BookingCancelledByVenue, OrderReady, ReviewHidden,
         TableRequest, TableRequestDecided, ReviewReplied, BookingChangedByLink, BookingCancelledByLink,
         BookingsBlockedNoShows, BookingNoShow, BookingsUnblocked, BookingOnYourWay, TakeawayAccepted, TakeawayReady,
-        TakeawayDeclined,
+        TakeawayDeclined, VenueMessage,
     ];
 }

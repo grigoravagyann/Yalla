@@ -124,6 +124,13 @@ come first.
 (`takeaway-accepted`, `takeaway-ready`, `takeaway-declined`, `orderId` set). An auto-accepted order writes the feed entry
 and no push.
 
+## 5a. Messages with the venue
+
+Each order has a thread with the venue, as a booking does - the guest asks ("can I come ten minutes early?"), the counter
+answers, the guest is pushed (`message.to-guest`). Open from Sent until two hours after the order is collected, declined,
+cancelled or not collected. The Orders tab's takeaway items carry `messages` (unread, the last message, open). See
+[messages.md](messages.md).
+
 ## 6a. The guest record, the no-show block and the reports
 
 Added 2026-10-23 (Yalla#61's follow-up).

@@ -309,6 +309,10 @@ Each refusal has its own code (2026-10-22), so the app and the tablet say what i
 | `takeaway-status-conflict` | 409 | `orderId`, `status` (where the order is now) | a move the order is not in the state for - cancel after the venue answered, accept a cancelled order |
 | `takeaway-no-show-too-early` | 409 | `orderId`, `noShowFromUtc` | "no-show" less than thirty minutes after ready |
 | `booking-blocked-no-shows` | 403 | `blockedUntilUtc` | a takeaway order from a guest blocked for no-shows - the booking's own code (2026-10-23), so the app says the same thing at both checkouts |
+| `conversation-closed` | 409 | `subjectKind` (`reservation`/`takeaway`), `subjectId`, `closedAtUtc` | writing to a guest-message thread two hours after its booking or order ended (2026-10-23, [messages.md](messages.md)) |
+| `guests-cannot-write` | 403 | `branchId` | a guest's typed message where the venue switched them off - the answer buttons still work |
+| `waiters-cannot-write` | 403 | `branchId` | a waiter writing to a guest where the venue keeps messages to managers |
+| `messages-too-fast` | 429 | `conversationId`, `perMinute` (5), `perConversation` (60), `retryAfterUtc` (with `Retry-After`) while waiting helps | a guest writing faster than five a minute, or past sixty in a thread |
 | `ask-on-my-way-too-early` | 409 | `reservationId`, `opensAtUtc` | the venue asks more than two hours before the start |
 | `ask-on-my-way-not-open` | 409 | `reservationId`, `status`, `startUtc` | the venue asks about a booking not confirmed, or started |
 | `guest-already-answered` | 409 | `reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) | the guest said on my way or running late |

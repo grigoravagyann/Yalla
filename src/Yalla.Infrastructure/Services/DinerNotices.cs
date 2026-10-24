@@ -49,21 +49,6 @@ internal static class DinerNotices
         YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime dueAtUtc) =>
         Booking(db, DinerNotificationKinds.BookingOnYourWay, reservation, venueName, branchName, dueAtUtc);
 
-    /// <summary>
-    /// "Are you coming?" asked now by somebody at the venue from the tablet - the same entry as the automatic question,
-    /// with <c>askedByVenue</c> <c>"true"</c> so the app can say who is asking.
-    /// </summary>
-    public static void BookingOnYourWayAskedByVenue(
-        YallaDbContext db, Reservation reservation, string venueName, string branchName, DateTime atUtc) =>
-        Booking(
-            db,
-            DinerNotificationKinds.BookingOnYourWay,
-            reservation,
-            venueName,
-            branchName,
-            atUtc,
-            new Dictionary<string, string> { ["askedByVenue"] = "true" });
-
     /// <summary>A takeaway order moved on: accepted, ready or declined - <paramref name="kind"/> says which.</summary>
     public static void Takeaway(
         YallaDbContext db,
@@ -90,6 +75,43 @@ internal static class DinerNotices
         }
 
         db.DinerNotifications.Add(new DinerNotification(dinerUserId, kind, Params(values), atUtc, branchId, orderId: orderId));
+    }
+
+    /// <summary>
+    /// Somebody at the venue wrote in a booking's or an order's thread, or asked "are you coming?" - beside the
+    /// <c>message.to-guest</c> push. <paramref name="values"/> carry the thread (<c>conversationId</c>, <c>subjectKind</c>,
+    /// <c>ask</c>, <c>text</c>) and the subject's <c>date</c>/<c>time</c> or <c>code</c>; never who at the venue wrote.
+    /// </summary>
+    public static void VenueMessage(
+        YallaDbContext db,
+        Guid dinerUserId,
+        Guid branchId,
+        Guid? reservationId,
+        Guid? takeawayOrderId,
+        string venueName,
+        string branchName,
+        Dictionary<string, string> values,
+        DateTime atUtc)
+    {
+        var all = new Dictionary<string, string>
+        {
+            ["venueName"] = venueName,
+            ["branchName"] = branchName,
+        };
+
+        foreach (var (key, value) in values)
+        {
+            all[key] = value;
+        }
+
+        db.DinerNotifications.Add(new DinerNotification(
+            dinerUserId,
+            DinerNotificationKinds.VenueMessage,
+            Params(all),
+            atUtc,
+            branchId,
+            reservationId: reservationId,
+            orderId: takeawayOrderId));
     }
 
     /// <summary>A pending booking approved or declined.</summary>

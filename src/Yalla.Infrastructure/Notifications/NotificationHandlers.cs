@@ -204,12 +204,19 @@ internal sealed class ReservationLateNudgeHandler(
 /// it - so the waiter knows whether to send the pre-order to the kitchen without phoning.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
 /// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Every
 /// booking is asked (2026-10-21); not once its pre-order was sent or the party marked not coming - the floor has decided
-/// - or when the guest already said they are coming or running late. The wording says whether a pre-order is waiting
-/// for the kitchen. The same message carries the venue's "Ask: are you coming?" (<c>staffAsked</c>), sent at once and
-/// whatever the floor decided; the automatic question is not asked on top of one the venue already asked.
+/// - or when the guest already said they are coming or running late, or the venue already asked. The wording says
+/// whether a pre-order is waiting for the kitchen.
+/// </para>
+/// <para>
+/// The venue's "Ask: are you coming?" is <b>not</b> sent through here: since guest messages (2026-10-23) it is a message
+/// in the booking's thread, pushed as <c>message.to-guest</c> by <see cref="VenueMessageHandler"/>. <c>staffAsked</c> on
+/// the notice is the earlier path, kept only so a message of that kind still queued when this shipped is delivered as
+/// it was written - sent at once, whatever the floor decided. Nothing enqueues one any more.
+/// </para>
 /// </remarks>
 internal sealed class ReservationOnYourWayHandler(
     YallaDbContext db,
@@ -241,8 +248,8 @@ internal sealed class ReservationOnYourWayHandler(
 
         var expected = booking is { Status: ReservationStatus.Confirmed };
 
-        // The venue's own "ask now" goes whatever the floor decided about a pre-order - somebody tapped it a moment ago.
-        // The automatic question is not asked on top of the venue's: the guest has been asked already.
+        // A venue's "ask now" queued before guest messages shipped goes whatever the floor decided about a pre-order -
+        // somebody tapped it. The automatic question is not asked on top of the venue's: the guest has been asked already.
         if (!expected
             || booking!.Answered
             || (!notice.StaffAsked && (booking.FloorDecided || booking.StaffAsked)))
@@ -841,6 +848,153 @@ internal sealed class TakeawayDeclinedHandler(YallaDbContext db, INotificationCh
 
     protected override (string Title, string Body) Text(string locale, TakeawayNotice notice) =>
         NotificationText.TakeawayDeclined(locale, notice.VenueName, notice.Code, notice.Reason, notice.NoAnswer);
+}
+
+/// <summary>A venue message, as its thread's guest is told about it.</summary>
+/// <param name="ConversationId">The thread - where a tap lands.</param>
+/// <param name="MessageId">The message.</param>
+/// <param name="DinerUserId">Who is told.</param>
+/// <param name="VenueName">The venue, as named when the message was written - the title.</param>
+/// <param name="ReservationId">The booking, for a booking's thread.</param>
+/// <param name="TakeawayOrderId">The order, for a takeaway order's thread.</param>
+/// <param name="Ask">The venue's "are you coming?" rather than words.</param>
+/// <param name="Preview">The words, at most 140 characters. Null for an ask.</param>
+/// <param name="LocalStartTime">The booking's start on the branch's wall clock, for the ask's "at 19:30".</param>
+internal sealed record VenueMessageNotice(
+    Guid ConversationId,
+    Guid MessageId,
+    Guid DinerUserId,
+    string VenueName,
+    Guid? ReservationId,
+    Guid? TakeawayOrderId,
+    bool Ask,
+    string? Preview,
+    TimeOnly? LocalStartTime);
+
+/// <summary>
+/// "Lava restaurant: Of course, without onion." - somebody at the venue wrote in a booking's or an order's thread, or
+/// asked "are you coming?".
+/// </summary>
+/// <remarks>
+/// <para>
+/// Sent while the thread is still the account's it was written for (a deletion cuts the link), and an ask only while it
+/// is still a question: the booking confirmed and the guest not yet answered - "are you coming?" after "I'm on my way"
+/// is the push that teaches a guest to switch them off.
+/// </para>
+/// <para>
+/// <b>The category</b> - the actions the app hangs under the push - follows the branch's <c>guestsCanWrite</c> when it
+/// is sent: a Reply the venue would refuse with 403 <c>guests-cannot-write</c> is not offered. Guests may write:
+/// <c>venue-ask</c> ("I'm coming", "Late 15 min", a text reply) and <c>venue-message</c> (a text reply). They may not:
+/// <c>venue-ask-buttons</c> (the two answers, no reply) and <c>venue-message-readonly</c> (no actions).
+/// </para>
+/// </remarks>
+internal sealed class VenueMessageHandler(
+    YallaDbContext db,
+    INotificationChannel channel,
+    ILogger<VenueMessageHandler> logger) : IOutboxHandler
+{
+    public string MessageType => OutboxMessageTypes.MessageToGuest;
+
+    public async Task HandleAsync(string payloadJson, CancellationToken cancellationToken)
+    {
+        var notice = Payload.Read<VenueMessageNotice>(payloadJson);
+
+        var thread = await db.Conversations
+            .AsNoTracking()
+            .Where(c => c.Id == notice.ConversationId && c.DinerUserId == notice.DinerUserId)
+            .Select(c => new
+            {
+                GuestsCanWrite = db.Branches.Where(b => b.Id == c.BranchId).Select(b => b.GuestsCanMessage).FirstOrDefault(),
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (thread is null)
+        {
+            logger.LogInformation(
+                "Not telling anybody about message {MessageId}: its thread no longer belongs to the account it was written for.",
+                notice.MessageId);
+
+            return;
+        }
+
+        if (notice.Ask && notice.ReservationId is { } reservationId)
+        {
+            var booking = await db.Reservations
+                .AsNoTracking()
+                .Where(r => r.Id == reservationId)
+                .Select(r => new
+                {
+                    r.Status,
+                    Answered = r.GuestConfirmedOnWayAtUtc != null || r.GuestRunningLateAtUtc != null,
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (booking is not { Status: ReservationStatus.Confirmed, Answered: false })
+            {
+                logger.LogInformation(
+                    "Not asking booking {ReservationId} whether they are coming: it is {Status}, answered {Answered}.",
+                    reservationId, booking?.Status, booking?.Answered);
+
+                return;
+            }
+        }
+
+        var locale = await Payload.LocaleForAsync(db, notice.DinerUserId, cancellationToken);
+        var (title, body) = NotificationText.VenueMessage(locale, notice.VenueName, notice.Preview, notice.Ask, notice.LocalStartTime);
+
+        var data = new Dictionary<string, string>
+        {
+            ["kind"] = "venue-message",
+            ["conversationId"] = notice.ConversationId.ToString(),
+            ["ask"] = notice.Ask ? "true" : "false",
+        };
+
+        if (notice.ReservationId is { } booked)
+        {
+            data["reservationId"] = booked.ToString();
+        }
+
+        if (notice.TakeawayOrderId is { } ordered)
+        {
+            data["takeawayOrderId"] = ordered.ToString();
+        }
+
+        await channel.SendAsync(
+            new NotificationMessage(
+                notice.DinerUserId,
+                title,
+                body,
+                data,
+                CategoryId: VenueMessageCategories.For(notice.Ask, thread.GuestsCanWrite)),
+            cancellationToken);
+    }
+}
+
+/// <summary>
+/// The push categories of a venue message (<c>message.to-guest</c>). The app registers all four; the server picks by the
+/// message's kind and whether the branch lets guests type.
+/// </summary>
+internal static class VenueMessageCategories
+{
+    /// <summary>An ask, guests may type: "I'm coming", "Late 15 min" and Reply (a text input).</summary>
+    public const string Ask = "venue-ask";
+
+    /// <summary>An ask, guests may not type: "I'm coming" and "Late 15 min", no Reply.</summary>
+    public const string AskButtons = "venue-ask-buttons";
+
+    /// <summary>A text, guests may type: Reply (a text input).</summary>
+    public const string Message = "venue-message";
+
+    /// <summary>A text, guests may not type: no actions - a tap opens the thread.</summary>
+    public const string MessageReadOnly = "venue-message-readonly";
+
+    public static string For(bool ask, bool guestsCanWrite) => (ask, guestsCanWrite) switch
+    {
+        (true, true) => Ask,
+        (true, false) => AskButtons,
+        (false, true) => Message,
+        (false, false) => MessageReadOnly,
+    };
 }
 
 /// <summary>Shared bits every handler needs.</summary>
