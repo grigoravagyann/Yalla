@@ -150,6 +150,36 @@ public sealed class WebPushCryptoTests
         Assert.Null(new WebPushOptions().Problem());
     }
 
+    [Fact]
+    public void A_point_that_is_not_on_the_curve_is_not_a_public_key_on_any_platform()
+    {
+        // 65 bytes starting 0x04, so it passes the shape check and reaches the import. Windows (CNG) refuses such a
+        // point with PlatformNotSupportedException, other platforms with CryptographicException: both are "no".
+        byte[] origin = [0x04, .. new byte[64]];
+        byte[] ones = [0x04, .. Enumerable.Repeat((byte)0xFF, 64)];
+
+        Assert.False(WebPushCrypto.IsPublicKey(Base64Url.Encode(origin)));
+        Assert.False(WebPushCrypto.IsPublicKey(Base64Url.Encode(ones)));
+
+        using var real = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var q = real.ExportParameters(false).Q;
+        Assert.True(WebPushCrypto.IsPublicKey(Base64Url.Encode([0x04, .. q.X!, .. q.Y!])));
+    }
+
+    [Fact]
+    public void A_configured_public_key_off_the_curve_is_a_problem_not_a_crash()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var options = new WebPushOptions
+        {
+            Subject = "mailto:ops@example.com",
+            PublicKey = Base64Url.Encode([0x04, .. new byte[64]]),
+            PrivateKey = Base64Url.Encode(key.ExportParameters(true).D!),
+        };
+
+        Assert.StartsWith("WebPush keys are not a matching P-256 pair", options.Problem(), StringComparison.Ordinal);
+    }
+
     /// <summary>What a browser does with a push: RFC 8291 from the receiving side.</summary>
     internal static byte[] Decrypt(byte[] body, ECDiffieHellman browser, byte[] auth)
     {

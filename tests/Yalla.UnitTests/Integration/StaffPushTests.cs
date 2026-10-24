@@ -79,6 +79,18 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
             new { endpoint = browser.Endpoint, keys = new { p256dh = "not-a-key", auth = browser.Auth } });
         Assert.Equal(HttpStatusCode.UnprocessableEntity, badKey.StatusCode);
 
+        // The right shape but not a point on P-256: Windows' CNG throws PlatformNotSupportedException for it, which was
+        // a 500 until it was caught with the rest (found by live QA, 2026-10-24).
+        var offCurve = await rig.WaiterPhone.PutAsJsonAsync(
+            "/api/staff/device/push-subscription",
+            new
+            {
+                endpoint = browser.Endpoint,
+                keys = new { p256dh = Yalla.Infrastructure.Notifications.Base64Url.Encode([0x04, .. new byte[64]]), auth = browser.Auth },
+            });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, offCurve.StatusCode);
+        Assert.Contains("p256dh", await offCurve.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
         // Saved switches read back, with the language.
         var saved = await (await rig.WaiterPhone.PutAsJsonAsync(
                 "/api/staff/device/notification-preferences", Switches(kitchenReady: true, onlyDuringShift: false, locale: "ru")))

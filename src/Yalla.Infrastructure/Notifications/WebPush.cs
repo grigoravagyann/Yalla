@@ -102,7 +102,7 @@ public sealed class WebPushOptions
         {
             using var _ = VapidKeys.Signer(PublicKey!, PrivateKey!);
         }
-        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
+        catch (Exception ex) when (WebPushCrypto.IsBadKey(ex))
         {
             return $"WebPush keys are not a matching P-256 pair in base64url ({ex.GetType().Name})";
         }
@@ -357,11 +357,20 @@ internal static class WebPushCrypto
 
             return true;
         }
-        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
+        catch (Exception ex) when (IsBadKey(ex))
         {
             return false;
         }
     }
+
+    /// <summary>
+    /// What importing a key that is not one throws. Windows (CNG) answers a point off the curve with
+    /// <see cref="PlatformNotSupportedException"/> ("the specified curve or its parameters are not valid for this
+    /// platform") rather than a <see cref="CryptographicException"/>, so a bad key a browser - or anybody - sends must
+    /// be caught as that too, or it is a 500 instead of a 422.
+    /// </summary>
+    internal static bool IsBadKey(Exception ex) =>
+        ex is FormatException or CryptographicException or ArgumentException or PlatformNotSupportedException;
 
     private static ECDiffieHellman ImportPublic(byte[] point)
     {
