@@ -603,6 +603,26 @@ public static class ErrorCodes
     /// </summary>
     public const string SignInUnknown = "sign-in-unknown";
 
+    /// <summary>
+    /// The waiter named cannot take the table: nobody by that id at the venue, deactivated, at another branch, or one
+    /// who does not serve (the kitchen). HTTP 422, with <c>context.staffMemberId</c> and <c>context.reason</c>
+    /// (<c>not-found</c>, <c>inactive</c>, <c>other-branch</c>, <c>does-not-serve</c>). Minted by
+    /// <c>TransferTargetIneligibleException</c>.
+    /// </summary>
+    public const string TransferTargetIneligible = "transfer-target-ineligible";
+
+    /// <summary>
+    /// A table whose bill is closed or written off, or whose party has gone, has nobody to hand over. HTTP 409, with
+    /// <c>context.tabId</c> and <c>context.status</c>. Minted by <c>TabNotTransferableException</c>.
+    /// </summary>
+    public const string TabNotTransferable = "tab-not-transferable";
+
+    /// <summary>
+    /// A History export would carry more rows than a file may. HTTP 422, with <c>context.rows</c> (at least) and
+    /// <c>context.maxRows</c>: narrow the dates or add a filter. Minted by <c>ActivityExportTooLargeException</c>.
+    /// </summary>
+    public const string ActivityExportTooLarge = "activity-export-too-large";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -683,6 +703,9 @@ public static class ErrorCodes
         TakeawayStatusConflict => "Order has moved on",
         TakeawayNoShowTooEarly => "Too early for a no-show",
         ConversationClosed => "Conversation closed",
+        TransferTargetIneligible => "Cannot take this table",
+        TabNotTransferable => "Nothing to hand over",
+        ActivityExportTooLarge => "Export too large",
         GuestsCannotWrite => "This venue takes no written messages",
         WaitersCannotWrite => "Only managers write to guests here",
         MessagesTooFast => "Messages too fast",

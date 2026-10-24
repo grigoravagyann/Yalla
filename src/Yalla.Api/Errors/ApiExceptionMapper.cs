@@ -1162,6 +1162,40 @@ internal static class ApiExceptionMapper
                 ["admission"] = (int)e.Admission,
             }),
 
+        // Handing a table over (docs/activity.md). Their own codes, so the tablet says what is true.
+        Yalla.Application.Activity.TransferTargetIneligibleException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.TransferTargetIneligible,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["staffMemberId"] = e.StaffMemberId,
+                ["reason"] = e.Why,
+            }),
+
+        Yalla.Application.Activity.TabNotTransferableException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.TabNotTransferable,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["tabId"] = e.TabId,
+                ["status"] = (int)e.Status,
+            }),
+
+        Yalla.Application.Activity.ActivityExportTooLargeException e => new MappedError(
+            StatusCodes.Status422UnprocessableEntity,
+            ErrorCodes.ActivityExportTooLarge,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?>
+            {
+                ["rows"] = e.Rows,
+                ["maxRows"] = e.MaxRows,
+            }),
+
         DomainStateException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
 

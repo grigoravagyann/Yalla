@@ -112,7 +112,10 @@ public static class DependencyInjection
         // Guest-message threads a year quiet, deleted on the same loop's daily pass (docs/messages.md, history).
         services.AddScoped<ConversationRetention>();
 
-        // Handing a table to another waiter (docs/activity.md).
+        // The activity log: kept a year, money three, swept on the same daily pass (docs/activity.md). And its reads.
+        services.AddScoped<ActivityRetention>();
+        services.AddScoped<Yalla.Application.Activity.IActivityQuery, ActivityHistoryQuery>();
+        services.AddScoped<Yalla.Application.Activity.IStaffPerformanceQuery, StaffPerformanceReader>();
         services.AddScoped<Yalla.Application.Activity.ITableTransferService, TableTransferService>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();

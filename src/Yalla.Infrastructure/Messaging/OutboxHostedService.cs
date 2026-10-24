@@ -88,6 +88,7 @@ internal sealed class OutboxHostedService(
 
         await SweepFeedAsync(cancellationToken);
         await SweepConversationsAsync(cancellationToken);
+        await SweepActivityAsync(cancellationToken);
     }
 
     /// <summary>How often the notifications feed is swept for entries past their retention.</summary>
@@ -99,6 +100,11 @@ internal sealed class OutboxHostedService(
     private static readonly TimeSpan ConversationSweepInterval = TimeSpan.FromDays(1);
 
     private DateTimeOffset? _lastConversationSweep;
+
+    /// <summary>How often the activity log is swept for entries past their keeping.</summary>
+    private static readonly TimeSpan ActivitySweepInterval = TimeSpan.FromDays(1);
+
+    private DateTimeOffset? _lastActivitySweep;
 
     /// <summary>
     /// Deletes feed entries older than their 90 days (K12), on the wake-up pass and then about hourly.
@@ -190,6 +196,47 @@ internal sealed class OutboxHostedService(
             // Again in about an hour rather than a day: nothing is lost by waiting, but a day is long to stay unswept.
             _lastConversationSweep = now - ConversationSweepInterval + FeedSweepInterval;
             logger.LogError(ex, "The guest-message retention sweep failed. It will try again in about an hour.");
+        }
+    }
+
+    /// <summary>
+    /// Deletes activity entries a year old - three years for money - on the wake-up pass and then about daily
+    /// (<see cref="Yalla.Infrastructure.Services.ActivityRetention"/>, <c>docs/activity.md</c>).
+    /// </summary>
+    /// <remarks>Its own try, as the threads' sweep: a failed one stops neither the dispatch nor another attempt about an hour later.</remarks>
+    private async Task SweepActivityAsync(CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+
+        if (_lastActivitySweep is { } last && now - last < ActivitySweepInterval)
+        {
+            return;
+        }
+
+        _lastActivitySweep = now;
+
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+
+            if (scope.ServiceProvider.GetService<Yalla.Infrastructure.Services.ActivityRetention>() is not { } retention)
+            {
+                return;
+            }
+
+            var deleted = await retention.PurgeAsync(cancellationToken);
+
+            if (deleted > 0)
+            {
+                logger.LogInformation(
+                    "Deleted {Count} activity entries past their keeping ({Days} days, {MoneyDays} for money).",
+                    deleted, Yalla.Domain.Audit.ActivityEntry.RetentionDays, Yalla.Domain.Audit.ActivityEntry.MoneyRetentionDays);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _lastActivitySweep = now - ActivitySweepInterval + FeedSweepInterval;
+            logger.LogError(ex, "The activity retention sweep failed. It will try again in about an hour.");
         }
     }
 }
