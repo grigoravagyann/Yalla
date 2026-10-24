@@ -90,6 +90,13 @@ internal sealed class StaffTodayQuery(
             throw new StaffBranchScopeException("branch");
         }
 
+        // An id that is no branch at all is "no such branch" (404), not a refusal of the caller's reach: the guard
+        // below answers 403 for a branch that exists but is not theirs, and would answer the same for a typo.
+        if (!await db.Branches.AsNoTracking().AnyAsync(b => b.Id == target, cancellationToken))
+        {
+            throw new KeyNotFoundException("There is no such branch.");
+        }
+
         // The stored row's reach: a branch manager their own branch, an owner or general manager the venue's.
         await branchGuard.RequireAtBranchAsync(target, Operation, cancellationToken);
 

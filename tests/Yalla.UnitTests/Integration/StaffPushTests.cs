@@ -310,12 +310,16 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(rig.Factory.Clock);
         var policy = await db.Branches.AsNoTracking().Where(b => b.Id == rig.Branch.BranchId).Select(b => b.ReservationPolicy).FirstAsync();
 
+        // The booking's date and time on the branch's own wall clock, as the API writes them - not the UTC
+        // ones, which name another day for part of every night.
+        var zone = BranchZone.For("Asia/Yerevan");
+
         Reservation Booking(ReservationStatus status, int hoursAhead) => Reservation.Create(
             rig.Branch.BranchId,
             rig.Branch.FirstTableId,
             now.AddHours(hoursAhead),
-            DateOnly.FromDateTime(now.AddHours(hoursAhead)),
-            TimeOnly.FromDateTime(now.AddHours(hoursAhead)),
+            DateOnly.FromDateTime(zone.ToLocal(now.AddHours(hoursAhead))),
+            TimeOnly.FromDateTime(zone.ToLocal(now.AddHours(hoursAhead))),
             2,
             "Lilit M.",
             "+37411000000",
