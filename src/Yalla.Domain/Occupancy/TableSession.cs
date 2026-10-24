@@ -175,7 +175,6 @@ public sealed class TableSession : Entity
         }
     }
 
-    /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>
     /// <summary>
     /// Makes <paramref name="staffMemberId"/> the table's waiter when it has none - the tab's opener, or the first
     /// staff member to order on a table a guest's scan seated. Answers false, changing nothing, when it already has one.
@@ -222,6 +221,7 @@ public sealed class TableSession : Entity
         return previous;
     }
 
+    /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>
     public void Close(DateTime closedAtUtc)
     {
         Guard.NotLocalTime(closedAtUtc, nameof(closedAtUtc));

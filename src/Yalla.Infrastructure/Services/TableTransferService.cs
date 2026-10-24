@@ -61,6 +61,16 @@ internal sealed class TableTransferService(
             .Select(s => new { s.Role, s.FullName })
             .FirstAsync(cancellationToken);
 
+        // The sitting has no row version, so two transfers at once - a manager and the waiter, two tablets - would both
+        // read the same waiter, both write, and log two hand-overs "from" the same person, the later silently winning.
+        // Its row is held to the end of this transaction and read inside the hold, so they go one after the other and
+        // the second sees what the first did: its caller re-checked as that table's waiter, its "from" the real one.
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.ReadCommitted, cancellationToken);
+
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT Id FROM TableSessions WITH (UPDLOCK, HOLDLOCK) WHERE Id = {tab.TableSessionId}", cancellationToken);
+
         var session = await db.TableSessions.FirstAsync(s => s.Id == tab.TableSessionId, cancellationToken);
 
         // The waiter whose table it is, or somebody who manages here - the stored role, not the token's.
@@ -161,6 +171,7 @@ internal sealed class TableTransferService(
             db, tab, TableChangeSignal.TableTransferred, $"handed to {target.FullName}", (ActorType.Staff, callerId), nowUtc);
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation(
             "Table {TableLabel} (tab {TabId}) handed from {From} to {To} by staff {CallerId}.",

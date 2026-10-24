@@ -42,8 +42,16 @@ tries again, so an entry is never written twice or for the losing attempt.
 
 No foreign keys, as `PlatformAuditLogs` has none: the log is the record and outlives what it names. Indexes: one per
 read - `(BranchId, OccurredAtUtc, Id)` the feed, `(StaffMemberId, OccurredAtUtc)` a person, `(SubjectType, SubjectId,
-OccurredAtUtc)` a subject, `(TableSessionId, OccurredAtUtc)` a bill, `(VenueId, OccurredAtUtc)` venue-wide entries,
-`(IsMoney, OccurredAtUtc)` the purge.
+OccurredAtUtc)` a subject, `(TableSessionId, OccurredAtUtc)` a bill, `(VenueId, OccurredAtUtc, Id)` filtered to
+`BranchId IS NULL` the venue-wide entries, `(IsMoney, OccurredAtUtc)` the purge. For somebody venue-wide the feed reads
+the branch's entries and the branch-less ones as two ordered ranges of a page each and merges them (ids compared as SQL
+Server orders them), rather than one `OR` that would sort the whole window on every page.
+
+**Guest messages in the log.** `message.sent` carries the venue's own text (`summary.text`) - never the guest's. It
+follows the threads' rules: a venue message is kept when a guest deletes their account (only the guest's texts go), and
+an entry goes at a year from when it was written, which is never later than its thread's purge (a year after the
+thread's last message). No entry carries a guest's phone number; a person's `staff.updated` before/after carries a
+staff phone, which the Staff page already shows the same readers.
 
 **`PlatformAuditLogs` stays** the platform tier's own record - Yalla reads it, and the password-reset rules read their
 history from it. The venue actions that also write there (a person added, a sign-in issued) write an entry here too, for
@@ -153,7 +161,8 @@ served before anybody opens a bill, and the sitting has no row version for ten p
 - **`POST /api/tabs/{tabId}/transfer { toStaffMemberId, clientCommandId? }`** (`transferTable`), answering
   `{ tabId, serverStaffMemberId, serverName, previousServerStaffMemberId, previousServerName, transferredAtUtc,
   tableSessionId, tableLabel, wasReplay }`. The table's waiter, or a manager or above
-  at the branch. The target: active, at the branch (or venue-wide), a waiter or above - never the kitchen (422
+  at the branch. The sitting's row is held (`UPDLOCK`) for the transfer and read inside the hold, so two at once go one
+  after the other: the second is re-checked against the waiter the first left, and logged from them. The target: active, at the branch (or venue-wide), a waiter or above - never the kitchen (422
   `transfer-target-ineligible`). A closed bill or a party gone: 409 `tab-not-transferable`. Already theirs: done,
   `wasReplay`. Logged as `table.transferred`, signalled on the branch stream (`TableTransferred`, 7).
 - **What came before stays.** Each order records the waiter it was placed under (`TabOrder.ServerStaffMemberId`), each
@@ -166,7 +175,9 @@ served before anybody opens a bill, and the sitting has no row version for ten p
 ## 6. Calls and their claim
 
 **`POST /api/branches/{branchId}/calls/{callId}/claim`** (`claimServiceRequest`, no body) is "I'm on it": it records
-`ServiceRequest.ClaimedByStaffId` and `ClaimedAtUtc`, the first claim wins and a repeat answers as it stands. The guest
+`ServiceRequest.ClaimedByStaffId` and `ClaimedAtUtc`, the first claim wins and a repeat answers as it stands. A claim
+and an acknowledgement hold the request's row (`UPDLOCK`) and read it inside the hold, so taps at the same instant still
+leave one claim and one `table.call-claimed`. The guest
 is not told, and the call **stays on the open list** (`getOpenServiceRequests`), showing `claimedByStaffMemberId` and
 `claimedByName`, until somebody acknowledges it (`acknowledgeServiceRequest`, unchanged). Acknowledging a call nobody
 claimed claims it in the same moment, so every answered call has a claim. The claim is logged as `table.call-claimed`
@@ -190,7 +201,8 @@ general manager every branch of their venue, a platform admin any. A waiter, the
 branch: **403**. Every query value is a string and every bad one is named in one **422 `validation-failed`**.
 
 **The feed** is keyset-paged like the message history: newest first then by id, `nextCursor` until the last page.
-`date` or `from`/`to` (default today), at most 366 days, not before 1,095 days ago. Filters: `staffMemberId`,
+`date` or `from`/`to` (default today), at most 366 days, not before 1,095 days ago nor after 366 days ahead (the same
+bounds on the staff results). Filters: `staffMemberId`,
 `actorKind` (`staff`, `guest`, `system`, `platform`), `category`, `q` (table exact, guest contains, a code, a dish
 contains). The **CSV** is the same window, every row, at
 most 20,000 (more: 422 `activity-export-too-large`), with the reports' CSV rules and a formula guard on text.

@@ -7,9 +7,11 @@ using Yalla.Application.Tables;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Takeaway;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 
@@ -547,6 +549,406 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
         }
 
         Assert.Equal(await CountAsync(small, smallTab), await CountAsync(large, largeTab));
+    }
+
+    /// <summary>
+    /// The money matches the revenue report over more than one bill and more than one day, on the branch's own dates:
+    /// a bill transferred mid-evening, one paid at 00:40 local (the next local day, still the previous UTC day), one
+    /// nobody served (a sitting from before waiters were recorded) with a discount, a bill still open, and takeaway
+    /// collected in cash and by card. For each window - both days and each alone - the totals are the report's to the
+    /// dram, the rows plus the unattributed part add up to the hall, and the rows' cash adds up to the report's cash.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_totals_match_the_revenue_report_for_every_window_across_local_midnight()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var day1 = new DateOnly(2026, 10, 23);
+        var day2 = new DateOnly(2026, 10, 24);
+        var clock = new TestClock(new DateTime(2026, 10, 23, 15, 0, 0, DateTimeKind.Utc));
+
+        TestBranch branch;
+        TestMenu menu;
+        Guid aram;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            branch = await TestBranchBuilder.CreateAsync(db, timeZoneId: "Asia/Yerevan", tableCount: 4);
+            menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+            var waiter = new StaffMember(
+                branch.VenueId, "Aram Petrosyan", $"+3747{Random.Shared.Next(1_000_000, 9_999_999)}", StaffRole.Waiter, "hash", branch.BranchId);
+            db.StaffMembers.Add(waiter);
+            await db.SaveChangesAsync();
+            aram = waiter.Id;
+        }
+
+        var lilit = branch.WaiterId;
+
+        async Task<Guid> SeatAsync(Guid tableId, Guid waiter, int party) =>
+            await AsAsync(clock, TestActor.Waiter(waiter), async (db, actor) =>
+            {
+                await fixture.CreateService(db, clock, actor)
+                    .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, tableId, party, Guid.CreateVersion7()));
+
+                return (await fixture.CreateTabService(db, clock, actor)
+                    .OpenForStaffAsync(new OpenTabForStaffCommand(branch.BranchId, tableId, Guid.CreateVersion7()))).TabId;
+            });
+
+        async Task PayAsync(Guid tabId, Guid waiter, long tip)
+        {
+            long total;
+
+            await using (var db = fixture.CreateContext(clock))
+            {
+                total = (await fixture.CreateLedger(db, clock, TestActor.Waiter(waiter)).RecomputeTotalsAsync(tabId, default)).TotalAmd;
+            }
+
+            await AsAsync(clock, TestActor.Waiter(waiter), async (db, actor) =>
+                await fixture.CreatePaymentService(db, clock, actor)
+                    .RecordCashAsync(new RecordCashPaymentCommand(tabId, total, null, tip, Guid.CreateVersion7())));
+        }
+
+        // Day 1, 19:00 local: Lilit seats three and sends khachapuri; she hands the table to Aram, who sends wine and
+        // takes the cash with a tip.
+        var transferred = await SeatAsync(branch.TableIds[0], lilit, 3);
+        await OrderAsync(clock, lilit, transferred, menu.Khachapuri, quantity: 3);
+        clock.UtcNow = clock.UtcNow.AddMinutes(30);
+        await AsAsync(clock, TestActor.Waiter(lilit), (db, actor) =>
+            Transfer(db, clock, actor).TransferAsync(new TransferTableCommand(transferred, aram)));
+        await OrderAsync(clock, aram, transferred, menu.Wine, quantity: 2);
+        clock.UtcNow = clock.UtcNow.AddMinutes(40);
+        await PayAsync(transferred, aram, tip: 1_500L);
+
+        // Day 1, 23:30 local: Lilit seats two; they pay at 00:40 local - day 2 on the branch's clock, day 1 in UTC.
+        clock.UtcNow = new DateTime(2026, 10, 23, 19, 30, 0, DateTimeKind.Utc);
+        var pastMidnight = await SeatAsync(branch.TableIds[1], lilit, 2);
+        await OrderAsync(clock, lilit, pastMidnight, menu.Coffee, quantity: 2);
+        clock.UtcNow = new DateTime(2026, 10, 23, 20, 40, 0, DateTimeKind.Utc);
+        await PayAsync(pastMidnight, lilit, tip: 0L);
+
+        // Day 2, 13:00 local: a sitting nobody served, as one from before waiters were recorded is - with a discount.
+        clock.UtcNow = new DateTime(2026, 10, 24, 9, 0, 0, DateTimeKind.Utc);
+        var nobodys = await SeatAsync(branch.TableIds[2], lilit, 4);
+        await OrderAsync(clock, lilit, nobodys, menu.Wine, quantity: 1);
+        await OrderAsync(clock, lilit, nobodys, menu.Coffee, quantity: 3);
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            var sittingId = await db.Tabs.Where(t => t.Id == nobodys).Select(t => t.TableSessionId).SingleAsync();
+            await db.TabOrders.Where(o => o.TabId == nobodys)
+                .ExecuteUpdateAsync(set => set.SetProperty(o => o.ServerStaffMemberId, (Guid?)null));
+            await db.TableSessions.Where(s => s.Id == sittingId)
+                .ExecuteUpdateAsync(set => set.SetProperty(s => s.ServerStaffMemberId, (Guid?)null));
+        }
+
+        await AsAsync(clock, TestActor.Manager(branch.ManagerId), async (db, actor) =>
+            await fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
+                nobodys, null, AdjustmentKind.Discount, 15m, null, "Regular", Guid.CreateVersion7())));
+        clock.UtcNow = clock.UtcNow.AddMinutes(50);
+        await PayAsync(nobodys, lilit, tip: 0L);
+
+        // Day 2: a bill still open is nobody's sale yet; takeaway collected in cash (Aram) and by card.
+        var open = await SeatAsync(branch.TableIds[3], aram, 2);
+        await OrderAsync(clock, aram, open, menu.Wine, quantity: 1);
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            foreach (var (minutes, method) in new[] { (60, TakeawayPaymentMethod.Cash), (70, TakeawayPaymentMethod.Card) })
+            {
+                var at = clock.UtcNow.AddMinutes(minutes);
+                var guest = new DinerUser($"+3749{Random.Shared.Next(1_000_000, 9_999_999)}", "hy", "Ani");
+                db.DinerUsers.Add(guest);
+
+                var order = new TakeawayOrder(
+                    branch.BranchId,
+                    guest.Id,
+                    $"T-1{minutes}",
+                    day2,
+                    "Ani",
+                    guest.PhoneE164!,
+                    pickupAsap: false,
+                    at.AddMinutes(-30),
+                    TimeOnly.FromDateTime(at.AddHours(4).AddMinutes(-30)),
+                    note: null,
+                    [new TakeawayLineInput(menu.Khachapuri, "Adjarian khachapuri", TestMenu.KhachapuriAmd, 2)],
+                    Guid.CreateVersion7(),
+                    at.AddMinutes(-40));
+
+                order.Accept(at.AddMinutes(-30), aram, at.AddMinutes(-39));
+                order.MarkReady(aram, at.AddMinutes(-30));
+                order.Collect(method, aram, at);
+                db.TakeawayOrders.Add(order);
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        clock.UtcNow = new DateTime(2026, 10, 24, 18, 0, 0, DateTimeKind.Utc);
+
+        foreach (var (from, to) in new[] { (day1, day2), (day1, day1), (day2, day2) })
+        {
+            var report = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+                Performance(db, clock, actor).GetBranchAsync(
+                    branch.BranchId,
+                    new StaffPerformanceQuery(from.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                        to.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture))));
+            var revenue = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+                SqlServerFixture.CreateReportQuery(db, actor).GetRevenueAsync(new ReportRequest(branch.BranchId, from, to)));
+
+            var window = $"{from}..{to}";
+            Assert.True(revenue.Tabs.Value > 0, window);
+            Assert.Equal(revenue.Tabs.Value, report.Totals.Tables);
+            Assert.Equal(revenue.HallAmd.Value, report.Totals.SalesAmd);
+            Assert.Equal(revenue.AverageTabAmd.Value, report.Totals.AverageCheckAmd);
+            Assert.Equal(revenue.CashAmd.Value, report.Totals.CashAmd);
+            Assert.Equal(revenue.TakeawayAmd.Value, report.Totals.TakeawayAmd);
+            Assert.Equal(revenue.AdjustmentsTotalAmd.Value, report.Totals.AdjustmentsAmd);
+
+            // Every dram of the hall is somebody's or explicitly nobody's; every dram of cash was taken by somebody.
+            Assert.Equal(report.Totals.SalesAmd, report.Staff.Sum(r => r.SalesAmd) + report.Totals.UnattributedSalesAmd);
+            Assert.Equal(report.Totals.CashAmd, report.Staff.Sum(r => r.CashAmd));
+            Assert.Equal(report.Totals.AdjustmentsAmd, report.Staff.Sum(r => r.AdjustmentsAmd));
+            Assert.Equal(report.Totals.TipsAmd, report.Staff.Sum(r => r.TipsAmd));
+        }
+
+        // Day 2 alone: the bill paid at 00:40 is there, the sitting nobody served is the unattributed part.
+        var second = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            Performance(db, clock, actor).GetBranchAsync(branch.BranchId, new StaffPerformanceQuery("2026-10-24", "2026-10-24")));
+        Assert.Equal(2, second.Totals.Tables);
+        Assert.True(second.Totals.UnattributedSalesAmd > 0);
+        Assert.Equal(1, second.Staff.Single(r => r.StaffMemberId == lilit).Tables);
+        Assert.Equal(2 * TestMenu.KhachapuriAmd, second.Staff.Single(r => r.StaffMemberId == aram).CashAmd);
+    }
+
+    /// <summary>
+    /// "I'm on it" from four tablets at the same instant: one claim stands, it is the one stored and the one logged,
+    /// and every tablet is answered with it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Simultaneous_claims_leave_one_claim_and_one_entry()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt);
+        var (branch, _, aram, _) = await ArrangeAsync(clock);
+        var lilit = branch.WaiterId;
+        var tableId = branch.FirstTableId;
+
+        var tabId = await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+        {
+            await fixture.CreateService(db, clock, actor)
+                .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, tableId, 2, Guid.CreateVersion7()));
+
+            return (await fixture.CreateTabService(db, clock, actor)
+                .OpenForStaffAsync(new OpenTabForStaffCommand(branch.BranchId, tableId, Guid.CreateVersion7()))).TabId;
+        });
+
+        for (var call = 0; call < 3; call++)
+        {
+            Guid requestId;
+
+            await using (var db = fixture.CreateContext(clock))
+            {
+                var request = new ServiceRequest(tabId, branch.BranchId, tableId, null, ServiceRequestPreset.Water, clock.UtcNow);
+                db.ServiceRequests.Add(request);
+                await db.SaveChangesAsync();
+                requestId = request.Id;
+            }
+
+            clock.UtcNow = clock.UtcNow.AddSeconds(40);
+
+            // Two claim, one acknowledges, one claims again - all at once.
+            var answers = await Task.WhenAll(
+                AsAsync(clock, TestActor.Waiter(aram), (db, actor) =>
+                    fixture.CreateServiceRequests(db, clock, actor).ClaimAsync(branch.BranchId, requestId)),
+                AsAsync(clock, TestActor.Waiter(lilit), (db, actor) =>
+                    fixture.CreateServiceRequests(db, clock, actor).ClaimAsync(branch.BranchId, requestId)),
+                AsAsync(clock, TestActor.Waiter(lilit), (db, actor) =>
+                    fixture.CreateServiceRequests(db, clock, actor).AcknowledgeAsync(requestId)),
+                AsAsync(clock, TestActor.Waiter(aram), (db, actor) =>
+                    fixture.CreateServiceRequests(db, clock, actor).ClaimAsync(branch.BranchId, requestId)));
+
+            await using var verify = fixture.CreateContext(clock);
+            var stored = await verify.ServiceRequests.AsNoTracking().SingleAsync(r => r.Id == requestId);
+            var claims = await verify.ActivityEntries.AsNoTracking()
+                .Where(e => e.SubjectId == requestId && e.Action == ActivityActions.TableCallClaimed)
+                .ToListAsync();
+
+            var entry = Assert.Single(claims);
+            Assert.Equal(stored.ClaimedByStaffId, entry.StaffMemberId);
+
+            // Whoever answered after the first claim was told who has it; the acknowledgement did not take it over.
+            Assert.All(answers.Where(a => a.ClaimedAtUtc is not null), a => Assert.Equal(stored.ClaimedByStaffId, a.ClaimedByStaffMemberId));
+            Assert.Equal(lilit, stored.AcknowledgedByStaffId);
+        }
+    }
+
+    /// <summary>
+    /// The table's waiter and a manager hand the same table over at the same instant. They go one after the other: the
+    /// second reads what the first did - re-checked as the table's waiter, and logged from the waiter who really had it
+    /// - so the History's hand-overs chain and end at the table's waiter now.
+    /// </summary>
+    [SkippableFact]
+    public async Task Simultaneous_transfers_go_one_after_the_other_and_chain()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt);
+        var (branch, _, aram, _) = await ArrangeAsync(clock);
+        var lilit = branch.WaiterId;
+        Guid narek;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            var waiter = new StaffMember(
+                branch.VenueId, "Narek Hakobyan", $"+3746{Random.Shared.Next(1_000_000, 9_999_999)}", StaffRole.Waiter, "hash", branch.BranchId);
+            db.StaffMembers.Add(waiter);
+            await db.SaveChangesAsync();
+            narek = waiter.Id;
+        }
+
+        for (var round = 0; round < 3; round++)
+        {
+            var tableId = branch.TableIds[round];
+
+            var tabId = await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+            {
+                await fixture.CreateService(db, clock, actor)
+                    .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, tableId, 2, Guid.CreateVersion7()));
+
+                return (await fixture.CreateTabService(db, clock, actor)
+                    .OpenForStaffAsync(new OpenTabForStaffCommand(branch.BranchId, tableId, Guid.CreateVersion7()))).TabId;
+            });
+
+            async Task<bool> TryAsync(TestActor actor, Guid to)
+            {
+                try
+                {
+                    await AsAsync(clock, actor, (db, a) => Transfer(db, clock, a).TransferAsync(new TransferTableCommand(tabId, to)));
+                    return true;
+                }
+                catch (StaffPermissionException)
+                {
+                    // Lilit's, after the manager had already handed her table to Aram: no longer hers to give.
+                    return false;
+                }
+            }
+
+            var done = await Task.WhenAll(
+                TryAsync(TestActor.Waiter(lilit), narek),
+                TryAsync(TestActor.Manager(branch.ManagerId), aram));
+
+            await using var verify = fixture.CreateContext(clock);
+            var sittingId = await verify.Tabs.Where(t => t.Id == tabId).Select(t => t.TableSessionId).SingleAsync();
+            var server = await verify.TableSessions.Where(s => s.Id == sittingId).Select(s => s.ServerStaffMemberId).SingleAsync();
+            var handovers = (await verify.ActivityEntries.AsNoTracking()
+                    .Where(e => e.TableSessionId == sittingId && e.Action == ActivityActions.TableTransferred)
+                    .Select(e => e.SummaryJson)
+                    .ToListAsync())
+                .Select(json => System.Text.Json.JsonDocument.Parse(json).RootElement)
+                .Select(s => (From: s.GetProperty("fromStaffMemberId").GetGuid(), To: s.GetProperty("toStaffMemberId").GetGuid()))
+                .ToList();
+
+            Assert.Equal(done.Count(d => d), handovers.Count);
+
+            // Both entries can carry the same instant, so follow the chain rather than the clock: from Lilit, each
+            // hand-over from whoever the one before handed to - never two from the same person.
+            var holder = lilit;
+            var left = handovers.ToList();
+
+            while (left.Count > 0)
+            {
+                var next = Assert.Single(left, h => h.From == holder);
+                left.Remove(next);
+                holder = next.To;
+            }
+
+            Assert.Equal(holder, server);
+        }
+    }
+
+    /// <summary>
+    /// The owner's feed is the branch's entries and the venue's branch-less ones, read apart and merged: page after page
+    /// in one order - newest first, then by id as SQL Server orders it, equal instants across the two included - with
+    /// nothing repeated or skipped and nothing of another venue. A branch manager sees the branch's alone.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_owners_feed_merges_branch_less_entries_page_by_page()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt.AddHours(5));
+        TestBranch branch;
+        Guid ownerId;
+        var expected = new List<ActivityEntry>();
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            branch = await TestBranchBuilder.CreateAsync(db);
+            var owner = new StaffMember(
+                branch.VenueId, "Ani Owner", $"+3745{Random.Shared.Next(1_000_000, 9_999_999)}", StaffRole.Owner, "hash", null);
+            db.StaffMembers.Add(owner);
+            ownerId = owner.Id;
+
+            ActivityEntry Entry(Guid venueId, Guid? branchId, int minute) => new(
+                venueId,
+                branchId,
+                SeatedAt.AddMinutes(minute),
+                ActivityActorKind.System,
+                null,
+                null,
+                null,
+                null,
+                branchId is null ? ActivityCategory.Staff : ActivityCategory.Table,
+                branchId is null ? ActivityActions.StaffUpdated : ActivityActions.TableSeated,
+                ActivitySubjects.Tab,
+                Guid.CreateVersion7(),
+                "{}");
+
+            // Seven of the branch's, four of the venue's with no branch - two at the same instants as branch entries -
+            // and one of another venue's, which nobody here may see.
+            var mine = new[] { 1, 3, 5, 5, 8, 13, 21 }.Select(m => Entry(branch.VenueId, branch.BranchId, m)).ToList();
+            var venueWide = new[] { 2, 5, 13, 30 }.Select(m => Entry(branch.VenueId, null, m)).ToList();
+            var elsewhere = Entry(Guid.CreateVersion7(), null, 4);
+
+            db.ActivityEntries.AddRange(mine);
+            db.ActivityEntries.AddRange(venueWide);
+            db.ActivityEntries.Add(elsewhere);
+            await db.SaveChangesAsync();
+
+            expected.AddRange(mine.Concat(venueWide)
+                .OrderByDescending(e => e.OccurredAtUtc)
+                .ThenByDescending(e => new System.Data.SqlTypes.SqlGuid(e.Id)));
+        }
+
+        async Task<List<Guid>> AllPagesAsync(TestActor actor)
+        {
+            var seen = new List<Guid>();
+            string? cursor = null;
+
+            do
+            {
+                var page = await AsAsync(clock, actor, (db, a) =>
+                    History(db, clock, a).ListAsync(branch.BranchId, new ActivityFeedQuery(Cursor: cursor, Limit: "3")));
+
+                Assert.True(page.Items.Count <= 3);
+                seen.AddRange(page.Items.Select(i => i.Id));
+                cursor = page.NextCursor;
+            }
+            while (cursor is not null);
+
+            return seen;
+        }
+
+        Assert.Equal(expected.Select(e => e.Id).ToList(), await AllPagesAsync(new TestActor(ActorType.Staff, ownerId, StaffRole.Owner)));
+        Assert.Equal(
+            expected.Where(e => e.BranchId is not null).Select(e => e.Id).ToList(),
+            await AllPagesAsync(TestActor.Manager(branch.ManagerId)));
+
+        // The CSV's rows are the same window in the same order.
+        var export = await AsAsync(clock, new TestActor(ActorType.Staff, ownerId, StaffRole.Owner), (db, a) =>
+            History(db, clock, a).ExportAsync(branch.BranchId, new ActivityFeedQuery()));
+        Assert.Equal(expected.Select(e => e.Id).ToList(), export.Items.Select(i => i.Id).ToList());
     }
 
     // ---------------------------------------------------------------- helpers

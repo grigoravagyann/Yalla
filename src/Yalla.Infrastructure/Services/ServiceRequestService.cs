@@ -171,6 +171,11 @@ internal sealed class ServiceRequestService(
     {
         var staffId = RequireStaff("Claim a call");
 
+        // Under the request's row lock, read inside it: the first claim stands even when two waiters tap at the same
+        // instant. Without it both read "unclaimed", both write, the later one overwrites the first and the History
+        // gets two claims of one call.
+        await using var transaction = await LockRequestAsync(serviceRequestId, cancellationToken);
+
         var request = await db.ServiceRequests
             .Include(r => r.DiningTable)
             .FirstOrDefaultAsync(r => r.Id == serviceRequestId && r.BranchId == branchId, cancellationToken)
@@ -188,6 +193,8 @@ internal sealed class ServiceRequestService(
             await db.SaveChangesAsync(cancellationToken);
         }
 
+        await transaction.CommitAsync(cancellationToken);
+
         return await ViewAsync(request.Id, nowUtc, 0L, cancellationToken);
     }
 
@@ -196,6 +203,10 @@ internal sealed class ServiceRequestService(
         CancellationToken cancellationToken = default)
     {
         var staffId = RequireStaff("Acknowledge a service request");
+
+        // The same row lock as a claim: an acknowledgement that read "unclaimed" must not overwrite a claim that
+        // landed in between, nor two acknowledgements both record the claim.
+        await using var transaction = await LockRequestAsync(serviceRequestId, cancellationToken);
 
         var request = await db.ServiceRequests
             .Include(r => r.DiningTable)
@@ -227,8 +238,35 @@ internal sealed class ServiceRequestService(
             await ledger.SaveAppendedAsync(cancellationToken);
         }
 
+        await transaction.CommitAsync(cancellationToken);
+
         return await ViewAsync(
             request.Id, nowUtc, await ledger.MaxSequenceAsync(request.TabId, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>
+    /// Opens a transaction holding the request's row with <c>UPDLOCK, HOLDLOCK</c> to its end, so a claim and an
+    /// acknowledgement of the same call run one after the other and each reads what the one before wrote. Readers - the
+    /// floor's open list - are not blocked.
+    /// </summary>
+    private async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction> LockRequestAsync(
+        Guid serviceRequestId, CancellationToken cancellationToken)
+    {
+        var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
+
+        try
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT Id FROM ServiceRequests WITH (UPDLOCK, HOLDLOCK) WHERE Id = {serviceRequestId}",
+                cancellationToken);
+
+            return transaction;
+        }
+        catch
+        {
+            await transaction.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>The claim in the History, with the seconds from the call - the response time Staff → Results reports.</summary>

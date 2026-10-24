@@ -43,8 +43,8 @@ public static class ActivityEndpoints
                 + "devices - with who did it (staff, the guest, or the system), from which device (`deviceLabel`: the "
                 + "tablet's or phone's name, `Console` for the console), and what it was about.\n\n"
                 + "Query, all optional: `date` (one branch-local day, `yyyy-MM-dd`) **or** `from`/`to` (inclusive; both "
-                + "default to today) - not both; at most 366 days, and not before today - 1095 (money is kept three years, "
-                + "everything else one). `staffMemberId`: only what this person did. `actorKind`: `staff`, `guest`, `system` (what the system did by itself) or `platform`. `category`: `booking`, `table`, "
+                + "default to today) - not both; at most 366 days, not before today - 1095 (money is kept three years, "
+                + "everything else one) and not after today + 366. `staffMemberId`: only what this person did. `actorKind`: `staff`, `guest`, `system` (what the system did by itself) or `platform`. `category`: `booking`, `table`, "
                 + "`order`, `payment`, `takeaway`, `message`, `settings`, `staff` or `device`. `q` (at most 60): the "
                 + "table (exact), the guest (contains), a code (`T-482` or `482`, or a booking's), or a dish (contains). "
                 + "`limit` 1 to 100, default 50. `cursor`: the page before's `nextCursor`. A bad value is **422 "
@@ -107,7 +107,7 @@ public static class ActivityEndpoints
             .WithSummary("Staff → Results: everybody's numbers over the dates, and the branch's")
             .WithDescription(
                 "Query: `from`, `to` - branch-local dates, inclusive; `from` defaults to `to`, `to` to today; at most 366 "
-                + "days. Bad values: 422 `validation-failed`.\n\n"
+                + "days, not before today - 1095 nor after today + 366. Bad values: 422 `validation-failed`.\n\n"
                 + "**Whose a sale is.** A bill counts when it closes, as the revenue report counts it, and is split over "
                 + "the table's waiters in the proportion of the lines ordered while the table was theirs: a transfer moves "
                 + "what comes after it and leaves what came before. Tips are the waiter's whose table it was when paid; "

@@ -69,10 +69,13 @@ internal sealed class ActivityEntryConfiguration : EntityConfiguration<ActivityE
             .HasDatabaseName("IX_ActivityEntries_TableSessionId")
             .HasFilter("[TableSessionId] IS NOT NULL");
 
-        // Venue-wide entries (no branch) for the owner's feed, and the purge's range by age.
-        builder.HasIndex(e => new { e.VenueId, e.OccurredAtUtc })
-            .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc");
+        // Venue-wide entries (no branch) for the owner's feed - only those: filtered, so the read seeks the few
+        // branch-less rows instead of every branch's entries of the venue, looked up one by one for their BranchId.
+        builder.HasIndex(e => new { e.VenueId, e.OccurredAtUtc, e.Id })
+            .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc")
+            .HasFilter("[BranchId] IS NULL");
 
+        // The purge's range by age.
         builder.HasIndex(e => new { e.IsMoney, e.OccurredAtUtc })
             .HasDatabaseName("IX_ActivityEntries_Retention");
     }

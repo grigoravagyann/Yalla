@@ -160,7 +160,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_ActivityEntries_VenueId_OccurredAtUtc",
                 table: "ActivityEntries",
-                columns: new[] { "VenueId", "OccurredAtUtc" });
+                columns: new[] { "VenueId", "OccurredAtUtc", "Id" },
+                filter: "[BranchId] IS NULL");
 
             migrationBuilder.AddForeignKey(
                 name: "FK_Payments_StaffMembers_RecordedByStaffId",

@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +27,8 @@ namespace Yalla.Infrastructure.Services;
 /// </para>
 /// <para>
 /// <b>One statement per page</b>: the window and the cursor are a range on <c>IX_ActivityEntries_BranchId_OccurredAtUtc</c>,
-/// newest first, then by id, so equal instants neither repeat nor skip across pages.
+/// newest first, then by id, so equal instants neither repeat nor skip across pages - and for somebody venue-wide a
+/// second, on the filtered <c>IX_ActivityEntries_VenueId_OccurredAtUtc</c> (branch-less entries only), merged in memory.
 /// </para>
 /// </remarks>
 internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, StaffBranchGuard branchGuard) : IActivityQuery
@@ -37,9 +39,7 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
 
         var (scope, zone, filter) = await PrepareAsync(branchId, query, "Read the history", cancellationToken);
 
-        var rows = await Filtered(scope, zone, filter, withCursor: true)
-            .Take(filter.Limit + 1)
-            .ToListAsync(cancellationToken);
+        var rows = await ReadAsync(scope, zone, filter, withCursor: true, filter.Limit + 1, cancellationToken);
 
         var shown = rows.Take(filter.Limit).ToList();
         var next = rows.Count > filter.Limit
@@ -57,9 +57,8 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
         var (scope, zone, filter) = await PrepareAsync(
             branchId, query with { Cursor = null, Limit = null }, "Export the history", cancellationToken);
 
-        var rows = await Filtered(scope, zone, filter, withCursor: false)
-            .Take(ActivityFeedRules.MaxExportRows + 1)
-            .ToListAsync(cancellationToken);
+        var rows = await ReadAsync(
+            scope, zone, filter, withCursor: false, ActivityFeedRules.MaxExportRows + 1, cancellationToken);
 
         if (rows.Count > ActivityFeedRules.MaxExportRows)
         {
@@ -157,18 +156,53 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
         return (scope, zone, filter);
     }
 
-    private IQueryable<ActivityEntry> Filtered(Scope scope, BranchZone zone, ActivityFeedFilter filter, bool withCursor)
+    /// <summary>
+    /// The newest <paramref name="take"/> entries of the window, newest first then by id.
+    /// </summary>
+    /// <remarks>
+    /// For somebody venue-wide the branch's entries and the venue's branch-less ones are two reads, each an ordered
+    /// range on its own index that stops after <paramref name="take"/> rows, merged here - not one <c>OR</c>, which
+    /// SQL Server answers by collecting and sorting the whole window (a year of a busy branch) for every page. The
+    /// merge orders the id as SQL Server does (<see cref="SqlGuid"/>), so the cursor's tie-break is the database's.
+    /// </remarks>
+    private async Task<List<ActivityEntry>> ReadAsync(
+        Scope scope, BranchZone zone, ActivityFeedFilter filter, bool withCursor, int take, CancellationToken cancellationToken)
     {
-        var fromUtc = zone.ToUtcLenient(filter.From, TimeOnly.MinValue);
-        var toUtc = zone.ToUtcLenient(filter.To.AddDays(1), TimeOnly.MinValue);
         var branchId = scope.BranchId;
         var venueId = scope.VenueId;
 
-        var entries = scope.VenueWide
-            ? db.ActivityEntries.Where(e => e.BranchId == branchId || (e.BranchId == null && e.VenueId == venueId))
-            : db.ActivityEntries.Where(e => e.BranchId == branchId);
+        var rows = await Filtered(db.ActivityEntries.Where(e => e.BranchId == branchId), zone, filter, withCursor)
+            .Take(take)
+            .ToListAsync(cancellationToken);
 
-        entries = entries
+        if (!scope.VenueWide)
+        {
+            return rows;
+        }
+
+        var venueWide = await Filtered(
+                db.ActivityEntries.Where(e => e.BranchId == null && e.VenueId == venueId), zone, filter, withCursor)
+            .Take(take)
+            .ToListAsync(cancellationToken);
+
+        return venueWide.Count == 0
+            ? rows
+            :
+            [
+                .. rows.Concat(venueWide)
+                    .OrderByDescending(e => e.OccurredAtUtc)
+                    .ThenByDescending(e => new SqlGuid(e.Id))
+                    .Take(take),
+            ];
+    }
+
+    private static IQueryable<ActivityEntry> Filtered(
+        IQueryable<ActivityEntry> source, BranchZone zone, ActivityFeedFilter filter, bool withCursor)
+    {
+        var fromUtc = zone.ToUtcLenient(filter.From, TimeOnly.MinValue);
+        var toUtc = zone.ToUtcLenient(filter.To.AddDays(1), TimeOnly.MinValue);
+
+        var entries = source
             .AsNoTracking()
             .Where(e => e.OccurredAtUtc >= fromUtc && e.OccurredAtUtc < toUtc);
 

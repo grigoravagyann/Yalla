@@ -71,6 +71,13 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
             Assert.Equal(HttpStatusCode.Forbidden, (await sibling.GetAsync(url)).StatusCode);
         }
 
+        // A timeline too: refused for who may not read the branch before anything is looked up, so a waiter cannot even
+        // learn whether a bill exists.
+        var timeline = $"{b}/activity/subjects/tab/{Guid.NewGuid()}";
+        Assert.Equal(HttpStatusCode.Forbidden, (await waiter.GetAsync(timeline)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await kitchen.GetAsync(timeline)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await sibling.GetAsync(timeline)).StatusCode);
+
         // A waiter's own, from their own session - and nobody else's through it.
         var mine = await OkAsync(await waiter.GetAsync("/api/staff/me/performance"));
         Assert.Equal(branch.WaiterId, mine.GetProperty("kpis").GetProperty("staffMemberId").GetGuid());

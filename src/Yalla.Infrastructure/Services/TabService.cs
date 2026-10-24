@@ -1704,11 +1704,6 @@ internal sealed class TabService(
         return rows;
     }
 
-    /// <summary>
-    /// Admits a tab that was waiting, in the caller's unit of work: the tab, its stream's
-    /// <c>TabAdmitted</c>, and the branch stream's signal. False, staging nothing, when it already was.
-    /// </summary>
-    /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
     /// <summary>Something staff did to a tab, for the activity log, in the caller's unit of work.</summary>
     private Task LogTabAsync(Tab tab, string action, object? summary, CancellationToken cancellationToken) =>
         activity.RecordAsync(
@@ -1722,6 +1717,11 @@ internal sealed class TabService(
             },
             cancellationToken);
 
+    /// <summary>
+    /// Admits a tab that was waiting, in the caller's unit of work: the tab, its stream's
+    /// <c>TabAdmitted</c>, and the branch stream's signal. False, staging nothing, when it already was.
+    /// </summary>
+    /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
     private bool AdmitInContext(Tab tab, TabAdmissionReason because, Guid? staffId, DateTime nowUtc) =>
         TabAdmissions.Admit(db, ledger, tab, because, staffId, SignalActor(staffId), nowUtc);
 

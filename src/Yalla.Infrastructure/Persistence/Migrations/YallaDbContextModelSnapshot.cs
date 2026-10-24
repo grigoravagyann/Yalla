@@ -129,8 +129,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_ActivityEntries_TableSessionId")
                         .HasFilter("[TableSessionId] IS NOT NULL");
 
-                    b.HasIndex("VenueId", "OccurredAtUtc")
-                        .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc");
+                    b.HasIndex("VenueId", "OccurredAtUtc", "Id")
+                        .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc")
+                        .HasFilter("[BranchId] IS NULL");
 
                     b.HasIndex("BranchId", "OccurredAtUtc", "Id")
                         .HasDatabaseName("IX_ActivityEntries_BranchId_OccurredAtUtc");

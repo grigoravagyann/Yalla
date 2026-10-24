@@ -141,6 +141,26 @@ public class ActivityRulesTests
         Assert.Equal("to", Assert.Single(tooLong.Violations).Field);
     }
 
+    /// <summary>
+    /// A far-future date is a 422, not the 500 the day after <c>9999-12-31</c> used to throw - in the History and the
+    /// staff results alike.
+    /// </summary>
+    [Fact]
+    public void A_window_far_in_the_future_is_refused_by_name_not_by_overflow()
+    {
+        var feed = Assert.Throws<FieldValidationException>(() => ActivityFeedRules.Check(
+            new ActivityFeedQuery(Date: "9999-12-31"), Today));
+        Assert.Equal("to", Assert.Single(feed.Violations).Field);
+
+        var results = Assert.Throws<FieldValidationException>(() => StaffPerformanceRules.Check(
+            new StaffPerformanceQuery(From: "9999-12-31"), Today));
+        Assert.Equal("to", Assert.Single(results.Violations).Field);
+
+        // A year ahead is still a window (empty, but asked for).
+        var ahead = ActivityFeedRules.Check(new ActivityFeedQuery(Date: DateRules.Iso(Today.AddDays(366))), Today);
+        Assert.Equal(Today.AddDays(366), ahead.To);
+    }
+
     [Fact]
     public void A_cursor_survives_its_round_trip()
     {

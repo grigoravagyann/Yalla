@@ -495,6 +495,21 @@ public static class DateRules
 
         var oldest = today.AddDays(-maxDaysBack);
 
+        // Nothing is recorded ahead of today; a far-future date would only overflow the day after it into a 500.
+        var latest = today.AddDays(maxRangeDays);
+
+        if (to > latest || from > latest)
+        {
+            violations.Add(new FieldViolation(
+                to > latest ? toField : fromField,
+                $"The history reaches no later than {Iso(latest)}.",
+                FieldBounds.Max,
+                Max: Iso(latest),
+                Value: Iso(to > latest ? to : from)));
+
+            return;
+        }
+
         if (from < oldest)
         {
             violations.Add(new FieldViolation(

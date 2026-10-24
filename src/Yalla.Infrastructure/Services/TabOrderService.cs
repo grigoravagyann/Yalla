@@ -910,14 +910,6 @@ internal sealed class TabOrderService(
         ];
     }
 
-    /// <summary>
-    /// The Kitchen role cooks and nothing else.
-    /// </summary>
-    /// <remarks>
-    /// <c>InKitchen -> Ready</c> is the whole of what that role does. Serving is a floor action and
-    /// belongs to whoever carried the plate; letting the kitchen mark food served would make the
-    /// floor screen say a table has its order when nobody has walked it over.
-    /// </remarks>
     /// <summary>An order placed: <c>order.sent</c> by a waiter (it goes straight to the kitchen), <c>order.placed-by-guest</c> from a phone.</summary>
     private async Task LogOrderAsync(Tab tab, TabOrder order, CancellationToken cancellationToken)
     {
@@ -961,6 +953,14 @@ internal sealed class TabOrderService(
             .Select(t => t.Label)
             .FirstOrDefaultAsync(cancellationToken);
 
+    /// <summary>
+    /// The Kitchen role cooks and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <c>InKitchen -> Ready</c> is the whole of what that role does. Serving is a floor action and
+    /// belongs to whoever carried the plate; letting the kitchen mark food served would make the
+    /// floor screen say a table has its order when nobody has walked it over.
+    /// </remarks>
     private void RequireKitchenMayMake(TabOrderStatus from, TabOrderStatus to)
     {
         if (actor.Role != StaffRole.Kitchen)
