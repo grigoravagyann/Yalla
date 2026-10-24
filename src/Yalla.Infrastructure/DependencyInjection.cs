@@ -88,6 +88,7 @@ public static class DependencyInjection
 
         // The venue console's Overview: one branch, today. Read-only, behind the branch guard.
         services.AddScoped<IBranchOverviewQuery, BranchOverviewQuery>();
+        services.AddScoped<Yalla.Application.Staff.IStaffTodayQuery, StaffTodayQuery>();
 
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.

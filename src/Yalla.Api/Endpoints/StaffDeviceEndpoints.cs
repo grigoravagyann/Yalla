@@ -1,6 +1,8 @@
 using Yalla.Api.Authorization;
 using Yalla.Application.Auth;
 using Yalla.Application.Notifications;
+using Yalla.Application.Staff;
+using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.Endpoints;
@@ -33,6 +35,33 @@ public static class StaffDeviceEndpoints
             .Produces<StaffPushConfig>()
             .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No staff device token, or the device was revoked.")
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a staff device or a PIN session on one.");
+
+        app.MapGet("/api/staff/today", GetTodayAsync)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove)
+            .WithName("getStaffToday")
+            .WithSummary("The manager's Today: one branch's day so far, for the staff phone")
+            .WithDescription(
+                "One read for the phone's Today board: `revenue` (`totalAmd`, `hallAmd` - the Overview's closed tabs - "
+                + "`takeawayAmd` and `takeawayOrders` collected, all since `sinceUtc`, the service day's first opening), "
+                + "`guests` (`total`, `withBooking`, `walkIn`: people seated since then), `bookings` (`total`, `came` = "
+                + "seated + completed, `expected` = confirmed not yet seated, `late`, `noShow`, `pendingApproval` - the "
+                + "Overview's counts for the same service day), `room` (`occupiedTables` of `tables`, `people`), "
+                + "`needsYou` (`pendingApprovals` the floor can answer now with `oldestApprovalRequestedAtUtc` and "
+                + "`soonestApprovalDeadlineUtc`; `unansweredMessages` with `oldestUnansweredMessageAtUtc` - the Messages "
+                + "tab's rule) and `shifts` (the service date's shifts at the branch and last night's still running: "
+                + "`fullName`, `role`, `startsAt`/`endsAt`, `endsNextDay`, the instants, `onShiftNow`, and `signedIn` - a "
+                + "live PIN session on one of the branch's devices).\n\n"
+                + "**Which branch.** `branchId` picks it; absent, the session's branch, else the caller's own. A branch "
+                + "manager reads their own branch only. An owner or general manager reads any branch of their venue - "
+                + "`branches` lists them for the switcher - from their own phone or the console. **On a shared tablet** "
+                + "a manager's PIN session reads that tablet's branch only, as every PIN session there is confined; "
+                + "`branches` is then that one. Read-only; the floor's actions stay on their own routes.")
+            .Produces<StaffToday>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a manager or above, a branch the caller does not reach, or another branch from a tablet.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 
         var device = app.MapGroup("/api/staff/device")
             .WithTags(EndpointConventions.StaffTag)
@@ -113,6 +142,21 @@ public static class StaffDeviceEndpoints
     }
 
     private static IResult GetPushConfig(IStaffPushService service) => Results.Ok(service.GetConfig());
+
+    private static async Task<IResult> GetTodayAsync(
+        Guid? branchId,
+        HttpContext http,
+        IStaffTodayQuery today,
+        CancellationToken cancellationToken)
+    {
+        // The device a PIN session is open on - a tablet confines it to its branch. An admin-panel token has none.
+        var sessionDevice = http.User.PrincipalType() == PrincipalType.StaffSession
+            ? http.User.Guid(YallaClaims.DeviceId)
+            : null;
+
+        return Results.Ok(await today.GetAsync(
+            branchId, sessionDevice, http.User.Guid(YallaClaims.BranchId), cancellationToken));
+    }
 
     private static async Task<IResult> SaveSubscriptionAsync(
         SaveStaffPushSubscriptionRequest request,
