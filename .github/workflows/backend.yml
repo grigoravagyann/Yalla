@@ -42,7 +42,9 @@ jobs:
   build-and-test:
     name: build-and-test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The integration suite alone ran 23 minutes on 2026-10-24 (2071 tests);
+    # 25 left no room for the build and a slow runner.
+    timeout-minutes: 40
 
     services:
       sqlserver:

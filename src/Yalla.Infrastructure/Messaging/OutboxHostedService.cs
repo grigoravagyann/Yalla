@@ -87,12 +87,18 @@ internal sealed class OutboxHostedService(
         }
 
         await SweepFeedAsync(cancellationToken);
+        await SweepConversationsAsync(cancellationToken);
     }
 
     /// <summary>How often the notifications feed is swept for entries past their retention.</summary>
     private static readonly TimeSpan FeedSweepInterval = TimeSpan.FromHours(1);
 
     private DateTimeOffset? _lastFeedSweep;
+
+    /// <summary>How often guest-message threads are swept for those a year quiet.</summary>
+    private static readonly TimeSpan ConversationSweepInterval = TimeSpan.FromDays(1);
+
+    private DateTimeOffset? _lastConversationSweep;
 
     /// <summary>
     /// Deletes feed entries older than their 90 days (K12), on the wake-up pass and then about hourly.
@@ -139,6 +145,51 @@ internal sealed class OutboxHostedService(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "The notifications feed sweep failed. It will try again on a later tick.");
+        }
+    }
+
+    /// <summary>
+    /// Deletes guest-message threads whose last message is over a year old - unless the thread is still open -
+    /// on the wake-up pass and then about daily (<see cref="Yalla.Infrastructure.Services.ConversationRetention"/>).
+    /// </summary>
+    /// <remarks>
+    /// The wake-up pass included, so a server restarted more often than once a day still sweeps. Its own try, as the
+    /// feed's: a failed sweep stops neither the dispatch nor the next attempt, about an hour later.
+    /// </remarks>
+    private async Task SweepConversationsAsync(CancellationToken cancellationToken)
+    {
+        var now = time.GetUtcNow();
+
+        if (_lastConversationSweep is { } last && now - last < ConversationSweepInterval)
+        {
+            return;
+        }
+
+        _lastConversationSweep = now;
+
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+
+            if (scope.ServiceProvider.GetService<Yalla.Infrastructure.Services.ConversationRetention>() is not { } retention)
+            {
+                return;
+            }
+
+            var deleted = await retention.PurgeAsync(cancellationToken);
+
+            if (deleted > 0)
+            {
+                logger.LogInformation(
+                    "Deleted {Count} guest-message threads whose last message is over {Days} days old.",
+                    deleted, Yalla.Domain.Messages.ConversationRules.RetentionDays);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Again in about an hour rather than a day: nothing is lost by waiting, but a day is long to stay unswept.
+            _lastConversationSweep = now - ConversationSweepInterval + FeedSweepInterval;
+            logger.LogError(ex, "The guest-message retention sweep failed. It will try again in about an hour.");
         }
     }
 }

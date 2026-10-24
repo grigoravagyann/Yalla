@@ -38,6 +38,11 @@ public sealed record ConversationSubject(ConversationSubjectKind Kind, Guid Id)
 /// before. Absent on a booking.
 /// </param>
 /// <param name="ReadyAtUtc">The same instant. Absent on a booking.</param>
+/// <param name="Outcome">
+/// The staff view only - absent on the guest's: what became of the subject. A booking: <c>came</c>, <c>no-show</c>,
+/// <c>cancelled</c>, <c>declined</c> or <c>upcoming</c>. An order: <c>collected</c>, <c>no-show</c>, <c>declined</c>,
+/// <c>cancelled</c> or <c>in-progress</c>.
+/// </param>
 public sealed record ConversationSubjectView(
     string Kind,
     Guid Id,
@@ -50,7 +55,8 @@ public sealed record ConversationSubjectView(
     string? TableLabel,
     string? TakeawayCode,
     string? ReadyAtLocal,
-    DateTime? ReadyAtUtc);
+    DateTime? ReadyAtUtc,
+    string? Outcome = null);
 
 // ---------------------------------------------------------------- a message
 
@@ -386,6 +392,14 @@ public interface IGuestMessageService
 
     /// <summary>The branch's inbox.</summary>
     Task<BranchConversations> ListForBranchAsync(Guid branchId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The console's Messages page: the branch's threads by their last message, newest first, a page at a time. Manager
+    /// or above at the branch. Reads only - nothing is marked read.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.FieldValidationException">A bad query - every bad field named.</exception>
+    Task<MessageHistoryPage> ListHistoryAsync(
+        Guid branchId, MessageHistoryQuery query, CancellationToken cancellationToken = default);
 
     /// <summary>A thread as the venue reads it. Waiter or above at the subject's branch.</summary>
     Task<StaffConversationView> GetForStaffAsync(ConversationSubject subject, CancellationToken cancellationToken = default);

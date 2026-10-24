@@ -7,7 +7,7 @@ guest's answer buttons write theirs. Added 2026-10-23 (the "SHURJ Նամակնե
 Domain: `Domain/Messages` (`Conversation`, `ConversationMessage`, `ConversationRules`). Service:
 `Infrastructure/Services/GuestMessageService.cs`, with `GuestThreads.cs` for what the booking and pre-order services
 append and the summaries other reads carry. Endpoints: `Api/Endpoints/MessageEndpoints.cs`. Push:
-`VenueMessageHandler` (`message.to-guest`).
+`VenueMessageHandler` (`message.to-guest`). The console's history and the year's retention: §8 (`ConversationRetention`).
 
 ---
 
@@ -23,6 +23,7 @@ append and the summaries other reads carry. Endpoints: `Api/Endpoints/MessageEnd
 - **Linked to the account the subject holds under that lock** - read again there, never taken from a read made before
   the locks: an account deleted in between has had its link cut from the booking or order, and a new thread must not
   hand it back (`GuestThreads.FindOrStartAsync`).
+- **Kept a year** after its last message, then swept with its messages - unless the thread is still open (§8).
 - **`ConversationMessage`** - `Author` (1 Guest, 2 Venue, 3 System), `Kind` (1 Text, 2 AskComing, 3 Answer, 4 Status),
   `Body` (Text only - a check constraint), `AnswerKind` (1 Coming, 2 Late, 3 NotComing) and `LateMinutes` on an answer
   and its status line, `HeldUntilLocal` on a late answer's status line, `StaffMemberId` and `StaffName` (a snapshot) on a
@@ -49,7 +50,7 @@ after trimming, never linkified, no photos.
 
 Writing to a closed thread is **409 `conversation-closed`** (`context.subjectKind`, `subjectId`, `closedAtUtc`). The
 guest still reads a closed thread **for 30 days** after it closed; after that the diner's routes answer 404. Staff read
-it any time.
+it any time - until the year's retention deletes it (§8).
 
 ## 3. Who writes
 
@@ -149,7 +150,7 @@ item     { conversationId, subject: { kind, id, label, guestName, localTime, loc
            awaitingGuestAnswer,
            oldestUnansweredGuestMessageUtc?, open }
 StaffConversationView = the diner's view + guestName, guestPhone (empty for a platform admin), canWrite,
-                        guestLastReadUtc; messages carry staffName? on venue ones
+                        guestLastReadUtc; messages carry staffName? on venue ones; subject carries outcome (§8)
 StaffMessageResult { conversationId, id, author, kind, text, createdAtUtc, staffName, wasReplay }
 ```
 
@@ -188,6 +189,9 @@ Read body (optional), as the guest's: `{ upToUtc? }` (§3).
 | `templates` | null - the app's default four | at most 8, each 1 to 120 characters after trimming (stored trimmed) |
 | `remindAfterMinutes` | 3 | 1 to 15 |
 
+`GET /api/branches/{branchId}/conversations/history` (`listBranchMessageHistory`): the Messages page - a year of the
+branch's threads, read only, marking nothing read. See §8.
+
 On the branch, not in the reservation policy - the policy is replaced whole by every save of the reservation form, and a
 switch living there would be reset by an edit that never showed it (the takeaway settings' reason). `guestsCanWrite`,
 `waitersCanWrite` and `remindAfterMinutes` are required; `templates` may be null or left out (the default set). One 422
@@ -210,11 +214,99 @@ so no push offers a Reply the venue would refuse:
 
 ## 7. The account's deletion
 
-The thread is the venue's record beside the booking or the order: it stays, with `DinerUserId` cut. The guest's own
+The thread is the venue's record beside the booking or the order: it stays - until the year's retention (§8) - with
+`DinerUserId` cut. The guest's own
 typed messages are deleted with the person's other rows; their answers (on my way, late, not coming) and the venue's
 messages stay. A push still queued is not sent: the handler sends only while the thread is still the account's.
 
-## 8. What it does not do
+## 8. History
+
+The console's **Messages** page (added 2026-10-24): every guest thread of the branch from the last 12 months, filtered and
+searchable, with the whole thread beside it. **Read only** - nobody answers from here; replies go from the tablet.
+
+### Who reads it
+
+Manager or above, scoped like the Reviews page (`ManagerOrAbove` and `BranchScoped` on the route, the stored-row guard
+again in the service): a branch manager reaches their own branch only, the owner and the general manager every branch of
+their venue, a platform admin any. Waiters and the kitchen: 403. A manager of another branch, or another venue's staff:
+403.
+
+### It marks nothing read
+
+Neither the list nor the thread it opens moves `VenueLastReadUtc`: the right pane is the staff read
+(`getStaffReservationConversation` / `getStaffTakeawayConversation`), which never marked anything - only `POST
+.../conversation/read` does, and the console never calls it. The tablet's unread counts and the remind are untouched by
+somebody looking at the history at home. Staff read a thread any time, however old (§2), so a year-old thread opens like
+today's; the staff view's `subject` carries `outcome` (below), the guest's does not.
+
+### The list
+
+`GET /api/branches/{branchId}/conversations/history` (`listBranchMessageHistory`):
+
+| Parameter | |
+|---|---|
+| `from`, `to` | Branch-local dates, `yyyy-MM-dd`, inclusive, matched against the day of the thread's **last** message (`LastMessageUtc`) on the branch's clock - its midnight to the next midnight, so 00:30 in Yerevan is that day although it is 20:30 the day before in UTC. Defaults: `to` today, `from` six days before `to` (never before the oldest day kept). `from` is not after `to`, the range is at most 366 days, and neither is before today - 365 |
+| `kind` | `all` (default), `reservation` or `takeaway` |
+| `q` | At most 60 characters, trimmed, case-insensitive: the guest's name (contains), the table's label (exact), or the takeaway code with or without `T-` (`T-482`, `t-482`, `482`) |
+| `unansweredOnly` | `true`: only threads whose guest's last typed message has no venue message (text or ask) after it. Unlike the tablet's "waits" it counts closed threads too - it is a record, not a remind |
+| `limit` | 1 to 100, default 50 |
+| `cursor` | The previous page's `nextCursor` |
+
+Every value is read as a string, so one that does not parse is named with the rest: a bad query is one **422
+`validation-failed`** naming every bad field (`from`, `to`, `kind`, `q`, `unansweredOnly`, `cursor`, `limit`). A blank
+value (`kind=`) is the same as none, its default. A window too long only because `from` is before the oldest day is
+named on `from` alone.
+
+```
+MessageHistoryPage { items[], nextCursor?, from, to }      // from/to: the dates read, defaults filled in
+item    { conversationId,
+          subject: { kind, id, label, guestName, localDate, localTime, partySize?, itemCount?, totalAmd?, outcome },
+          messageCount, firstAtUtc, lastAtUtc, lastLocal ("yyyy-MM-dd HH:mm"), staffNames[], unanswered, open }
+```
+
+- **`label`** is the table for a booking and the `T-` code for an order; `localDate`/`localTime` the booking's start, or
+  the order's ready time (asked-for time before it was accepted), on the branch's clock.
+- **`outcome`**: a booking `came` (seated or completed), `no-show`, `declined` (the venue's no, or nobody's answer in
+  time - `CancelledByVenue` with a `DeclineReason`), `cancelled` (by the guest, or by the venue without one) or
+  `upcoming` (pending or confirmed). An order `collected`, `no-show` (not collected), `declined`, `cancelled` or
+  `in-progress` (sent, accepted or ready).
+- **`messageCount`** counts the guest's and the venue's messages - texts, asks and answers - not the system's status
+  lines. `firstAtUtc` is the first message still in the thread.
+- **`staffNames`**: who at the venue wrote, by the name each message keeps (as the person was named then), each once, in
+  the order they first wrote.
+- **Order and pages.** Newest last message first, then the thread's id (as the database orders it): a total order, so the
+  opaque cursor - the last row's `LastMessageUtc` to the tick and its id - neither repeats nor skips a thread at a page
+  boundary, equal instants included. A thread written to after the first page was read moves above the cursor: it is not
+  repeated further down, and shows on a fresh read.
+
+**What it costs.** One statement for the page: the branch's threads by `IX_Conversations_BranchId_LastMessageUtc` (the
+window and the cursor are its range, the clustered `Id` its tie-break), the counts and `unanswered` correlated per row on
+`IX_ConversationMessages_ConversationId_CreatedAtUtc_Sequence`; then one statement per kind of subject
+(`GuestThreads.ReservationSubjectsAsync` / `TakeawaySubjectsAsync`) and one for the staff names - five or six
+statements whatever the page holds, no N+1. The search lowers both sides (`LOWER`) rather than trusting the column's
+collation with Armenian and Cyrillic; it runs inside one branch's window, so it needs no index of its own. No migration.
+
+### Retention
+
+**A thread is kept 365 days after its last message** (`ConversationRules.RetentionDays`), then deleted with its messages
+(the foreign key cascades; nothing else points at a thread). `ConversationRetention.PurgeAsync`, run by the outbox loop
+(`OutboxHostedService`) on its wake-up pass and then about daily, beside the notifications feed's retention; a failed
+sweep is logged and tried again about an hour later. In batches of 500, each its own statement.
+
+- **Never a thread still open.** A thread whose booking is pending, confirmed or seated and has not ended two hours
+  ago, or whose order is still sent, accepted or ready (placed within the year), is kept however old its last message:
+  a booking can be made a year ahead, and its thread is open until two hours after it ends. A booking left "confirmed"
+  long after its evening, or an order left "ready" for a year, does not keep its thread for ever.
+- **The booking or the order stays** - only the conversation goes. The history therefore reaches back exactly as far
+  as anything is kept, and `from` refuses a day before that.
+
+**Privacy.** Messages are the guest's words held by the venue, so they are not kept for ever: a year is long enough to
+settle "what did they ask for last time" and short enough not to become a file on a person. The guest's own typed
+messages go sooner if they delete their account (§7) - the answers and the venue's messages stay until the year is up.
+Staff names are a snapshot on each message and leave with it. The history shows no guest phone number - the thread's
+`guestPhone` is the Call button's, and a platform admin's is empty.
+
+## 9. What it does not do
 
 - No thread without a subject, no group chat, no photos, no links made clickable, nothing promotional.
 - No push to the venue: the tablet polls the floor and the inbox.

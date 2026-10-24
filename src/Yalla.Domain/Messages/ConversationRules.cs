@@ -22,6 +22,12 @@ public static class ConversationRules
     /// <summary>The guest may read a closed thread for this many days; after that it is not found.</summary>
     public const int ReadableAfterCloseDays = 30;
 
+    /// <summary>
+    /// A thread - the venue's record - is kept this long after its last message; the daily sweep then deletes it with its
+    /// messages, unless the thread is still open. The console's history reaches back as far.
+    /// </summary>
+    public const int RetentionDays = 365;
+
     /// <summary>The tablet's inbox keeps a closed thread this long after its last message.</summary>
     public const int InboxRecentHours = 24;
 

@@ -94,6 +94,9 @@ internal static class GuestThreads
 
         public ReservationStatus? ReservationStatus { get; init; }
 
+        /// <summary>A booking the venue declined - or nobody answered in time - rather than cancelled.</summary>
+        public bool ReservationDeclined { get; init; }
+
         public DateTime? StartUtc { get; init; }
 
         public DateTime? EndUtc { get; init; }
@@ -120,12 +123,18 @@ internal static class GuestThreads
 
         public bool IsOpenAt(DateTime nowUtc) => ConversationRules.IsOpen(ClosesAtUtc, nowUtc);
 
+        /// <summary>What became of the booking or order - <see cref="MessageHistoryRules.BookingOutcome"/>, <see cref="MessageHistoryRules.TakeawayOutcome"/>.</summary>
+        public string Outcome => Kind == ConversationSubjectKind.Reservation
+            ? MessageHistoryRules.BookingOutcome(ReservationStatus!.Value, ReservationDeclined)
+            : MessageHistoryRules.TakeawayOutcome(TakeawayStatus!.Value);
+
         /// <summary>"Are you coming?" may still be answered - the answer bar shows.</summary>
         public bool AnswerAcceptedAt(DateTime nowUtc) =>
             ReservationStatus is { } status
             && ConversationRules.AnswerAccepted(status, StartUtc!.Value, EndUtc!.Value, nowUtc);
 
-        public ConversationSubjectView View() => new(
+        /// <summary>The header. <paramref name="withOutcome"/> for staff: the guest's view carries no outcome.</summary>
+        public ConversationSubjectView View(bool withOutcome = false) => new(
             SubjectKindName(Kind),
             Id,
             VenueName,
@@ -137,7 +146,8 @@ internal static class GuestThreads
             TableLabel,
             TakeawayCode,
             ReadyAtLocal is { } ready ? Hhmm(ready) : null,
-            Kind == ConversationSubjectKind.Takeaway ? ReadyAtUtc : null);
+            Kind == ConversationSubjectKind.Takeaway ? ReadyAtUtc : null,
+            withOutcome ? Outcome : null);
     }
 
     /// <summary>One booking's or order's facts, or null when there is no such subject.</summary>
@@ -180,6 +190,7 @@ internal static class GuestThreads
                 r.PartySize,
                 TableLabel = r.DiningTable.Label,
                 r.CancelledAtUtc,
+                Declined = r.DeclineReason != null,
 
                 // A completed booking ended when its table was given back.
                 CompletedAtUtc = db.TableSessions
@@ -207,6 +218,7 @@ internal static class GuestThreads
                 ClosesAtUtc = ConversationRules.ReservationClosesAtUtc(
                     r.Status, r.EndUtc, r.Status == ReservationStatus.Completed ? r.CompletedAtUtc ?? r.CancelledAtUtc : r.CancelledAtUtc),
                 ReservationStatus = r.Status,
+                ReservationDeclined = r.Declined,
                 StartUtc = r.StartUtc,
                 EndUtc = r.EndUtc,
                 LocalDate = r.LocalDate,

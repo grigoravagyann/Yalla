@@ -42,6 +42,7 @@ public static class MessageEndpoints
         MapDiner(app);
         MapStaff(app);
         MapSettings(app);
+        MapHistory(app);
 
         return app;
     }
@@ -169,7 +170,11 @@ public static class MessageEndpoints
                     + "platform admin), `guestLastReadUtc` (a venue message not after it is \"seen\") and "
                     + "`canWrite` - open, and the caller a manager, the general manager or the owner, or a waiter while the "
                     + "venue lets waiters write; never a platform admin. `unreadCount`: guest messages since anybody at the "
-                    + "venue last read it. Waiter or above at the subject's branch.\n\n" + OpenRule + "\n\n" + MessageShape)
+                    + "venue last read it. `subject.outcome` (staff only): a booking `came`, `no-show`, `cancelled`, "
+                    + "`declined` or `upcoming`; an order `collected`, `no-show`, `declined`, `cancelled` or "
+                    + "`in-progress`. Reading never marks read - only `.../conversation/read` does - and works however old "
+                    + "the thread (the console's history opens threads up to a year old here). Waiter or above at the "
+                    + "subject's branch.\n\n" + OpenRule + "\n\n" + MessageShape)
                 .Produces<StaffConversationView>()
                 .ProducesProblemDetails(StatusCodes.Status403Forbidden, $"Not floor staff at this {noun}'s branch.")
                 .ProducesProblemDetails(StatusCodes.Status404NotFound, $"No such {noun}.");
@@ -240,6 +245,51 @@ public static class MessageEndpoints
             .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`context.fields` names each.");
     }
 
+    // ---------------------------------------------------------------- the console's history
+
+    private static void MapHistory(IEndpointRouteBuilder app)
+    {
+        app.MapGet("/api/branches/{branchId:guid}/conversations/history", ListHistoryAsync)
+            .WithTags(EndpointConventions.AdminTag)
+            .RequireAuthorization(YallaPolicies.ManagerOrAbove, YallaPolicies.BranchScoped)
+            .WithName("listBranchMessageHistory")
+            .WithSummary("The console's Messages page: the branch's threads with guests over the last year")
+            .WithDescription(
+                "Read only - nobody answers from here (replies go from the tablet), and **nothing is marked read**: the "
+                + "tablet's unread counts stay as they were. The right pane is the thread's own staff read, "
+                + "`getStaffReservationConversation` / `getStaffTakeawayConversation`, which never marks read either.\n\n"
+                + "Query, all optional: `from`, `to` - branch-local dates, `yyyy-MM-dd`, inclusive, matched against the day "
+                + "of the thread's **last** message on the branch's clock; `to` defaults to today and `from` to six days "
+                + "before `to`. `from` is not after `to`, the range is at most 366 days, and neither is before today - 365 "
+                + "(older threads are deleted, see `docs/messages.md` §history). `kind`: `all` (default), `reservation` or "
+                + "`takeaway`. `q`: at most 60 characters, case-insensitive - the guest's name (contains), the table "
+                + "(exact) or the takeaway code (`T-482` or `482`). `unansweredOnly`: `true` keeps the threads whose "
+                + "guest's last typed message has no venue message (text or ask) after it. `limit`: 1 to 100, default 50. "
+                + "`cursor`: the page before's `nextCursor`. A bad value is **422 `validation-failed`** naming every "
+                + "bad field in `context.fields` (`from`, `to`, `kind`, `q`, `unansweredOnly`, `cursor`, `limit`).\n\n"
+                + "Answers `{ items, nextCursor, from, to }` - `from` and `to` the dates read, defaults filled in; "
+                + "`nextCursor` absent on the last page. Newest last message first, then by thread, so equal instants "
+                + "neither repeat nor skip across pages; a thread written to after the first page moves above the cursor "
+                + "and shows on a fresh read. Each item: `conversationId`, `subject` (`kind`, `id`, `label` - the table "
+                + "or the `T-` code, `guestName`, `localDate`, `localTime` - a booking's start or an order's ready time, "
+                + "`partySize` or `itemCount`/`totalAmd`, and `outcome`: a booking `came`, `no-show`, `cancelled`, "
+                + "`declined` or `upcoming`; an order `collected`, `no-show`, `declined`, `cancelled` or "
+                + "`in-progress`), `messageCount` (the guest's and the venue's - not the system's status lines), "
+                + "`firstAtUtc`, `lastAtUtc`, `lastLocal` (`yyyy-MM-dd HH:mm` on the branch's clock), `staffNames` "
+                + "(who at the venue wrote, as they were named then, each once in the order they first wrote), "
+                + "`unanswered`, `open`.\n\n"
+                + "Manager or above, scoped like the Reviews page: a branch manager reaches their own branch only, the "
+                + "owner and the general manager every branch of their venue, a platform admin any. Waiters and the "
+                + "kitchen: 403.")
+            .Produces<MessageHistoryPage>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "`forbidden`: not a manager or above, another venue's, or a manager of another branch of this venue.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblem<Errors.ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "A bad query value; `context.fields` names each.");
+    }
+
     // ---------------------------------------------------------------- handlers
 
     /// <summary>The two subjects: a booking and a takeaway order, their route prefix, the word for them, the id's name.</summary>
@@ -295,6 +345,23 @@ public static class MessageEndpoints
 
         return Results.NoContent();
     }
+
+    private static async Task<IResult> ListHistoryAsync(
+        Guid branchId,
+        IGuestMessageService messages,
+        CancellationToken cancellationToken,
+
+        // Strings, every one: a value that does not parse is named in the one 422 with the rest, not refused alone by
+        // the binder as a 400.
+        string? from = null,
+        string? to = null,
+        string? kind = null,
+        string? q = null,
+        string? unansweredOnly = null,
+        string? cursor = null,
+        string? limit = null) =>
+        Results.Ok(await messages.ListHistoryAsync(
+            branchId, new MessageHistoryQuery(from, to, kind, q, unansweredOnly, cursor, limit), cancellationToken));
 
     private static async Task<IResult> GetSettingsAsync(Guid branchId, IGuestMessageService messages, CancellationToken cancellationToken) =>
         Results.Ok(await messages.GetSettingsAsync(branchId, cancellationToken));
