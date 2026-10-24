@@ -11,8 +11,33 @@
 #
 # `SqlServerFixture` **skips** when it cannot reach a server, which is right on
 # a laptop and catastrophic here — a misconfigured container would give a green
-# run that proved nothing. So the last step reads the test results and fails if
-# anything skipped.
+# run that proved nothing. So every shard reads its test results and fails if
+# anything skipped, and the gate counts the skips again across all of them.
+#
+# Three kinds of job, because the single one it used to be ran 23–26 minutes:
+#
+#   build            restore --locked-mode, the strict build, the model check,
+#                    then lists every test and plans the shards. Runs once; the
+#                    shards test the very binaries that passed the strict build.
+#   test (shard n)   one per shard, each with its own SQL Server container, each
+#                    running a fixed set of test classes and proving it ran
+#                    exactly that set.
+#   build-and-test   the gate, and the one name branch protection on master
+#                    requires. It waits for everything and fails unless the build
+#                    and every shard succeeded and the shards, between them, ran
+#                    every listed test exactly once.
+#
+# The gate's name is load-bearing: the required status check is `build-and-test`,
+# which used to be the single job. It runs `if: always()` on purpose — a skipped
+# job reports as passing to branch protection, so a gate that could be skipped
+# when a shard failed would be a green tick on a red run.
+#
+# Splitting is by test CLASS (scripts/ci/test_shards.py), never by method: the
+# SQL-backed classes share one xUnit collection whose fixture migrates one
+# database, and a class split across shards would be two fixtures for what its
+# author wrote as one. Classes are balanced by the durations in
+# scripts/ci/test-timings.json; the gate uploads a fresh copy of that file as
+# the `test-timings` artifact on every run, to commit when the shards drift apart.
 name: backend
 
 on:
@@ -37,34 +62,27 @@ env:
   # Only ever in a throwaway container that lives for one job. It still has to
   # satisfy SQL Server's own complexity rule or the container exits on startup.
   SA_PASSWORD: 'Yalla-CI-p4ssw0rd!'
+  # The one place the shard count is set. The matrix is built from the plan the
+  # build job writes for this many shards, and the gate reads the count back from
+  # that plan, so the three cannot disagree. Four kept each shard near six
+  # minutes of tests on 2026-10-24 (2075 tests); raise it when one passes eight.
+  TEST_SHARDS: 4
+  # The one test project. The build job fails if a second appears, because the
+  # plan - and so the gate's "every test ran" - would not know about it.
+  TEST_DLL: tests/Yalla.UnitTests/bin/Release/net9.0/Yalla.UnitTests.dll
+  # Writes artifacts/openapi/swagger.json. Only the shard holding it uploads
+  # `openapi-swagger`; the plan fails if the class is renamed without this.
+  SWAGGER_TEST_CLASS: Yalla.UnitTests.Integration.SwaggerExposureTests
 
 jobs:
-  build-and-test:
-    name: build-and-test
+  build:
+    name: build
     runs-on: ubuntu-latest
-    # The integration suite alone ran 23 minutes on 2026-10-24 (2071 tests);
-    # 25 left no room for the build and a slow runner.
-    timeout-minutes: 40
+    timeout-minutes: 20
 
-    services:
-      sqlserver:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: 'Y'
-          MSSQL_SA_PASSWORD: 'Yalla-CI-p4ssw0rd!'
-          MSSQL_PID: Developer
-        ports:
-          - 1433:1433
-        # A container-level health check as well as the loop below. This one
-        # gates the *job* on the container reporting healthy; the loop gates the
-        # tests on a connection that actually authenticates, which is a later
-        # and stricter moment — SQL Server accepts TCP before it accepts logins.
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Yalla-CI-p4ssw0rd!' -Q 'SELECT 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 15
-          --health-start-period 30s
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      swagger-shard: ${{ steps.plan.outputs.located-shard }}
 
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +133,119 @@ jobs:
             --project src/Yalla.Infrastructure \
             --no-build --configuration Release
 
+      # Discovery only — no fixture runs, so no database is needed. The list is
+      # `Namespace.Class.Method`, the same string the shard filters match and the
+      # .trx files record, which is what lets the gate compare the two exactly.
+      # `plan` also fails if the swagger class is missing, rather than letting the
+      # `openapi-swagger` artifact quietly stop being produced.
+      - name: List the tests and plan the shards
+        id: plan
+        run: |
+          projects=$(find tests -name '*.csproj' | wc -l)
+          if [ "$projects" -ne 1 ]; then
+            echo "::error::$projects test projects under tests/. The shard plan lists $TEST_DLL"
+            echo "only; teach this job about the new one before it can be sharded and checked."
+            exit 1
+          fi
+
+          mkdir -p artifacts/test-plan
+          dotnet test "$TEST_DLL" \
+            --ListFullyQualifiedTests \
+            --ListTestsTargetPath:artifacts/test-plan/listed.txt
+          python3 scripts/ci/test_shards.py plan \
+            --list artifacts/test-plan/listed.txt \
+            --shards "$TEST_SHARDS" \
+            --timings scripts/ci/test-timings.json \
+            --out artifacts/test-plan \
+            --locate "$SWAGGER_TEST_CLASS" \
+            --github-output "$GITHUB_OUTPUT"
+
+      # The test project's output folder is self-contained — every dependency,
+      # the API's deps.json for WebApplicationFactory, the xUnit adapter — so a
+      # shard needs it and a checkout, not a restore and a build. One tarball
+      # rather than the folder: thousands of small files upload slowly. The
+      # shards unpack it at the same path, so the tests' walk up to Yalla.sln
+      # finds the checkout exactly as it was laid out at build time.
+      - name: Pack the test build
+        run: tar -czf test-build.tgz tests/Yalla.UnitTests/bin/Release/net9.0
+
+      - name: Upload the test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build
+          path: test-build.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload the shard plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-plan
+          path: artifacts/test-plan
+          if-no-files-found: error
+
+  test:
+    name: test (shard ${{ matrix.shard }})
+    needs: build
+    runs-on: ubuntu-latest
+    # About six minutes of tests per shard at four shards; 20 leaves room for the
+    # container, a slow runner and a shard that grows before the count does.
+    timeout-minutes: 20
+
+    strategy:
+      # Every shard runs to the end, so one red run names every failing test
+      # rather than the first shard's and a pile of cancellations.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'Yalla-CI-p4ssw0rd!'
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        # A container-level health check as well as the loop below. This one
+        # gates the *job* on the container reporting healthy; the loop gates the
+        # tests on a connection that actually authenticates, which is a later
+        # and stricter moment — SQL Server accepts TCP before it accepts logins.
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Yalla-CI-p4ssw0rd!' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 30s
+
+    steps:
+      # For the files some tests read from the source tree (deploy/.env.example,
+      # appsettings, Yalla.sln as the anchor they walk up to) and for the script.
+      - uses: actions/checkout@v4
+
+      # The runtime the tests run on and the vstest host that runs them. No
+      # restore, no build, so no NuGet cache either.
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Download the test build
+        uses: actions/download-artifact@v4
+        with:
+          name: test-build
+
+      - name: Unpack the test build
+        run: tar -xzf test-build.tgz && rm test-build.tgz
+
+      - name: Download the shard plan
+        uses: actions/download-artifact@v4
+        with:
+          name: test-plan
+          path: artifacts/test-plan
+
       # A loop on a real query, not a sleep. The container's own health check
       # gates the job on the server accepting a login; this asks the question
       # the tests are about to ask, because a cold image accepts TCP before it
@@ -144,13 +275,19 @@ jobs:
       # back to Trusted_Connection: the container is Linux and has no notion of
       # a Windows identity, and without these it would find no server, skip
       # every integration test, and report green.
+      #
+      # The test assembly rather than Yalla.sln: `--no-build` on the solution
+      # wants the obj/ folders a restore leaves behind, and the assembly is
+      # exactly what the build job built. The filter is this shard's classes.
       - name: Test
         env:
           YALLA_TEST_SQL_SERVER: localhost,1433
           YALLA_TEST_SQL_USER: sa
           YALLA_TEST_SQL_PASSWORD: ${{ env.SA_PASSWORD }}
+          SHARD: ${{ matrix.shard }}
         run: |
-          dotnet test Yalla.sln -c Release --no-build \
+          dotnet test "$TEST_DLL" \
+            --filter "$(cat "artifacts/test-plan/shard-$SHARD.filter")" \
             --logger "trx;LogFileName=results.trx" \
             --results-directory artifacts/test-results
 
@@ -186,21 +323,108 @@ jobs:
             exit 1
           fi
 
+      # A filter that matched less than the plan meant - or more, picking up a
+      # neighbour's class - would still be a green shard. This compares the
+      # methods the .trx says ran with the ones the plan gave this shard.
+      - name: Every assigned test ran
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python3 scripts/ci/test_shards.py verify-shard \
+            --plan artifacts/test-plan --shard "$SHARD" --results artifacts/test-results
+
+      # One artifact per shard. Nothing downloads the old single `test-results`
+      # by name - the frontend builds and runs its own backend - and the gate
+      # reads all of these back.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.shard }}
           path: artifacts/test-results
           if-no-files-found: warn
 
       # The OpenAPI document this commit serves, written by SwaggerExposureTests during the Test step.
       # The frontend commits packages/api/src/generated/swagger.json and generates schema.ts from it;
       # this is the document to compare that copy with, without starting the API - see docs/openapi.md.
+      # Uploaded by the one shard the plan put that class in, under the name it always had.
       - name: Upload OpenAPI document
-        if: always()
+        if: always() && matrix.shard == fromJSON(needs.build.outputs.swagger-shard)
         uses: actions/upload-artifact@v4
         with:
           name: openapi-swagger
           path: artifacts/openapi/swagger.json
+          if-no-files-found: warn
+
+  build-and-test:
+    name: build-and-test
+    needs: [build, test]
+    # Always, so this job reports red - never "skipped", which branch protection
+    # counts as passing - when the build or any shard fails or is cancelled.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # `needs.test.result` is the matrix as a whole: `success` only when every
+      # shard succeeded. Anything else - failure, cancelled, skipped because the
+      # build failed - fails the gate.
+      - name: The build and every shard succeeded
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          echo "build: $BUILD_RESULT"
+          echo "test shards: $TEST_RESULT"
+          if [ "$BUILD_RESULT" != success ] || [ "$TEST_RESULT" != success ]; then
+            echo "::error::The build or a test shard did not succeed."
+            exit 1
+          fi
+
+      # The steps below run even after a red shard, so the log says which tests
+      # no shard ran - but a step can only add a failure here, never clear one.
+      - uses: actions/checkout@v4
+        if: always() && needs.build.result == 'success'
+
+      - name: Download the shard plan
+        if: always() && needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: test-plan
+          path: artifacts/test-plan
+
+      - name: Download every shard's test results
+        if: always() && needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: artifacts/shard-results
+
+      # Each shard proved it ran its own list. This proves the lists add up: the
+      # union of what the shards ran is every test the build listed, no test ran
+      # in two shards, every shard left results, and no result was a skip. A
+      # class that somehow fell out of the plan fails here, by name.
+      - name: Every listed test ran exactly once
+        if: always() && needs.build.result == 'success'
+        run: |
+          python3 scripts/ci/test_shards.py verify-all \
+            --plan artifacts/test-plan --results artifacts/shard-results
+
+      # This run's durations, in the format the plan reads. Commit the artifact as
+      # scripts/ci/test-timings.json when the shards' times drift apart. A hiccup
+      # here says nothing about the code, so it cannot turn the gate red.
+      - name: Record test timings
+        if: always() && needs.build.result == 'success'
+        continue-on-error: true
+        run: |
+          python3 scripts/ci/test_shards.py timings artifacts/shard-results --out test-timings.json
+
+      - name: Upload test timings
+        if: always() && needs.build.result == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings
+          path: test-timings.json
           if-no-files-found: warn
