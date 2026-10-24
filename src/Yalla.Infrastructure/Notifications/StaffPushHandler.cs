@@ -403,12 +403,21 @@ internal static class StaffPushSubjects
     }
 
     /// <summary>A table's call nobody has said "I'm on it" to, and no newer one replaced.</summary>
+    /// <remarks>
+    /// "I'm on it" is the claim: a call somebody claimed in the seconds before this send buzzes nobody, though it stays
+    /// open - on the floor's list, showing who has it - until it is acknowledged. The push asks for somebody to go;
+    /// once somebody is going, the question is answered. Acknowledging claims a call nobody claimed, so an
+    /// acknowledged call is claimed too. See <c>docs/notifications.md</c>.
+    /// </remarks>
     private static async Task<StaffPushSubject?> TableCallAsync(
         YallaDbContext db, Guid requestId, CancellationToken cancellationToken)
     {
         var call = await db.ServiceRequests
             .AsNoTracking()
-            .Where(r => r.Id == requestId && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
+            .Where(r => r.Id == requestId
+                        && r.ClaimedAtUtc == null
+                        && r.AcknowledgedAtUtc == null
+                        && r.SupersededAtUtc == null)
             .Select(r => new
             {
                 r.BranchId,

@@ -168,6 +168,43 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         Assert.Empty(rig.Push.Sent);
     }
 
+    /// <summary>
+    /// "I'm on it" answers the push: a call claimed before its push goes out buzzes nobody, though it stays open on the
+    /// floor's list until it is acknowledged. An unclaimed one beside it still buzzes.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_call_claimed_before_its_push_goes_out_buzzes_nobody_but_stays_open()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var rig = await Rig.StartAsync(fixture);
+
+        var managerBrowser = new Browser();
+        await rig.SubscribeAsync(rig.ManagerPhone, managerBrowser);
+
+        var tab = await rig.OpenTabAsync();
+        var claimed = await rig.RaiseCallAsync(tab, ServiceRequestPreset.Napkins);
+        var unclaimed = await rig.RaiseCallAsync(tab, ServiceRequestPreset.Water);
+
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            var call = await db.ServiceRequests.SingleAsync(r => r.Id == claimed);
+            Assert.True(call.Claim(rig.Factory.Clock.UtcNow, rig.Branch.WaiterId));
+            await db.SaveChangesAsync();
+        }
+
+        await rig.DispatchAsync($"staff-push:call:{claimed}");
+        Assert.Empty(rig.Push.Sent);
+
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            Assert.True((await db.ServiceRequests.AsNoTracking().SingleAsync(r => r.Id == claimed)).IsOpen);
+        }
+
+        await rig.DispatchAsync($"staff-push:call:{unclaimed}");
+        Assert.Single(rig.Push.Sent, p => p.Endpoint == managerBrowser.Endpoint);
+    }
+
     [SkippableFact]
     public async Task A_switched_off_kind_is_not_pushed_and_a_gone_browser_is_deleted()
     {

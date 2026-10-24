@@ -22,7 +22,8 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// <b>The device lookup is tolerant.</b> Any staff token that names a device is looked up by id in
 /// <c>StaffDevices</c>; a device that is not found is recorded by id with no label rather than refused, and a token
-/// that names none is the console. Nothing here depends on what kind of device it is.
+/// that names none is the console. A tablet is labelled with its name ("Hall tablet"), a personal phone with its
+/// person's ("Aram's phone") - what the manager would call it, not whatever the browser called itself when paired.
 /// </para>
 /// </remarks>
 internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock clock) : IActivityLog
@@ -53,7 +54,9 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
             ? Actor.System
             : record.ByGuest
                 ? Actor.Diner
-                : await ActorAsync(record, cancellationToken);
+                : record.ProvedBy is { } proved
+                    ? await StaffAsync(proved.StaffMemberId, proved.DeviceId, cancellationToken)
+                    : await ActorAsync(record, cancellationToken);
 
         // Staff of another venue are never named in this one's History: a no-show at one venue cancelling a booking
         // at another, say, is the platform's doing there, not that waiter's.
@@ -121,7 +124,7 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
 
         _actor = actor.Type switch
         {
-            ActorType.Staff when actor.StaffMemberId is { } staffId => await StaffAsync(staffId, cancellationToken),
+            ActorType.Staff when actor.StaffMemberId is { } staffId => await StaffAsync(staffId, actor.DeviceId, cancellationToken),
             ActorType.Diner => Actor.Diner,
             _ => Actor.System,
         };
@@ -129,7 +132,7 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
         return _actor;
     }
 
-    private async Task<Actor> StaffAsync(Guid staffId, CancellationToken cancellationToken)
+    private async Task<Actor> StaffAsync(Guid staffId, Guid? deviceId, CancellationToken cancellationToken)
     {
         var tracked = db.StaffMembers.Local.FirstOrDefault(s => s.Id == staffId);
 
@@ -141,24 +144,70 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
                 .Select(s => new ValueTuple<StaffRole, string?, Guid?>(s.Role, s.FullName, s.VenueId))
                 .FirstOrDefaultAsync(cancellationToken);
 
-        var kind = (role == StaffRole.PlatformAdmin || actor.Role == StaffRole.PlatformAdmin)
+        var kind = (role == StaffRole.PlatformAdmin
+                    || (actor.Role == StaffRole.PlatformAdmin && actor.StaffMemberId == staffId))
             ? ActivityActorKind.PlatformAdmin
             : ActivityActorKind.Staff;
 
-        if (actor.DeviceId is not { } deviceId || deviceId == Guid.Empty)
+        if (deviceId is not { } device || device == Guid.Empty)
         {
             return new Actor(kind, staffId, name, null, ConsoleLabel, venueId);
         }
 
-        var label = db.StaffDevices.Local.FirstOrDefault(d => d.Id == deviceId)?.Name
-                    ?? await db.StaffDevices
-                        .AsNoTracking()
-                        .Where(d => d.Id == deviceId)
-                        .Select(d => d.Name)
-                        .FirstOrDefaultAsync(cancellationToken);
+        var label = await DeviceLabelAsync(device, staffId, name, cancellationToken);
 
-        return new Actor(kind, staffId, name, deviceId, label, venueId);
+        return new Actor(kind, staffId, name, device, label, venueId);
     }
+
+    /// <summary>
+    /// A tablet's name, or "{first name}'s phone" for a personal phone - its person, read from their row when they
+    /// are not the one acting. Null for a device that is not found.
+    /// </summary>
+    private async Task<string?> DeviceLabelAsync(
+        Guid deviceId, Guid actingStaffId, string? actingName, CancellationToken cancellationToken)
+    {
+        var tracked = db.StaffDevices.Local.FirstOrDefault(d => d.Id == deviceId);
+
+        var device = tracked is not null
+            ? new DeviceRow(tracked.Name, tracked.Kind, tracked.BoundStaffMemberId)
+            : await db.StaffDevices
+                .AsNoTracking()
+                .Where(d => d.Id == deviceId)
+                .Select(d => new DeviceRow(d.Name, d.Kind, d.BoundStaffMemberId))
+                .FirstOrDefaultAsync(cancellationToken);
+
+        if (device is null)
+        {
+            return null;
+        }
+
+        if (device.Kind != StaffDeviceKind.Phone || device.BoundStaffMemberId is not { } personId)
+        {
+            return device.Name;
+        }
+
+        var person = personId == actingStaffId
+            ? actingName
+            : db.StaffMembers.Local.FirstOrDefault(s => s.Id == personId)?.FullName
+              ?? await db.StaffMembers
+                  .AsNoTracking()
+                  .Where(s => s.Id == personId)
+                  .Select(s => s.FullName)
+                  .FirstOrDefaultAsync(cancellationToken);
+
+        return PhoneLabel(person) ?? device.Name;
+    }
+
+    /// <summary>"Aram's phone" for Aram Petrosyan; null for nobody.</summary>
+    internal static string? PhoneLabel(string? fullName)
+    {
+        var first = fullName?.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+
+        return string.IsNullOrEmpty(first) ? null : $"{first}'s phone";
+    }
+
+    private sealed record DeviceRow(string Name, StaffDeviceKind Kind, Guid? BoundStaffMemberId);
 
     private sealed record Actor(
         ActivityActorKind Kind,

@@ -99,7 +99,10 @@ public sealed record ActivityCursor(DateTime OccurredAtUtc, Guid EntryId)
 /// <param name="StaffMemberId">Who, when staff.</param>
 /// <param name="ActorName">Their name then - staff's, or the guest's; absent for the system.</param>
 /// <param name="DeviceId">The tablet or phone it came from; absent from the console.</param>
-/// <param name="DeviceLabel">That device's name then, or <c>Console</c>; absent for the guest and the system.</param>
+/// <param name="DeviceLabel">
+/// That device's label then - a tablet's name, "Aram's phone" for a personal phone - or <c>Console</c>; absent for the
+/// guest and the system.
+/// </param>
 /// <param name="Category">The filter word.</param>
 /// <param name="Action">The stable code - see <c>docs/activity.md</c>.</param>
 /// <param name="SubjectType">What it was done to: <c>reservation</c>, <c>tab</c>, <c>takeaway</c>, <c>menu-item</c>...</param>

@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Yalla.Application.Activity;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Staff;
 using Yalla.Infrastructure.Persistence;
 
@@ -81,6 +83,50 @@ internal static class StaffPhones
     }
 
     /// <summary>
+    /// Stages the History's entry for a device that stopped working, in the caller's save: <c>device.revoked</c> for a
+    /// tablet, <c>device.phone-unpaired</c> for somebody's phone, its summary's <c>cause</c> one of
+    /// <see cref="PhoneUnpairedBy"/>. See <c>docs/activity.md</c>.
+    /// </summary>
+    public static async Task RecordGoneAsync(
+        YallaDbContext db,
+        IActivityLog activity,
+        StaffDevice device,
+        string cause,
+        CancellationToken cancellationToken,
+        ActivityProvedActor? provedBy = null)
+    {
+        if (device.Kind != StaffDeviceKind.Phone)
+        {
+            await activity.RecordAsync(
+                new ActivityRecord(ActivityCategory.Device, ActivityActions.DeviceRevoked, ActivitySubjects.Device, device.Id)
+                {
+                    BranchId = device.BranchId,
+                    Summary = new { name = device.Name },
+                },
+                cancellationToken);
+
+            return;
+        }
+
+        var personId = device.BoundStaffMemberId;
+        var staffName = db.StaffMembers.Local.FirstOrDefault(s => s.Id == personId)?.FullName
+                        ?? await db.StaffMembers
+                            .AsNoTracking()
+                            .Where(s => s.Id == personId)
+                            .Select(s => s.FullName)
+                            .FirstOrDefaultAsync(cancellationToken);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Device, ActivityActions.DevicePhoneUnpaired, ActivitySubjects.Device, device.Id)
+            {
+                BranchId = device.BranchId,
+                ProvedBy = provedBy,
+                Summary = new { name = device.Name, staffMemberId = personId, staffName, cause },
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Stages the deletion of the push subscriptions of devices being revoked, in the caller's save.
     /// </summary>
     /// <remarks>
@@ -103,4 +149,26 @@ internal static class StaffPhones
 
         db.StaffPushSubscriptions.RemoveRange(subscriptions);
     }
+}
+
+/// <summary>Why a phone was unpaired - the <c>cause</c> of a <c>device.phone-unpaired</c> entry. Stable wire words.</summary>
+internal static class PhoneUnpairedBy
+{
+    /// <summary>A manager unpaired it from the console's phones list.</summary>
+    public const string Console = "console";
+
+    /// <summary>Its own person unpaired it, from the phone.</summary>
+    public const string ItsOwner = "its-owner";
+
+    /// <summary>The same browser was paired again - to somebody else here, or to its person at another branch.</summary>
+    public const string Replaced = "replaced";
+
+    /// <summary>Its person was deactivated.</summary>
+    public const string Deactivated = "deactivated";
+
+    /// <summary>Its person was moved to the kitchen, which works on its tablet.</summary>
+    public const string Kitchen = "kitchen";
+
+    /// <summary>Its person was moved to another branch.</summary>
+    public const string OtherBranch = "other-branch";
 }

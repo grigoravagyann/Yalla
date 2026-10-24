@@ -265,6 +265,18 @@ internal sealed class StaffManagementService(
         // in the same save. See StaffPhones.
         var unpaired = await StaffPhones.RevokeUnusableAsync(db, staff, clock.UtcNow, cancellationToken);
 
+        // Each in the History, in the same save as the change that took it away.
+        var cause = !staff.IsActive
+            ? PhoneUnpairedBy.Deactivated
+            : staff.Role == StaffRole.Kitchen
+                ? PhoneUnpairedBy.Kitchen
+                : PhoneUnpairedBy.OtherBranch;
+
+        foreach (var gone in db.StaffDevices.Local.Where(d => unpaired.Contains(d.Id)).ToList())
+        {
+            await StaffPhones.RecordGoneAsync(db, activity, gone, cause, cancellationToken);
+        }
+
         await SaveAsync(cancellationToken);
 
         if (transaction is not null)

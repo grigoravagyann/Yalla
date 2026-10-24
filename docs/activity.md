@@ -30,7 +30,7 @@ tries again, so an entry is never written twice or for the losing attempt.
 | `OccurredAtUtc` | When. |
 | `ActorKind` | `1 Staff`, `2 Diner` (the guest), `3 System`, `4 PlatformAdmin` - pinned ints in the database; on the wire the words `staff`, `guest`, `system`, `platform`, as the feed's `actorKind` filter takes them. |
 | `StaffMemberId?`, `ActorName` | Who, and their name **then** (copied from the stored row, not the token). The guest's name for a guest; nothing for the system. |
-| `DeviceId?`, `DeviceLabel` | The enrolled device the request came from and its name then ("Hall tablet", "Aram's phone"), or `Console` for a console sign-in. |
+| `DeviceId?`, `DeviceLabel` | The enrolled device the request came from and its label then: a tablet's name ("Hall tablet"), a personal phone's person ("Aram's phone"), or `Console` for a console sign-in. |
 | `Category` | `1 booking`, `2 table`, `3 order`, `4 payment`, `5 takeaway`, `6 message`, `7 settings`, `8 staff`, `9 device` - pinned ints, words on the wire. |
 | `Action` | A stable code, `category.verb` - §3. |
 | `SubjectType`, `SubjectId`, `SubjectCode?` | What it was done to - the detail link - and its short code (`T-482`, a booking's). |
@@ -60,13 +60,15 @@ the venue's History.
 ### Who acted, and from where
 
 Read from the request, never passed in. `ICurrentActor.DeviceId` is the `deviceId` claim of **any staff token that
-carries one** - a tablet's staff session today, a phone's after `feat/staff-phone` - and the log looks its `Name` up in
-`StaffDevices` by id. A device it cannot find is recorded by id with no label; a staff token with no device is the
-console. Nothing here depends on what kind of device it is.
+carries one** - a tablet's staff session or a personal phone's - and the log looks the device up in `StaffDevices` by
+id. A tablet is labelled with its `Name`; a phone (`Kind = Phone`) with its bound person's first name, "Aram's phone",
+not the name the browser gave itself when it was paired. A device it cannot find is recorded by id with no label; a
+staff token with no device is the console.
 
-A caller may say only two things about the actor: **the system did it** (`BySystem` - a deadline passed: the approval
-and takeaway sweeps, a takeaway auto-accepted) and **the guest did it** (`ByGuest` - a booking's manage link carries no
-diner token, but it is the guest).
+A caller may say only three things about the actor: **the system did it** (`BySystem` - a deadline passed: the approval
+and takeaway sweeps, a takeaway auto-accepted), **the guest did it** (`ByGuest` - a booking's manage link carries no
+diner token, but it is the guest), and **this request proved who it is** (`ProvedBy` - pairing a phone checks its
+person's PIN before any token names them; the entry is theirs, on the phone being paired).
 
 ## 2. What is recorded
 
@@ -88,13 +90,13 @@ Staff actions throughout; the system's; the guest's only where they matter to th
 - **Settings**: a menu price, an item's availability (hall or takeaway), opening hours, special days, the reservation
   policy, takeaway, messages, pre-orders.
 - **The team and devices**: a person added or changed (name, phone, role, branch, active), a PIN set, a sign-in issued,
-  a PIN lockout cleared, an enrolment code made, a device revoked.
+  a PIN lockout cleared, an enrolment code made, a tablet enrolled, a tablet revoked, a phone paired, a phone unpaired
+  (from the console, by its own person, by pairing the same browser again, or because its person was deactivated,
+  moved to the kitchen or moved to another branch).
 
-**The device admin entries are a second save.** The three changes behind them live in `StaffAuthService`, which the
-personal-phone work (`feat/staff-phone`) rewrites, so they are recorded from the endpoint right after the service
-returns (`IDeviceAdminActivity`) - never for a change that did not happen, but missed if the process dies between the
-two saves. Fold them into the service once that work has landed. A device's own enrolment (`device.enrolled`) is not
-recorded yet, for the same reason.
+Every device entry is written by `StaffAuthService` (or the staff screen's save, for a person's change) in the same
+unit of work as the change, beside the platform audit the phone work keeps (`staff.phone-unpaired`) - not a second
+save.
 
 ## 3. Action codes
 
@@ -139,7 +141,11 @@ summary also carries `localDate`, `localTime`, `partySize`, `status` and `tableI
 | `settings.menu-availability` | manager | menu-item | `before`/`after` `{isAvailable}` or `{availableForTakeaway}` |
 | `settings.hours`, `settings.special-days`, `settings.policy`, `settings.takeaway`, `settings.messages`, `settings.pre-orders` | manager | branch | `before`/`after` the whole setting |
 | `staff.created`, `staff.updated`, `staff.pin-set`, `staff.sign-in-issued`, `staff.pin-lockout-cleared` | manager | staff | `name`, `role`, `branchId`; `before`/`after` for an update |
-| `device.enrolment-code-created`, `device.revoked` | manager | branch / device | `expiresAtUtc`, `name` |
+| `device.enrolment-code-created` | manager | branch | `expiresAtUtc` |
+| `device.enrolled` | system (nobody is signed in to a tablet being enrolled) | device | `name`, `codeCreatedByStaffMemberId` |
+| `device.revoked` | manager | device (a tablet) | `name` |
+| `device.phone-paired` | the phone's person, on that phone (`ProvedBy`) | device | `name` (what the browser called itself), `staffMemberId`, `staffName`, `repaired` (the same phone paired again), `codeCreatedByStaffMemberId` |
+| `device.phone-unpaired` | manager, the phone's person, or whoever changed the person | device | `name`, `staffMemberId`, `staffName`, `cause`: `console`, `its-owner`, `replaced`, `deactivated`, `kitchen`, `other-branch` |
 
 (m) = `IsMoney`, kept three years.
 
@@ -183,6 +189,11 @@ is not told, and the call **stays on the open list** (`getOpenServiceRequests`),
 claimed claims it in the same moment, so every answered call has a claim. The claim is logged as `table.call-claimed`
 with `responseSeconds`, and its time from the call is the response time Staff → Results reports. The migration
 backfills the claim of every call already acknowledged from its acknowledgement.
+
+**A claimed call buzzes nobody.** The `tableCalls` staff push is decided at send time (`docs/notifications.md`), and
+a call claimed by then is not pushed: the push asks for somebody to go, and somebody is going. It is sent once per call
+and never repeated, so there is nothing further to silence; the call itself stays open on the list until it is
+acknowledged.
 
 ## 7. Reading it
 

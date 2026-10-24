@@ -81,7 +81,19 @@ public sealed record ActivityRecord(
 
     /// <summary>When it happened, when not now - a sweep acting on a deadline that passed earlier records now anyway.</summary>
     public DateTime? OccurredAtUtc { get; init; }
+
+    /// <summary>
+    /// The staff member this very request proved with their PIN before any token names them, on the device it set up -
+    /// a phone being paired. Recorded as that person on that device, read from the stored rows like any staff actor.
+    /// The only way besides <see cref="BySystem"/> and <see cref="ByGuest"/> a caller says who acted.
+    /// </summary>
+    public ActivityProvedActor? ProvedBy { get; init; }
 }
+
+/// <summary>Who a request proved itself to be, for <see cref="ActivityRecord.ProvedBy"/>.</summary>
+/// <param name="StaffMemberId">The person whose PIN it checked.</param>
+/// <param name="DeviceId">The device it set up for them.</param>
+public sealed record ActivityProvedActor(Guid StaffMemberId, Guid DeviceId);
 
 /// <summary>The subject types an entry names. Stable: the console routes on them.</summary>
 public static class ActivitySubjects
@@ -187,6 +199,8 @@ public static class ActivityActions
     public const string DeviceEnrolmentCodeCreated = "device.enrolment-code-created";
     public const string DeviceEnrolled = "device.enrolled";
     public const string DeviceRevoked = "device.revoked";
+    public const string DevicePhonePaired = "device.phone-paired";
+    public const string DevicePhoneUnpaired = "device.phone-unpaired";
 
     /// <summary>The money codes - always written with <see cref="ActivityRecord.IsMoney"/>, kept three years.</summary>
     public static readonly IReadOnlySet<string> Money = new HashSet<string>(StringComparer.Ordinal)

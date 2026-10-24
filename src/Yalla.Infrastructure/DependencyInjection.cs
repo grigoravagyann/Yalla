@@ -55,7 +55,6 @@ public static class DependencyInjection
         // Who did what, in the same unit of work as the change (docs/activity.md). Scoped: one request's actor and
         // context, read once.
         services.AddScoped<Yalla.Application.Activity.IActivityLog, ActivityLog>();
-        services.AddScoped<IDeviceAdminActivity, DeviceAdminActivity>();
 
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();

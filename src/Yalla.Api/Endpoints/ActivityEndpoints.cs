@@ -41,7 +41,7 @@ public static class ActivityEndpoints
             .WithDescription(
                 "Every recorded action - bookings, tables, orders, money, takeaway, guest messages, settings, the team and "
                 + "devices - with who did it (staff, the guest, or the system), from which device (`deviceLabel`: the "
-                + "tablet's or phone's name, `Console` for the console), and what it was about.\n\n"
+                + "tablet's name, \"{first name}'s phone\" for a personal phone, `Console` for the console), and what it was about.\n\n"
                 + "Query, all optional: `date` (one branch-local day, `yyyy-MM-dd`) **or** `from`/`to` (inclusive; both "
                 + "default to today) - not both; at most 366 days, not before today - 1095 (money is kept three years, "
                 + "everything else one) and not after today + 366. `staffMemberId`: only what this person did. `actorKind`: `staff`, `guest`, `system` (what the system did by itself) or `platform`. `category`: `booking`, `table`, "

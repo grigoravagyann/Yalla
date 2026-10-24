@@ -140,9 +140,14 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
 
         await OkAsync(await manager.PostAsJsonAsync($"{b}/menu/items/{menu.Wine}/availability", new { isAvailable = false }));
 
-        // The sign-in helpers' enrolment code is on it too - a device entry from the console.
+        // The sign-in helpers' enrolment code is on it too - a device entry from the console - and the tablet's
+        // enrolment with it, the system's.
         var everything = (await OkAsync(await manager.GetAsync($"{b}/activity"))).GetProperty("items").EnumerateArray().ToList();
         Assert.Single(everything, i => i.GetProperty("action").GetString() == ActivityActions.DeviceEnrolmentCodeCreated);
+        Assert.Equal(
+            "system",
+            Assert.Single(everything, i => i.GetProperty("action").GetString() == ActivityActions.DeviceEnrolled)
+                .GetProperty("actorKind").GetString());
 
         var all = everything.Where(i => i.GetProperty("category").GetString() != "device").ToList();
         Assert.Equal(
@@ -175,7 +180,7 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
         Assert.Equal([ActivityActions.TableSeated], await ActionsAsync("q=2"));
         Assert.Equal([ActivityActions.SettingsMenuAvailability], await ActionsAsync("q=areni"));
 
-        // A page at a time: the same four, in the same order, no repeats.
+        // A page at a time: the same rows, in the same order, no repeats.
         var seen = new List<Guid>();
         string? cursor = null;
 
@@ -189,7 +194,7 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
 
         Assert.Equal(everything.Select(i => i.GetProperty("id").GetGuid()), seen);
 
-        // The CSV: a byte-order mark, the header, the four rows.
+        // The CSV: a byte-order mark, the header, the same rows.
         var csv = await manager.GetAsync($"{b}/activity.csv");
         Assert.Equal(HttpStatusCode.OK, csv.StatusCode);
         Assert.Equal("text/csv", csv.Content.Headers.ContentType!.MediaType);
@@ -201,7 +206,7 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
             .SelectMany(l => l.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             .ToList();
         Assert.StartsWith("local,actorKind,actorName,deviceLabel,category,action", lines[0]);
-        Assert.Equal(5, lines.Count);
+        Assert.Equal(everything.Count + 1, lines.Count);
         Assert.Contains(ActivityActions.SettingsMenuAvailability, lines[1]);
 
         // The results table lists the waiter and the manager, with nothing yet.
@@ -281,5 +286,7 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
         Assert.True(await verify.ActivityEntries.AnyAsync(e => e.SubjectId == tabId && e.Action == ActivityActions.TableTabOpened));
     }
 
-    private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+    /// <summary>The middle of the test branches' day on today's Yerevan date: nothing here depends on the hour it runs.</summary>
+    private YallaApiFactory NewFactory() =>
+        new YallaApiFactory().WithDatabase(fixture.ConnectionString).StartingAtYerevan(new TimeOnly(15, 0));
 }
