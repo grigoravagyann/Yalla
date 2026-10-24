@@ -48,7 +48,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         AuthBranch branch;
         Guid dinerUserId;
         await using (var db = fixture.CreateContext(clock))
@@ -79,7 +79,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         Guid reporterId;
         Guid reviewId;
         await using (var db = fixture.CreateContext(clock))
@@ -113,7 +113,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         AuthBranch home;
         Guid sibling;
         Guid dinerUserId;
@@ -162,7 +162,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (branch, dinerUserId) = await SeedVisitorAsync(clock);
 
         // Phone B has passed the phone gate and the visit check and is inserting; phone A deletes now.
@@ -186,7 +186,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (branch, dinerUserId) = await SeedVisitorAsync(clock);
 
         var deletion = new DeletionMidWrite(() => EraseAsync(clock, dinerUserId));
@@ -209,7 +209,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var dinerUserId = await SeedDinerAsync(clock);
         var suffix = Guid.NewGuid().ToString("N")[..10];
 
@@ -234,7 +234,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var dinerUserId = await SeedDinerAsync(clock);
 
         var deletion = new DeletionMidWrite(() => EraseAsync(clock, dinerUserId));
@@ -258,7 +258,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var dinerUserId = await SeedDinerAsync(clock);
         var storage = Storage();
 
@@ -286,7 +286,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var dinerUserId = await SeedDinerAsync(clock);
         var storage = Storage();
 
@@ -354,7 +354,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         AuthBranch branch;
         Guid dinerUserId;
         Guid orderId;

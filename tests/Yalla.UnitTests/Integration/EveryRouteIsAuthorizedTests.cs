@@ -47,6 +47,8 @@ public class EveryRouteIsAuthorizedTests
         ["POST /api/auth/diner/refresh"] = "Runs when the access token has already expired; the refresh handle is the credential.",
         ["POST /api/auth/diner/sign-out"] = "Revokes a refresh handle, which is the credential; works with an expired access token.",
         ["POST /api/auth/staff/enrol"] = "A new tablet has no token; the one-time enrolment code is the credential.",
+        ["POST /api/auth/staff/phone-pair/preview"] = "A phone being paired has no token yet; the one-time pairing code is the credential.",
+        ["POST /api/auth/staff/phone-pair"] = "A phone being paired has no token yet; the pairing code and the person's PIN are the credential.",
         ["POST /api/auth/staff/renew"] = "Runs after the session token expired; the refresh handle is the credential.",
         ["POST /api/auth/staff/sign-out"] = "Revokes a refresh handle, which is the credential.",
         ["POST /api/auth/venue/sign-in"] = "Exchanges an email and password for a token.",

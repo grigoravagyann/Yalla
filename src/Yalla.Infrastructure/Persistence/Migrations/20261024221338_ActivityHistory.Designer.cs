@@ -12,7 +12,7 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    [Migration("20261024162053_ActivityHistory")]
+    [Migration("20261024221338_ActivityHistory")]
     partial class ActivityHistory
     {
         /// <inheritdoc />
@@ -132,15 +132,15 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_ActivityEntries_TableSessionId")
                         .HasFilter("[TableSessionId] IS NOT NULL");
 
-                    b.HasIndex("VenueId", "OccurredAtUtc", "Id")
-                        .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc")
-                        .HasFilter("[BranchId] IS NULL");
-
                     b.HasIndex("BranchId", "OccurredAtUtc", "Id")
                         .HasDatabaseName("IX_ActivityEntries_BranchId_OccurredAtUtc");
 
                     b.HasIndex("SubjectType", "SubjectId", "OccurredAtUtc")
                         .HasDatabaseName("IX_ActivityEntries_Subject");
+
+                    b.HasIndex("VenueId", "OccurredAtUtc", "Id")
+                        .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc")
+                        .HasFilter("[BranchId] IS NULL");
 
                     b.ToTable("ActivityEntries", (string)null);
                 });
@@ -642,6 +642,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid?>("BoundStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
@@ -653,13 +656,28 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<int>("Kind")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1);
+
                     b.Property<DateTime?>("LastSeenAtUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("Locale")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("PushKinds")
+                        .HasColumnType("int");
+
+                    b.Property<bool?>("PushOnlyDuringShift")
+                        .HasColumnType("bit");
 
                     b.Property<DateTime?>("RevokedAtUtc")
                         .HasColumnType("datetime2");
@@ -669,6 +687,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BoundStaffMemberId", "RevokedAtUtc")
+                        .HasFilter("[BoundStaffMemberId] IS NOT NULL");
+
                     b.HasIndex("BranchId", "ClientDeviceId")
                         .IsUnique()
                         .HasDatabaseName("UX_StaffDevices_BranchId_ClientDeviceId_Live")
@@ -676,7 +697,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("BranchId", "RevokedAtUtc");
 
-                    b.ToTable("StaffDevices", (string)null);
+                    b.ToTable("StaffDevices", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_StaffDevices_KindBinding", "([Kind] = 1 AND [BoundStaffMemberId] IS NULL) OR ([Kind] = 2 AND [BoundStaffMemberId] IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Yalla.Domain.Identity.StaffEnrolmentCode", b =>
@@ -701,12 +725,19 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("ExpiresAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<Guid?>("ForStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTime?>("RedeemedAtUtc")
                         .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.Property<Guid?>("RedeemedByDeviceId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetime2");
 
                     b.Property<Guid>("VenueId")
                         .HasColumnType("uniqueidentifier");
@@ -719,7 +750,57 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_StaffEnrolmentCodes_CodeHash");
 
+                    b.HasIndex("ForStaffMemberId")
+                        .HasFilter("[ForStaffMemberId] IS NOT NULL AND [RedeemedAtUtc] IS NULL AND [SupersededAtUtc] IS NULL");
+
                     b.ToTable("StaffEnrolmentCodes", (string)null);
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffPushSubscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Auth")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("EndpointHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("P256dh")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("StaffDeviceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EndpointHash")
+                        .IsUnique()
+                        .HasDatabaseName("UX_StaffPushSubscriptions_EndpointHash");
+
+                    b.HasIndex("StaffDeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_StaffPushSubscriptions_StaffDeviceId");
+
+                    b.ToTable("StaffPushSubscriptions", (string)null);
                 });
 
             modelBuilder.Entity("Yalla.Domain.Identity.StaffSession", b =>
@@ -3195,11 +3276,18 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Yalla.Domain.Identity.StaffDevice", b =>
                 {
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", "BoundStaffMember")
+                        .WithMany()
+                        .HasForeignKey("BoundStaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Yalla.Domain.Venues.Branch", "Branch")
                         .WithMany()
                         .HasForeignKey("BranchId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("BoundStaffMember");
 
                     b.Navigation("Branch");
                 });
@@ -3213,6 +3301,17 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Branch");
+                });
+
+            modelBuilder.Entity("Yalla.Domain.Identity.StaffPushSubscription", b =>
+                {
+                    b.HasOne("Yalla.Domain.Identity.StaffDevice", "StaffDevice")
+                        .WithMany()
+                        .HasForeignKey("StaffDeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("StaffDevice");
                 });
 
             modelBuilder.Entity("Yalla.Domain.Identity.StaffSession", b =>

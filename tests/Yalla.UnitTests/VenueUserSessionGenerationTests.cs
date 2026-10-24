@@ -22,7 +22,7 @@ public class VenueUserSessionGenerationTests
     [Fact]
     public void An_admin_panel_token_carries_the_session_generation_it_was_minted_under()
     {
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var issuer = new TokenIssuer(Options.Create(new JwtOptions { SigningKey = SigningKey }), clock);
         var staffId = Guid.CreateVersion7();
 
@@ -52,7 +52,7 @@ public class VenueUserSessionGenerationTests
     [Fact]
     public async Task The_check_reuses_a_read_for_five_seconds_and_never_refuses_a_token_newer_than_it()
     {
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var queries = new ScriptedQueries { State = new VenueUserSessionState(0) };
         var check = new TokenAuthorityCheck(
             queries, new MemoryCache(new MemoryCacheOptions()), clock, Options.Create(new JwtOptions()));

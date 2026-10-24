@@ -331,7 +331,7 @@ public partial class PreOrderTests
             var sessionTab = await db.TableSessions.Where(s => s.ReservationId == id).Select(s => s.TabId).SingleAsync();
             Assert.Equal(sessionTab, await db.TabOrders.Where(o => o.Id == preOrderId).Select(o => (Guid?)o.TabId).SingleAsync());
 
-            factory.Clock.UtcNow = DateTime.UtcNow;
+            factory.Clock.UtcNow = TestNow.UtcNow;
         }
     }
 

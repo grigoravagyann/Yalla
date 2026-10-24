@@ -63,14 +63,19 @@ public sealed class OutboxTests(SqlServerFixture fixture)
 
         // The successful booking has its three messages - reminder, late nudge and "are you on your way?". The refused
         // one has none - not a partial set, not an orphan reminder for a booking that does not exist.
-        var messages = await verify.OutboxMessages.AsNoTracking().ToListAsync();
+        var all = await verify.OutboxMessages.AsNoTracking().ToListAsync();
+        var messages = all.Where(m => m.Type != OutboxMessageTypes.StaffPush).ToList();
 
         Assert.Equal(3, messages.Count);
         Assert.All(messages, m => Assert.StartsWith("reservation:", m.IdempotencyKey, StringComparison.Ordinal));
 
-        var bookings = await verify.Reservations.CountAsync(r => r.BranchId == branch.BranchId);
+        var booking = await verify.Reservations.SingleAsync(r => r.BranchId == branch.BranchId);
 
-        Assert.Equal(1, bookings);
+        // Booked at short notice, it waits for the floor - so the floor's devices are told, in the same save. That
+        // push, too, is the committed booking's alone.
+        var staffPushes = all.Where(m => m.Type == OutboxMessageTypes.StaffPush).ToList();
+        Assert.All(staffPushes, m => Assert.StartsWith($"staff-push:approval:{booking.Id}:", m.IdempotencyKey, StringComparison.Ordinal));
+        Assert.Equal(booking.Status == Yalla.Domain.Enums.ReservationStatus.PendingApproval ? 1 : 0, staffPushes.Count);
     }
 
     // ------------------------------------------------------------ 7. the same message twice

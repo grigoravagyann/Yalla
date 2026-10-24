@@ -128,7 +128,7 @@ public sealed class LoggingNotificationChannelContractTests(SqlServerFixture fix
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var db = fixture.CreateContext(clock);
         contexts.Add(db);
 

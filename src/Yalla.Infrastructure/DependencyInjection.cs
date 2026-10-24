@@ -93,6 +93,7 @@ public static class DependencyInjection
 
         // The venue console's Overview: one branch, today. Read-only, behind the branch guard.
         services.AddScoped<IBranchOverviewQuery, BranchOverviewQuery>();
+        services.AddScoped<Yalla.Application.Staff.IStaffTodayQuery, StaffTodayQuery>();
 
         // The anonymous surface a link opens, and the reports behind the admin panel. Both are
         // read-only projections over what is already stored; neither writes anything.
@@ -220,6 +221,18 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, TakeawayReadyHandler>();
         services.AddScoped<IOutboxHandler, TakeawayDeclinedHandler>();
         services.AddScoped<IOutboxHandler, VenueMessageHandler>();
+
+        // Staff push: Web Push to the staff app's phones and tablets. The VAPID identity is configured, generated for
+        // the run in Development, or absent - and then every push is logged instead of sent. See WebPushOptions.
+        services.AddSingleton(Bind<WebPushOptions>(configuration, WebPushOptions.SectionName));
+        services.AddSingleton<VapidKeys>();
+        // No redirects: the endpoint was held to the push services' hosts when it was saved, and a redirect would take
+        // the POST - and its VAPID signature - somewhere that check never saw.
+        services.AddHttpClient(StaffPushSender.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+        services.AddScoped<StaffPushSender>();
+        services.AddScoped<IStaffPushService, StaffPushService>();
+        services.AddScoped<IOutboxHandler, StaffPushHandler>();
 
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges

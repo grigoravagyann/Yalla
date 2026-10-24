@@ -282,6 +282,17 @@ and your own current PIN is no clash. A conflict rather than a 422: the PIN is w
 somebody else's. PINs are hashed, so the check verifies the candidate against each roster hash;
 duplicates already in the data are left alone. Minted by `PinTakenException`.
 
+### Personal phones: `kitchen-phone-not-allowed`, `pairing-code-invalid`, `pairing-code-expired`
+
+`POST /api/branches/{branchId}/staff/{staffMemberId}/phone-pairings` for kitchen staff, and
+`POST /api/auth/staff/phone-pair` for somebody moved to the kitchen since their code was issued: **409
+`kitchen-phone-not-allowed`**, `context.staffMemberId`, *"Kitchen staff work on the kitchen tablet, so a phone
+cannot be paired to them."* Minted by `KitchenPhoneNotAllowedException`. The pairing code's own refusals are
+sign-in reasons (401, no context): `pairing-code-invalid` - unknown, or a tablet's enrolment code - and
+`pairing-code-expired` - past its ten minutes, or superseded by a newer code for the same person; retyping
+never helps that one. A code already used is the generic `409 conflicting-state`, as a tablet's is. See
+`docs/auth.md`, "Personal phones".
+
 ### 409 `table-has-future-bookings`
 
 `DELETE /api/branches/{branchId}/tables/{tableId}`, and `PUT /api/branches/{branchId}/floor-plan`

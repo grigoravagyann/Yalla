@@ -129,7 +129,24 @@ internal sealed class StaffDeviceConfiguration : EntityConfiguration<StaffDevice
 {
     protected override void ConfigureEntity(EntityTypeBuilder<StaffDevice> builder)
     {
-        builder.ToTable("StaffDevices");
+        // A phone is one person's and a tablet nobody's. The invariant StaffDevice.Phone keeps, held by the
+        // table too so no other writer can make a phone anybody can open or a tablet only one person can.
+        builder.ToTable("StaffDevices", table => table.HasCheckConstraint(
+            "CK_StaffDevices_KindBinding",
+            "([Kind] = 1 AND [BoundStaffMemberId] IS NULL) OR ([Kind] = 2 AND [BoundStaffMemberId] IS NOT NULL)"));
+
+        builder.Property(d => d.Kind).HasDefaultValue(Yalla.Domain.Enums.StaffDeviceKind.Tablet).HasSentinel(0);
+
+        builder.Property(d => d.Locale).HasMaxLength(FieldLengths.LocaleCode);
+
+        builder.HasOne(d => d.BoundStaffMember)
+            .WithMany()
+            .HasForeignKey(d => d.BoundStaffMemberId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // A person's phones: revoked when they are deactivated, listed on the console's Phones tab.
+        builder.HasIndex(d => new { d.BoundStaffMemberId, d.RevokedAtUtc })
+            .HasFilter("[BoundStaffMemberId] IS NOT NULL");
 
         builder.Property(d => d.Name)
             .HasMaxLength(FieldLengths.DeviceName)
@@ -177,6 +194,12 @@ internal sealed class StaffEnrolmentCodeConfiguration : EntityConfiguration<Staf
         // update matches no rows and its whole transaction - device row included - rolls back.
         builder.Property(c => c.RedeemedAtUtc).IsConcurrencyToken();
 
+        // And a phone pairing code's supersession, for the same reason the other way round: "show a new code" and the
+        // phone redeeming the old one at the same moment cannot both win. Whichever saves second matches no rows -
+        // the manager asks again, or the phone is told its code was replaced - instead of a code the manager took
+        // back pairing a phone anyway.
+        builder.Property(c => c.SupersededAtUtc).IsConcurrencyToken();
+
         builder.HasOne(c => c.Branch)
             .WithMany()
             .HasForeignKey(c => c.BranchId)
@@ -185,6 +208,47 @@ internal sealed class StaffEnrolmentCodeConfiguration : EntityConfiguration<Staf
         builder.HasIndex(c => c.CodeHash)
             .IsUnique()
             .HasDatabaseName(DatabaseIndexNames.StaffEnrolmentCodeHash);
+
+        // A person's unused pairing codes, superseded when a new one is issued.
+        builder.HasIndex(c => c.ForStaffMemberId)
+            .HasFilter("[ForStaffMemberId] IS NOT NULL AND [RedeemedAtUtc] IS NULL AND [SupersededAtUtc] IS NULL");
+    }
+}
+
+internal sealed class StaffPushSubscriptionConfiguration : EntityConfiguration<StaffPushSubscription>
+{
+    protected override void ConfigureEntity(EntityTypeBuilder<StaffPushSubscription> builder)
+    {
+        builder.ToTable("StaffPushSubscriptions");
+
+        builder.Property(s => s.Endpoint)
+            .HasMaxLength(StaffPushSubscription.EndpointMaxLength)
+            .IsRequired();
+
+        builder.Property(s => s.EndpointHash)
+            .HasMaxLength(FieldLengths.TokenHash)
+            .IsRequired();
+
+        builder.Property(s => s.P256dh)
+            .HasMaxLength(StaffPushSubscription.KeyMaxLength)
+            .IsRequired();
+
+        builder.Property(s => s.Auth)
+            .HasMaxLength(StaffPushSubscription.KeyMaxLength)
+            .IsRequired();
+
+        builder.HasOne(s => s.StaffDevice)
+            .WithMany()
+            .HasForeignKey(s => s.StaffDeviceId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(s => s.StaffDeviceId)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.StaffPushPerDevice);
+
+        builder.HasIndex(s => s.EndpointHash)
+            .IsUnique()
+            .HasDatabaseName(DatabaseIndexNames.StaffPushEndpoint);
     }
 }
 

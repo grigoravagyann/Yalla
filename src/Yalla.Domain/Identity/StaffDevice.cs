@@ -1,10 +1,13 @@
 using Yalla.Domain.Common;
+using Yalla.Domain.Enums;
+using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
 
 namespace Yalla.Domain.Identity;
 
 /// <summary>
-/// A tablet enrolled to one branch, holding a long-lived device token.
+/// A tablet enrolled to one branch, or one person's phone paired to them there, holding a long-lived
+/// device token.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -61,6 +64,46 @@ public sealed class StaffDevice : Entity
 
     public bool IsRevoked => RevokedAtUtc is not null;
 
+    /// <summary>A shared tablet, or one person's phone. Existing rows are tablets.</summary>
+    public StaffDeviceKind Kind { get; private set; } = StaffDeviceKind.Tablet;
+
+    /// <summary>
+    /// The one person a phone belongs to: only their PIN opens it, and its roster lists only them. Always set
+    /// on a phone and never on a tablet - the invariant <see cref="Phone"/> and the table's check constraint
+    /// both hold.
+    /// </summary>
+    public Guid? BoundStaffMemberId { get; private set; }
+
+    public StaffMember? BoundStaffMember { get; private set; }
+
+    /// <summary>
+    /// Which staff pushes this device asked for. Null until somebody chooses, and then
+    /// <see cref="StaffPushKinds.Defaults"/> applies - see <see cref="EffectivePushKinds"/>.
+    /// </summary>
+    public StaffPushKinds? PushKinds { get; private set; }
+
+    /// <summary>
+    /// Whether a phone's pushes wait for its person's shift. Null until chosen, and then the role decides:
+    /// on for a waiter, off for a manager and above (<see cref="OnlyDuringShiftByDefault"/>). Never read
+    /// for a tablet, which has no person and so no shift.
+    /// </summary>
+    public bool? PushOnlyDuringShift { get; private set; }
+
+    /// <summary>
+    /// The language this device's pushes are written in (<c>hy</c>, <c>ru</c> or <c>en</c>), as the app last
+    /// said. Null: Armenian, the market's language.
+    /// </summary>
+    public string? Locale { get; private set; }
+
+    /// <summary>What this device gets pushed: its own choice, or the defaults.</summary>
+    public StaffPushKinds EffectivePushKinds => PushKinds ?? StaffPushKinds.Defaults;
+
+    /// <summary>
+    /// The default for "only during my shift": a waiter's pocket should be quiet off shift, while a manager
+    /// wants to know whenever something needs them.
+    /// </summary>
+    public static bool OnlyDuringShiftByDefault(StaffRole role) => role is StaffRole.Waiter or StaffRole.Kitchen;
+
     private StaffDevice()
     {
     }
@@ -80,6 +123,42 @@ public sealed class StaffDevice : Entity
         StampCreatedAt(enrolledAtUtc);
         LastSeenAtUtc = enrolledAtUtc;
     }
+
+    /// <summary>
+    /// One person's own phone at a branch. Paired by a code a manager issued for them and redeemed with their PIN.
+    /// </summary>
+    public static StaffDevice Phone(
+        Guid venueId,
+        Guid branchId,
+        string name,
+        string clientDeviceId,
+        Guid boundStaffMemberId,
+        DateTime pairedAtUtc) =>
+        new(venueId, branchId, name, clientDeviceId, pairedAtUtc)
+        {
+            Kind = StaffDeviceKind.Phone,
+            BoundStaffMemberId = Guard.NotEmpty(boundStaffMemberId, nameof(boundStaffMemberId)),
+        };
+
+    /// <summary>Whether this is a phone bound to somebody other than <paramref name="staffMemberId"/>.</summary>
+    public bool IsBoundToSomebodyOtherThan(Guid staffMemberId) =>
+        Kind == StaffDeviceKind.Phone && BoundStaffMemberId != staffMemberId;
+
+    /// <summary>
+    /// Records what this device wants pushed. <paramref name="onlyDuringShift"/> is ignored on a tablet,
+    /// which has no person to be on shift.
+    /// </summary>
+    public void SetPushPreferences(StaffPushKinds kinds, bool onlyDuringShift)
+    {
+        PushKinds = kinds & StaffPushKinds.All;
+        PushOnlyDuringShift = Kind == StaffDeviceKind.Phone ? onlyDuringShift : null;
+    }
+
+    /// <summary>The language for this device's pushes. Null or blank clears it.</summary>
+    public void SetLocale(string? locale) =>
+        Locale = string.IsNullOrWhiteSpace(locale)
+            ? null
+            : Guard.NotBlank(locale.Trim(), nameof(locale), FieldLengths.LocaleCode);
 
     public void Rename(string name) => Name = Guard.NotBlank(name, nameof(name), FieldLengths.DeviceName);
 

@@ -563,7 +563,18 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
         Assert.Equal(because, (ApprovalTrigger)booking.GetProperty("awaitingApprovalBecause").GetInt32());
     }
 
-    private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+    /// <summary>
+    /// A host whose day starts at 15:00 in Yerevan, today.
+    /// </summary>
+    /// <remarks>
+    /// These tests seed history "an hour ago", "twenty hours ago", and withdraw no-shows on their service day, which
+    /// ends at 05:00 the next morning. Started from the real current instant, "an hour ago" at 05:30 is 04:30 - the
+    /// evening before's service day, whose undo window closed half an hour earlier - and the withdrawal answered 409.
+    /// Mid-afternoon, inside the test branches' 10:00-23:00 hours, every relative instant here lands where the test
+    /// means it to, whatever the hour the suite runs at.
+    /// </remarks>
+    private YallaApiFactory NewFactory() =>
+        new YallaApiFactory().WithDatabase(fixture.ConnectionString).StartingAtYerevan(new TimeOnly(15, 0));
 
     private async Task<AuthBranch> ArrangeAsync(YallaApiFactory factory, bool autoConfirm)
     {
@@ -636,12 +647,18 @@ public partial class GuestRecordTests(SqlServerFixture fixture)
 
         var policy = await db.Branches.AsNoTracking().Where(b => b.Id == branchId).Select(b => b.ReservationPolicy).FirstAsync();
 
+        // The branch's wall clock (every branch here is in Yerevan), not the UTC date and time: the undo window and the
+        // one-no-show-per-service-day rule read these two, and a row whose "local" start is four hours off the instant
+        // it starts at is a booking no floor ever wrote.
+        var localStart = TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.SpecifyKind(startUtc, DateTimeKind.Utc), TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan"));
+
         var reservation = Reservation.Create(
             branchId: branchId,
             diningTableId: tableId,
             startUtc: startUtc,
-            localDate: localDate ?? DateOnly.FromDateTime(startUtc),
-            localStartTime: localTime ?? TimeOnly.FromDateTime(startUtc),
+            localDate: localDate ?? DateOnly.FromDateTime(localStart),
+            localStartTime: localTime ?? TimeOnly.FromDateTime(localStart),
             partySize: 2,
             guestName: "History",
             guestPhone: guestPhone ?? "+37411223344",

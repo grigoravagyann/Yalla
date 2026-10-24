@@ -28,7 +28,7 @@ public sealed class ReviewModerationRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         AuthBranch branch;
         PlatformAdminAccount admin;
         Guid reviewId;

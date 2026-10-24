@@ -193,6 +193,7 @@ var api = app.MapGroup(string.Empty)
 api.MapTabEndpoints();
 api.MapTableStateEndpoints();
 api.MapAdminDeviceEndpoints();
+api.MapStaffDeviceEndpoints();
 api.MapReservationEndpoints();
 api.MapPreOrderEndpoints();
 api.MapTakeawayEndpoints();

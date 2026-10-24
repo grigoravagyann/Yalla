@@ -378,6 +378,7 @@ public sealed record ActivityFeed(IReadOnlyList<ActivityEntry> Items);
 /// The stable slug - <c>venue.create</c>, <c>venue.update</c>, <c>venue.suspend</c>,
 /// <c>venue.reactivate</c>, <c>venue.delete</c>, <c>branch.create</c>, <c>branch.update</c>,
 /// <c>branch.tier-change</c>, <c>branch.relocate</c>, <c>staff.create</c>, <c>staff.sign-in-issued</c>,
+/// <c>staff.phone-pairing-issued</c>, <c>staff.phone-unpaired</c>,
 /// <c>venue.restore</c>, <c>review.hide</c>, <c>review.unhide</c>, <c>review.dismiss-reports</c>,
 /// <c>review.restore-reports</c>, <c>review.remove-reply</c> (the platform taking a venue's reply down - a
 /// venue's own replies and removals are left out of the feed), <c>table.regenerate-qr</c>,

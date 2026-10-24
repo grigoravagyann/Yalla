@@ -478,7 +478,17 @@ public class MessageHistoryTests(SqlServerFixture fixture)
 
     private static readonly TimeZoneInfo Yerevan = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
 
-    private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+    /// <summary>
+    /// A host whose day starts at 15:00 in Yerevan, today.
+    /// </summary>
+    /// <remarks>
+    /// The sweep test places an ASAP takeaway order "now". Started from the real current instant, after 22:10 - the test
+    /// branch closes at 23:00, its last pickup is half an hour before, and the order takes twenty minutes - or before it
+    /// opens at 10:00, the order was refused with 409 <c>takeaway-closed</c> and the test failed for the hour it ran at.
+    /// Mid-afternoon the kitchen is always taking orders.
+    /// </remarks>
+    private YallaApiFactory NewFactory() =>
+        new YallaApiFactory().WithDatabase(fixture.ConnectionString).StartingAtYerevan(new TimeOnly(15, 0));
 
     private async Task<(AuthBranch Branch, HttpClient Manager, HttpClient[] Diners)> ArrangeAsync(YallaApiFactory factory, int diners)
     {

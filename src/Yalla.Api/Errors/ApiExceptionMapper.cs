@@ -872,6 +872,15 @@ internal static class ApiExceptionMapper
         SignInUnknownException e => new MappedError(
             StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
 
+        // A phone for somebody in the kitchen. Its own code so the console says why. Must stay ABOVE
+        // DomainStateException, which it derives from.
+        Yalla.Domain.Identity.KitchenPhoneNotAllowedException e => new MappedError(
+            StatusCodes.Status409Conflict,
+            ErrorCodes.KitchenPhoneNotAllowed,
+            e.Message,
+            LogAsError: false,
+            Context: new Dictionary<string, object?> { ["staffMemberId"] = e.StaffMemberId }),
+
         ScanTurnedAwayException e => new MappedError(
             StatusCodes.Status409Conflict,
             ErrorCodes.ScanTurnedAway,

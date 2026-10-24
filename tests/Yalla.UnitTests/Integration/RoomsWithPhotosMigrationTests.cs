@@ -64,7 +64,7 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
                 cover = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
 
                 var area = await db.FloorAreas.Where(a => a.BranchId == branch.BranchId).Select(a => a.Id).SingleAsync();
-                var now = DateTime.UtcNow;
+                var now = TestNow.UtcNow;
 
                 // Two tables the old way: geometry, and one of them pinned on the cover.
                 await db.Database.ExecuteSqlAsync(
@@ -130,7 +130,7 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
     private static YallaDbContext CreateContext(string connectionString) =>
         new(
             new DbContextOptionsBuilder<YallaDbContext>().UseSqlServer(connectionString).Options,
-            new TestClock(DateTime.UtcNow));
+            new TestClock(TestNow.UtcNow));
 
     private static async Task DropAsync(string connectionString)
     {

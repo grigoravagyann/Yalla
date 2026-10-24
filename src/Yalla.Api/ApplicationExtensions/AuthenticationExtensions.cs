@@ -304,7 +304,17 @@ public static class AuthenticationExtensions
             .AddPolicy(YallaPolicies.VerifiedDiner, policy => policy
                 .RequireAuthenticatedUser()
                 .AddRequirements(new PrincipalTypeRequirement(
-                    new HashSet<PrincipalType> { PrincipalType.Diner })));
+                    new HashSet<PrincipalType> { PrincipalType.Diner })))
+
+            .AddPolicy(YallaPolicies.StaffDeviceSession, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PrincipalTypeRequirement(
+                    new HashSet<PrincipalType> { PrincipalType.StaffSession })))
+
+            .AddPolicy(YallaPolicies.StaffDeviceToken, policy => policy
+                .RequireAuthenticatedUser()
+                .AddRequirements(new PrincipalTypeRequirement(
+                    new HashSet<PrincipalType> { PrincipalType.StaffDevice, PrincipalType.StaffSession })));
 
         return services;
     }
