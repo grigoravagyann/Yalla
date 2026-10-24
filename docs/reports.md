@@ -164,6 +164,11 @@ software would be making that management decision on the venue's behalf without 
 If a venue wants per-person numbers, they can be given a report. A ranking that arrives unbidden
 every morning is a different thing, and the difference is the point.
 
+**2026-10-24: the venue asked, and got the page, not the ranking.** Staff → Results and a person's page
+([activity.md](activity.md) §8) are what a manager, the general manager or the owner opens - a waiter sees only their
+own numbers, and no screen ranks waiters for each other. The staff report here stays aggregated. Their money is this
+report's: the same bills, cash and adjustments for the same dates, split by whose each part was.
+
 ### No rollup pipeline, yet
 
 Everything is **queried live** against the operational tables, with indexes.

@@ -162,3 +162,9 @@ Added 2026-10-23 (Yalla#61's follow-up).
 - **No editing** an order once sent: cancel while Sent, and order again.
 - **No change-stream signal**: the counter polls.
 - The account's deletion keeps the order (the venue's record of what it cooked and was paid) with the account link cut.
+
+## In the History (2026-10-24)
+
+Placed and cancelled by the guest; accepted, declined, ready, collected (cash or card, kept three years) and not
+collected by staff; accepted or declined by the system - each an entry in the venue's History, and the counter's cash
+is the collector's in Staff → Results. See [activity.md](activity.md).

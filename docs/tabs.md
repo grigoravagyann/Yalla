@@ -720,3 +720,11 @@ before the start, opened 15 minutes later: the line says when it was sent).
 Menu, ordering, order lines, totals, service charge, splitting, payments, fiscal receipts,
 SignalR broadcasting, the kitchen queue. The permission model is built now so that when ordering
 arrives it has a rule to enforce rather than inventing one.
+
+## Who served the table, and the History (2026-10-24)
+
+The sitting carries the table's waiter (`TableSession.ServerStaffMemberId`): whoever seated it, opened its tab or let
+it in, else the first staff member to order on it - until `POST /api/tabs/{tabId}/transfer` hands it on. Each order
+and payment keeps the waiter it was taken under, and every staff action here - seat, open, admit, turn away, order,
+void, discount, comp, cash, write-off, call claimed - writes an `ActivityEntries` row in its own unit of work. See
+[activity.md](activity.md).
