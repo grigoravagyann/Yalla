@@ -37,6 +37,77 @@ internal sealed class TableTransferService(
 {
     private const string Operation = "Transfer a table";
 
+    /// <summary>The roles that serve tables - who may take one. Never the kitchen.</summary>
+    private static readonly StaffRole[] Serving = [StaffRole.Waiter, StaffRole.Manager, StaffRole.GeneralManager, StaffRole.Owner];
+
+    public async Task<TransferTargetsView> ListTargetsAsync(Guid tabId, CancellationToken cancellationToken = default)
+    {
+        if (actor.Type != ActorType.Staff || actor.StaffMemberId is not { } callerId)
+        {
+            throw new StaffPermissionException(Operation, actor.Role, StaffRole.Waiter);
+        }
+
+        var tab = await db.Tabs
+                      .AsNoTracking()
+                      .Where(t => t.Id == tabId)
+                      .Select(t => new { t.BranchId, t.TableSessionId, t.Branch.VenueId, t.Branch.TimeZoneId })
+                      .FirstOrDefaultAsync(cancellationToken)
+                  ?? throw new KeyNotFoundException($"Tab {tabId} was not found.");
+
+        await branchGuard.RequireAsync(callerId, tab.BranchId, "Listing who can take this table", "tab", cancellationToken);
+
+        var callerRole = await db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.Id == callerId)
+            .Select(s => s.Role)
+            .FirstAsync(cancellationToken);
+
+        var serverId = await db.TableSessions
+            .AsNoTracking()
+            .Where(s => s.Id == tab.TableSessionId)
+            .Select(s => s.ServerStaffMemberId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Who may hand it over may see who could take it - the transfer's own rule, so nobody else learns the team.
+        var manages = callerRole == StaffRole.PlatformAdmin || StaffRoleRules.ManagesAtVenue(callerRole);
+
+        if (!manages && serverId != callerId)
+        {
+            throw new StaffPermissionException(
+                "Listing who can take another waiter's table", callerRole, StaffRole.Manager);
+        }
+
+        // The POST's target rule exactly: of the venue, active, serving, at this branch or venue-wide.
+        var people = await db.StaffMembers
+            .AsNoTracking()
+            .Where(s => s.VenueId == tab.VenueId
+                        && s.IsActive
+                        && Serving.Contains(s.Role)
+                        && (s.BranchId == tab.BranchId
+                            || (s.BranchId == null && (s.Role == StaffRole.Owner || s.Role == StaffRole.GeneralManager)))
+                        && s.Id != serverId)
+            .Select(s => new
+            {
+                s.Id,
+                s.FullName,
+                s.Role,
+                OpenTables = db.TableSessions.Count(t =>
+                    t.BranchId == tab.BranchId && t.ClosedAtUtc == null && t.ServerStaffMemberId == s.Id),
+            })
+            .ToListAsync(cancellationToken);
+
+        var onShift = await ShiftInstants.OnShiftAsync(db, tab.BranchId, tab.TimeZoneId, clock.UtcNow, cancellationToken);
+
+        return new TransferTargetsView(
+        [
+            .. people
+                .Select(p => new TransferTarget(p.Id, p.FullName, p.Role, onShift.Contains(p.Id), p.OpenTables))
+                .OrderByDescending(t => t.OnShiftNow)
+                .ThenBy(t => t.Name, StringComparer.InvariantCultureIgnoreCase)
+                .ThenBy(t => t.StaffMemberId),
+        ]);
+    }
+
     public async Task<TableTransferResult> TransferAsync(
         TransferTableCommand command,
         CancellationToken cancellationToken = default)

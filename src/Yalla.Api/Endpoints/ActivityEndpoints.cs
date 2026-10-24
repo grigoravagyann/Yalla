@@ -209,6 +209,26 @@ public static class ActivityEndpoints
                 StatusCodes.Status422UnprocessableEntity,
                 "`transfer-target-ineligible` (`context.reason`), or `toStaffMemberId` missing (`validation-failed`).");
 
+        app.MapGet("/api/tabs/{tabId:guid}/transfer-targets", ListTransferTargetsAsync)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove, YallaPolicies.BranchScoped)
+            .WithName("listTransferTargets")
+            .WithSummary("Who the table can be handed to")
+            .WithDescription(
+                "The transfer sheet's list - for a waiter's phone, whose own roster lists only its person. Answers "
+                + "`{ items: [{ staffMemberId, name, role, onShiftNow, openTables }] }`: the active staff at the tab's "
+                + "branch (or venue-wide) who serve - a waiter, manager, general manager or owner, never the kitchen - "
+                + "except the table's waiter now. On shift first, then by name. `onShiftNow`: a shift of theirs at "
+                + "this branch runs now. `openTables`: the live sittings at this branch whose waiter they are. Nothing "
+                + "else about anybody - no PIN, phone or email.\n\n"
+                + "Allowed for whoever may transfer the table: its waiter, or a manager or above at the branch (stored "
+                + "roles) - anybody else 403, the kitchen and another branch included. A tab that does not exist is the "
+                + "same 403: the branch scope finds no branch for it.")
+            .Produces<TransferTargetsView>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "`forbidden`: not the table's waiter nor a manager here, the kitchen, another branch, or no such tab.");
+
         return app;
     }
 
@@ -359,6 +379,10 @@ public static class ActivityEndpoints
         return Results.Ok(await transfers.TransferAsync(
             new TransferTableCommand(tabId, request.ToStaffMemberId!.Value), cancellationToken));
     }
+
+    private static async Task<IResult> ListTransferTargetsAsync(
+        Guid tabId, ITableTransferService transfers, CancellationToken cancellationToken) =>
+        Results.Ok(await transfers.ListTargetsAsync(tabId, cancellationToken));
 
     private static string Number(long? value) => value?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
 

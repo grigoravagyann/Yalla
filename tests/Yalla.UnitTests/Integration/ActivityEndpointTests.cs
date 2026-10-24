@@ -4,6 +4,10 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Activity;
+using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
+using Yalla.Domain.Staff;
+using Yalla.Infrastructure.Identity;
 using static Yalla.UnitTests.Integration.BookingPerNumberTests;
 using static Yalla.UnitTests.Integration.PreOrderTests;
 
@@ -284,6 +288,120 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
 
         await using var verify = fixture.CreateContext(factory.Clock);
         Assert.True(await verify.ActivityEntries.AnyAsync(e => e.SubjectId == tabId && e.Action == ActivityActions.TableTabOpened));
+    }
+
+    /// <summary>
+    /// The transfer sheet's list, read from the waiter's own phone (whose roster names only them): active people at the
+    /// branch or venue-wide who serve, not the table's waiter, on shift first and then by name, each with the tables
+    /// they serve now - and nothing personal. Only whoever may transfer the table may read it: another waiter of the
+    /// branch, the kitchen and another branch's manager are 403.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_transfer_targets_are_who_can_take_the_table_on_shift_first_for_whoever_may_hand_it_over()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+        PanelAccount owner;
+        PanelAccount generalManager;
+        PanelAccount siblingManager;
+        Guid cookId;
+        Guid zed;
+        Guid aaa;
+        const string aaaPin = "1357";
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 2);
+            owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId);
+            generalManager = await AuthTestData.SeedGeneralManagerAsync(db, branch.VenueId);
+            var siblingBranchId = await AuthTestData.AddBranchAsync(db, branch.VenueId, "Asia/Yerevan", tableCount: 1);
+            siblingManager = await AuthTestData.SeedManagerAsync(db, branch.VenueId, siblingBranchId);
+            cookId = await AuthTestData.SeedKitchenAsync(db, branch);
+
+            var hasher = new SecretHasher();
+            StaffMember Person(string name, StaffRole role, Guid? at, string pin = "hash") =>
+                new(branch.VenueId, name, $"+3749{Random.Shared.Next(1_000_000, 9_999_999)}", role,
+                    pin == "hash" ? pin : hasher.Hash(pin), at);
+
+            var onShift = Person("Zed Waiter", StaffRole.Waiter, branch.BranchId);
+            var offShift = Person("aaa Waiter", StaffRole.Waiter, branch.BranchId, aaaPin);
+            var gone = Person("Gone Waiter", StaffRole.Waiter, branch.BranchId);
+            gone.SetActive(false);
+            var elsewhere = Person("Elsewhere Waiter", StaffRole.Waiter, siblingBranchId);
+            db.StaffMembers.AddRange(onShift, offShift, gone, elsewhere);
+
+            // On shift at 15:00 Yerevan, the factory's start; and a shift at the other branch counts for nothing here.
+            var today = BranchZone.For("Asia/Yerevan").LocalDateAt(factory.Clock.UtcNow);
+            db.StaffShifts.Add(new StaffShift(onShift.Id, branch.BranchId, today, new TimeOnly(14, 0), new TimeOnly(18, 0)));
+            db.StaffShifts.Add(new StaffShift(elsewhere.Id, siblingBranchId, today, new TimeOnly(14, 0), new TimeOnly(18, 0)));
+            await db.SaveChangesAsync();
+
+            zed = onShift.Id;
+            aaa = offShift.Id;
+        }
+
+        using var manager = factory.CreateClientWithToken(await SignInManagerAsync(factory, branch));
+        using var tablet = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        var b = $"/api/branches/{branch.BranchId}";
+
+        // The waiter's table, and one the manager seated from the console - the manager's.
+        await OkAsync(await tablet.PostAsJsonAsync(
+            $"{b}/tables/{branch.TableIds[0]}/seat-walk-in", new { partySize = 2, clientCommandId = Guid.NewGuid() }));
+        var tabId = (await OkAsync(await tablet.PostAsJsonAsync(
+            $"{b}/tables/{branch.TableIds[0]}/open-tab", new { clientCommandId = Guid.NewGuid() }))).GetProperty("tabId").GetGuid();
+        await OkAsync(await manager.PostAsJsonAsync(
+            $"{b}/tables/{branch.TableIds[1]}/seat-walk-in", new { partySize = 2, clientCommandId = Guid.NewGuid() }));
+
+        var route = $"/api/tabs/{tabId}/transfer-targets";
+
+        // From the waiter's own phone.
+        var (_, phoneSession) = await StaffPhoneTests.PairWaiterAsync(factory, branch);
+        using var phone = factory.CreateClientWithToken(phoneSession);
+
+        var items = (await OkAsync(await phone.GetAsync(route))).GetProperty("items").EnumerateArray().ToList();
+
+        // Zed is on shift; then by name, case aside. Not the table's waiter, the inactive, the other branch, the kitchen.
+        Assert.Equal(
+            [zed, aaa, owner.StaffMemberId, generalManager.StaffMemberId, branch.ManagerId],
+            items.Select(i => i.GetProperty("staffMemberId").GetGuid()).ToArray());
+        Assert.Equal(
+            [true, false, false, false, false],
+            items.Select(i => i.GetProperty("onShiftNow").GetBoolean()).ToArray());
+        Assert.Equal(
+            [0, 0, 0, 0, 1],
+            items.Select(i => i.GetProperty("openTables").GetInt32()).ToArray());
+        Assert.Equal((int)StaffRole.Owner, items[2].GetProperty("role").GetInt32());
+
+        // Nothing else about anybody.
+        Assert.All(items, i => Assert.Equal(
+            ["name", "onShiftNow", "openTables", "role", "staffMemberId"],
+            i.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray()));
+
+        // A manager reads it too, and does not see the waiter whose table it is.
+        var forManager = (await OkAsync(await manager.GetAsync(route))).GetProperty("items").EnumerateArray()
+            .Select(i => i.GetProperty("staffMemberId").GetGuid()).ToList();
+        Assert.DoesNotContain(branch.WaiterId, forManager);
+        Assert.Contains(branch.ManagerId, forManager);
+
+        // Another waiter of the branch may not hand this table over, so may not list who could take it.
+        var enrolled = await StaffAuthTests.EnrolDeviceAsync(factory, branch);
+        using var otherTablet = factory.CreateClientWithToken(enrolled);
+        var aaaSignIn = await otherTablet.PostAsJsonAsync("/api/auth/staff/pin", new { staffMemberId = aaa, pin = aaaPin });
+        aaaSignIn.EnsureSuccessStatusCode();
+        using var otherWaiter = factory.CreateClientWithToken(
+            (await aaaSignIn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!);
+        await ProblemAsync(await otherWaiter.GetAsync(route), HttpStatusCode.Forbidden, "forbidden");
+
+        using var kitchen = factory.CreateClientWithToken(await AuthTestData.SignInKitchenAsync(factory, branch, cookId));
+        Assert.Equal(HttpStatusCode.Forbidden, (await kitchen.GetAsync(route)).StatusCode);
+
+        using var sibling = factory.CreateClientWithToken(await AuthTestData.SignInAsync(factory, siblingManager));
+        Assert.Equal(HttpStatusCode.Forbidden, (await sibling.GetAsync(route)).StatusCode);
+
+        // A tab that does not exist resolves to no branch: refused like the wrong branch, revealing nothing.
+        Assert.Equal(HttpStatusCode.Forbidden, (await manager.GetAsync($"/api/tabs/{Guid.NewGuid()}/transfer-targets")).StatusCode);
     }
 
     /// <summary>The middle of the test branches' day on today's Yerevan date: nothing here depends on the hour it runs.</summary>

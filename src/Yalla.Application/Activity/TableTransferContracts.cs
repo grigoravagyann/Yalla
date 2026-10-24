@@ -30,10 +30,28 @@ public sealed record TableTransferResult(
     string TableLabel,
     bool WasReplay);
 
+/// <summary>Who the table can be handed to - the transfer sheet's list, for a phone that lists nobody else.</summary>
+/// <param name="Items">On shift first, then by name.</param>
+public sealed record TransferTargetsView(IReadOnlyList<TransferTarget> Items);
+
+/// <summary>One person who may take the table. Nothing more personal than a name and a role.</summary>
+/// <param name="StaffMemberId">Who - the <c>toStaffMemberId</c> of the transfer.</param>
+/// <param name="Name">Their name.</param>
+/// <param name="Role">A waiter, manager, general manager or owner.</param>
+/// <param name="OnShiftNow">A shift of theirs at this branch runs now.</param>
+/// <param name="OpenTables">The tables they serve at this branch now - live sittings whose waiter they are.</param>
+public sealed record TransferTarget(Guid StaffMemberId, string Name, StaffRole Role, bool OnShiftNow, int OpenTables);
+
 /// <summary>Transfers. The current waiter, or a manager or above at the branch.</summary>
 public interface ITableTransferService
 {
     Task<TableTransferResult> TransferAsync(TransferTableCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Everybody the table could be handed to: active, at the tab's branch (or venue-wide), who serves, not the table's
+    /// waiter now. The same caller rule as <see cref="TransferAsync"/>.
+    /// </summary>
+    Task<TransferTargetsView> ListTargetsAsync(Guid tabId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>The waiter named cannot take the table: 422 <c>transfer-target-ineligible</c>, saying why.</summary>

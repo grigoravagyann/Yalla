@@ -171,6 +171,14 @@ served before anybody opens a bill, and the sitting has no row version for ten p
   after the other: the second is re-checked against the waiter the first left, and logged from them. The target: active, at the branch (or venue-wide), a waiter or above - never the kitchen (422
   `transfer-target-ineligible`). A closed bill or a party gone: 409 `tab-not-transferable`. Already theirs: done,
   `wasReplay`. Logged as `table.transferred`, signalled on the branch stream (`TableTransferred`, 7).
+- **`GET /api/tabs/{tabId}/transfer-targets`** (`listTransferTargets`) is who the sheet offers, for a waiter's phone
+  whose own roster lists only its person: `{ items: [{ staffMemberId, name, role, onShiftNow, openTables }] }`. The
+  POST's target rule exactly - active, at the tab's branch or venue-wide, a waiter, manager, general manager or owner -
+  less the table's waiter now; on shift first (a shift at this branch running now, `ShiftInstants`), then by name.
+  `openTables` counts the live sittings at this branch whose waiter they are. No PIN, phone or email. Readable by
+  whoever may transfer the table - its waiter, or a manager or above at the branch, stored roles; anybody else 403,
+  the kitchen and another branch included, and a tab that does not exist is the same 403 (the branch scope resolves
+  no branch for it). Nothing is logged: it is a read.
 - **What came before stays.** Each order records the waiter it was placed under (`TabOrder.ServerStaffMemberId`), each
   payment the waiter whose table it was (`Payment.ServerStaffMemberId`, for the tip) and who took it
   (`Payment.RecordedByStaffId`, for the cash). A transfer moves none of them.
