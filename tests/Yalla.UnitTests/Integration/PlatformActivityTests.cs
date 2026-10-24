@@ -24,7 +24,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow.AddYears(2));
+        var clock = new TestClock(TestNow.UtcNow.AddYears(2));
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var actor = TestActor.PlatformAdmin(admin.StaffMemberId);
@@ -124,7 +124,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
@@ -147,7 +147,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow.AddYears(2).AddDays(1));
+        var clock = new TestClock(TestNow.UtcNow.AddYears(2).AddDays(1));
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);
@@ -193,13 +193,13 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         TestBranch branch;
         PlatformAdminAccount admin;
 
-        await using (var today = fixture.CreateContext(new TestClock(DateTime.UtcNow)))
+        await using (var today = fixture.CreateContext(new TestClock(TestNow.UtcNow)))
         {
             branch = await TestBranchBuilder.CreateAsync(today);
             admin = await AuthTestData.CreatePlatformAdminAsync(today);
         }
 
-        var clock = new TestClock(DateTime.UtcNow.AddYears(200));
+        var clock = new TestClock(TestNow.UtcNow.AddYears(200));
         await using var db = fixture.CreateContext(clock);
         var actor = TestActor.PlatformAdmin(admin.StaffMemberId);
         var platform = fixture.CreatePlatformService(db, clock, actor);
@@ -249,7 +249,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var query = fixture.CreatePlatformOverviewQuery(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
@@ -268,7 +268,7 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var branch = await TestBranchBuilder.CreateAsync(db);

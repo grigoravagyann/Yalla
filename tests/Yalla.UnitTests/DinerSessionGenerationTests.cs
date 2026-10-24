@@ -27,7 +27,7 @@ public class DinerSessionGenerationTests
     [Fact]
     public void A_diner_token_carries_the_session_generation_it_was_minted_under()
     {
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var issuer = new TokenIssuer(Options.Create(new JwtOptions { SigningKey = SigningKey }), clock);
         var dinerUserId = Guid.CreateVersion7();
 
@@ -89,7 +89,7 @@ public class DinerSessionGenerationTests
     [Fact]
     public async Task The_check_reuses_a_read_for_five_seconds_and_never_refuses_a_token_newer_than_it()
     {
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var queries = new ScriptedQueries { State = new DinerSessionState(true, false, 0) };
         var check = new TokenAuthorityCheck(
             queries, new MemoryCache(new MemoryCacheOptions()), clock, Options.Create(new JwtOptions()));
@@ -128,7 +128,7 @@ public class DinerSessionGenerationTests
     [Fact]
     public void Displacing_a_registrant_bumps_the_generation_and_the_registrants_own_proof_does_not()
     {
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = TestNow.UtcNow;
 
         var honest = Registered("honest");
         Assert.Equal(0, honest.SessionGeneration);
@@ -170,7 +170,7 @@ public class DinerSessionGenerationTests
     [Fact]
     public void Deleting_clears_everything_that_identifies_the_person_and_ends_every_session_once()
     {
-        var nowUtc = DateTime.UtcNow;
+        var nowUtc = TestNow.UtcNow;
         var diner = DinerUser.Register(
             "+37491000102", "en", "Ani Kh", "ani_deleted", "ani.deleted@example.test", "a-hash");
         diner.MarkPhoneVerified(nowUtc);

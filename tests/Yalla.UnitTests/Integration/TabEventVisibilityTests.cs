@@ -271,7 +271,7 @@ public sealed class TabEventVisibilityTests(SqlServerFixture fixture)
     /// </summary>
     private async Task AssertHostReadsTheStoredStreamAsync(Guid tabId, IReadOnlyList<Event> hostStream)
     {
-        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = fixture.CreateContext(new TestClock(TestNow.UtcNow));
 
         var stored = await db.TabEvents.AsNoTracking()
             .Where(e => e.TabId == tabId)

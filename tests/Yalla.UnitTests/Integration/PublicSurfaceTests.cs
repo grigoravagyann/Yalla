@@ -680,7 +680,7 @@ public class PublicSurfaceTests(SqlServerFixture fixture)
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
 
         await using (var db = fixture.CreateContext(clock))
         {

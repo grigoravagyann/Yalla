@@ -80,7 +80,7 @@ public partial class GuestRecordTests
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = fixture.CreateContext(new TestClock(TestNow.UtcNow));
 
         var on = await db.Database
             .SqlQuery<bool>($"SELECT is_read_committed_snapshot_on AS [Value] FROM sys.databases WHERE name = DB_NAME()")

@@ -47,7 +47,9 @@ public sealed class ClaimsCurrentActorContractTests : CurrentActorContract
 
         // The wall clock, not a fixed instant. Validation below checks lifetime against the real
         // clock - as the JwtBearer handler does - so a token minted at a fixed 2026 noon is "not
-        // yet valid" for most of the day. Nothing in this suite is about time.
+        // yet valid" for most of the day. Nothing in this suite is about time. The real wall clock, not
+        // TestNow: the validator reads the real one, and YALLA_TEST_NOW moving only the issuer would
+        // mint a token that is expired or not yet valid.
         var clock = new TestClock(DateTime.UtcNow);
         var issuer = new TokenIssuer(options, clock);
 

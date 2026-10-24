@@ -26,7 +26,7 @@ namespace Yalla.UnitTests.Integration;
 [Collection(SqlServerCollection.Name)]
 public sealed class PlatformOverviewTests(SqlServerFixture fixture)
 {
-    private static TestClock NewClock() => new(DateTime.UtcNow.AddYears(1));
+    private static TestClock NewClock() => new(TestNow.UtcNow.AddYears(1));
 
     [SkippableFact]
     public async Task Venues_are_counted_by_their_branches_tier_mix_and_state_with_deleted_ones_apart()
@@ -196,7 +196,7 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow.AddYears(40));
+        var clock = new TestClock(TestNow.UtcNow.AddYears(40));
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var actor = TestActor.PlatformAdmin(admin.StaffMemberId);
@@ -256,7 +256,7 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow.AddYears(100));
+        var clock = new TestClock(TestNow.UtcNow.AddYears(100));
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
         var actor = TestActor.PlatformAdmin(admin.StaffMemberId);

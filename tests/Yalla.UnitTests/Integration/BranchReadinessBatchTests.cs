@@ -16,7 +16,7 @@ public sealed class BranchReadinessBatchTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var readiness = SqlServerFixture.CreateReadinessQuery(db);
 
@@ -74,7 +74,7 @@ public sealed class BranchReadinessBatchTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db);
 

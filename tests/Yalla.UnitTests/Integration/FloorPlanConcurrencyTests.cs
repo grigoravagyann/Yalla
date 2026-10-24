@@ -100,7 +100,7 @@ public sealed class FloorPlanConcurrencyTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         TestBranch branch;
         FloorPlanView plan;
 

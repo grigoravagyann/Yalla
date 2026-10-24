@@ -458,7 +458,7 @@ public class GuestMessageTests(SqlServerFixture fixture)
         }));
 
         // Tomorrow at 14:00 in Yerevan: inside the test branch's hours.
-        var afternoon = DateTime.UtcNow.Date.AddDays(1).AddHours(10);
+        var afternoon = TestNow.UtcNow.Date.AddDays(1).AddHours(10);
         factory.Clock.UtcNow = afternoon;
 
         var order = await OkAsync(await diner.PostAsJsonAsync("/api/diner/takeaway-orders", new

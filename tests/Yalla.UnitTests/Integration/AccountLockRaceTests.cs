@@ -29,7 +29,7 @@ public sealed class AccountLockRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (managerId, link) = await ManagerWithLinkAsync(clock);
 
         // A password change holds the account: it will spend every unused link.
@@ -62,7 +62,7 @@ public sealed class AccountLockRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (managerId, link) = await ManagerWithLinkAsync(clock);
 
         // Something else holds the account, so both uses arrive and queue.
@@ -100,7 +100,7 @@ public sealed class AccountLockRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var phone = ReviewTestData.NextPhone();
         var unique = Guid.NewGuid().ToString("N")[..12];
         Guid dinerId;
@@ -148,7 +148,7 @@ public sealed class AccountLockRaceTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var (managerId, oldLink) = await ManagerWithLinkAsync(clock);
         Guid venueId;
         Guid ownerId;

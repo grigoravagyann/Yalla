@@ -147,7 +147,7 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
     private static YallaDbContext CreateContext(string connectionString) =>
         new(
             new DbContextOptionsBuilder<YallaDbContext>().UseSqlServer(connectionString).Options,
-            new TestClock(DateTime.UtcNow));
+            new TestClock(TestNow.UtcNow));
 
     private static async Task DropAsync(string connectionString)
     {
