@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Persistence;
@@ -49,6 +50,7 @@ internal sealed class ApprovalExpirySweep(
     IClock clock,
     IOutbox outbox,
     ReservationWriter writer,
+    IActivityLog activity,
     ILogger<ApprovalExpirySweep> logger)
 {
     /// <summary>
@@ -161,7 +163,21 @@ internal sealed class ApprovalExpirySweep(
                 reason: null,
                 quietIfAlreadyStarted: true,
                 nowUtc,
-                cancellationToken);
+                cancellationToken,
+                ct => BookingActivity.RecordAsync(
+                    activity,
+                    db,
+                    reservation,
+                    ActivityActions.BookingAutoDeclined,
+                    ct,
+                    extra: new
+                    {
+                        declineReason = (int)(waitedOnEarlierGuest ? DeclineReason.EarlierGuestNoAnswer : DeclineReason.NoAnswer),
+                        trigger = (int?)reservation.ApprovalTrigger,
+                        deadlineUtc = deadline,
+                        keptEarlierSlot = reservation.Status == ReservationStatus.Confirmed,
+                    },
+                    bySystem: true));
         }
         catch (DbUpdateConcurrencyException)
         {

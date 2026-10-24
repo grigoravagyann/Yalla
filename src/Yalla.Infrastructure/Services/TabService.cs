@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Media;
 using Yalla.Application.Reservations;
@@ -58,6 +59,7 @@ internal sealed class TabService(
     TabLedger ledger,
     IOutbox outbox,
     StaffBranchGuard branchGuard,
+    IActivityLog activity,
     ILogger<TabService> logger) : ITabService
 {
     /// <summary>
@@ -1152,6 +1154,23 @@ internal sealed class TabService(
             session.AttachTab(tab.Id);
             db.Tabs.Add(tab);
 
+            // Whoever opens the tab on a table nobody serves yet serves it (docs/activity.md).
+            if (actor.StaffMemberId is { } openerId)
+            {
+                session.ClaimServerIfNone(openerId, tab.OpenedAtUtc);
+            }
+
+            await activity.RecordAsync(
+                new ActivityRecord(ActivityCategory.Table, ActivityActions.TableTabOpened, ActivitySubjects.Tab, tab.Id)
+                {
+                    BranchId = table.BranchId,
+                    VenueId = table.Branch.VenueId,
+                    TableSessionId = session.Id,
+                    TableLabel = table.Label,
+                    Summary = new { tableId = table.Id, partySize = session.PartySize },
+                },
+                cancellationToken);
+
             try
             {
                 await db.SaveChangesAsync(cancellationToken);
@@ -1272,6 +1291,12 @@ internal sealed class TabService(
             toParticipantId = newHost.Id,
         });
 
+        await LogTabAsync(
+            tab,
+            ActivityActions.TableHostReassigned,
+            new { fromName = oldHost?.DisplayName, toName = newHost.DisplayName },
+            cancellationToken);
+
         await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
@@ -1301,6 +1326,9 @@ internal sealed class TabService(
         }
 
         ledger.Append(tab.Id, TabEventType.TabClosing, new { atUtc = nowUtc });
+
+        await LogTabAsync(
+            tab, ActivityActions.TableBillPresented, new { totalAmd = tab.TotalAmd, remainingAmd = tab.RemainingAmd }, cancellationToken);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -1358,6 +1386,12 @@ internal sealed class TabService(
         if (AdmitInContext(tab, TabAdmissionReason.Waiter, staffId, nowUtc))
         {
             logger.LogInformation("Staff {StaffId} let tab {TabId} order.", staffId, tab.Id);
+
+            // The waiter who came over and let the table in serves it, when nobody did yet.
+            var sitting = await db.TableSessions.FirstOrDefaultAsync(s => s.Id == tab.TableSessionId, cancellationToken);
+            sitting?.ClaimServerIfNone(staffId, nowUtc);
+
+            await LogTabAsync(tab, ActivityActions.TableTabAdmitted, null, cancellationToken);
         }
 
         RecordAdmissionCommand(command.ClientCommandId, AdmitCommandType, tab.Id, staffId, nowUtc);
@@ -1572,6 +1606,18 @@ internal sealed class TabService(
             tableFreed = seatedByScan,
         });
 
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Table, ActivityActions.TableTabTurnedAway, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                VenueId = tab.Branch.VenueId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = tab.DiningTable.Label,
+                Reason = reason,
+                Summary = new { tableFreed = seatedByScan },
+            },
+            cancellationToken);
+
         RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
 
         if (!seatedByScan)
@@ -1663,6 +1709,19 @@ internal sealed class TabService(
     /// <c>TabAdmitted</c>, and the branch stream's signal. False, staging nothing, when it already was.
     /// </summary>
     /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
+    /// <summary>Something staff did to a tab, for the activity log, in the caller's unit of work.</summary>
+    private Task LogTabAsync(Tab tab, string action, object? summary, CancellationToken cancellationToken) =>
+        activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Table, action, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                VenueId = tab.Branch.VenueId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = tab.DiningTable.Label,
+                Summary = summary,
+            },
+            cancellationToken);
+
     private bool AdmitInContext(Tab tab, TabAdmissionReason because, Guid? staffId, DateTime nowUtc) =>
         TabAdmissions.Admit(db, ledger, tab, because, staffId, SignalActor(staffId), nowUtc);
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
@@ -27,6 +28,7 @@ internal sealed class NoShowBlocks(
     YallaDbContext db,
     IOutbox outbox,
     ITableStateService tableState,
+    IActivityLog activity,
     ILogger<NoShowBlocks> logger)
 {
     /// <summary>
@@ -102,6 +104,11 @@ internal sealed class NoShowBlocks(
             await TableShares.EarlierChangedAsync(db, outbox, booking, branch, nowUtc, cancellationToken);
             await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", booking.Id), cancellationToken);
             await DinerNotices.CancelUnshownAsync(db, booking.Id, nowUtc, cancellationToken);
+
+            // In each venue's History as the platform's doing, not the staff member's at the venue whose no-show made it.
+            await BookingActivity.RecordAsync(
+                activity, db, booking, ActivityActions.BookingCancelled, cancellationToken,
+                extra: new { because = "no-show-block" }, bySystem: true);
         }
 
         // Each venue is told on its change stream: a row on the booking's table, naming it (review S8).

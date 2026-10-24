@@ -650,7 +650,12 @@ public class TakeawayTests(SqlServerFixture fixture)
     }
 
     private TakeawayExpirySweep Sweep(YallaDbContext db, TestClock clock) =>
-        new(db, clock, fixture.CreateOutbox(db, clock), NullLogger<TakeawayExpirySweep>.Instance);
+        new(
+            db,
+            clock,
+            fixture.CreateOutbox(db, clock),
+            SqlServerFixture.CreateActivityLog(db, clock, new TestActor(Domain.Enums.ActorType.System, null, null)),
+            NullLogger<TakeawayExpirySweep>.Instance);
 
     private static OutboxDispatcher Dispatcher(YallaDbContext db, TestClock clock, RecordingChannel channel) =>
         new(

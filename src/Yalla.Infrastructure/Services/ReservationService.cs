@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Tabs;
@@ -98,6 +99,7 @@ internal sealed class ReservationService(
     NoShowBlocks noShowBlocks,
     IOutbox outbox,
     IOptions<PublicWebOptions> publicWeb,
+    IActivityLog activity,
     ILogger<ReservationService> logger) : IReservationService
 {
     public async Task<ReservationView> CreateAsync(
@@ -265,6 +267,15 @@ internal sealed class ReservationService(
                     bookerPhoneE164: booker.PhoneE164);
 
                 booking.AttachManageToken(manageTokenHash);
+
+                await BookingActivity.RecordAsync(
+                    activity,
+                    db,
+                    booking,
+                    ActivityActions.BookingCreated,
+                    ct,
+                    extra: new { channel = (int)command.Channel, trigger = (int?)withTable.Status.Trigger },
+                    byGuest: true);
 
                 if (withTable.Ask is { } ask)
                 {
@@ -664,6 +675,7 @@ internal sealed class ReservationService(
 
         var shortNoticeMove = ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc));
         StatusDecision decided = status;
+        var movedFrom = BookingActivity.Slot(reservation);
 
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
@@ -701,6 +713,16 @@ internal sealed class ReservationService(
 
                 decided = await StageMoveAsync(
                     reservation, command, table, branch, startUtc, decision, ask, verdict, dinerUserId, viaManageLink, nowUtc, ct);
+
+                await BookingActivity.RecordAsync(
+                    activity,
+                    db,
+                    reservation,
+                    ActivityActions.BookingMoved,
+                    ct,
+                    extra: new { viaManageLink },
+                    before: movedFrom,
+                    byGuest: true);
             },
             cancellationToken);
 
@@ -1142,6 +1164,11 @@ internal sealed class ReservationService(
 
                 await TableShares.ApplyYesAsync(db, outbox, later.Id, branch, nowUtc, cancellationToken);
 
+                await BookingActivity.RecordAsync(
+                    activity, db, later, ActivityActions.BookingGuestAnswered, cancellationToken,
+                    extra: new { answer = "table-request", accepted = true, earlierReservationId = earlier.Id },
+                    byGuest: true);
+
                 var key = await DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
 
                 TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
@@ -1165,7 +1192,11 @@ internal sealed class ReservationService(
                     reason: null,
                     quietIfAlreadyStarted: false,
                     nowUtc,
-                    cancellationToken);
+                    cancellationToken,
+                    ct => BookingActivity.RecordAsync(
+                        activity, db, later, ActivityActions.BookingGuestAnswered, ct,
+                        extra: new { answer = "table-request", accepted = false, earlierReservationId = earlier.Id },
+                        byGuest: true));
             }
         }
         catch (Exception ex) when (ex is DbUpdateConcurrencyException
@@ -1422,6 +1453,10 @@ internal sealed class ReservationService(
                          <= ReservationRules.CancellationDeadline(reservation.StartUtc, branch.ReservationPolicy);
 
         reservation.CancelByDiner(nowUtc, reason, late, countsAgainstGuest: madeInTime);
+
+        await BookingActivity.RecordAsync(
+            activity, db, reservation, ActivityActions.BookingCancelled, cancellationToken,
+            extra: new { late, viaManageLink }, reason: reason, byGuest: true);
 
         // A question this booking was waiting on goes with it, and a guest who was asked to free their
         // table for it - or a booking waiting on this one's guest - is settled now the table is free.
@@ -2152,6 +2187,14 @@ internal sealed class ReservationService(
             {
                 reservation.Confirm(nowUtc);
 
+                await BookingActivity.RecordAsync(
+                    activity, db, reservation, ActivityActions.BookingApproved, cancellationToken,
+                    extra: new
+                    {
+                        trigger = (int?)reservation.ApprovalTrigger,
+                        decisionSeconds = BookingActivity.DecisionSeconds(reservation, nowUtc),
+                    });
+
                 // The floor's yes for the guest before, when this booking was waiting on them: they are
                 // held to the time asked - its end cut to it - and told.
                 await TableShares.ApplyYesAsync(db, outbox, reservation.Id, branch, nowUtc, cancellationToken);
@@ -2179,7 +2222,16 @@ internal sealed class ReservationService(
                     command.Reason,
                     quietIfAlreadyStarted: false,
                     nowUtc,
-                    cancellationToken);
+                    cancellationToken,
+                    ct => BookingActivity.RecordAsync(
+                        activity, db, reservation, ActivityActions.BookingDeclined, ct,
+                        extra: new
+                        {
+                            trigger = (int?)reservation.ApprovalTrigger,
+                            decisionSeconds = BookingActivity.DecisionSeconds(reservation, nowUtc),
+                            keptEarlierSlot = reservation.Status == ReservationStatus.Confirmed,
+                        },
+                        reason: command.Reason));
             }
         }
         catch (DbUpdateConcurrencyException)
@@ -2617,6 +2669,10 @@ internal sealed class ReservationService(
         // Throws when the one extension is spent, or the booking is not confirmed.
         reservation.ExtendHold(clock.UtcNow, minutes);
 
+        await BookingActivity.RecordAsync(
+            activity, db, reservation, ActivityActions.BookingHoldExtended, cancellationToken,
+            extra: new { minutes, holdExpiresAtUtc = reservation.HoldExpiresAtUtc }, byGuest: true);
+
         await db.SaveChangesAsync(cancellationToken);
 
         // Onto the branch change sequence, so the waiter watching that table sees it. Held to Held -
@@ -2723,6 +2779,15 @@ internal sealed class ReservationService(
                 OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
 
             await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
+
+            await BookingActivity.RecordAsync(
+                activity,
+                db,
+                reservation,
+                command.Outcome == ReleaseOutcome.NoShow ? ActivityActions.BookingNoShow : ActivityActions.BookingReleased,
+                cancellationToken,
+                extra: new { countsTowardBlock = reservation.NoShowCountsTowardBlock },
+                reason: command.Reason);
 
             if (reservation.DinerUserId is not null)
             {
@@ -2833,6 +2898,10 @@ internal sealed class ReservationService(
         await using (var locked = await LockForNoShowAsync(reservation, table, guest, cancellationToken))
         {
             reservation.UndoNoShow(nowUtc, staffId, command.Reason);
+
+            await BookingActivity.RecordAsync(
+                activity, db, reservation, ActivityActions.BookingNoShowUndone, cancellationToken, reason: command.Reason);
+
             await db.SaveChangesAsync(cancellationToken);
 
             // The block this no-show helped make, judged again without it: fewer than three left, and it is lifted.

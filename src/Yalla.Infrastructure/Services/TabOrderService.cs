@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Messaging;
 using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
@@ -36,6 +37,7 @@ internal sealed class TabOrderService(
     StaffBranchGuard branchGuard,
     TabLedger ledger,
     IOutbox outbox,
+    IActivityLog activity,
     ILogger<TabOrderService> logger) : ITabOrderService
 {
     /// <summary>
@@ -96,6 +98,19 @@ internal sealed class TabOrderService(
         }
 
         db.TabOrders.Add(order);
+
+        // Whose table this is now - the sale is theirs from this order on. A waiter ordering on a table nobody serves
+        // yet takes it (docs/activity.md). The sitting has no row version, so this writes nothing an order contends on.
+        var sitting = await db.TableSessions.FirstOrDefaultAsync(s => s.Id == tab.TableSessionId, cancellationToken);
+
+        if (order.PlacedByStaffId is { } orderingStaffId)
+        {
+            sitting?.ClaimServerIfNone(orderingStaffId, nowUtc);
+        }
+
+        order.TakenUnder(sitting?.ServerStaffMemberId);
+
+        await LogOrderAsync(tab, order, cancellationToken);
 
         ledger.Append(tab.Id, TabEventType.OrderPlaced, new
         {
@@ -434,7 +449,33 @@ internal sealed class TabOrderService(
             throw new LineAlreadyPaidException(tab.Id, line.Id);
         }
 
+        var beforeVoid = ledger.Compute(tab).TotalAmd;
+
         line.Void(clock.UtcNow, command.Reason, staffId);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Order, ActivityActions.OrderLineVoided, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                ItemNames = [line.NameSnapshot],
+                AmountAmd = line.UnitPriceAmdSnapshot * line.Quantity,
+                IsMoney = true,
+                Reason = command.Reason,
+                Before = new { name = line.NameSnapshot, quantity = line.Quantity, amountAmd = line.UnitPriceAmdSnapshot * line.Quantity },
+                After = new { voided = true },
+                Summary = new
+                {
+                    lineId = line.Id,
+                    orderId = order.Id,
+                    name = line.NameSnapshot,
+                    quantity = line.Quantity,
+                    totalBeforeAmd = beforeVoid,
+                    totalAfterAmd = ledger.Compute(tab).TotalAmd,
+                },
+            },
+            cancellationToken);
 
         ledger.Append(tab.Id, TabEventType.LineVoided, new
         {
@@ -487,7 +528,43 @@ internal sealed class TabOrderService(
         // sitting in Local is already reflected and "what did this take off" would come out zero.
         var before = ledger.Compute(tab).SubtotalAmd;
 
+        var totalBefore = ledger.Compute(tab).TotalAmd;
+
         db.TabAdjustments.Add(adjustment);
+
+        var after = ledger.Compute(tab);
+        var lineName = command.TabOrderLineId is { } adjustedLine
+            ? tab.Orders.SelectMany(o => o.Lines).First(l => l.Id == adjustedLine).NameSnapshot
+            : null;
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Payment,
+                adjustment.Kind == AdjustmentKind.Comp ? ActivityActions.PaymentComp : ActivityActions.PaymentDiscount,
+                ActivitySubjects.Tab,
+                tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                ItemNames = lineName is null ? null : [lineName],
+                AmountAmd = before - after.SubtotalAmd,
+                IsMoney = true,
+                Reason = adjustment.Reason,
+                Before = new { totalAmd = totalBefore },
+                After = new { totalAmd = after.TotalAmd },
+                Summary = new
+                {
+                    adjustmentId = adjustment.Id,
+                    percent = adjustment.Percent,
+                    amountAmd = adjustment.AmountAmd,
+                    lineId = adjustment.TabOrderLineId,
+                    lineName,
+                    totalBeforeAmd = totalBefore,
+                    totalAfterAmd = after.TotalAmd,
+                },
+            },
+            cancellationToken);
 
         ledger.Append(tab.Id, TabEventType.AdjustmentAdded, new
         {
@@ -522,7 +599,33 @@ internal sealed class TabOrderService(
         await branchGuard.RequireAsync(
                 staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
+        var reversedFrom = ledger.Compute(tab).TotalAmd;
+
         adjustment.Void(clock.UtcNow, staffId);
+
+        var reversedTo = ledger.Compute(tab).TotalAmd;
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Payment, ActivityActions.PaymentAdjustmentReversed, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                AmountAmd = reversedTo - reversedFrom,
+                IsMoney = true,
+                Reason = adjustment.Reason,
+                Before = new { totalAmd = reversedFrom },
+                After = new { totalAmd = reversedTo },
+                Summary = new
+                {
+                    adjustmentId = adjustment.Id,
+                    kind = adjustment.Kind == AdjustmentKind.Comp ? "comp" : "discount",
+                    totalBeforeAmd = reversedFrom,
+                    totalAfterAmd = reversedTo,
+                },
+            },
+            cancellationToken);
 
         ledger.Append(tab.Id, TabEventType.AdjustmentVoided, new
         {
@@ -587,6 +690,36 @@ internal sealed class TabOrderService(
 
         var from = order.Status;
         order.MoveTo(next);
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                next == TabOrderStatus.Voided ? ActivityCategory.Payment : ActivityCategory.Order,
+                next switch
+                {
+                    TabOrderStatus.InKitchen => ActivityActions.OrderInKitchen,
+                    TabOrderStatus.Ready => ActivityActions.OrderReady,
+                    TabOrderStatus.Served => ActivityActions.OrderServed,
+                    _ => ActivityActions.OrderVoided,
+                },
+                ActivitySubjects.Tab,
+                order.TabId)
+            {
+                BranchId = order.Tab.BranchId,
+                VenueId = order.Tab.Branch.VenueId,
+                TableSessionId = order.Tab.TableSessionId,
+                TableLabel = order.Tab.DiningTable.Label,
+                ItemNames = [.. order.Lines.Select(l => l.NameSnapshot)],
+                AmountAmd = next == TabOrderStatus.Voided ? order.Lines.Sum(l => l.LineTotalAmd) : null,
+                Summary = new
+                {
+                    orderId = order.Id,
+                    from = (int)from,
+                    to = (int)next,
+                    items = order.Lines.Sum(l => l.Quantity),
+                    lines = order.Lines.Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
+                },
+            },
+            cancellationToken);
 
         // Food is up. Per-branch and off by default: noisy in a cafe where a waiter carries the
         // plate ten feet, useful in a canteen where the diner collects it. Defaulting it on would
@@ -785,6 +918,49 @@ internal sealed class TabOrderService(
     /// belongs to whoever carried the plate; letting the kitchen mark food served would make the
     /// floor screen say a table has its order when nobody has walked it over.
     /// </remarks>
+    /// <summary>An order placed: <c>order.sent</c> by a waiter (it goes straight to the kitchen), <c>order.placed-by-guest</c> from a phone.</summary>
+    private async Task LogOrderAsync(Tab tab, TabOrder order, CancellationToken cancellationToken)
+    {
+        var guest = order.PlacedByParticipantId is { } participantId
+            ? tab.Participants.FirstOrDefault(p => p.Id == participantId)?.DisplayName
+            : null;
+
+        var amount = order.Lines.Sum(l => l.UnitPriceAmdSnapshot * l.Quantity);
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Order,
+                order.PlacedByStaffId is null ? ActivityActions.OrderPlacedByGuest : ActivityActions.OrderSent,
+                ActivitySubjects.Tab,
+                tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                GuestName = guest,
+                ItemNames = [.. order.Lines.Select(l => l.NameSnapshot)],
+                AmountAmd = amount,
+                Summary = new
+                {
+                    orderId = order.Id,
+                    items = order.Lines.Sum(l => l.Quantity),
+                    amountAmd = amount,
+                    lines = order.Lines.Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
+                    serverStaffMemberId = order.ServerStaffMemberId,
+                },
+            },
+            cancellationToken);
+    }
+
+    /// <summary>The tab's table label, from the tracker when it is there.</summary>
+    private async Task<string?> TableLabelAsync(Tab tab, CancellationToken cancellationToken) =>
+        db.DiningTables.Local.FirstOrDefault(t => t.Id == tab.DiningTableId)?.Label
+        ?? await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == tab.DiningTableId)
+            .Select(t => t.Label)
+            .FirstOrDefaultAsync(cancellationToken);
+
     private void RequireKitchenMayMake(TabOrderStatus from, TabOrderStatus to)
     {
         if (actor.Role != StaffRole.Kitchen)

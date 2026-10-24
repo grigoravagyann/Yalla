@@ -90,7 +90,7 @@ internal static class PreOrderSittings
         session.AttachTab(tab.Id);
         db.Tabs.Add(tab);
 
-        var order = BuildOrder(preOrder, tab.Id);
+        var order = BuildOrder(preOrder, tab.Id, session.ServerStaffMemberId);
         db.TabOrders.Add(order);
 
         var sequence = 1L;
@@ -130,7 +130,8 @@ internal static class PreOrderSittings
             throw new TabNotAcceptingOrdersException(tab.Id, tab.Status);
         }
 
-        var order = BuildOrder(preOrder, tab.Id);
+        var order = BuildOrder(
+            preOrder, tab.Id, db.TableSessions.Local.FirstOrDefault(s => s.Id == tab.TableSessionId)?.ServerStaffMemberId);
         db.TabOrders.Add(order);
 
         foreach (var (type, payload) in Events(order))
@@ -145,9 +146,12 @@ internal static class PreOrderSittings
     /// The order: the pre-order's id, placed by the waiter who sent it when they sent it, its lines the table's at their
     /// locked prices, and the kitchen's progress replayed onto it through the rail's own transitions.
     /// </summary>
-    private static TabOrder BuildOrder(PreOrder preOrder, Guid tabId)
+    private static TabOrder BuildOrder(PreOrder preOrder, Guid tabId, Guid? serverStaffMemberId)
     {
         var order = TabOrder.FromPreOrder(preOrder.Id, tabId, preOrder.SentByStaffId!.Value, preOrder.SentAtUtc!.Value);
+
+        // The sale is the table's waiter's when it lands on the tab, like any order (docs/activity.md).
+        order.TakenUnder(serverStaffMemberId);
 
         foreach (var line in preOrder.Lines.OrderBy(l => l.Position))
         {

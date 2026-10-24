@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messages;
 using Yalla.Application.Messaging;
@@ -24,6 +25,7 @@ internal sealed class GuestMessageService(
     IAuthorizationQueries authorization,
     IStaffBranchGuard branchGuard,
     IOutbox outbox,
+    IActivityLog activity,
     ILogger<GuestMessageService> logger) : IGuestMessageService
 {
     // ---------------------------------------------------------------- the guest
@@ -586,8 +588,45 @@ internal sealed class GuestMessageService(
         var staffName = await GuestThreads.StaffNameAsync(db, staffId, cancellationToken);
         var thread = existing
                      ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, nowUtc, cancellationToken);
+        // How long the guest waited: from their first text the venue had not answered to this one. Null when this
+        // answers nothing - the venue writing first, or again before the guest replied (docs/activity.md).
+        var waitingSince = existing is null
+            ? null
+            : await db.ConversationMessages
+                .AsNoTracking()
+                .Where(m => m.ConversationId == existing.Id
+                            && m.Author == MessageAuthor.Guest
+                            && m.Kind == MessageKind.Text
+                            && !db.ConversationMessages.Any(v => v.ConversationId == existing.Id
+                                                                 && v.Author == MessageAuthor.Venue
+                                                                 && v.CreatedAtUtc >= m.CreatedAtUtc))
+                .OrderBy(m => m.CreatedAtUtc)
+                .Select(m => (DateTime?)m.CreatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
         var message = thread.WriteAsVenue(body, staffId, staffName, clientCommandId, nowUtc);
         db.ConversationMessages.Add(message);
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Message,
+                ActivityActions.MessageSent,
+                subject.Kind == ConversationSubjectKind.Reservation ? ActivitySubjects.Reservation : ActivitySubjects.Takeaway,
+                subject.Id)
+            {
+                BranchId = facts.BranchId,
+                TableLabel = facts.TableLabel,
+                GuestName = facts.GuestName,
+                SubjectCode = facts.TakeawayCode,
+                Summary = new
+                {
+                    conversationId = thread.Id,
+                    messageId = message.Id,
+                    text = message.Body,
+                    replySeconds = waitingSince is { } since ? (int?)Math.Max(0d, (nowUtc - since).TotalSeconds) : null,
+                },
+            },
+            cancellationToken);
 
         var told = await GuestThreads.TellGuestAsync(db, outbox, thread, message, cancellationToken);
 
@@ -656,7 +695,33 @@ internal sealed class GuestMessageService(
         var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
                      ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
+        var before = new
+        {
+            guestsCanWrite = branch.GuestsCanMessage,
+            waitersCanWrite = branch.WaitersCanMessage,
+            remindAfterMinutes = branch.MessageRemindAfterMinutes,
+            templates = Domain.Venues.Branch.TemplatesFrom(branch.MessageTemplatesJson),
+        };
+
         branch.SetMessages(settings.GuestsCanWrite, settings.WaitersCanWrite, settings.Templates, settings.RemindAfterMinutes);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Settings, ActivityActions.SettingsMessages, ActivitySubjects.Branch, branchId)
+            {
+                BranchId = branchId,
+                VenueId = branch.VenueId,
+                Before = before,
+                After = new
+                {
+                    guestsCanWrite = branch.GuestsCanMessage,
+                    waitersCanWrite = branch.WaitersCanMessage,
+                    remindAfterMinutes = branch.MessageRemindAfterMinutes,
+                    templates = Domain.Venues.Branch.TemplatesFrom(branch.MessageTemplatesJson),
+                },
+                Summary = new { settings.GuestsCanWrite, settings.WaitersCanWrite, settings.RemindAfterMinutes },
+            },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(

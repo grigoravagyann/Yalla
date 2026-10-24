@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messaging;
 using Yalla.Application.Public;
@@ -29,6 +30,7 @@ internal sealed class PreOrderService(
     TableLock tableLock,
     IOutbox outbox,
     TabLedger ledger,
+    IActivityLog activity,
     ILogger<PreOrderService> logger) : IPreOrderService
 {
     /// <summary>What a guest's save is recorded as in <c>ProcessedCommands</c>.</summary>
@@ -310,6 +312,10 @@ internal sealed class PreOrderService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Coming, null, nowUtc, cancellationToken);
 
+        await BookingActivity.RecordAsync(
+            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
+            extra: new { answer = "coming" }, byGuest: true);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -363,6 +369,10 @@ internal sealed class PreOrderService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Late, minutes, nowUtc, cancellationToken);
 
+        await BookingActivity.RecordAsync(
+            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
+            extra: new { answer = "late", minutes }, byGuest: true);
+
         try
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -410,6 +420,22 @@ internal sealed class PreOrderService(
         }
 
         var notified = await GuestThreads.AskAsync(db, outbox, reservation, staffId, nowUtc, cancellationToken);
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Message, ActivityActions.MessageAskedOnMyWay, ActivitySubjects.Reservation, reservation.Id)
+            {
+                BranchId = reservation.BranchId,
+                GuestName = reservation.GuestName,
+                SubjectCode = reservation.Code,
+                TableLabel = await db.DiningTables
+                    .AsNoTracking()
+                    .Where(t => t.Id == reservation.DiningTableId)
+                    .Select(t => t.Label)
+                    .FirstOrDefaultAsync(cancellationToken),
+                Summary = new { notified, startUtc = reservation.StartUtc },
+            },
+            cancellationToken);
 
         try
         {
@@ -585,6 +611,33 @@ internal sealed class PreOrderService(
 
             preOrder.MarkSent(staffId, nowUtc);
 
+            var preOrderAmount = preOrder.Lines.Sum(l => l.LineTotalAmd);
+
+            await activity.RecordAsync(
+                new ActivityRecord(
+                    ActivityCategory.Order,
+                    ActivityActions.OrderPreOrderSent,
+                    session?.TabId is not null ? ActivitySubjects.Tab : ActivitySubjects.Reservation,
+                    session?.TabId ?? reservation.Id)
+                {
+                    BranchId = reservation.BranchId,
+                    TableSessionId = session?.Id,
+                    TableLabel = tableLabel,
+                    GuestName = reservation.GuestName,
+                    SubjectCode = reservation.Code,
+                    ItemNames = [.. preOrder.Lines.Select(l => l.NameSnapshot)],
+                    AmountAmd = preOrderAmount,
+                    Summary = new
+                    {
+                        reservationId = reservation.Id,
+                        items = preOrder.Lines.Sum(l => l.Quantity),
+                        amountAmd = preOrderAmount,
+                        seated = session is not null,
+                        lines = preOrder.Lines.OrderBy(l => l.Position).Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
+                    },
+                },
+                cancellationToken);
+
             // Sent: "are you on your way?" has nothing left to decide - its push and feed entry not yet out are withdrawn.
             await PreOrderQuestions.WithdrawAsync(db, outbox, reservationId, nowUtc, cancellationToken);
 
@@ -684,6 +737,10 @@ internal sealed class PreOrderService(
 
         preOrder.MarkNotComing(staffId, nowUtc);
 
+        await BookingActivity.RecordAsync(
+            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
+            extra: new { answer = "not-coming", recordedByStaff = true });
+
         // The waiter has called and decided: the guest is not asked "are you on your way?" on top.
         await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
 
@@ -771,7 +828,30 @@ internal sealed class PreOrderService(
             throw new FieldValidationException(violations);
         }
 
+        var settingsBefore = new
+        {
+            acceptsPreOrders = branch.AcceptsPreOrders,
+            minutesBefore = branch.PreOrderMinutesBefore,
+            excludedMenuItemIds = items.Where(i => !i.AvailableForPreOrder).Select(i => i.Id).ToList(),
+        };
+
         branch.SetPreOrders(settings.AcceptsPreOrders, settings.MinutesBefore);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Settings, ActivityActions.SettingsPreOrders, ActivitySubjects.Branch, branchId)
+            {
+                BranchId = branchId,
+                VenueId = branch.VenueId,
+                Before = settingsBefore,
+                After = new
+                {
+                    acceptsPreOrders = settings.AcceptsPreOrders,
+                    minutesBefore = settings.MinutesBefore,
+                    excludedMenuItemIds = excluded.ToList(),
+                },
+                Summary = new { acceptsPreOrders = settings.AcceptsPreOrders, minutesBefore = settings.MinutesBefore },
+            },
+            cancellationToken);
 
         // The whole list each time: every dish not named may be pre-ordered.
         foreach (var item in items)

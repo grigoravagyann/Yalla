@@ -371,9 +371,29 @@ public static class OrderingEndpoints
                 + "`billAmountAmd`, `tipPercent` and `tipAmd`: the amount to bring, priced when the "
                 + "diner asked, and the tip to expect on top of it - what the cash keypad opens with. "
                 + "One the same diner has since replaced with a newer request for the bill is not "
-                + "listed: the newer one is what to bring.")
+                + "listed: the newer one is what to bring.\n\n"
+                + "A claimed request (`claimServiceRequest`, \"I'm on it\") stays listed until acknowledged, with "
+                + "`claimedAtUtc`, `claimedByStaffMemberId` and `claimedByName` - so every tablet shows who has it.")
             .Produces<IReadOnlyList<ServiceRequestView>>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.");
+
+        app.MapPost("/api/branches/{branchId:guid}/calls/{callId:guid}/claim", ClaimServiceRequestAsync)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove, YallaPolicies.BranchScoped)
+            .WithName("claimServiceRequest")
+            .WithSummary("\"I'm on it\": claim a call or a bill request")
+            .WithDescription(
+                "No body. Records `claimedByStaffMemberId` and `claimedAtUtc`; **the first claim wins** and a repeat - "
+                + "anybody's - answers with the request as it stands, nothing written. The guest is **not** told, and "
+                + "the request does **not** leave the open list: it stays, showing `claimedByName`, until somebody "
+                + "acknowledges it (`acknowledgeServiceRequest`). One already acknowledged or replaced is answered as "
+                + "it stands. The seconds from the call to the claim are the waiter's response time in Staff → Results, "
+                + "and the claim is logged as `table.call-claimed` (`docs/activity.md`). Acknowledging a request nobody "
+                + "claimed claims it in the same moment.\n\n"
+                + "A waiter or above at the branch; a call at another branch is not found.")
+            .Produces<ServiceRequestView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff at this branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such call at this branch.");
 
         app.MapPost("/api/service-requests/{id:guid}/acknowledge", AcknowledgeServiceRequestAsync)
             .WithTags(EndpointConventions.StaffTag)
@@ -382,7 +402,10 @@ public static class OrderingEndpoints
             .WithSummary("A waiter has seen it")
             .WithDescription(
                 "Acknowledging one twice is a no-op rather than an error: two waiters tapping the "
-                + "same request is the normal case, and both seeing it is what the table wanted.")
+                + "same request is the normal case, and both seeing it is what the table wanted.\n\n"
+                + "The first acknowledgement stands (`acknowledgedByStaffMemberId`, `acknowledgedByName`). One nobody "
+                + "claimed (`claimServiceRequest`) is claimed by the same tap: that is then the response time "
+                + "(`docs/activity.md`).")
             .Produces<ServiceRequestView>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not staff.");
     }
@@ -577,6 +600,13 @@ public static class OrderingEndpoints
         IServiceRequestService requests,
         CancellationToken cancellationToken) =>
         Results.Ok(await requests.GetOpenAsync(branchId, cancellationToken));
+
+    private static async Task<IResult> ClaimServiceRequestAsync(
+        Guid branchId,
+        Guid callId,
+        IServiceRequestService requests,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await requests.ClaimAsync(branchId, callId, cancellationToken));
 
     private static async Task<IResult> AcknowledgeServiceRequestAsync(
         Guid id,

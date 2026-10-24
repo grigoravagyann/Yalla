@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Media;
+using Yalla.Application.Activity;
 using Yalla.Application.Menus;
 using Yalla.Domain;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Menus;
 using Yalla.Infrastructure.Persistence;
 
@@ -22,7 +24,7 @@ namespace Yalla.Infrastructure.Services;
 /// need a photo, which is the entire point of being allowed to save them half-entered.
 /// </para>
 /// </remarks>
-internal sealed class MenuService(YallaDbContext db) : IMenuService
+internal sealed class MenuService(YallaDbContext db, IActivityLog activity) : IMenuService
 {
     public async Task<IReadOnlyList<MenuCategoryView>> GetMenuAsync(Guid branchId, CancellationToken cancellationToken = default)
     {
@@ -273,15 +275,24 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         }
 
         // Hall only, or for takeaway too. Takeaway orders already placed keep their lines.
-        if (command.AvailableForTakeaway is { } forTakeaway)
+        if (command.AvailableForTakeaway is { } forTakeaway && forTakeaway != item.AvailableForTakeaway)
         {
             item.SetAvailableForTakeaway(forTakeaway);
+
+            await LogItemAsync(
+                branchId, item, ActivityActions.SettingsMenuAvailability,
+                new { availableForTakeaway = !forTakeaway }, new { availableForTakeaway = forTakeaway }, cancellationToken);
         }
 
         // Existing order lines snapshotted the old price and are untouched by this.
-        if (command.PriceAmd is { } price)
+        if (command.PriceAmd is { } price && price != item.PriceAmd)
         {
+            var was = item.PriceAmd;
             item.SetPrice(price);
+
+            await LogItemAsync(
+                branchId, item, ActivityActions.SettingsMenuPrice,
+                new { priceAmd = was }, new { priceAmd = item.PriceAmd }, cancellationToken);
         }
 
         if (command.CategoryId is { } categoryId && categoryId != item.MenuCategoryId)
@@ -299,6 +310,21 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
 
         return ToView(await WithPhotoAsync(item, cancellationToken));
     }
+
+    /// <summary>A price or an availability changed, for the History (docs/activity.md), in this unit of work.</summary>
+    private Task LogItemAsync(
+        Guid branchId, MenuItem item, string action, object before, object after, CancellationToken cancellationToken) =>
+        activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Settings, action, ActivitySubjects.MenuItem, item.Id)
+            {
+                BranchId = branchId,
+                ItemNames = [item.Name],
+                AmountAmd = action == ActivityActions.SettingsMenuPrice ? item.PriceAmd : null,
+                Before = before,
+                After = after,
+                Summary = new { name = item.Name, priceAmd = item.PriceAmd, isAvailable = item.IsAvailable },
+            },
+            cancellationToken);
 
     public async Task<MenuItemView> RemoveItemPhotoAsync(
         Guid branchId,
@@ -322,7 +348,16 @@ internal sealed class MenuService(YallaDbContext db) : IMenuService
         CancellationToken cancellationToken = default)
     {
         var item = await LoadItemAsync(branchId, itemId, cancellationToken);
+        var was = item.IsAvailable;
         item.SetAvailable(isAvailable);
+
+        if (was != isAvailable)
+        {
+            await LogItemAsync(
+                branchId, item, ActivityActions.SettingsMenuAvailability,
+                new { isAvailable = was }, new { isAvailable }, cancellationToken);
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         return ToView(await WithPhotoAsync(item, cancellationToken));

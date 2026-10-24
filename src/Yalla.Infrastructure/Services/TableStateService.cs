@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Tables;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
@@ -45,6 +46,7 @@ internal sealed class TableStateService(
     IClock clock,
     ICurrentActor actor,
     TableLock tableLock,
+    IActivityLog activity,
     ILogger<TableStateService> logger) : ITableStateService
 {
     public async Task<TableStateChangeResult> SeatWalkInAsync(
@@ -78,6 +80,8 @@ internal sealed class TableStateService(
         db.TableStateChanges.Add(NewChange(
             table, fromStatus, TableStatus.Occupied, command.Reason ?? "seated walk-in",
             nowUtc, command.ClientCommandId, staffId, tableSessionId: session.Id));
+
+        await LogSeatingAsync(table, session, "walk-in", reservation: null, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -137,6 +141,8 @@ internal sealed class TableStateService(
             command.ClientCommandId,
             actorId,
             tableSessionId: session.Id));
+
+        await LogSeatingAsync(table, session, "scan", reservation: null, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -218,6 +224,8 @@ internal sealed class TableStateService(
             reservationId: reservation.Id,
             tableSessionId: session.Id));
 
+        await LogSeatingAsync(table, session, "booking", reservation, cancellationToken);
+
         return await CommitAsync(
             table,
             fromStatus,
@@ -286,6 +294,8 @@ internal sealed class TableStateService(
             nowUtc, command.ClientCommandId, staffId,
             reservationId: reservation.Id, tableSessionId: session.Id));
 
+        await LogSeatingAsync(table, session, "booking", reservation, cancellationToken);
+
         return await CommitAsync(
             table,
             fromStatus,
@@ -322,6 +332,9 @@ internal sealed class TableStateService(
             table, fromStatus, TableStatus.Held, command.Reason ?? "held for late party",
             nowUtc, command.ClientCommandId, staffId, reservationId: next.ReservationId));
 
+        await LogTableAsync(
+            table, ActivityActions.TableHeld, command.Reason, new { reservationId = next.ReservationId }, cancellationToken);
+
         return await CommitAsync(
             table,
             fromStatus,
@@ -354,6 +367,8 @@ internal sealed class TableStateService(
         db.TableStateChanges.Add(NewChange(
             table, fromStatus, TableStatus.Free, command.Reason ?? "hold released",
             nowUtc, command.ClientCommandId, staffId));
+
+        await LogTableAsync(table, ActivityActions.TableHoldReleased, command.Reason, null, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -419,6 +434,8 @@ internal sealed class TableStateService(
             table, fromStatus, TableStatus.Occupied, command.Reason ?? "seated held party",
             nowUtc, command.ClientCommandId, staffId,
             reservationId: reservation?.Id, tableSessionId: session.Id));
+
+        await LogSeatingAsync(table, session, reservation is null ? "held" : "booking", reservation, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -539,6 +556,25 @@ internal sealed class TableStateService(
             nowUtc, command.ClientCommandId, staffId,
             reservationId: sittingReservationId, tabId: tabId, tableSessionId: session?.Id ?? settled?.Id));
 
+        var sittingId = session?.Id ?? settled?.Id;
+
+        await activity.RecordAsync(
+            new ActivityRecord(
+                ActivityCategory.Table,
+                ActivityActions.TableFreed,
+                sittingId is null ? ActivitySubjects.Table : ActivitySubjects.TableSession,
+                sittingId ?? table.Id)
+            {
+                BranchId = table.BranchId,
+                VenueId = table.Branch.VenueId,
+                TableSessionId = sittingId,
+                TableLabel = table.Label,
+                AmountAmd = outstandingAmd,
+                Reason = command.Reason,
+                Summary = new { tableId = table.Id, tabId, reservationId = sittingReservationId, outstandingAmd },
+            },
+            cancellationToken);
+
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
         return await CommitAsync(
@@ -658,6 +694,9 @@ internal sealed class TableStateService(
             table, fromStatus, TableStatus.OutOfService, command.Reason ?? "out of service",
             nowUtc, command.ClientCommandId, staffId));
 
+        await LogTableAsync(
+            table, ActivityActions.TableOutOfService, command.Reason, new { strandedBookings = stranded.Count }, cancellationToken);
+
         if (stranded.Count > 0)
         {
             logger.LogWarning(
@@ -703,6 +742,8 @@ internal sealed class TableStateService(
             table, fromStatus, TableStatus.Free, command.Reason ?? "returned to service",
             nowUtc, command.ClientCommandId, staffId));
 
+        await LogTableAsync(table, ActivityActions.TableBackInService, command.Reason, null, cancellationToken);
+
         return await CommitAsync(
             table,
             fromStatus,
@@ -740,6 +781,25 @@ internal sealed class TableStateService(
         var writtenOff = tab.RemainingAmd;
 
         tab.MarkAbandoned(nowUtc);
+
+        var tableLabel = await db.DiningTables
+            .Where(t => t.Id == tab.DiningTableId)
+            .Select(t => t.Label)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentUnpaid, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = tableLabel,
+                AmountAmd = writtenOff,
+                IsMoney = true,
+                Reason = command.Reason,
+                Summary = new { writtenOffAmd = writtenOff, totalAmd = tab.TotalAmd, paidAmd = tab.PaidAmd },
+            },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(
@@ -1202,6 +1262,50 @@ internal sealed class TableStateService(
     }
 
     // ---------------------------------------------------------------- results
+
+    /// <summary>A party sat down: <c>booking.seated</c> for a booking, <c>table.seated</c> otherwise.</summary>
+    private Task LogSeatingAsync(
+        DiningTable table,
+        TableSession session,
+        string source,
+        Reservation? reservation,
+        CancellationToken cancellationToken) =>
+        activity.RecordAsync(
+            new ActivityRecord(
+                reservation is null ? ActivityCategory.Table : ActivityCategory.Booking,
+                reservation is null ? ActivityActions.TableSeated : ActivityActions.BookingSeated,
+                reservation is null ? ActivitySubjects.TableSession : ActivitySubjects.Reservation,
+                reservation?.Id ?? session.Id)
+            {
+                BranchId = table.BranchId,
+                VenueId = table.Branch.VenueId,
+                TableSessionId = session.Id,
+                TableLabel = table.Label,
+                GuestName = reservation?.GuestName,
+                SubjectCode = reservation?.Code,
+                Summary = new
+                {
+                    tableId = table.Id,
+                    partySize = session.PartySize,
+                    source,
+                    reservationId = reservation?.Id,
+                },
+            },
+            cancellationToken);
+
+    /// <summary>Something done to a table that is not a seating: held, released, out of service.</summary>
+    private Task LogTableAsync(
+        DiningTable table, string action, string? reason, object? summary, CancellationToken cancellationToken) =>
+        activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Table, action, ActivitySubjects.Table, table.Id)
+            {
+                BranchId = table.BranchId,
+                VenueId = table.Branch.VenueId,
+                TableLabel = table.Label,
+                Reason = reason,
+                Summary = summary,
+            },
+            cancellationToken);
 
     private TableStateChange NewChange(
         DiningTable table,

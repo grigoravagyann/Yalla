@@ -887,6 +887,7 @@ public class GuestMessageTests(SqlServerFixture fixture)
                 new AuthorizationQueries(writeDb),
                 fixture.CreateBranchGuard(writeDb, actor),
                 new Outbox(writeDb, factory.Clock, NullLogger<Outbox>.Instance),
+                SqlServerFixture.CreateActivityLog(writeDb, factory.Clock, actor),
                 NullLogger<GuestMessageService>.Instance);
 
             await messages.WriteAsStaffAsync(ConversationSubject.Reservation(id), "Your table is ready.", Guid.CreateVersion7());

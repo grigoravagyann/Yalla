@@ -1,6 +1,7 @@
 using Yalla.Api.Authorization;
 using Yalla.Application.Auth;
 using Yalla.Infrastructure.Identity;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.Api.Endpoints;
 
@@ -71,6 +72,7 @@ public static class AdminDeviceEndpoints
         Guid branchId,
         HttpContext http,
         IStaffAuthService service,
+        IDeviceAdminActivity activity,
         CancellationToken cancellationToken)
     {
         var staffMemberId = http.User.Guid(YallaClaims.StaffMemberId);
@@ -82,6 +84,8 @@ public static class AdminDeviceEndpoints
 
         var result = await service.CreateEnrolmentCodeAsync(
             branchId, staffMemberId.Value, cancellationToken);
+
+        await activity.EnrolmentCodeCreatedAsync(branchId, result.ExpiresAtUtc, cancellationToken);
 
         return Results.Created($"/api/branches/{branchId}/devices", result);
     }
@@ -96,17 +100,33 @@ public static class AdminDeviceEndpoints
         Guid branchId,
         Guid deviceId,
         IStaffAuthService service,
-        CancellationToken cancellationToken) =>
-        await service.RevokeDeviceAsync(branchId, deviceId, cancellationToken)
-            ? Results.NoContent()
-            : Results.NotFound();
+        IDeviceAdminActivity activity,
+        CancellationToken cancellationToken)
+    {
+        if (!await service.RevokeDeviceAsync(branchId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        await activity.DeviceRevokedAsync(branchId, deviceId, cancellationToken);
+
+        return Results.NoContent();
+    }
 
     private static async Task<IResult> ClearPinLockoutAsync(
         Guid branchId,
         Guid staffMemberId,
         IStaffAuthService service,
-        CancellationToken cancellationToken) =>
-        await service.ClearPinLockoutAsync(branchId, staffMemberId, cancellationToken)
-            ? Results.NoContent()
-            : Results.NotFound();
+        IDeviceAdminActivity activity,
+        CancellationToken cancellationToken)
+    {
+        if (!await service.ClearPinLockoutAsync(branchId, staffMemberId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        await activity.PinLockoutClearedAsync(branchId, staffMemberId, cancellationToken);
+
+        return Results.NoContent();
+    }
 }

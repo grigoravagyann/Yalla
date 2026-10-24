@@ -65,7 +65,8 @@ internal static class PendingDecline
         string? reason,
         bool quietIfAlreadyStarted,
         DateTime nowUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? recordAsync = null)
     {
         var expired = Reservation.IsForNoAnswer(because);
         var key = await ReservationService.DecisionKeyAsync(
@@ -95,6 +96,12 @@ internal static class PendingDecline
             {
                 ReservationService.TellDinerDecided(
                     db, outbox, reservation, branch, approved: false, expired, key, nowUtc, because: because);
+            }
+
+            // The activity entry, in this save (docs/activity.md).
+            if (recordAsync is not null)
+            {
+                await recordAsync(cancellationToken);
             }
 
             await db.SaveChangesAsync(cancellationToken);
@@ -161,6 +168,11 @@ internal static class PendingDecline
                         nowUtc,
                         new DeclinedChange(free, requestedDate, requestedTime),
                         because);
+                }
+
+                if (recordAsync is not null)
+                {
+                    await recordAsync(token);
                 }
             },
             cancellationToken);

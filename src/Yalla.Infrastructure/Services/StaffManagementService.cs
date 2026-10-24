@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Staff;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -29,6 +30,7 @@ internal sealed class StaffManagementService(
     SecretHasher hasher,
     RefreshTokenStore accountLock,
     IOptions<AuthOptions> authOptions,
+    IActivityLog activity,
     ILogger<StaffManagementService> logger) : IStaffManagementService
 {
     /// <summary>The audit action for adding somebody to a venue's staff.</summary>
@@ -128,6 +130,13 @@ internal sealed class StaffManagementService(
             },
             cancellationToken);
 
+        await LogStaffAsync(
+            staff,
+            ActivityActions.StaffCreated,
+            null,
+            new { role = (int)staff.Role, branchId = staff.BranchId, canSignIn = staff.HasPasswordCredentials },
+            cancellationToken);
+
         await SaveAsync(cancellationToken);
 
         logger.LogInformation(
@@ -161,6 +170,7 @@ internal sealed class StaffManagementService(
 
         var newRole = staff.Role;
         var newBranchId = staff.BranchId;
+        var was = Snapshot(staff);
 
         if (command.Role is { } role && role != staff.Role)
         {
@@ -242,6 +252,13 @@ internal sealed class StaffManagementService(
             ? await DropFutureShiftsElsewhereAsync(staff.Id, newBranchId!.Value, cancellationToken)
             : 0;
 
+        var now = Snapshot(staff);
+
+        if (!Equals(was, now))
+        {
+            await LogStaffAsync(staff, ActivityActions.StaffUpdated, was, now, cancellationToken, extra: new { droppedShifts });
+        }
+
         await SaveAsync(cancellationToken);
 
         if (transaction is not null)
@@ -309,6 +326,31 @@ internal sealed class StaffManagementService(
         return removed;
     }
 
+    /// <summary>The fields of a person the History says changed: who they are, what they do, where, whether they still work here.</summary>
+    private static StaffSnapshot Snapshot(StaffMember staff) =>
+        new(staff.FullName, staff.Phone, (int)staff.Role, staff.BranchId, staff.IsActive);
+
+    private sealed record StaffSnapshot(string FullName, string? Phone, int Role, Guid? BranchId, bool IsActive);
+
+    /// <summary>A change to the team, for the History (docs/activity.md), in this unit of work. Never a PIN, a password or a link.</summary>
+    private Task LogStaffAsync(
+        StaffMember staff,
+        string action,
+        object? before,
+        object? after,
+        CancellationToken cancellationToken,
+        object? extra = null) =>
+        activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Staff, action, ActivitySubjects.StaffMember, staff.Id)
+            {
+                BranchId = staff.BranchId,
+                VenueId = staff.VenueId,
+                Before = before,
+                After = after,
+                Summary = new { name = staff.FullName, role = (int)staff.Role, branchId = staff.BranchId, extra },
+            },
+            cancellationToken);
+
     public async Task<StaffMemberView> SetPinAsync(
         Guid venueId,
         Guid staffMemberId,
@@ -332,6 +374,10 @@ internal sealed class StaffManagementService(
         await RequirePinFreeAsync(venueId, staff.BranchId, staff.Id, validPin, cancellationToken);
 
         staff.SetPinHash(hasher.Hash(validPin));
+
+        // That it was set and by whom - never the PIN or its hash.
+        await LogStaffAsync(staff, ActivityActions.StaffPinSet, null, null, cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("PIN reset for staff member {StaffMemberId} by {ActorId}.", staff.Id, acting.Id);
@@ -435,6 +481,14 @@ internal sealed class StaffManagementService(
                 replacedExistingSignIn = hadPassword,
             },
             cancellationToken);
+
+        await LogStaffAsync(
+            staff,
+            ActivityActions.StaffSignInIssued,
+            null,
+            null,
+            cancellationToken,
+            extra: new { email = staff.Email, replacedExistingSignIn = hadPassword, expiresAtUtc = issued.ExpiresAtUtc });
 
         await SaveAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

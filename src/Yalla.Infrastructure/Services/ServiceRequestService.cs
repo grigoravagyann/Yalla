@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Billing;
@@ -25,6 +26,7 @@ internal sealed class ServiceRequestService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
+    IActivityLog activity,
     ILogger<ServiceRequestService> logger) : IServiceRequestService
 {
     /// <summary>
@@ -143,18 +145,50 @@ internal sealed class ServiceRequestService(
 
         // Newest first: on a busy floor the screen is glanced at, not read, and the thing that just
         // came in is the thing nobody has walked to yet. A request for the bill the diner has since
-        // replaced with another is not outstanding - the newer one is.
+        // replaced with another is not outstanding - the newer one is. A claimed one stays, with who has it.
         var rows = await db.ServiceRequests
             .AsNoTracking()
             .Where(r => r.BranchId == branchId && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
             .OrderByDescending(r => r.CreatedAtUtc)
-            .Select(r => new { Request = r, TableLabel = r.DiningTable.Label })
+            .Select(r => new
+            {
+                Request = r,
+                TableLabel = r.DiningTable.Label,
+                ClaimedBy = r.ClaimedByStaff != null ? r.ClaimedByStaff.FullName : null,
+            })
             .ToListAsync(cancellationToken);
 
         // Zero rather than a per-row query. This list spans every tab in the branch, so there is no
         // single stream to be caught up with - and it is a staff screen, which follows the floor
         // rather than one tab's events.
-        return [.. rows.Select(row => ToView(row.Request, row.TableLabel, nowUtc, tabEventSequence: 0L))];
+        return [.. rows.Select(row => ToView(row.Request, row.TableLabel, nowUtc, 0L, claimedBy: row.ClaimedBy))];
+    }
+
+    public async Task<ServiceRequestView> ClaimAsync(
+        Guid branchId,
+        Guid serviceRequestId,
+        CancellationToken cancellationToken = default)
+    {
+        var staffId = RequireStaff("Claim a call");
+
+        var request = await db.ServiceRequests
+            .Include(r => r.DiningTable)
+            .FirstOrDefaultAsync(r => r.Id == serviceRequestId && r.BranchId == branchId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Call {serviceRequestId} was not found at this branch.");
+
+        await branchGuard.RequireAsync(staffId, request.BranchId, "Claiming this call", "request", cancellationToken);
+
+        var nowUtc = clock.UtcNow;
+
+        // The first claim stands - two waiters tapping at once both see who has it. Nothing goes to the guest's phone:
+        // a claim is the floor's, the acknowledgement is what the table hears about.
+        if (request.Claim(nowUtc, staffId))
+        {
+            await RecordClaimAsync(request, nowUtc, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return await ViewAsync(request.Id, nowUtc, 0L, cancellationToken);
     }
 
     public async Task<ServiceRequestView> AcknowledgeAsync(
@@ -172,9 +206,11 @@ internal sealed class ServiceRequestService(
             staffId, request.BranchId, "Acknowledging this request", "request", cancellationToken);
 
         var nowUtc = clock.UtcNow;
+        var unclaimed = request.ClaimedAtUtc is null;
 
         // Two waiters tapping the same request at once is the normal case, not a race worth
-        // reporting: both saw it, which is what the table wanted. The first one stands.
+        // reporting: both saw it, which is what the table wanted. The first one stands - and when nobody
+        // claimed it first, it is the claim too (docs/activity.md).
         if (request.Acknowledge(nowUtc, staffId))
         {
             ledger.Append(request.TabId, TabEventType.ServiceRequestAcknowledged, new
@@ -183,14 +219,59 @@ internal sealed class ServiceRequestService(
                 byStaffId = staffId,
             });
 
+            if (unclaimed)
+            {
+                await RecordClaimAsync(request, nowUtc, cancellationToken);
+            }
+
             await ledger.SaveAppendedAsync(cancellationToken);
         }
 
-        return ToView(
-            request,
-            request.DiningTable.Label,
-            nowUtc,
-            await ledger.MaxSequenceAsync(request.TabId, cancellationToken));
+        return await ViewAsync(
+            request.Id, nowUtc, await ledger.MaxSequenceAsync(request.TabId, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>The claim in the History, with the seconds from the call - the response time Staff → Results reports.</summary>
+    private async Task RecordClaimAsync(ServiceRequest request, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        var sittingId = await db.Tabs
+            .Where(t => t.Id == request.TabId)
+            .Select(t => (Guid?)t.TableSessionId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Table, ActivityActions.TableCallClaimed, ActivitySubjects.ServiceRequest, request.Id)
+            {
+                BranchId = request.BranchId,
+                TableSessionId = sittingId,
+                TableLabel = request.DiningTable.Label,
+                Summary = new
+                {
+                    tabId = request.TabId,
+                    preset = (int)request.Preset,
+                    calledAtUtc = request.CreatedAtUtc,
+                    responseSeconds = (int)Math.Max(0d, (nowUtc - request.CreatedAtUtc).TotalSeconds),
+                },
+            },
+            cancellationToken);
+    }
+
+    /// <summary>The request as it now stands, with who claimed and who acknowledged it. One statement.</summary>
+    private async Task<ServiceRequestView> ViewAsync(Guid id, DateTime nowUtc, long sequence, CancellationToken cancellationToken)
+    {
+        var row = await db.ServiceRequests
+            .AsNoTracking()
+            .Where(r => r.Id == id)
+            .Select(r => new
+            {
+                Request = r,
+                TableLabel = r.DiningTable.Label,
+                ClaimedBy = r.ClaimedByStaff != null ? r.ClaimedByStaff.FullName : null,
+                AcknowledgedBy = r.AcknowledgedByStaff != null ? r.AcknowledgedByStaff.FullName : null,
+            })
+            .FirstAsync(cancellationToken);
+
+        return ToView(row.Request, row.TableLabel, nowUtc, sequence, row.AcknowledgedBy, row.ClaimedBy);
     }
 
     /// <summary>
@@ -276,7 +357,9 @@ internal sealed class ServiceRequestService(
         ServiceRequest request,
         string tableLabel,
         DateTime nowUtc,
-        long tabEventSequence) =>
+        long tabEventSequence,
+        string? acknowledgedBy = null,
+        string? claimedBy = null) =>
         new(
             request.Id,
             request.TabId,
@@ -292,7 +375,12 @@ internal sealed class ServiceRequestService(
             request.BillScope,
             request.BillAmountAmd,
             request.TipPercent,
-            request.TipAmd);
+            request.TipAmd,
+            request.AcknowledgedByStaffId,
+            request.AcknowledgedByStaffId is null ? null : acknowledgedBy,
+            request.ClaimedAtUtc,
+            request.ClaimedByStaffId,
+            request.ClaimedByStaffId is null ? null : claimedBy);
 
     private Guid RequireStaff(string operation) =>
         actor.Type == ActorType.Staff && actor.StaffMemberId is { } id

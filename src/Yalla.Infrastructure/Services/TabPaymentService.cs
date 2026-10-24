@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
@@ -34,6 +35,7 @@ internal sealed class TabPaymentService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
+    IActivityLog activity,
     ILogger<TabPaymentService> logger) : ITabPaymentService
 {
     public async Task<CashPaymentView> RecordCashAsync(
@@ -95,6 +97,10 @@ internal sealed class TabPaymentService(
         // steps exist so a wallet can sit in Reserved while the provider is called.
         payment.MarkSucceeded(nowUtc);
 
+        // Who took the cash, and whose table it was: the tip is the table's waiter's (docs/activity.md).
+        var sitting = await db.TableSessions.FirstOrDefaultAsync(s => s.Id == tab.TableSessionId, cancellationToken);
+        payment.TakenBy(staffId, sitting?.ServerStaffMemberId);
+
         db.Payments.Add(payment);
 
         // Navigation fixup does not reach a collection that was loaded before the add, and the
@@ -129,6 +135,27 @@ internal sealed class TabPaymentService(
             byStaffId = staffId,
             remainingAmd = tab.RemainingAmd,
         });
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentCash, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                AmountAmd = payment.AmountAmd,
+                IsMoney = true,
+                Summary = new
+                {
+                    paymentId = payment.Id,
+                    amountAmd = payment.AmountAmd,
+                    tipAmd = payment.TipAmd,
+                    remainingAmd = tab.RemainingAmd,
+                    totalAmd = tab.TotalAmd,
+                    closed,
+                    serverStaffMemberId = payment.ServerStaffMemberId,
+                },
+            },
+            cancellationToken);
 
         if (closed)
         {
@@ -224,6 +251,19 @@ internal sealed class TabPaymentService(
         tab.ApplyComputedTotals(bill.SubtotalAmd, bill.ServiceChargeAmd, bill.PaidAmd);
         tab.MarkAbandoned(clock.UtcNow);
 
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentUnpaid, ActivitySubjects.Tab, tab.Id)
+            {
+                BranchId = tab.BranchId,
+                TableSessionId = tab.TableSessionId,
+                TableLabel = await TableLabelAsync(tab, cancellationToken),
+                AmountAmd = tab.RemainingAmd,
+                IsMoney = true,
+                Reason = reason,
+                Summary = new { writtenOffAmd = tab.RemainingAmd, totalAmd = tab.TotalAmd, paidAmd = tab.PaidAmd },
+            },
+            cancellationToken);
+
         ledger.Append(tab.Id, TabEventType.TabAbandoned, new
         {
             reason,
@@ -241,6 +281,15 @@ internal sealed class TabPaymentService(
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>The tab's table label, from the tracker when it is there.</summary>
+    private async Task<string?> TableLabelAsync(Tab tab, CancellationToken cancellationToken) =>
+        db.DiningTables.Local.FirstOrDefault(t => t.Id == tab.DiningTableId)?.Label
+        ?? await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == tab.DiningTableId)
+            .Select(t => t.Label)
+            .FirstOrDefaultAsync(cancellationToken);
 
     /// <summary>The payment this command already made, if it made one.</summary>
     /// <remarks>

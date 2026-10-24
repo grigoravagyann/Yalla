@@ -157,6 +157,18 @@ public interface IServiceRequestService
         Guid branchId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// "I'm on it": the first claim stands, a repeat answers as it stands. The guest is not told and the call stays on
+    /// the list, showing who has it, until acknowledged. <b>Waiter or above, at the call's branch.</b>
+    /// </summary>
+    /// <param name="branchId">The branch in the route - a call at another is not found.</param>
+    /// <param name="serviceRequestId">The call.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    Task<ServiceRequestView> ClaimAsync(
+        Guid branchId,
+        Guid serviceRequestId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>A waiter has seen it. <b>Waiter or above.</b></summary>
     Task<ServiceRequestView> AcknowledgeAsync(
         Guid serviceRequestId,
