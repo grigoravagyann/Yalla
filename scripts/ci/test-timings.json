@@ -1,0 +1,533 @@
+{
+  "comment": "Per-class test durations for scripts/ci/test_shards.py plan. Regenerate with `python3 scripts/ci/test_shards.py timings <trx files or folders>` - the backend workflow's gate uploads a fresh copy as the `test-timings` artifact on every run.",
+  "classes": {
+    "Yalla.UnitTests.ApiExceptionMapperTests": {
+      "seconds": 0.03,
+      "tests": 15
+    },
+    "Yalla.UnitTests.BranchBindingRulesTests": {
+      "seconds": 0.0,
+      "tests": 7
+    },
+    "Yalla.UnitTests.BranchListingRulesTests": {
+      "seconds": 0.04,
+      "tests": 18
+    },
+    "Yalla.UnitTests.BranchZoneTests": {
+      "seconds": 0.02,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Contracts.ClaimsCurrentActorContractTests": {
+      "seconds": 0.07,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Contracts.CountingChannelContractTests": {
+      "seconds": 0.01,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Contracts.DevCurrentActorContractTests": {
+      "seconds": 0.0,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Contracts.DevelopmentActorOrTokenContractTests": {
+      "seconds": 0.02,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Contracts.FakeClockContractTests": {
+      "seconds": 0.0,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Contracts.LocalDiskPhotoStorageContractTests": {
+      "seconds": 0.26,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Contracts.LoggingNotificationChannelContractTests": {
+      "seconds": 0.01,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Contracts.RecordingChannelContractTests": {
+      "seconds": 0.04,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Contracts.SystemClockContractTests": {
+      "seconds": 0.01,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Contracts.TestActorContractTests": {
+      "seconds": 0.02,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Contracts.TestClockContractTests": {
+      "seconds": 0.01,
+      "tests": 4
+    },
+    "Yalla.UnitTests.DerivedTableStateTests": {
+      "seconds": 0.01,
+      "tests": 7
+    },
+    "Yalla.UnitTests.DinerAccountRulesTests": {
+      "seconds": 0.02,
+      "tests": 24
+    },
+    "Yalla.UnitTests.DinerSessionGenerationTests": {
+      "seconds": 0.09,
+      "tests": 7
+    },
+    "Yalla.UnitTests.DiningTableTests": {
+      "seconds": 0.02,
+      "tests": 4
+    },
+    "Yalla.UnitTests.GoldenBillingVectorTests": {
+      "seconds": 0.15,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.AppBookingGateTests": {
+      "seconds": 3.44,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.AuthorizationBoundaryTests": {
+      "seconds": 7.32,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.AuthorizationMatrixTests": {
+      "seconds": 40.83,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.AvailabilityQueryTests": {
+      "seconds": 0.54,
+      "tests": 12
+    },
+    "Yalla.UnitTests.Integration.BranchCoverPhotoTests": {
+      "seconds": 3.5,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.BranchReadinessTests": {
+      "seconds": 0.43,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.BranchReservationListTests": {
+      "seconds": 5.01,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.BranchReviewRaceTests": {
+      "seconds": 6.36,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.BranchScopeEnforcementTests": {
+      "seconds": 7.13,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.BranchSettingsServiceTests": {
+      "seconds": 0.57,
+      "tests": 15
+    },
+    "Yalla.UnitTests.Integration.ChangeStreamTests": {
+      "seconds": 1.25,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.CommandIdempotencyTests": {
+      "seconds": 0.1,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.CorsPolicyTests": {
+      "seconds": 2.25,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.DeployEnvExampleTests": {
+      "seconds": 1.73,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.DevListingSeedTests": {
+      "seconds": 6.45,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.DinerAccountDeletionTests": {
+      "seconds": 4.46,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.DinerAccountLockRaceTests": {
+      "seconds": 25.54,
+      "tests": 11
+    },
+    "Yalla.UnitTests.Integration.DinerAccountTests": {
+      "seconds": 18.56,
+      "tests": 19
+    },
+    "Yalla.UnitTests.Integration.DinerAuthTests": {
+      "seconds": 5.0,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.DinerBrowseTests": {
+      "seconds": 8.37,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.DinerDeletionMigrationRollbackTests": {
+      "seconds": 1.94,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.DinerFavoriteTests": {
+      "seconds": 4.8,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.DinerJourneyEndToEndTests": {
+      "seconds": 16.77,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.DinerNotificationFeedTests": {
+      "seconds": 8.73,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Integration.DinerPasswordAfterPhoneProofTests": {
+      "seconds": 4.38,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.EveryRouteIsAuthorizedTests": {
+      "seconds": 2.69,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.FloorPlanConcurrencyTests": {
+      "seconds": 3.85,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.FloorQueryTests": {
+      "seconds": 0.29,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Integration.ForwardedHeadersTests": {
+      "seconds": 7.49,
+      "tests": 10
+    },
+    "Yalla.UnitTests.Integration.GeneralManagerMigrationTests": {
+      "seconds": 2.07,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.GeneralManagerStaffTests": {
+      "seconds": 2.1,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.InactiveTableVisibilityTests": {
+      "seconds": 0.1,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.KitchenQueueEndpointTests": {
+      "seconds": 6.4,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.LateBookingEndpointTests": {
+      "seconds": 6.66,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.ListingRelocationTests": {
+      "seconds": 6.05,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.ManagedVenueQueryTests": {
+      "seconds": 0.58,
+      "tests": 10
+    },
+    "Yalla.UnitTests.Integration.MenuAndStaffManagementTests": {
+      "seconds": 1.04,
+      "tests": 10
+    },
+    "Yalla.UnitTests.Integration.MoneyEndpointTests": {
+      "seconds": 7.01,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.OccupancyAwareAvailabilityTests": {
+      "seconds": 0.24,
+      "tests": 11
+    },
+    "Yalla.UnitTests.Integration.OpenTabByBookingTests": {
+      "seconds": 25.14,
+      "tests": 16
+    },
+    "Yalla.UnitTests.Integration.OrderingTests": {
+      "seconds": 1.54,
+      "tests": 23
+    },
+    "Yalla.UnitTests.Integration.OutboxTests": {
+      "seconds": 0.27,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.PaymentAndServiceTests": {
+      "seconds": 0.67,
+      "tests": 11
+    },
+    "Yalla.UnitTests.Integration.PhotoPipelineTests": {
+      "seconds": 0.2,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.PhotoScopeTests": {
+      "seconds": 2.56,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.PhotoSweepHostedServiceTests": {
+      "seconds": 2.06,
+      "tests": 9
+    },
+    "Yalla.UnitTests.Integration.PinUniquenessTests": {
+      "seconds": 2.98,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.PlatformEndpointTests": {
+      "seconds": 8.36,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.PlatformReviewModerationTests": {
+      "seconds": 10.61,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.PlatformServiceTests": {
+      "seconds": 0.47,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.PublicBookingTests": {
+      "seconds": 18.95,
+      "tests": 13
+    },
+    "Yalla.UnitTests.Integration.PublicBranchPageShapeTests": {
+      "seconds": 1.28,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.PublicSurfaceTests": {
+      "seconds": 21.64,
+      "tests": 16
+    },
+    "Yalla.UnitTests.Integration.RateLimitPartitionTests": {
+      "seconds": 2.89,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.RealAuthFlowTests": {
+      "seconds": 11.14,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Integration.RefreshTokenTests": {
+      "seconds": 3.86,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.ReleaseAndOutOfServiceTests": {
+      "seconds": 0.45,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.ReportTests": {
+      "seconds": 4.83,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.RequestShapeContractTests": {
+      "seconds": 1.88,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.RequestValidationTests": {
+      "seconds": 15.21,
+      "tests": 9
+    },
+    "Yalla.UnitTests.Integration.ReservationEndpointTests": {
+      "seconds": 17.73,
+      "tests": 11
+    },
+    "Yalla.UnitTests.Integration.ReservationFloorEndpointTests": {
+      "seconds": 6.75,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.ReservationNoteTests": {
+      "seconds": 3.47,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.ReservationServiceTests": {
+      "seconds": 0.81,
+      "tests": 24
+    },
+    "Yalla.UnitTests.Integration.ReviewIntegrityTests": {
+      "seconds": 10.88,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.ReviewModerationRaceTests": {
+      "seconds": 3.26,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.RoomsWithPhotosMigrationTests": {
+      "seconds": 1.86,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.RoomsWithPhotosTests": {
+      "seconds": 0.58,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Integration.SchedulerTests": {
+      "seconds": 0.5,
+      "tests": 9
+    },
+    "Yalla.UnitTests.Integration.StaffAuthTests": {
+      "seconds": 9.52,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.StaffLifecycleEndpointTests": {
+      "seconds": 6.64,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.StaffRosterTests": {
+      "seconds": 7.67,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.StaffSignInEndpointTests": {
+      "seconds": 7.89,
+      "tests": 5
+    },
+    "Yalla.UnitTests.Integration.StaffSignInIssuanceTests": {
+      "seconds": 1.35,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.StagingHostTests": {
+      "seconds": 1.99,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.StartupAndCorsEnvironmentTests": {
+      "seconds": 4.5,
+      "tests": 10
+    },
+    "Yalla.UnitTests.Integration.SwaggerExposureTests": {
+      "seconds": 8.95,
+      "tests": 13
+    },
+    "Yalla.UnitTests.Integration.TabEndpointTests": {
+      "seconds": 25.78,
+      "tests": 16
+    },
+    "Yalla.UnitTests.Integration.TabEventContractTests": {
+      "seconds": 0.26,
+      "tests": 2
+    },
+    "Yalla.UnitTests.Integration.TabServiceTests": {
+      "seconds": 0.48,
+      "tests": 16
+    },
+    "Yalla.UnitTests.Integration.TableLockContentionTests": {
+      "seconds": 0.58,
+      "tests": 3
+    },
+    "Yalla.UnitTests.Integration.TableStateServiceTests": {
+      "seconds": 0.44,
+      "tests": 20
+    },
+    "Yalla.UnitTests.Integration.TelegramStartupTests": {
+      "seconds": 2.27,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.TelegramUpdateHandlerTests": {
+      "seconds": 0.07,
+      "tests": 7
+    },
+    "Yalla.UnitTests.Integration.TelegramVerificationFlowTests": {
+      "seconds": 10.32,
+      "tests": 8
+    },
+    "Yalla.UnitTests.Integration.TokenAuthorityTests": {
+      "seconds": 6.15,
+      "tests": 4
+    },
+    "Yalla.UnitTests.Integration.VenueAdminEndpointTests": {
+      "seconds": 23.79,
+      "tests": 12
+    },
+    "Yalla.UnitTests.Integration.VenueLifecycleTests": {
+      "seconds": 2.47,
+      "tests": 6
+    },
+    "Yalla.UnitTests.Integration.WholeEveningScenarioTests": {
+      "seconds": 0.21,
+      "tests": 1
+    },
+    "Yalla.UnitTests.Integration.WriteRateLimitTests": {
+      "seconds": 5.76,
+      "tests": 3
+    },
+    "Yalla.UnitTests.NoShowPolicyTests": {
+      "seconds": 0.01,
+      "tests": 5
+    },
+    "Yalla.UnitTests.OpeningHoursTests": {
+      "seconds": 0.0,
+      "tests": 2
+    },
+    "Yalla.UnitTests.PaymentTests": {
+      "seconds": 0.01,
+      "tests": 3
+    },
+    "Yalla.UnitTests.PersistedEnumValueTests": {
+      "seconds": 0.02,
+      "tests": 20
+    },
+    "Yalla.UnitTests.PlatformAdminRulesTests": {
+      "seconds": 0.05,
+      "tests": 18
+    },
+    "Yalla.UnitTests.PolicyHandlerTests": {
+      "seconds": 0.05,
+      "tests": 25
+    },
+    "Yalla.UnitTests.ReservationCodeTests": {
+      "seconds": 0.02,
+      "tests": 4
+    },
+    "Yalla.UnitTests.ReservationLatenessTests": {
+      "seconds": 0.02,
+      "tests": 6
+    },
+    "Yalla.UnitTests.ReservationOverlapTests": {
+      "seconds": 0.01,
+      "tests": 13
+    },
+    "Yalla.UnitTests.ReservationPolicyTests": {
+      "seconds": 0.01,
+      "tests": 3
+    },
+    "Yalla.UnitTests.ReservationRuleTests": {
+      "seconds": 0.02,
+      "tests": 26
+    },
+    "Yalla.UnitTests.ReservationTests": {
+      "seconds": 0.01,
+      "tests": 4
+    },
+    "Yalla.UnitTests.TabBillingTests": {
+      "seconds": 0.2,
+      "tests": 13
+    },
+    "Yalla.UnitTests.TabJoinTokenTests": {
+      "seconds": 0.0,
+      "tests": 2
+    },
+    "Yalla.UnitTests.TabOrderTests": {
+      "seconds": 0.01,
+      "tests": 5
+    },
+    "Yalla.UnitTests.TabParticipantTests": {
+      "seconds": 0.0,
+      "tests": 4
+    },
+    "Yalla.UnitTests.TabProjectionTests": {
+      "seconds": 0.04,
+      "tests": 11
+    },
+    "Yalla.UnitTests.TabTests": {
+      "seconds": 0.01,
+      "tests": 4
+    },
+    "Yalla.UnitTests.TableSessionTests": {
+      "seconds": 0.0,
+      "tests": 4
+    },
+    "Yalla.UnitTests.TableStatusTransitionTests": {
+      "seconds": 0.02,
+      "tests": 17
+    },
+    "Yalla.UnitTests.TelegramBotClientTests": {
+      "seconds": 0.14,
+      "tests": 5
+    },
+    "Yalla.UnitTests.TelegramVerificationTests": {
+      "seconds": 0.01,
+      "tests": 9
+    }
+  }
+}

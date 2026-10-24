@@ -59,7 +59,8 @@ pins; `TableShape` is no longer in the document; and the floor-plan PUT's 422 is
 `.github/workflows/backend.yml` uploads the document every backend build serves, as the artifact
 **`openapi-swagger`** (`swagger.json`). `SwaggerExposureTests` writes it to
 `artifacts/openapi/swagger.json` during the test run - `./verify.sh` produces the same file locally -
-in the committed copy's layout: two-space indentation, LF line endings.
+in the committed copy's layout: two-space indentation, LF line endings. The tests run in shards; the
+one shard the plan puts `SwaggerExposureTests` in uploads the artifact, under the same name.
 
 That is the document to compare the frontend's `swagger.json` with, without starting an API: download
 the artifact for the backend commit the frontend targets and diff the two. A difference means the

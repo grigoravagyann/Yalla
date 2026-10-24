@@ -220,6 +220,14 @@ Rate limiting is on in Production and Staging (`appsettings.Staging.json`) and o
 `-warnaserror`, checks for pending model changes, and runs the whole suite against **a real SQL
 Server service container**.
 
+The suite is split across parallel shards, each with its own container, by test class
+(`scripts/ci/test_shards.py`, balanced by `scripts/ci/test-timings.json`). One `build` job builds
+once and plans the shards; the `test (shard n)` jobs run them; the `build-and-test` job is the gate,
+and fails unless the build and every shard passed and the shards between them ran every listed test
+exactly once. Raise `TEST_SHARDS` in the workflow when a shard's tests pass about eight minutes, and
+commit a run's `test-timings` artifact as `scripts/ci/test-timings.json` when the shards' times
+drift apart.
+
 The container is not optional. The tests that are most likely to be quietly broken by a later change
 are the concurrency ones — two racing bookings, two racing scans, ten racing orders, two racing cash
 payments, two scheduler instances leasing one message — and every one of them proves something only
@@ -232,7 +240,8 @@ Three details in that workflow are load-bearing:
   reports itself started long before it accepts logins.
 - **A skipped test fails the build.** `SqlServerFixture` skips rather than fails when it finds no
   server, which is right on a laptop and a silent disaster in CI — it would report green while
-  proving nothing. The workflow greps the `.trx` for `NotExecuted` and fails if there are any.
+  proving nothing. Every shard greps its `.trx` for `NotExecuted` and fails if there are any, and
+  the gate counts them again across all shards.
 - **`dotnet ef migrations has-pending-model-changes` fails the build.** An entity edited without a
   migration is the most common way this breaks, and it is invisible locally because your database
   already has the column.
@@ -252,7 +261,8 @@ needs neither a connection string nor a running API.
 Set once, in the repository settings, and not something the workflow file can do for itself:
 **Settings → Branches → Add rule** on the default branch — which is `master` here, not `main` —
 with *Require status checks to pass before merging* and the `build-and-test` check selected.
-Without it the workflow is advisory and a red run can still be merged.
+Without it the workflow is advisory and a red run can still be merged. `build-and-test` is the gate
+job, not one of the shards; it runs even when a shard fails, so it reports red rather than skipped.
 
 The workflow triggers on pushes to both `main` and `master` for the same reason: a workflow naming
 only `main` would fire on pull requests alone, leaving the branch everything actually lands on as
