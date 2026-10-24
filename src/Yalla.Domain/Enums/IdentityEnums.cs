@@ -70,3 +70,58 @@ public enum TelegramVerificationStatus
     /// <summary>Found past its deadline before it was consumed. Finished.</summary>
     Expired = 4,
 }
+
+/// <summary>
+/// What an enrolled <c>StaffDevice</c> is. Stored as the integer; never renumber.
+/// </summary>
+/// <remarks>
+/// A tablet is the branch's: anybody who works there taps their PIN on it. A phone is one person's: it
+/// is paired to them by a code their manager shows, and only their own PIN opens it. Both are the same
+/// row, the same device token and the same revocation, because a phone is a personal tablet and not a
+/// second sign-in system. See <c>docs/auth.md</c>, "Personal phones".
+/// </remarks>
+public enum StaffDeviceKind
+{
+    /// <summary>A shared floor device, enrolled to a branch with a one-time code. No bound person.</summary>
+    Tablet = 1,
+
+    /// <summary>One staff member's own phone, paired to them and unlocked only with their PIN.</summary>
+    Phone = 2,
+}
+
+/// <summary>
+/// The kinds of staff push a device can ask for, as flags. Stored as the integer on <c>StaffDevice</c>; never
+/// renumber a bit.
+/// </summary>
+/// <remarks>
+/// Flags rather than five columns, because a device's preference is one choice the person makes on one
+/// screen, and because a new kind is a new bit rather than a new column on a busy table. A device that has
+/// never chosen stores nothing and reads <see cref="Defaults"/>.
+/// </remarks>
+[Flags]
+public enum StaffPushKinds
+{
+    /// <summary>Nothing at all - every switch off.</summary>
+    None = 0,
+
+    /// <summary>A booking now waits for the floor's yes or no.</summary>
+    Approvals = 1,
+
+    /// <summary>A guest wrote in a booking's or takeaway order's thread, or answered "are you coming?".</summary>
+    GuestMessages = 2,
+
+    /// <summary>A table called a waiter or asked for the bill.</summary>
+    TableCalls = 4,
+
+    /// <summary>A new takeaway order waits to be accepted.</summary>
+    Takeaway = 8,
+
+    /// <summary>The kitchen marked an order ready for the person's table.</summary>
+    KitchenReady = 16,
+
+    /// <summary>What a device that never chose gets: everything but the kitchen.</summary>
+    Defaults = Approvals | GuestMessages | TableCalls | Takeaway,
+
+    /// <summary>Every kind there is.</summary>
+    All = Defaults | KitchenReady,
+}

@@ -85,4 +85,21 @@ public static class YallaPolicies
     /// </para>
     /// </remarks>
     public const string VerifiedDiner = "VerifiedDiner";
+
+    /// <summary>
+    /// A person signed in on a staff device with their PIN: the principal type is <c>StaffSession</c>, whatever the
+    /// role. The device's own settings - its push subscription, its notification switches, a phone's "unpair" -
+    /// which act on the device the session is open on and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// Not the bare device token, which offers a PIN and nothing more (docs/auth.md), and not an admin-panel
+    /// token, which has no device to act on.
+    /// </remarks>
+    public const string StaffDeviceSession = "StaffDeviceSession";
+
+    /// <summary>
+    /// A staff device's own token or a PIN session on one: principal type <c>StaffDevice</c> or <c>StaffSession</c>.
+    /// Only for what the device may read before anybody signs in - the Web Push public key.
+    /// </summary>
+    public const string StaffDeviceToken = "StaffDeviceToken";
 }

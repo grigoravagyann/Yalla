@@ -401,6 +401,11 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new SecretHasher(),
             new RefreshTokenStore(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            new TokenAuthorityCheck(
+                new AuthorizationQueries(db),
+                new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+                clock,
+                Microsoft.Extensions.Options.Options.Create(new JwtOptions())),
             logger ?? NullLogger<StaffManagementService>.Instance);
 
     /// <summary>

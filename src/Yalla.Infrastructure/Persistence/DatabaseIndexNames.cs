@@ -111,6 +111,15 @@ internal static class DatabaseIndexNames
     public const string LiveDevicePerClientId = "UX_StaffDevices_BranchId_ClientDeviceId_Live";
 
     /// <summary>
+    /// Unique on a browser's Web Push endpoint. A violation means another device row already holds this
+    /// browser's subscription; the newer device takes it over.
+    /// </summary>
+    public const string StaffPushEndpoint = "UX_StaffPushSubscriptions_EndpointHash";
+
+    /// <summary>One push subscription per device. A violation means the device subscribed twice at once.</summary>
+    public const string StaffPushPerDevice = "UX_StaffPushSubscriptions_StaffDeviceId";
+
+    /// <summary>
     /// Unique on a tab's event positions. A violation means two writers raced for the same place in
     /// the stream; the loser renumbers and retries.
     /// </summary>

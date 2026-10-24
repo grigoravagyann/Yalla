@@ -133,3 +133,23 @@ public sealed record ResetPasswordRequest(
 /// <summary>Body of <c>POST /api/branches/{branchId}/devices/enrolment-codes</c>.</summary>
 /// <remarks>Empty: the branch is in the route and the manager is in the token.</remarks>
 public sealed record CreateEnrolmentCodeRequest;
+
+/// <summary>Body of <c>POST /api/auth/staff/phone-pair/preview</c>.</summary>
+/// <param name="Code">The pairing code from the QR's <c>#code=</c> or typed off the console. Case and dashes do not matter.</param>
+public sealed record PhonePairPreviewRequest([Required] string Code);
+
+/// <summary>Body of <c>POST /api/auth/staff/phone-pair</c>.</summary>
+/// <param name="Code">The pairing code the manager showed, from the QR or typed.</param>
+/// <param name="Pin">The person's own PIN - the one they tap on the tablet. Never logged, never stored in the clear.</param>
+/// <param name="ClientDeviceId">
+/// The identifier this browser minted for itself and keeps, as a tablet's <c>deviceId</c>. Pairing again with the same
+/// one reuses the phone rather than adding a row.
+/// </param>
+/// <param name="DeviceName">
+/// What the console's Phones tab shows for it - the platform and browser, such as "iPhone · Safari".
+/// </param>
+public sealed record PhonePairRequest(
+    [Required] string Code,
+    [Required][StringLength(12, MinimumLength = 4)] string Pin,
+    [Required][StringLength(128, MinimumLength = 8)] string ClientDeviceId,
+    [Required][StringLength(100, MinimumLength = 1)] string DeviceName);

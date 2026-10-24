@@ -37,6 +37,7 @@ public static class DependencyInjectionExtension
 
         RequireManageBookingUrl(builder);
         RequirePasswordResetUrl(builder);
+        RequireUsableWebPush(builder);
 
         builder.Services.AddInfrastructure(connectionString, configuration);
 
@@ -178,6 +179,30 @@ public static class DependencyInjectionExtension
             + "This is not optional and startup will not continue without it: the link is returned "
             + "once to whoever issues a manager's sign-in and is what the forgot-password mail "
             + "carries, and one pointing at loopback sends every one of them nowhere.");
+    }
+
+    /// <summary>
+    /// Refuses to start on a Web Push configuration that is half there or does not fit together.
+    /// </summary>
+    /// <remarks>
+    /// Nothing configured is fine - staff pushes are then logged instead of sent, and a Development host generates a
+    /// key pair for its run. What is refused is a public key without its private key (or the other way round), keys
+    /// that are not a matching P-256 pair, and keys with no <c>mailto:</c> or <c>https:</c> subject: each would start a
+    /// host whose every push the services reject, which looks exactly like a quiet evening. The private key is never
+    /// in the message.
+    /// </remarks>
+    private static void RequireUsableWebPush(WebApplicationBuilder builder)
+    {
+        var options = builder.Configuration.GetSection(Yalla.Infrastructure.Notifications.WebPushOptions.SectionName)
+            .Get<Yalla.Infrastructure.Notifications.WebPushOptions>() ?? new();
+
+        if (options.Problem() is { } problem)
+        {
+            throw new InvalidOperationException(
+                $"WebPush is misconfigured: {problem}. Set WebPush__Subject, WebPush__PublicKey and WebPush__PrivateKey "
+                + "together (the private key is a secret: user secrets locally, an environment variable elsewhere), "
+                + "or none of them to log staff pushes instead of sending them.");
+        }
     }
 
     /// <summary>

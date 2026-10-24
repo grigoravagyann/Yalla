@@ -228,6 +228,58 @@ public static class AuthEndpoints
                 + "branch - in which case the client should show its PIN screen instead.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
+        group.MapPost("/staff/phone-pair/preview", PreviewPhonePairingAsync)
+            .WithName("previewStaffPhonePairing")
+            .WithSummary("Who a phone pairing code is for - the phone's \"is this you?\"")
+            .WithDescription(
+                "Read after scanning the QR (or typing the code) and before asking for the PIN, so the phone "
+                + "can show the person's name, role, venue and branch and let them say *no, wrong code*. Does "
+                + "not spend the code.\n\n"
+                + "Refused exactly as `phone-pair` refuses the code: `401 pairing-code-invalid` (unknown, or a "
+                + "tablet's enrolment code), `401 pairing-code-expired` (past its ten minutes, or replaced by a "
+                + "newer code for the same person), `409 conflicting-state` (already used, or its person can no "
+                + "longer sign in at that branch). Rate limited like the other credential routes.")
+            .Produces<PhonePairingPreview>()
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized, "`pairing-code-invalid` or `pairing-code-expired`.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "The code was already used, or its person was deactivated or moved since.")
+            .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
+
+        group.MapPost("/staff/phone-pair", PairPhoneAsync)
+            .WithName("pairStaffPhone")
+            .WithSummary("Pair a personal phone with a code and the person's own PIN")
+            .WithDescription(
+                "**A phone is a tablet that belongs to one person.** A manager issues a ten-minute, single-use "
+                + "code for somebody (`POST /api/branches/{branchId}/staff/{staffMemberId}/phone-pairings`), the "
+                + "phone scans it, and the person taps their own PIN. The answer is exactly what enrolling a "
+                + "tablet and then tapping a PIN would give: `device` is `enrolStaffDevice`'s body - keep "
+                + "`deviceToken` - and `session` is `signInStaffWithPin`'s, so the person is signed in.\n\n"
+                + "From then on the phone's PIN screen lists only that person (`GET /api/auth/staff/roster`), "
+                + "`GET /api/auth/staff/device` says `kind: 2` and names them in `boundStaffMember`, and "
+                + "`POST /api/auth/staff/pin` accepts only their id - anybody else's is refused as a wrong PIN.\n\n"
+                + "**The PIN** is checked with the lockout every PIN sign-in has: a wrong one is `401 pin-invalid` "
+                + "and counts toward the person's five; the fifth is `403 account-locked`. A wrong PIN leaves the "
+                + "code usable until it expires.\n\n"
+                + "**The same browser again.** A live phone of this person's at the branch with the same "
+                + "`clientDeviceId` is reused (renamed to `deviceName`, a new device token). A live phone of "
+                + "somebody else's with it, or this person's at another branch, is unpaired - the browser holds one "
+                + "device token, and now it is this one. A live **tablet** with it is refused with `409` - a "
+                + "manager revokes the tablet first.\n\n"
+                + "Kitchen staff cannot have a phone: `409 kitchen-phone-not-allowed`.")
+            .Produces<PhonePairingResult>()
+            .ProducesProblemDetails(
+                StatusCodes.Status401Unauthorized,
+                "`pairing-code-invalid`, `pairing-code-expired`, or `pin-invalid` (the PIN was wrong).")
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden, "`account-locked`: too many wrong PINs; a manager clears it.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "The code was already used; its person can no longer sign in at that branch; the browser is one of "
+                + "the branch's tablets; or `kitchen-phone-not-allowed`.")
+            .RequireRateLimiting(RateLimitingExtensions.PinPolicy);
+
         authenticated.MapGet("/staff/device", GetEnrolledDeviceAsync)
             .WithName("getEnrolledStaffDevice")
             .WithSummary("Which venue and branch this device is bound to")
@@ -238,7 +290,9 @@ public static class AuthEndpoints
                 + "in an audit row.\n\n"
                 + "Authenticated by the device token. A revoked device is refused here too: showing "
                 + "a venue name and a keypad to somebody holding a killed tablet is the wrong answer "
-                + "twice.")
+                + "twice.\n\n"
+                + "`kind` is 1 for a tablet and 2 for a personal phone; a phone also carries "
+                + "`boundStaffMember` (`id`, `fullName`, `role`) - the one person whose PIN opens it.")
             .Produces<EnrolledDeviceView>()
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized, "No device token, or the device was revoked.");
@@ -270,7 +324,9 @@ public static class AuthEndpoints
                 + "Nothing else per person - no phone, email or PIN state - because whoever holds "
                 + "the tablet can read it.\n\n"
                 + "Authenticated by the device token, and refused exactly as "
-                + "`GET /api/auth/staff/device` refuses: no token, or a revoked device, is a 401.")
+                + "`GET /api/auth/staff/device` refuses: no token, or a revoked device, is a 401.\n\n"
+                + "On a personal phone the list is its own person alone, with their shift - the PIN "
+                + "exchange takes nobody else's there.")
             .Produces<IReadOnlyList<StaffRosterEntry>>()
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized, "No device token, or the device was revoked.");
@@ -287,7 +343,10 @@ public static class AuthEndpoints
                 + "the renewal handle keeps it alive while the tablet is in use and stops working "
                 + "after thirty minutes of inactivity.\n\n"
                 + "PINs are per person, never shared. A shared PIN is faster and destroys the "
-                + "audit trail that answers 'who gave away my reserved table'.")
+                + "audit trail that answers 'who gave away my reserved table'.\n\n"
+                + "**On a personal phone** (`kind` 2) only the phone's own person is accepted. Anybody "
+                + "else's `staffMemberId` is refused exactly as a wrong PIN is (`401 pin-invalid`), before "
+                + "their PIN is checked: nothing counts toward their lockout and nothing says whose PIN it was.")
             .Produces<StaffSessionResult>()
             .ProducesProblemDetails(
                 StatusCodes.Status401Unauthorized,
@@ -469,6 +528,19 @@ public static class AuthEndpoints
 
         return Results.NoContent();
     }
+
+    private static async Task<IResult> PreviewPhonePairingAsync(
+        PhonePairPreviewRequest request,
+        IStaffAuthService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.PreviewPhonePairingAsync(request.Code, cancellationToken));
+
+    private static async Task<IResult> PairPhoneAsync(
+        PhonePairRequest request,
+        IStaffAuthService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.PairPhoneAsync(
+            request.Code, request.Pin, request.ClientDeviceId, request.DeviceName, cancellationToken));
 
     private static async Task<IResult> RedeemEnrolmentCodeAsync(
         RedeemEnrolmentCodeRequest request,

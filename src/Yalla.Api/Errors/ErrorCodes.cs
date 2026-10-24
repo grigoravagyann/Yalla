@@ -603,6 +603,25 @@ public static class ErrorCodes
     /// </summary>
     public const string SignInUnknown = "sign-in-unknown";
 
+    /// <summary>
+    /// A phone cannot be paired to kitchen staff: the kitchen works on its tablet. HTTP 409, with
+    /// <c>context.staffMemberId</c>. From issuing the code, or from redeeming it for somebody moved to the kitchen
+    /// since. Minted by <c>KitchenPhoneNotAllowedException</c>.
+    /// </summary>
+    public const string KitchenPhoneNotAllowed = "kitchen-phone-not-allowed";
+
+    /// <summary>
+    /// The phone pairing code is unknown - mistyped, or a tablet's enrolment code. HTTP 401. Retype it or scan the
+    /// QR again. An <c>AuthenticationFailedException</c> reason, listed here so the phone can branch on it.
+    /// </summary>
+    public const string PairingCodeInvalid = "pairing-code-invalid";
+
+    /// <summary>
+    /// The phone pairing code is past its ten minutes, or a newer code for the same person replaced it. HTTP 401.
+    /// Retyping never helps; ask the manager for a new one.
+    /// </summary>
+    public const string PairingCodeExpired = "pairing-code-expired";
+
     /// <summary>Anything unhandled. Details go to the log, never to the client. HTTP 500.</summary>
     public const string InternalError = "internal-error";
 
@@ -705,6 +724,9 @@ public static class ErrorCodes
         TelegramVerificationExpired => "Telegram verification no longer available",
         PinTaken => "PIN already in use on this tablet",
         SignInUnknown => "Sign-in not identified",
+        KitchenPhoneNotAllowed => "No phone for kitchen staff",
+        PairingCodeInvalid => "Pairing code not valid",
+        PairingCodeExpired => "Pairing code expired",
         InternalError => "Internal error",
 
         // Auth reason codes are minted by the domain and are already kebab-case sentences of a

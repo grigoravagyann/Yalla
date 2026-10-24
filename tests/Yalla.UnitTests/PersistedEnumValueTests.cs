@@ -348,7 +348,7 @@ public class PersistedEnumValueTests
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
-            nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffRole), nameof(StayHint),
+            nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffDeviceKind), nameof(StaffPushKinds), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabAdmission), nameof(TabAdmissionReason), nameof(TabEventType),
             nameof(TabOrderStatus), nameof(TabStatus), nameof(TableChangeSignal),
             nameof(TableSessionSource), nameof(TableShareRequestStatus), nameof(TableStatus),
@@ -483,6 +483,21 @@ public class PersistedEnumValueTests
         Assert.Equal(1, (int)Yalla.Domain.Messages.GuestAnswer.Coming);
         Assert.Equal(2, (int)Yalla.Domain.Messages.GuestAnswer.Late);
         Assert.Equal(3, (int)Yalla.Domain.Messages.GuestAnswer.NotComing);
+    }
+
+    /// <summary>Staff devices: what kind each row is, and the push kinds a device asked for, stored as bits.</summary>
+    [Fact]
+    public void Staff_device_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)StaffDeviceKind.Tablet);
+        Assert.Equal(2, (int)StaffDeviceKind.Phone);
+
+        Assert.Equal(1, (int)StaffPushKinds.Approvals);
+        Assert.Equal(2, (int)StaffPushKinds.GuestMessages);
+        Assert.Equal(4, (int)StaffPushKinds.TableCalls);
+        Assert.Equal(8, (int)StaffPushKinds.Takeaway);
+        Assert.Equal(16, (int)StaffPushKinds.KitchenReady);
+        Assert.Equal(15, (int)StaffPushKinds.Defaults);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>
