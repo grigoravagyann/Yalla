@@ -35,7 +35,7 @@ public sealed class UnverifiedGuestsMigrationRollbackTests(SqlServerFixture fixt
             InitialCatalog = $"Yalla_UgRollback_{Guid.NewGuid():N}",
         }.ConnectionString;
 
-        var now = DateTime.UtcNow;
+        var now = TestNow.UtcNow;
         Guid sessionId;
         Guid phantomId;
         Guid liveId;

@@ -33,7 +33,7 @@ public sealed class GuestMessagesMigrationRollbackTests(SqlServerFixture fixture
             InitialCatalog = $"Yalla_MsgRollback_{Guid.NewGuid():N}",
         }.ConnectionString;
 
-        var now = DateTime.UtcNow;
+        var now = TestNow.UtcNow;
         var diner = Guid.CreateVersion7();
         var order = Guid.CreateVersion7();
         var thread = Guid.CreateVersion7();

@@ -49,7 +49,7 @@ public sealed class PhotoSweepHostedServiceTests(SqlServerFixture fixture) : IDi
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var time = new FakeTimeProvider(TestNow.UtcNowOffset);
 
         await using var factory = new YallaApiFactory()
             .WithDatabase(fixture.ConnectionString)
@@ -99,7 +99,7 @@ public sealed class PhotoSweepHostedServiceTests(SqlServerFixture fixture) : IDi
     [Fact]
     public async Task Each_interval_runs_one_pass_in_its_own_scope_and_a_failed_pass_does_not_stop_the_next()
     {
-        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var time = new FakeTimeProvider(TestNow.UtcNowOffset);
         var photos = new RecordingPhotoService(throwOnFirstCall: true);
         var scopes = 0;
 
@@ -133,7 +133,7 @@ public sealed class PhotoSweepHostedServiceTests(SqlServerFixture fixture) : IDi
     [Fact]
     public async Task Zero_minutes_switches_the_sweep_off()
     {
-        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var time = new FakeTimeProvider(TestNow.UtcNowOffset);
         var photos = new RecordingPhotoService(throwOnFirstCall: false);
 
         var services = new ServiceCollection();

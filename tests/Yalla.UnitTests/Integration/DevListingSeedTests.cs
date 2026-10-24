@@ -135,7 +135,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
 
         await RunSeederAsync(clock);
         var first = await SnapshotAsync(clock);
@@ -174,7 +174,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         Guid branchId;
         Guid coverId;
 
@@ -238,7 +238,7 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
-        var clock = new TestClock(DateTime.UtcNow);
+        var clock = new TestClock(TestNow.UtcNow);
         var reviewedAt = clock.UtcNow.AddDays(-3);
         Guid branchId;
 

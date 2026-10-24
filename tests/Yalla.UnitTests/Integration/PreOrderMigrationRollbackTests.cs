@@ -32,7 +32,7 @@ public sealed class PreOrderMigrationRollbackTests(SqlServerFixture fixture)
             InitialCatalog = $"Yalla_PoRollback_{Guid.NewGuid():N}",
         }.ConnectionString;
 
-        var now = DateTime.UtcNow;
+        var now = TestNow.UtcNow;
         var diner = Guid.CreateVersion7();
         Guid branchId;
 

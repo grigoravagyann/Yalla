@@ -33,7 +33,7 @@ public sealed class GuestRecordMigrationRollbackTests(SqlServerFixture fixture)
             InitialCatalog = $"Yalla_GrRollback_{Guid.NewGuid():N}",
         }.ConnectionString;
 
-        var now = DateTime.UtcNow;
+        var now = TestNow.UtcNow;
         var diner = Guid.CreateVersion7();
         Guid branchId;
 

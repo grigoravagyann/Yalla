@@ -168,7 +168,7 @@ public sealed class DinerPasswordAfterPhoneProofTests(SqlServerFixture fixture)
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var dinerUserId = body.GetProperty("dinerUserId").GetGuid();
 
-        await using var db = fixture.CreateContext(new TestClock(DateTime.UtcNow));
+        await using var db = fixture.CreateContext(new TestClock(TestNow.UtcNow));
         var chain = await db.RefreshTokens.AsNoTracking()
             .Where(t => t.SubjectId == dinerUserId)
             .Select(t => t.ChainId)
