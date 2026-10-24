@@ -320,11 +320,16 @@ internal static class GuestThreads
             : db.Conversations.FirstOrDefaultAsync(c => c.TakeawayOrderId == subject.Id, cancellationToken);
 
     /// <summary>The subject's thread, tracked - made and added to the context when there is none. Under the subject's lock.</summary>
+    /// <remarks>
+    /// A new thread is linked to the account the subject holds <b>now</b>, read under the lock - never to one a caller
+    /// read before taking it. An account deleted in between has had its link cut from the booking or order (the
+    /// deletion holds the account's lock, then the subject's row), and a thread made from the stale read would hand the
+    /// venue's record back to a tombstone.
+    /// </remarks>
     public static async Task<Conversation> FindOrStartAsync(
         YallaDbContext db,
         ConversationSubject subject,
         Guid branchId,
-        Guid? dinerUserId,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
@@ -332,6 +337,18 @@ internal static class GuestThreads
         {
             return existing;
         }
+
+        var dinerUserId = subject.Kind == ConversationSubjectKind.Reservation
+            ? await db.Reservations
+                .AsNoTracking()
+                .Where(r => r.Id == subject.Id)
+                .Select(r => r.DinerUserId)
+                .FirstOrDefaultAsync(cancellationToken)
+            : await db.TakeawayOrders
+                .AsNoTracking()
+                .Where(o => o.Id == subject.Id)
+                .Select(o => o.DinerUserId)
+                .FirstOrDefaultAsync(cancellationToken);
 
         var started = subject.Kind == ConversationSubjectKind.Reservation
             ? Conversation.ForReservation(branchId, subject.Id, dinerUserId, nowUtc)
@@ -362,7 +379,7 @@ internal static class GuestThreads
         await LockAsync(db, subject, cancellationToken);
 
         var staffName = await StaffNameAsync(db, staffMemberId, cancellationToken);
-        var thread = await FindOrStartAsync(db, subject, reservation.BranchId, reservation.DinerUserId, nowUtc, cancellationToken);
+        var thread = await FindOrStartAsync(db, subject, reservation.BranchId, nowUtc, cancellationToken);
         var ask = thread.AskComing(staffMemberId, staffName, nowUtc);
         db.ConversationMessages.Add(ask);
 
@@ -416,7 +433,7 @@ internal static class GuestThreads
             heldUntil = BranchZone.For(timeZoneId).LocalTimeAt(reservation.StartUtc.AddMinutes(lateMinutes!.Value));
         }
 
-        var thread = await FindOrStartAsync(db, subject, reservation.BranchId, reservation.DinerUserId, nowUtc, cancellationToken);
+        var thread = await FindOrStartAsync(db, subject, reservation.BranchId, nowUtc, cancellationToken);
         var (said, status) = thread.Answer(answer, lateMinutes, heldUntil, nowUtc);
 
         db.ConversationMessages.Add(said);
@@ -515,32 +532,52 @@ internal static class GuestThreads
     // ---------------------------------------------------------------- the venue's threads
 
     /// <summary>
-    /// The threads the venue's tablet keeps in view: a message in the last 24 hours, or a subject still taking messages -
-    /// a booking pending, confirmed or seated until two hours after its end, an order sent, accepted or ready.
+    /// The branch's threads the venue's tablet keeps in view: a message in the last 24 hours, or a subject still taking
+    /// messages - a booking pending, confirmed or seated until two hours after its end, an order sent, accepted or ready.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// One expression for the inbox and the floor's badge, so the two count the same threads. A booking that ended
     /// (cancelled, missed, completed) under two hours ago is open too; its last message is then under two hours old,
     /// inside the 24, unless nobody wrote since - and then nothing in it is unanswered or unread worth a ring.
+    /// </para>
+    /// <para>
+    /// <b>Its cost does not grow with the branch's history</b> - every floor poll reads it. Three disjoint legs, each
+    /// found from an index by a bounded predicate and glued with <c>UNION ALL</c>: the threads written to in the last 24
+    /// hours (<c>IX_Conversations_BranchId_LastMessageUtc</c>); the quieter threads of the bookings still live
+    /// (<c>IX_Reservations_BranchId_EndUtc_Live</c>, filtered to pending, confirmed and seated, from two hours ago on);
+    /// and those of the orders still moving (<c>IX_TakeawayOrders_BranchId_Status</c>). Each subject finds its thread by
+    /// the thread's unique subject index. A thread is the same branch as its subject: neither ever moves.
+    /// </para>
     /// </remarks>
-    public static IQueryable<Conversation> RelevantAt(YallaDbContext db, DateTime nowUtc)
+    public static IQueryable<Conversation> RelevantAt(YallaDbContext db, Guid branchId, DateTime nowUtc)
     {
         var recent = nowUtc.AddHours(-ConversationRules.InboxRecentHours);
         var endedBefore = nowUtc.AddHours(-ConversationRules.OpenAfterEndHours);
 
-        return db.Conversations.Where(c =>
-            c.LastMessageUtc >= recent
-            || (c.ReservationId != null
-                && db.Reservations.Any(r => r.Id == c.ReservationId
-                                            && (r.Status == ReservationStatus.PendingApproval
-                                                || r.Status == ReservationStatus.Confirmed
-                                                || r.Status == ReservationStatus.Seated)
-                                            && r.EndUtc > endedBefore))
-            || (c.TakeawayOrderId != null
-                && db.TakeawayOrders.Any(o => o.Id == c.TakeawayOrderId
-                                              && (o.Status == TakeawayStatus.Sent
-                                                  || o.Status == TakeawayStatus.Accepted
-                                                  || o.Status == TakeawayStatus.Ready))));
+        var spokenRecently = db.Conversations
+            .Where(c => c.BranchId == branchId && c.LastMessageUtc >= recent);
+
+        // The status list is written out as constants so it lands in the SQL as literals - the filtered index's own
+        // filter - rather than as a parameter the optimiser could not match it against.
+        var liveBookings = db.Reservations
+            .Where(r => r.BranchId == branchId
+                        && (r.Status == ReservationStatus.PendingApproval
+                            || r.Status == ReservationStatus.Confirmed
+                            || r.Status == ReservationStatus.Seated)
+                        && r.EndUtc > endedBefore)
+            .Join(db.Conversations, r => (Guid?)r.Id, c => c.ReservationId, (r, c) => c)
+            .Where(c => c.LastMessageUtc < recent);
+
+        var movingOrders = db.TakeawayOrders
+            .Where(o => o.BranchId == branchId
+                        && (o.Status == TakeawayStatus.Sent
+                            || o.Status == TakeawayStatus.Accepted
+                            || o.Status == TakeawayStatus.Ready))
+            .Join(db.Conversations, o => (Guid?)o.Id, c => c.TakeawayOrderId, (o, c) => c)
+            .Where(c => c.LastMessageUtc < recent);
+
+        return spokenRecently.Concat(liveBookings).Concat(movingOrders);
     }
 
     /// <summary>

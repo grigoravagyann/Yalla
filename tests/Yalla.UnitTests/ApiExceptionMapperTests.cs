@@ -412,17 +412,19 @@ public class ApiExceptionMapperTests
         Assert.Equal(StatusCodes.Status403Forbidden, waiters.Status);
         Assert.Equal("waiters-cannot-write", waiters.Code);
 
+        // The wait is counted on the service's clock, not the machine's: a clock years from today still says 30 s.
         var conversationId = Guid.CreateVersion7();
+        var refusedAt = new DateTime(2031, 3, 1, 12, 0, 0, DateTimeKind.Utc);
         var wait = ApiExceptionMapper.Map(
-            new Yalla.Domain.Messages.MessagesTooFastException(conversationId, DateTime.UtcNow.AddSeconds(30)));
+            new Yalla.Domain.Messages.MessagesTooFastException(conversationId, refusedAt.AddSeconds(29.2), refusedAt));
         Assert.Equal(StatusCodes.Status429TooManyRequests, wait.Status);
         Assert.Equal("messages-too-fast", wait.Code);
         Assert.Equal(5, wait.Context!["perMinute"]);
         Assert.Equal(60, wait.Context["perConversation"]);
-        Assert.True(wait.Context.ContainsKey("retryAfterUtc"));
-        Assert.InRange(wait.RetryAfterSeconds!.Value, 1, 31);
+        Assert.Equal(refusedAt.AddSeconds(29.2), wait.Context["retryAfterUtc"]);
+        Assert.Equal(30, wait.RetryAfterSeconds);
 
-        var spent = ApiExceptionMapper.Map(new Yalla.Domain.Messages.MessagesTooFastException(conversationId, null));
+        var spent = ApiExceptionMapper.Map(new Yalla.Domain.Messages.MessagesTooFastException(conversationId, null, refusedAt));
         Assert.False(spent.Context!.ContainsKey("retryAfterUtc"));
         Assert.Null(spent.RetryAfterSeconds);
         Assert.All(new[] { closed, guests, waiters, wait, spent }, m => Assert.False(m.LogAsError));

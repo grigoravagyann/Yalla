@@ -204,12 +204,19 @@ internal sealed class ReservationLateNudgeHandler(
 /// it - so the waiter knows whether to send the pre-order to the kitchen without phoning.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Re-reads the state that decides whether to ask at all, as every handler here does. Asked of a <b>confirmed</b> booking
 /// only - the answer refuses anything else, and a booking still waiting for the venue's yes is not expected yet. Every
 /// booking is asked (2026-10-21); not once its pre-order was sent or the party marked not coming - the floor has decided
-/// - or when the guest already said they are coming or running late. The wording says whether a pre-order is waiting
-/// for the kitchen. The same message carries the venue's "Ask: are you coming?" (<c>staffAsked</c>), sent at once and
-/// whatever the floor decided; the automatic question is not asked on top of one the venue already asked.
+/// - or when the guest already said they are coming or running late, or the venue already asked. The wording says
+/// whether a pre-order is waiting for the kitchen.
+/// </para>
+/// <para>
+/// The venue's "Ask: are you coming?" is <b>not</b> sent through here: since guest messages (2026-10-23) it is a message
+/// in the booking's thread, pushed as <c>message.to-guest</c> by <see cref="VenueMessageHandler"/>. <c>staffAsked</c> on
+/// the notice is the earlier path, kept only so a message of that kind still queued when this shipped is delivered as
+/// it was written - sent at once, whatever the floor decided. Nothing enqueues one any more.
+/// </para>
 /// </remarks>
 internal sealed class ReservationOnYourWayHandler(
     YallaDbContext db,
@@ -241,8 +248,8 @@ internal sealed class ReservationOnYourWayHandler(
 
         var expected = booking is { Status: ReservationStatus.Confirmed };
 
-        // The venue's own "ask now" goes whatever the floor decided about a pre-order - somebody tapped it a moment ago.
-        // The automatic question is not asked on top of the venue's: the guest has been asked already.
+        // A venue's "ask now" queued before guest messages shipped goes whatever the floor decided about a pre-order -
+        // somebody tapped it. The automatic question is not asked on top of the venue's: the guest has been asked already.
         if (!expected
             || booking!.Answered
             || (!notice.StaffAsked && (booking.FloorDecided || booking.StaffAsked)))
@@ -866,13 +873,20 @@ internal sealed record VenueMessageNotice(
 
 /// <summary>
 /// "Lava restaurant: Of course, without onion." - somebody at the venue wrote in a booking's or an order's thread, or
-/// asked "are you coming?". The <c>venue-ask</c> category carries "I'm coming", "Late 15 min" and a text reply; the
-/// <c>venue-message</c> category a text reply.
+/// asked "are you coming?".
 /// </summary>
 /// <remarks>
+/// <para>
 /// Sent while the thread is still the account's it was written for (a deletion cuts the link), and an ask only while it
 /// is still a question: the booking confirmed and the guest not yet answered - "are you coming?" after "I'm on my way"
 /// is the push that teaches a guest to switch them off.
+/// </para>
+/// <para>
+/// <b>The category</b> - the actions the app hangs under the push - follows the branch's <c>guestsCanWrite</c> when it
+/// is sent: a Reply the venue would refuse with 403 <c>guests-cannot-write</c> is not offered. Guests may write:
+/// <c>venue-ask</c> ("I'm coming", "Late 15 min", a text reply) and <c>venue-message</c> (a text reply). They may not:
+/// <c>venue-ask-buttons</c> (the two answers, no reply) and <c>venue-message-readonly</c> (no actions).
+/// </para>
 /// </remarks>
 internal sealed class VenueMessageHandler(
     YallaDbContext db,
@@ -885,11 +899,16 @@ internal sealed class VenueMessageHandler(
     {
         var notice = Payload.Read<VenueMessageNotice>(payloadJson);
 
-        var standing = await db.Conversations
+        var thread = await db.Conversations
             .AsNoTracking()
-            .AnyAsync(c => c.Id == notice.ConversationId && c.DinerUserId == notice.DinerUserId, cancellationToken);
+            .Where(c => c.Id == notice.ConversationId && c.DinerUserId == notice.DinerUserId)
+            .Select(c => new
+            {
+                GuestsCanWrite = db.Branches.Where(b => b.Id == c.BranchId).Select(b => b.GuestsCanMessage).FirstOrDefault(),
+            })
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (!standing)
+        if (thread is null)
         {
             logger.LogInformation(
                 "Not telling anybody about message {MessageId}: its thread no longer belongs to the account it was written for.",
@@ -946,9 +965,36 @@ internal sealed class VenueMessageHandler(
                 title,
                 body,
                 data,
-                CategoryId: notice.Ask ? "venue-ask" : "venue-message"),
+                CategoryId: VenueMessageCategories.For(notice.Ask, thread.GuestsCanWrite)),
             cancellationToken);
     }
+}
+
+/// <summary>
+/// The push categories of a venue message (<c>message.to-guest</c>). The app registers all four; the server picks by the
+/// message's kind and whether the branch lets guests type.
+/// </summary>
+internal static class VenueMessageCategories
+{
+    /// <summary>An ask, guests may type: "I'm coming", "Late 15 min" and Reply (a text input).</summary>
+    public const string Ask = "venue-ask";
+
+    /// <summary>An ask, guests may not type: "I'm coming" and "Late 15 min", no Reply.</summary>
+    public const string AskButtons = "venue-ask-buttons";
+
+    /// <summary>A text, guests may type: Reply (a text input).</summary>
+    public const string Message = "venue-message";
+
+    /// <summary>A text, guests may not type: no actions - a tap opens the thread.</summary>
+    public const string MessageReadOnly = "venue-message-readonly";
+
+    public static string For(bool ask, bool guestsCanWrite) => (ask, guestsCanWrite) switch
+    {
+        (true, true) => Ask,
+        (true, false) => AskButtons,
+        (false, true) => Message,
+        (false, false) => MessageReadOnly,
+    };
 }
 
 /// <summary>Shared bits every handler needs.</summary>

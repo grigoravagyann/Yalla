@@ -46,7 +46,13 @@ public sealed class WaitersCannotWriteException(Guid branchId)
 /// <c>perMinute</c>, <c>perConversation</c>, and <c>retryAfterUtc</c> when waiting helps (absent once the thread's own
 /// limit is spent).
 /// </summary>
-public sealed class MessagesTooFastException(Guid conversationId, DateTime? retryAfterUtc)
+/// <param name="conversationId">The thread.</param>
+/// <param name="retryAfterUtc">When the next one will be taken; null when none will.</param>
+/// <param name="nowUtc">
+/// The service's clock when it refused - the <c>Retry-After</c> header is counted from it, never from the machine's own
+/// clock, so the header and <c>retryAfterUtc</c> always say the same moment.
+/// </param>
+public sealed class MessagesTooFastException(Guid conversationId, DateTime? retryAfterUtc, DateTime nowUtc)
     : Exception(retryAfterUtc is null
         ? "This conversation has had as many messages from you as it takes. Call the venue instead."
         : "You are sending messages too fast. Wait a moment.")
@@ -57,4 +63,7 @@ public sealed class MessagesTooFastException(Guid conversationId, DateTime? retr
 
     /// <summary>When the next one will be taken; null when none will.</summary>
     public DateTime? RetryAfterUtc { get; } = retryAfterUtc;
+
+    /// <summary>How long until <see cref="RetryAfterUtc"/>, on the clock that refused; null when no wait helps.</summary>
+    public TimeSpan? RetryAfter { get; } = retryAfterUtc - nowUtc;
 }

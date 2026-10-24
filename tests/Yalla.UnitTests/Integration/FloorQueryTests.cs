@@ -288,6 +288,12 @@ public sealed class FloorQueryTests(SqlServerFixture fixture)
         Assert.Contains("[TableSessions]", statement, StringComparison.Ordinal);
         Assert.Contains("[Reservations]", statement, StringComparison.Ordinal);
         Assert.Equal(1, CountOf(statement, "FROM [Branches]"));
+
+        // The guest-message threads in view (GuestThreads.RelevantAt) are three bounded legs glued with UNION ALL - the
+        // recent threads, the live bookings' and the moving orders' - never a pass over every thread the branch had.
+        Assert.Contains("UNION ALL", statement, StringComparison.Ordinal);
+        Assert.Contains("[LastMessageUtc] >= @", statement, StringComparison.Ordinal);
+        Assert.Contains("[EndUtc] > @", statement, StringComparison.Ordinal);
     }
 
     private static int CountOf(string haystack, string needle)

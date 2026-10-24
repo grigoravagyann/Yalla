@@ -1410,6 +1410,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_Reservations_BookerPhoneE164_Active")
                         .HasFilter("[BookerPhoneE164] IS NOT NULL AND [Status] IN (1, 2)");
 
+                    b.HasIndex("BranchId", "EndUtc")
+                        .HasDatabaseName("IX_Reservations_BranchId_EndUtc_Live")
+                        .HasFilter("[Status] IN (1, 2, 4)");
+
                     b.HasIndex("BranchId", "StartUtc");
 
                     b.HasIndex("DinerUserId", "StartUtc");

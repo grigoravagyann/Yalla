@@ -292,11 +292,12 @@ public sealed record InboxSubject(
 /// row previews, with <c>answer</c> on an answer and <c>staffName</c> on a venue message.
 /// </param>
 /// <param name="LatestStatus">The newest system status line in the thread ("held until 19:45", "cancelled"), or absent.</param>
-/// <param name="UnreadFromGuest">What the guest wrote since anybody at the venue last read it.</param>
+/// <param name="UnreadFromGuest">What the guest wrote since anybody at the venue last read it - typed messages and answers.</param>
 /// <param name="AwaitingGuestAnswer">The last message is the venue's "are you coming?" and the guest has not answered.</param>
 /// <param name="OldestUnansweredGuestMessageUtc">
-/// The first guest message since the venue last wrote - the one to remind about after <c>remindAfterMinutes</c>.
-/// Absent when the venue has the last word, and once the thread has closed - nobody can answer it any more.
+/// The first typed guest message since the venue last wrote - the one to remind about after <c>remindAfterMinutes</c>.
+/// A guest's answer to "are you coming?" asks nothing back and never counts. Absent when nothing waits, and once the
+/// thread has closed - nobody can answer it any more.
 /// </param>
 /// <param name="Open">The thread takes messages now.</param>
 public sealed record InboxItem(
@@ -311,11 +312,11 @@ public sealed record InboxItem(
 
 /// <summary>The branch's threads for the tablet's Messages tab.</summary>
 /// <param name="Items">
-/// Threads that are open or had a message in the last 24 hours: those with a guest message unanswered first (the
+/// Threads that are open or had a message in the last 24 hours: those with a typed guest message unanswered first (the
 /// longest waiting first), then the rest, newest first.
 /// </param>
 /// <param name="UnreadTotal">Unread guest messages across <paramref name="Items"/> - the tab's badge.</param>
-/// <param name="RemindAfterMinutes">Ring when a guest message has waited this long unanswered.</param>
+/// <param name="RemindAfterMinutes">Ring when a typed guest message has waited this long unanswered.</param>
 /// <param name="Templates">The venue's quick replies; absent for the app's default set.</param>
 /// <param name="WaitersCanWrite">Whether waiters may write (managers always may).</param>
 /// <param name="AsOfUtc">When it was read.</param>
@@ -373,8 +374,12 @@ public interface IGuestMessageService
     Task<DinerMessageResult> WriteAsGuestAsync(
         ConversationSubject subject, string? text, Guid clientCommandId, CancellationToken cancellationToken = default);
 
-    /// <summary>The guest read the thread.</summary>
-    Task MarkReadByGuestAsync(ConversationSubject subject, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// The guest read the thread: up to <paramref name="upToUtc"/> (the newest message the app showed) when given, never
+    /// past now, never backwards; null - now.
+    /// </summary>
+    Task MarkReadByGuestAsync(
+        ConversationSubject subject, DateTime? upToUtc = null, CancellationToken cancellationToken = default);
 
     /// <summary>The guest's open threads and the ones with something unread.</summary>
     Task<DinerUnreadMessages> GetUnreadForGuestAsync(CancellationToken cancellationToken = default);
@@ -389,8 +394,12 @@ public interface IGuestMessageService
     Task<StaffMessageResult> WriteAsStaffAsync(
         ConversationSubject subject, string? text, Guid clientCommandId, CancellationToken cancellationToken = default);
 
-    /// <summary>Somebody at the venue read the thread.</summary>
-    Task MarkReadByVenueAsync(ConversationSubject subject, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Somebody at the venue read the thread: up to <paramref name="upToUtc"/> when given, never past now, never
+    /// backwards; null - now.
+    /// </summary>
+    Task MarkReadByVenueAsync(
+        ConversationSubject subject, DateTime? upToUtc = null, CancellationToken cancellationToken = default);
 
     Task<MessageSettingsView> GetSettingsAsync(Guid branchId, CancellationToken cancellationToken = default);
 

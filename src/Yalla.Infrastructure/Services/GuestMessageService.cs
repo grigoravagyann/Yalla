@@ -102,12 +102,12 @@ internal sealed class GuestMessageService(
 
             if (next is null || next > nowUtc)
             {
-                throw new MessagesTooFastException(existing.Id, next);
+                throw new MessagesTooFastException(existing.Id, next, nowUtc);
             }
         }
 
         var thread = existing
-                     ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, facts.DinerUserId, nowUtc, cancellationToken);
+                     ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, nowUtc, cancellationToken);
         var message = thread.WriteAsGuest(body, clientCommandId, nowUtc);
         db.ConversationMessages.Add(message);
 
@@ -121,7 +121,8 @@ internal sealed class GuestMessageService(
         return GuestResult(message, wasReplay: false);
     }
 
-    public async Task MarkReadByGuestAsync(ConversationSubject subject, CancellationToken cancellationToken = default)
+    public async Task MarkReadByGuestAsync(
+        ConversationSubject subject, DateTime? upToUtc = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(subject);
 
@@ -129,11 +130,12 @@ internal sealed class GuestMessageService(
         var nowUtc = clock.UtcNow;
         await GuestSubjectAsync(subject, dinerUserId, nowUtc, cancellationToken);
 
-        if (await GuestThreads.FindAsync(db, subject, cancellationToken) is { } thread)
-        {
-            thread.MarkReadByGuest(nowUtc);
-            await db.SaveChangesAsync(cancellationToken);
-        }
+        var mark = ConversationRules.ReadMarkAt(nowUtc, upToUtc is { } upTo ? AsUtc(upTo) : null);
+
+        // One conditional statement, so the mark only ever moves forward - two phones marking at once included.
+        await ThreadOf(subject)
+            .Where(c => c.GuestLastReadUtc == null || c.GuestLastReadUtc < mark)
+            .ExecuteUpdateAsync(set => set.SetProperty(c => c.GuestLastReadUtc, (DateTime?)mark), cancellationToken);
     }
 
     public async Task<DinerUnreadMessages> GetUnreadForGuestAsync(CancellationToken cancellationToken = default)
@@ -199,8 +201,7 @@ internal sealed class GuestMessageService(
 
         var nowUtc = clock.UtcNow;
 
-        var rows = await GuestThreads.RelevantAt(db, nowUtc)
-            .Where(c => c.BranchId == branchId)
+        var rows = await GuestThreads.RelevantAt(db, branchId, nowUtc)
             .AsNoTracking()
             .Select(c => new InboxRow
             {
@@ -220,8 +221,11 @@ internal sealed class GuestMessageService(
                     .OrderByDescending(m => m.CreatedAtUtc)
                     .ThenByDescending(m => m.Sequence)
                     .FirstOrDefault(),
+                // Only the guest's words wait for a reply: an answer to "are you coming?" asks nothing back. It is
+                // still unread above until somebody at the venue opens the thread.
                 OldestUnansweredUtc = c.Messages
                     .Where(m => m.Author == MessageAuthor.Guest
+                                && m.Kind == MessageKind.Text
                                 && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
                                                         && (v.CreatedAtUtc > m.CreatedAtUtc
                                                             || (v.CreatedAtUtc == m.CreatedAtUtc && v.Sequence > m.Sequence))))
@@ -367,9 +371,11 @@ internal sealed class GuestMessageService(
         var nowUtc = clock.UtcNow;
         RequireOpen(facts, nowUtc);
 
+        // A new thread takes the subject's account as it stands now, under the lock - not facts.DinerUserId, read before
+        // the locks: an account deleted in between has had its link cut, and must not be linked again (FindOrStartAsync).
         var staffName = await GuestThreads.StaffNameAsync(db, staffId, cancellationToken);
         var thread = existing
-                     ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, facts.DinerUserId, nowUtc, cancellationToken);
+                     ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, nowUtc, cancellationToken);
         var message = thread.WriteAsVenue(body, staffId, staffName, clientCommandId, nowUtc);
         db.ConversationMessages.Add(message);
 
@@ -385,8 +391,12 @@ internal sealed class GuestMessageService(
         return StaffResult(message, wasReplay: false);
     }
 
-    /// <summary>Any member of staff reading counts for the venue - except a platform admin, who only looks.</summary>
-    public async Task MarkReadByVenueAsync(ConversationSubject subject, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Any member of staff reading counts for the venue - except a platform admin, who only looks. Up to
+    /// <paramref name="upToUtc"/> when the tablet says what it showed, never past now, never backwards.
+    /// </summary>
+    public async Task MarkReadByVenueAsync(
+        ConversationSubject subject, DateTime? upToUtc = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(subject);
 
@@ -399,12 +409,23 @@ internal sealed class GuestMessageService(
             return;
         }
 
-        if (await GuestThreads.FindAsync(db, subject, cancellationToken) is { } thread)
-        {
-            thread.MarkReadByVenue(clock.UtcNow);
-            await db.SaveChangesAsync(cancellationToken);
-        }
+        var mark = ConversationRules.ReadMarkAt(clock.UtcNow, upToUtc is { } upTo ? AsUtc(upTo) : null);
+
+        // One conditional statement, so the mark only ever moves forward - two tablets marking at once included.
+        await ThreadOf(subject)
+            .Where(c => c.VenueLastReadUtc == null || c.VenueLastReadUtc < mark)
+            .ExecuteUpdateAsync(set => set.SetProperty(c => c.VenueLastReadUtc, (DateTime?)mark), cancellationToken);
     }
+
+    /// <summary>The subject's thread, as a query - none while nobody has written.</summary>
+    private IQueryable<Conversation> ThreadOf(ConversationSubject subject) =>
+        subject.Kind == ConversationSubjectKind.Reservation
+            ? db.Conversations.Where(c => c.ReservationId == subject.Id)
+            : db.Conversations.Where(c => c.TakeawayOrderId == subject.Id);
+
+    /// <summary>An instant off the wire: one with an offset is converted, one without is taken as UTC.</summary>
+    private static DateTime AsUtc(DateTime value) =>
+        value.Kind == DateTimeKind.Local ? value.ToUniversalTime() : DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     // ---------------------------------------------------------------- the console
 

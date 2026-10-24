@@ -142,11 +142,18 @@ public sealed class Conversation : Entity
         return (said, status);
     }
 
-    /// <summary>The guest opened the thread.</summary>
-    public void MarkReadByGuest(DateTime nowUtc) => GuestLastReadUtc = Later(GuestLastReadUtc, Guard.NotLocalTime(nowUtc, nameof(nowUtc)));
+    /// <summary>The guest read the thread - up to <paramref name="upToUtc"/> when given (see <see cref="ConversationRules.ReadMarkAt"/>).</summary>
+    public void MarkReadByGuest(DateTime nowUtc, DateTime? upToUtc = null) =>
+        GuestLastReadUtc = Later(GuestLastReadUtc, ReadMark(nowUtc, upToUtc));
 
-    /// <summary>Somebody at the venue opened the thread.</summary>
-    public void MarkReadByVenue(DateTime nowUtc) => VenueLastReadUtc = Later(VenueLastReadUtc, Guard.NotLocalTime(nowUtc, nameof(nowUtc)));
+    /// <summary>Somebody at the venue read the thread - up to <paramref name="upToUtc"/> when given.</summary>
+    public void MarkReadByVenue(DateTime nowUtc, DateTime? upToUtc = null) =>
+        VenueLastReadUtc = Later(VenueLastReadUtc, ReadMark(nowUtc, upToUtc));
+
+    private static DateTime ReadMark(DateTime nowUtc, DateTime? upToUtc) =>
+        ConversationRules.ReadMarkAt(
+            Guard.NotLocalTime(nowUtc, nameof(nowUtc)),
+            upToUtc is { } upTo ? Guard.NotLocalTime(upTo, nameof(upToUtc)) : null);
 
     private void Add(ConversationMessage message, DateTime nowUtc)
     {

@@ -223,7 +223,8 @@ public static class PreOrderEndpoints
             .WithDescription(
                 "Writes the question into the booking's thread with guests - an `ask-coming` message with the asker's name, "
                 + "made in the same transaction (see `getStaffReservationConversation`) - and tells the guest now: push "
-                + "`message.to-guest` (data `kind` `venue-message`, `ask` `\"true\"`, `categoryId` `venue-ask`) and feed "
+                + "`message.to-guest` (data `kind` `venue-message`, `ask` `\"true\"`, `categoryId` `venue-ask` - or "
+                + "`venue-ask-buttons`, the answers without a Reply, while the venue has `guestsCanWrite` off) and feed "
                 + "entry `venue-message`. Records `staffAskedOnMyWayAtUtc` on the booking; the automatic question is then "
                 + "not asked on top. "
                 + "A **confirmed** booking only, from two hours before its start until its start, while the guest has not "

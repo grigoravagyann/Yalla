@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Messages;
@@ -22,6 +24,12 @@ public static class MessageEndpoints
         "`open`: a booking's thread takes messages until two hours after the booking ends - or after it was cancelled, "
         + "declined, missed or completed; a takeaway order's until two hours after it was collected, declined, cancelled "
         + "or not collected. `closesAtUtc` says when (absent while an order is still moving).";
+
+    private const string ReadBody =
+        "Optional JSON body `{ upToUtc }`: the `createdAtUtc` of the newest message the screen has shown - the read mark "
+        + "moves to it, so a message that arrived between the last poll and this call stays unread. Never past now (a "
+        + "later `upToUtc` counts as now) and never backwards (an earlier one than the mark changes nothing). No body, or "
+        + "no `upToUtc`: now.";
 
     private const string SendRefusals =
         "`text` is 1 to 500 characters after trimming (422 `validation-failed` naming `text`). **Idempotent on "
@@ -86,13 +94,17 @@ public static class MessageEndpoints
                 .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`text` blank or over 500 characters.")
                 .ProducesProblemDetails(StatusCodes.Status429TooManyRequests, "`messages-too-fast`.");
 
-            group.MapPost($"{prefix}/conversation/read", (Guid id, IGuestMessageService messages, CancellationToken ct) =>
-                    MarkReadByGuestAsync(new ConversationSubject(kind, id), messages, ct))
+            group.MapPost($"{prefix}/conversation/read", (
+                        Guid id,
+                        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] MarkConversationReadRequest? request,
+                        IGuestMessageService messages,
+                        CancellationToken ct) =>
+                    MarkReadByGuestAsync(new ConversationSubject(kind, id), request, messages, ct))
                 .WithName($"mark{name}ConversationRead")
                 .WithSummary("The guest read the thread")
                 .WithDescription(
-                    "Everything the venue wrote until now is read - the unread count and the nav dot go. Call it on open "
-                    + "and when new messages arrive while open. No thread yet: nothing to mark, still 204. No body.")
+                    "What the venue wrote up to the mark is read - the unread count and the nav dot go. Call it on open "
+                    + "and when new messages arrive while open. No thread yet: nothing to mark, still 204. " + ReadBody)
                 .Produces(StatusCodes.Status204NoContent)
                 .ProducesProblemDetails(StatusCodes.Status404NotFound, $"No such {noun} of yours.");
         }
@@ -118,10 +130,12 @@ public static class MessageEndpoints
             .WithName("listBranchConversations")
             .WithSummary("The Messages tab: the branch's threads with guests")
             .WithDescription(
-                "Threads that are open or had a message in the last 24 hours. A guest message the venue has not answered "
-                + "since, in a thread still open, puts its thread first (`oldestUnansweredGuestMessageUtc` - the longest "
-                + "waiting first; absent once the thread closed, as nobody can answer it then); the rest "
-                + "newest first. Each: the subject (`kind`, `id`, `label` - the table or the `T-` code, `guestName`, "
+                "Threads that are open or had a message in the last 24 hours. A guest's typed message (`text`) the venue "
+                + "has not answered since - with a text or an ask - in a thread still open, puts its thread first "
+                + "(`oldestUnansweredGuestMessageUtc` - the longest waiting first; absent once the thread closed, as nobody "
+                + "can answer it then); the rest newest first. A guest's answer to \"are you coming?\" (coming, late, not "
+                + "coming) asks nothing back: it never waits and never rings, but is unread (`unreadFromGuest`) until "
+                + "somebody opens the thread. Each: the subject (`kind`, `id`, `label` - the table or the `T-` code, `guestName`, "
                 + "`localTime`, and `localDate`/`partySize` or `itemCount`/`totalAmd`), `lastMessage` (the last that is "
                 + "not a system status line - the guest's words or answer, or the venue's - with `answer` on an answer and "
                 + "`staffName` on a venue message), `latestStatus` (the newest status line's `heldUntilLocal` / "
@@ -166,8 +180,9 @@ public static class MessageEndpoints
                 .WithName($"sendStaff{name}Message")
                 .WithSummary($"Write to the {noun}'s guest")
                 .WithDescription(
-                    "The guest is told at once: push `message.to-guest` (data `kind` `venue-message`, `categoryId` "
-                    + "`venue-message`, the venue's name over the text) and feed `venue-message`. The message keeps the "
+                    "The guest is told at once: push `message.to-guest` (data `kind` `venue-message`, the venue's name over "
+                    + "the text; `categoryId` `venue-message` - a Reply action - or `venue-message-readonly` - no actions - "
+                    + "while the venue has `guestsCanWrite` off) and feed `venue-message`. The message keeps the "
                     + "writer's name for staff; the guest sees the venue's. " + SendRefusals + " A platform admin reads "
                     + "only, the kitchen never writes: 403 `forbidden`. A waiter where the venue keeps messages to "
                     + "managers: **403 `waiters-cannot-write`** (`context.branchId`). \"Ask: are you coming?\" is "
@@ -178,13 +193,17 @@ public static class MessageEndpoints
                 .ProducesProblemDetails(StatusCodes.Status409Conflict, "`conversation-closed` or `client-command-id-in-use`.")
                 .ProducesProblem<Errors.ValidationFailedProblem>(StatusCodes.Status422UnprocessableEntity, "`text` blank or over 500 characters.");
 
-            group.MapPost($"{route}/conversation/read", (Guid id, IGuestMessageService messages, CancellationToken ct) =>
-                    MarkReadByVenueAsync(new ConversationSubject(kind, id), messages, ct))
+            group.MapPost($"{route}/conversation/read", (
+                        Guid id,
+                        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] MarkConversationReadRequest? request,
+                        IGuestMessageService messages,
+                        CancellationToken ct) =>
+                    MarkReadByVenueAsync(new ConversationSubject(kind, id), request, messages, ct))
                 .WithName($"markStaff{name}ConversationRead")
                 .WithSummary("Somebody at the venue read the thread")
                 .WithDescription(
-                    "Everything the guest wrote until now is read for the whole venue - any member of staff reading counts. "
-                    + "A platform admin's read changes nothing. No thread yet: still 204. No body.")
+                    "What the guest wrote up to the mark is read for the whole venue - any member of staff reading counts. "
+                    + "A platform admin's read changes nothing. No thread yet: still 204. " + ReadBody)
                 .Produces(StatusCodes.Status204NoContent)
                 .ProducesProblemDetails(StatusCodes.Status403Forbidden, $"Not floor staff at this {noun}'s branch.")
                 .ProducesProblemDetails(StatusCodes.Status404NotFound, $"No such {noun}.");
@@ -243,9 +262,9 @@ public static class MessageEndpoints
     }
 
     private static async Task<IResult> MarkReadByGuestAsync(
-        ConversationSubject subject, IGuestMessageService messages, CancellationToken cancellationToken)
+        ConversationSubject subject, MarkConversationReadRequest? request, IGuestMessageService messages, CancellationToken cancellationToken)
     {
-        await messages.MarkReadByGuestAsync(subject, cancellationToken);
+        await messages.MarkReadByGuestAsync(subject, request?.UpToUtc, cancellationToken);
 
         return Results.NoContent();
     }
@@ -270,9 +289,9 @@ public static class MessageEndpoints
     }
 
     private static async Task<IResult> MarkReadByVenueAsync(
-        ConversationSubject subject, IGuestMessageService messages, CancellationToken cancellationToken)
+        ConversationSubject subject, MarkConversationReadRequest? request, IGuestMessageService messages, CancellationToken cancellationToken)
     {
-        await messages.MarkReadByVenueAsync(subject, cancellationToken);
+        await messages.MarkReadByVenueAsync(subject, request?.UpToUtc, cancellationToken);
 
         return Results.NoContent();
     }
@@ -302,6 +321,13 @@ public static class MessageEndpoints
 public sealed record SendMessageRequest(
     [Required] string Text,
     [Required] Guid ClientCommandId) : IClientCommandRequest;
+
+/// <summary>Optional body of a <c>.../conversation/read</c> - the guest's and the venue's.</summary>
+/// <param name="UpToUtc">
+/// The <c>createdAtUtc</c> of the newest message the screen has shown. The read mark moves to it - never past now, never
+/// backwards. Absent: now.
+/// </param>
+public sealed record MarkConversationReadRequest(DateTime? UpToUtc);
 
 /// <summary>Body of <c>PUT /api/branches/{branchId}/message-settings</c>.</summary>
 /// <param name="GuestsCanWrite">Guests may type messages. Required.</param>

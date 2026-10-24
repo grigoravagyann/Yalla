@@ -168,4 +168,24 @@ public class ConversationRulesTests
         var order = Conversation.ForTakeaway(Guid.CreateVersion7(), Guid.CreateVersion7(), null, Now);
         Assert.Throws<DomainStateException>(() => order.AskComing(staffId, "Aram", Now));
     }
+
+    [Fact]
+    public void A_read_marks_up_to_what_was_shown_never_past_now_and_never_back()
+    {
+        Assert.Equal(Now, ConversationRules.ReadMarkAt(Now, null));
+        Assert.Equal(Now.AddMinutes(-3), ConversationRules.ReadMarkAt(Now, Now.AddMinutes(-3)));
+        Assert.Equal(Now, ConversationRules.ReadMarkAt(Now, Now.AddDays(1)));
+
+        var thread = Conversation.ForReservation(Guid.CreateVersion7(), Guid.CreateVersion7(), null, Now);
+        thread.MarkReadByGuest(Now, Now.AddMinutes(-3));
+        Assert.Equal(Now.AddMinutes(-3), thread.GuestLastReadUtc);
+        thread.MarkReadByGuest(Now.AddMinutes(1), Now.AddMinutes(-10));
+        Assert.Equal(Now.AddMinutes(-3), thread.GuestLastReadUtc);
+        thread.MarkReadByGuest(Now.AddMinutes(2));
+        Assert.Equal(Now.AddMinutes(2), thread.GuestLastReadUtc);
+
+        thread.MarkReadByVenue(Now, Now.AddHours(1));
+        Assert.Equal(Now, thread.VenueLastReadUtc);
+        Assert.Throws<ArgumentException>(() => thread.MarkReadByVenue(Now, DateTime.SpecifyKind(Now, DateTimeKind.Local)));
+    }
 }

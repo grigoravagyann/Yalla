@@ -218,8 +218,11 @@ venue's "Ask: are you coming?" - written in the same transaction as the message,
   question with the booking's time in the guest's language ("Գալի՞ս եք 19:30-ին։", "Вы придёте к 19:30?", "Are you
   coming at 19:30?"). Never the staff member's name.
 - **Data** `kind` `venue-message`, `conversationId`, `reservationId` or `takeawayOrderId`, `ask` `"true"`/`"false"`.
-- **`categoryId`** `venue-ask` for the ask (the app attaches "I'm coming", "Late 15 min" and a text reply), `venue-message`
-  otherwise (a text reply). `NotificationMessage.CategoryId`, already sent to Expo as `categoryId`.
+- **`categoryId`** by the kind and the branch's `guestsCanWrite` at send time (`VenueMessageCategories`), so no push
+  offers a Reply the venue would refuse: guests may write - `venue-ask` for the ask ("I'm coming", "Late 15 min" and a
+  text reply), `venue-message` for a text (a text reply); `guestsCanWrite` off - `venue-ask-buttons` (the two answers,
+  no reply) and `venue-message-readonly` (no actions). The app registers all four. `NotificationMessage.CategoryId`,
+  already sent to Expo as `categoryId`.
 - **Feed** entry `venue-message` beside it: params `venueName`, `branchName`, `conversationId`, `subjectKind`
   (`reservation`/`takeaway`), `ask`, `text` (140 at most; absent for the ask), and the booking's `date`/`time` or the
   order's `code`; `reservationId` or `orderId` set.
@@ -228,8 +231,8 @@ venue's "Ask: are you coming?" - written in the same transaction as the message,
 
 ### The venue's "Ask: are you coming?"
 
-Since 2026-10-23 a message in the booking's thread, pushed as `message.to-guest` with `categoryId` `venue-ask` and a
-`venue-message` feed entry - above. (Before, it was the automatic question's `reservation.on-your-way` with
+Since 2026-10-23 a message in the booking's thread, pushed as `message.to-guest` with `categoryId` `venue-ask` (or
+`venue-ask-buttons` while guests cannot type) and a `venue-message` feed entry - above. (Before, it was the automatic question's `reservation.on-your-way` with
 `staffAsked: true` and a `booking-on-your-way` entry with `askedByVenue: "true"`; the handler still sends such a message
 already queued.) The automatic question is not asked on top of one the venue already asked. See
 [reservations.md](reservations.md#3h-pre-orders).

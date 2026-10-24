@@ -20,6 +20,9 @@ append and the summaries other reads carry. Endpoints: `Api/Endpoints/MessageEnd
   (`UPDLOCK, HOLDLOCK` on the booking or order, after the account's lock when the write takes that too), so two first
   messages at once make one thread. The unique index is the backstop. A subject nobody wrote about has none, and its
   reads answer `conversationId` absent and `messages: []`.
+- **Linked to the account the subject holds under that lock** - read again there, never taken from a read made before
+  the locks: an account deleted in between has had its link cut from the booking or order, and a new thread must not
+  hand it back (`GuestThreads.FindOrStartAsync`).
 - **`ConversationMessage`** - `Author` (1 Guest, 2 Venue, 3 System), `Kind` (1 Text, 2 AskComing, 3 Answer, 4 Status),
   `Body` (Text only - a check constraint), `AnswerKind` (1 Coming, 2 Late, 3 NotComing) and `LateMinutes` on an answer
   and its status line, `HeldUntilLocal` on a late answer's status line, `StaffMemberId` and `StaffName` (a snapshot) on a
@@ -61,11 +64,17 @@ it any time.
 - **Pace.** A guest writes at most **5 messages a minute and 60 in a thread**: **429 `messages-too-fast`**
   (`context.conversationId`, `perMinute`, `perConversation`, and `retryAfterUtc` with a `Retry-After` header while
   waiting helps; absent once the thread's own limit is spent). Counted under the subject's lock, so it is a real limit.
+  The header's seconds are counted on the service's clock (`IClock`) from the same instant as `retryAfterUtc`.
 - **Idempotent on `clientCommandId`.** A retry answers the message the first try wrote, `wasReplay: true`; nobody is
   told twice. Checked under the lock, before the open, permission and pace checks, so a retry after the thread closed
   still answers what was written. The same id with other words - or from another member of staff - is a client bug,
   not a retry: **409 `client-command-id-in-use`**, rather than the first message answered and the new one dropped.
-- **Read marks.** Writing marks the writer's side read. Any member of staff reading marks it for the venue.
+- **Read marks.** Writing marks the writer's side read. Any member of staff reading marks it for the venue (a
+  platform admin's read marks nothing). `POST .../conversation/read` takes an optional JSON body `{ upToUtc }` - the
+  `createdAtUtc` of the newest message the screen has shown: the mark becomes `min(now, upToUtc)`, so a message that
+  landed between the client's poll and its "read" stays unread. A mark never moves backwards (an earlier `upToUtc`
+  changes nothing - one conditional `UPDATE`, so two tablets at once cannot either). No body, `{}` or no `upToUtc`: now.
+  An instant with an offset is converted; one without is taken as UTC.
 
 ## 4. The ask and the answers
 
@@ -112,7 +121,8 @@ DinerUnreadMessages { total, items: [{ conversationId, subjectKind, subjectId, v
                                        lastAuthor, lastAtUtc, open }] }
 ```
 
-Send body: `{ text, clientCommandId }`. `unreadCount` / `unread`: venue messages after `GuestLastReadUtc`. The unread list
+Send body: `{ text, clientCommandId }`. Read body (optional): `{ upToUtc? }` (§3). `unreadCount` / `unread`: venue
+messages after `GuestLastReadUtc`. The unread list
 holds the threads that are open or have something unread (and are still readable), newest first.
 
 **Summaries.** The diner's booking list and detail (`getMyReservations`, each booking) and the Orders tab's takeaway
@@ -143,13 +153,24 @@ StaffConversationView = the diner's view + guestName, guestPhone (empty for a pl
 StaffMessageResult { conversationId, id, author, kind, text, createdAtUtc, staffName, wasReplay }
 ```
 
+Read body (optional), as the guest's: `{ upToUtc? }` (§3).
+
 - **The inbox** holds threads that are open or had a message in the last 24 hours (`GuestThreads.RelevantAt`). A thread
-  with a guest message the venue has not answered since comes first, the longest waiting first; the rest newest first.
+  with a typed guest message the venue has not answered since comes first, the longest waiting first; the rest newest
+  first.
+- **What it costs.** `RelevantAt` runs on every floor poll, so it does not grow with the branch's history: three
+  disjoint legs glued with `UNION ALL` - threads written to in the last 24 hours (`IX_Conversations_BranchId_LastMessageUtc`),
+  the quieter threads of bookings still live (`IX_Reservations_BranchId_EndUtc_Live`: pending, confirmed or seated,
+  ending after two hours ago) and of orders still moving (`IX_TakeawayOrders_BranchId_Status`), each finding its thread
+  by the unique subject index.
   `label` is the table for a booking and the `T-` code for an order; `localTime` the booking's start or the order's ready
   time. `awaitingGuestAnswer`: the last message is the venue's ask.
-- **Unread** for the venue: guest messages (text and answers) after `VenueLastReadUtc`. **Unanswered**: a guest message
-  with no venue message after it, in a thread still open - the remind rings when the oldest has waited
-  `remindAfterMinutes`. A closed thread cannot be answered, so nothing in it waits or rings (`GuestThreads.OpenAt`).
+- **Unread** for the venue: guest messages (text and answers) after `VenueLastReadUtc` - `unreadFromGuest`, the floor's
+  `unreadTotal`. **Unanswered**: a guest **text** message with no venue message (text or ask) after it, in a thread
+  still open - `oldestUnansweredGuestMessageUtc`, the floor's `oldestUnansweredUtc`, the inbox's order; the remind rings
+  when the oldest has waited `remindAfterMinutes`. The guest's answers (coming, late, not coming) ask nothing back:
+  they are unread until somebody opens the thread, but never wait and never ring. A closed thread cannot be answered,
+  so nothing in it waits or rings (`GuestThreads.OpenAt`).
 - **The floor** (`getBranchFloor`) carries `messages: { unreadTotal, oldestUnansweredUtc? }` over the same threads, and
   each table `nextReservationUnreadMessages` and `sittingUnreadMessages` - folded into its one statement, so the tile,
   the Now rail and the tab's badge need no second read. The tablet polls, as for takeaway: messages write nothing to the
@@ -176,8 +197,16 @@ switch living there would be reset by an edit that never showed it (the takeaway
 
 Every **venue** message - text or ask - writes, in the same transaction and under the account's lock, the push
 `message.to-guest` (due at once, keyed `conversation:{id}:message:{messageId}`) and the feed entry `venue-message`. See
-[notifications.md](notifications.md#guest-messages-messageto-guest) for the payload, the `venue-ask` / `venue-message`
-categories and when it is not sent. **Guest messages push nothing**: the tablet polls.
+[notifications.md](notifications.md#guest-messages-messageto-guest) for the payload and when it is not sent. **Guest
+messages push nothing**: the tablet polls.
+
+The push's `categoryId` - the actions the app hangs under it - follows the branch's `guestsCanWrite` when it is sent,
+so no push offers a Reply the venue would refuse:
+
+| | Guests may write | `guestsCanWrite` off |
+|---|---|---|
+| Ask | `venue-ask` - "I'm coming", "Late 15 min", Reply (text input) | `venue-ask-buttons` - the two answers, no Reply |
+| Text | `venue-message` - Reply (text input) | `venue-message-readonly` - no actions; a tap opens the thread |
 
 ## 7. The account's deletion
 

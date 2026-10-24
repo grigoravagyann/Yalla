@@ -3,11 +3,15 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Yalla.Application.Messages;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Messages;
+using Yalla.Infrastructure.Identity;
+using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Notifications;
+using Yalla.Infrastructure.Services;
 using static Yalla.UnitTests.Integration.BookingPerNumberTests;
 using static Yalla.UnitTests.Integration.PreOrderTests;
 
@@ -194,13 +198,28 @@ public class GuestMessageTests(SqlServerFixture fixture)
         Assert.Equal("18:15", last[1].GetProperty("status").GetProperty("heldUntilLocal").GetString());
         Assert.False(last[1].GetProperty("status").GetProperty("cancelled").GetBoolean());
 
-        // On the tablet the answer is a guest message waiting for a reply.
+        // On the tablet the answer is unread until somebody opens the thread, but it asks nothing back: nothing waits
+        // for a reply, nothing rings.
         row = Assert.Single((await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations")).GetProperty("items").EnumerateArray());
         Assert.False(row.GetProperty("awaitingGuestAnswer").GetBoolean());
         Assert.Equal("answer", row.GetProperty("lastMessage").GetProperty("kind").GetString());
         Assert.Equal(15, row.GetProperty("lastMessage").GetProperty("answer").GetProperty("lateMinutes").GetInt32());
         Assert.Equal("18:15", row.GetProperty("latestStatus").GetProperty("heldUntilLocal").GetString());
-        Assert.Equal(startUtc.AddMinutes(-58), row.GetProperty("oldestUnansweredGuestMessageUtc").GetDateTime());
+        Assert.Equal(1, row.GetProperty("unreadFromGuest").GetInt32());
+        Assert.False(row.TryGetProperty("oldestUnansweredGuestMessageUtc", out _));
+        floor = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor");
+        Assert.Equal(1, floor.GetProperty("messages").GetProperty("unreadTotal").GetInt32());
+        Assert.False(floor.GetProperty("messages").TryGetProperty("oldestUnansweredUtc", out _));
+
+        // The guest's words after it do wait - from when they were written, not from the answer.
+        factory.Clock.UtcNow = startUtc.AddMinutes(-57);
+        await OkAsync(await diner.PostAsJsonAsync($"{thread}/messages", new { text = "Is parking free?", clientCommandId = Guid.CreateVersion7() }));
+        row = Assert.Single((await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations")).GetProperty("items").EnumerateArray());
+        Assert.Equal(2, row.GetProperty("unreadFromGuest").GetInt32());
+        Assert.Equal(startUtc.AddMinutes(-57), row.GetProperty("oldestUnansweredGuestMessageUtc").GetDateTime());
+        floor = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor");
+        Assert.Equal(2, floor.GetProperty("messages").GetProperty("unreadTotal").GetInt32());
+        Assert.Equal(startUtc.AddMinutes(-57), floor.GetProperty("messages").GetProperty("oldestUnansweredUtc").GetDateTime());
 
         // Somebody else's booking is not found - word for word as no booking.
         await ProblemAsync(await stranger.GetAsync(thread), HttpStatusCode.NotFound, "not-found");
@@ -284,6 +303,14 @@ public class GuestMessageTests(SqlServerFixture fixture)
             $"/api/reservations/{id}/conversation/messages", new { text = "See you at six.", clientCommandId = Guid.CreateVersion7() }));
         Assert.Equal("Test Manager", fromManager.GetProperty("staffName").GetString());
 
+        // Guests cannot type here, so no push offers a Reply the venue would refuse: the text has no actions, the ask
+        // only its two answer buttons.
+        await OkAsync(await manager.PostAsync($"/api/reservations/{id}/ask-on-my-way", null));
+        var channel = new RecordingChannel();
+        await DeliverAsync(channel, fromManager.GetProperty("conversationId").GetGuid(), factory.Clock);
+        Assert.Equal("venue-message-readonly", Assert.Single(channel.Messages, m => m.Data["ask"] == "false").CategoryId);
+        Assert.Equal("venue-ask-buttons", Assert.Single(channel.Messages, m => m.Data["ask"] == "true").CategoryId);
+
         // The answer buttons still write, typed messages switched off or not.
         await OkAsync(await diner.PostAsJsonAsync($"/api/reservations/{id}/on-my-way", new { }));
         var guestView = await ReadAsync(diner, $"/api/diner/reservations/{id}/conversation");
@@ -320,11 +347,11 @@ public class GuestMessageTests(SqlServerFixture fixture)
             await OkAsync(await diner.PostAsJsonAsync(url, new { text = $"Message {i}", clientCommandId = Guid.CreateVersion7() }));
         }
 
+        // Told on the service's clock - the header and retryAfterUtc say the same moment, whatever the machine's clock.
         factory.Clock.UtcNow = at.AddSeconds(30);
-        var tooFast = await ProblemAsync(
-            await diner.PostAsJsonAsync(url, new { text = "One more", clientCommandId = Guid.CreateVersion7() }),
-            HttpStatusCode.TooManyRequests,
-            "messages-too-fast");
+        var refusal = await diner.PostAsJsonAsync(url, new { text = "One more", clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(TimeSpan.FromSeconds(30), refusal.Headers.RetryAfter?.Delta);
+        var tooFast = await ProblemAsync(refusal, HttpStatusCode.TooManyRequests, "messages-too-fast");
         Assert.Equal(at.AddMinutes(1), tooFast.GetProperty("context").GetProperty("retryAfterUtc").GetDateTime());
 
         factory.Clock.UtcNow = at.AddMinutes(1);
@@ -471,6 +498,21 @@ public class GuestMessageTests(SqlServerFixture fixture)
 
         var unread = Assert.Single((await ReadAsync(diner, "/api/diner/messages/unread")).GetProperty("items").EnumerateArray());
         Assert.Equal("takeaway", unread.GetProperty("subjectKind").GetString());
+
+        // Read up to the reply the screen showed - by its own createdAtUtc - on both sides of the order's thread.
+        var replyAt = view.GetProperty("messages").EnumerateArray().Last().GetProperty("createdAtUtc").GetString();
+        Assert.Equal(HttpStatusCode.NoContent, (await diner.PostAsJsonAsync(
+            $"/api/diner/takeaway-orders/{orderId}/conversation/read", new { upToUtc = replyAt })).StatusCode);
+        Assert.Equal(0, (await ReadAsync(diner, $"/api/diner/takeaway-orders/{orderId}/conversation")).GetProperty("unreadCount").GetInt32());
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsJsonAsync(
+            $"/api/takeaway-orders/{orderId}/conversation/read", new { upToUtc = replyAt })).StatusCode);
+        Assert.Equal(0, (await ReadAsync(waiter, $"/api/takeaway-orders/{orderId}/conversation")).GetProperty("unreadCount").GetInt32());
+
+        // A day on, nobody has written since, but the order is still moving: its thread is still in view.
+        factory.Clock.UtcNow = afternoon.AddHours(25);
+        Assert.Equal(orderId, Assert.Single((await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations"))
+            .GetProperty("items").EnumerateArray()).GetProperty("subject").GetProperty("id").GetGuid());
+        factory.Clock.UtcNow = afternoon.AddMinutes(3);
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
@@ -676,6 +718,188 @@ public class GuestMessageTests(SqlServerFixture fixture)
         }));
 
         Assert.Equal(templates, saved.GetProperty("templates").EnumerateArray().Select(t => t.GetString()!).ToArray());
+    }
+
+    /// <summary>
+    /// A read mark moves up to the newest message the screen showed (<c>upToUtc</c>) - so one that arrived between the
+    /// poll and the "read" stays unread - never past now, never backwards; no body is now. Both sides, an instant with
+    /// an offset included.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_read_marks_what_the_screen_showed_never_past_now_and_never_back()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, _) = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var booking = await CreatedAsync(diner, AppBooking(factory, branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        var at = booking.GetProperty("startUtc").GetDateTime().AddDays(-1);
+        var thread = $"/api/diner/reservations/{id}/conversation";
+        var staffThread = $"/api/reservations/{id}/conversation";
+
+        factory.Clock.UtcNow = at;
+        var first = await OkAsync(await diner.PostAsJsonAsync($"{thread}/messages", new { text = "One", clientCommandId = Guid.CreateVersion7() }));
+        factory.Clock.UtcNow = at.AddMinutes(1);
+        await OkAsync(await diner.PostAsJsonAsync($"{thread}/messages", new { text = "Two", clientCommandId = Guid.CreateVersion7() }));
+
+        // The tablet showed only the first: the second stays unread.
+        factory.Clock.UtcNow = at.AddMinutes(2);
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsJsonAsync(
+            $"{staffThread}/read", new { upToUtc = first.GetProperty("createdAtUtc").GetString() })).StatusCode);
+        var staffView = await ReadAsync(waiter, staffThread);
+        Assert.Equal(1, staffView.GetProperty("unreadCount").GetInt32());
+        Assert.Equal(at, staffView.GetProperty("venueLastReadUtc").GetDateTime());
+
+        // An older mark changes nothing.
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsJsonAsync($"{staffThread}/read", new { upToUtc = at.AddHours(-1) })).StatusCode);
+        Assert.Equal(at, (await ReadAsync(waiter, staffThread)).GetProperty("venueLastReadUtc").GetDateTime());
+
+        // A mark in the future is now: what the guest writes next is unread.
+        factory.Clock.UtcNow = at.AddMinutes(3);
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsJsonAsync($"{staffThread}/read", new { upToUtc = at.AddDays(1) })).StatusCode);
+        Assert.Equal(at.AddMinutes(3), (await ReadAsync(waiter, staffThread)).GetProperty("venueLastReadUtc").GetDateTime());
+        factory.Clock.UtcNow = at.AddMinutes(4);
+        await OkAsync(await diner.PostAsJsonAsync($"{thread}/messages", new { text = "Three", clientCommandId = Guid.CreateVersion7() }));
+        Assert.Equal(1, (await ReadAsync(waiter, staffThread)).GetProperty("unreadCount").GetInt32());
+
+        // No body: now. An empty object too.
+        factory.Clock.UtcNow = at.AddMinutes(5);
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsync($"{staffThread}/read", null)).StatusCode);
+        Assert.Equal(0, (await ReadAsync(waiter, staffThread)).GetProperty("unreadCount").GetInt32());
+        Assert.Equal(HttpStatusCode.NoContent, (await waiter.PostAsJsonAsync($"{staffThread}/read", new { })).StatusCode);
+
+        // The guest's side: two replies, the screen showed the first; then the second, written with Yerevan's offset.
+        factory.Clock.UtcNow = at.AddMinutes(6);
+        var reply = await OkAsync(await waiter.PostAsJsonAsync($"{staffThread}/messages", new { text = "Yes", clientCommandId = Guid.CreateVersion7() }));
+        factory.Clock.UtcNow = at.AddMinutes(7);
+        var second = await OkAsync(await waiter.PostAsJsonAsync($"{staffThread}/messages", new { text = "And yes", clientCommandId = Guid.CreateVersion7() }));
+
+        factory.Clock.UtcNow = at.AddMinutes(8);
+        Assert.Equal(HttpStatusCode.NoContent, (await diner.PostAsJsonAsync(
+            $"{thread}/read", new { upToUtc = reply.GetProperty("createdAtUtc").GetString() })).StatusCode);
+        Assert.Equal(1, (await ReadAsync(diner, thread)).GetProperty("unreadCount").GetInt32());
+        Assert.Equal(1, (await ReadAsync(diner, "/api/diner/messages/unread")).GetProperty("total").GetInt32());
+
+        var inYerevan = new DateTimeOffset(second.GetProperty("createdAtUtc").GetDateTime(), TimeSpan.Zero).ToOffset(TimeSpan.FromHours(4));
+        Assert.Equal(HttpStatusCode.NoContent, (await diner.PostAsJsonAsync(
+            $"{thread}/read", new { upToUtc = inYerevan.ToString("O", System.Globalization.CultureInfo.InvariantCulture) })).StatusCode);
+        Assert.Equal(0, (await ReadAsync(diner, thread)).GetProperty("unreadCount").GetInt32());
+        Assert.Equal(at.AddMinutes(7), (await ReadAsync(waiter, staffThread)).GetProperty("guestLastReadUtc").GetDateTime());
+    }
+
+    /// <summary>
+    /// The threads in view are those written to in the last day and those whose subject still takes messages - however
+    /// long ago anybody wrote - and not a quiet one whose booking ended: the inbox and the floor alike, each thread once.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_quiet_thread_stays_in_view_while_its_booking_is_live()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, _) = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var other = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var live = await CreatedAsync(diner, AppBooking(factory, branch, daysAhead: 3));
+        var liveId = live.GetProperty("id").GetGuid();
+        var startUtc = live.GetProperty("startUtc").GetDateTime();
+        var gone = (await CreatedAsync(other, AppBooking(factory, branch, daysAhead: 3, tableIndex: 1))).GetProperty("id").GetGuid();
+        var inboxUrl = $"/api/branches/{branch.BranchId}/conversations";
+        var floorUrl = $"/api/branches/{branch.BranchId}/tables/floor";
+
+        factory.Clock.UtcNow = startUtc.AddDays(-2);
+        await OkAsync(await diner.PostAsJsonAsync(
+            $"/api/diner/reservations/{liveId}/conversation/messages", new { text = "A birthday cake?", clientCommandId = Guid.CreateVersion7() }));
+        await OkAsync(await other.PostAsJsonAsync(
+            $"/api/diner/reservations/{gone}/conversation/messages", new { text = "Window seat?", clientCommandId = Guid.CreateVersion7() }));
+        await OkAsync(await other.PostAsJsonAsync($"/api/reservations/{gone}/cancel", new { }));
+
+        // Both written within the day: both in view, once each.
+        var items = (await ReadAsync(waiter, inboxUrl)).GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(2, items.Count);
+        Assert.Equal(2, items.Select(i => i.GetProperty("conversationId").GetGuid()).Distinct().Count());
+
+        // A day and a half on, nobody has written since: the live booking's thread is still in view and still waits;
+        // the cancelled one's has left.
+        factory.Clock.UtcNow = startUtc.AddDays(-0.5);
+        var row = Assert.Single((await ReadAsync(waiter, inboxUrl)).GetProperty("items").EnumerateArray());
+        Assert.Equal(liveId, row.GetProperty("subject").GetProperty("id").GetGuid());
+        Assert.True(row.GetProperty("open").GetBoolean());
+        Assert.Equal(startUtc.AddDays(-2), row.GetProperty("oldestUnansweredGuestMessageUtc").GetDateTime());
+
+        var messages = (await ReadAsync(waiter, floorUrl)).GetProperty("messages");
+        Assert.Equal(1, messages.GetProperty("unreadTotal").GetInt32());
+        Assert.Equal(startUtc.AddDays(-2), messages.GetProperty("oldestUnansweredUtc").GetDateTime());
+
+        // Two hours after the booking ends, with nothing written for days, it leaves too.
+        factory.Clock.UtcNow = live.GetProperty("endUtc").GetDateTime().AddHours(2);
+        Assert.Empty((await ReadAsync(waiter, inboxUrl)).GetProperty("items").EnumerateArray());
+        Assert.Equal(0, (await ReadAsync(waiter, floorUrl)).GetProperty("messages").GetProperty("unreadTotal").GetInt32());
+    }
+
+    /// <summary>
+    /// The account is deleted after the venue's write read the booking but before it took the locks: the thread the
+    /// write makes is the venue's record with no account behind it - not linked to the tombstone - and nobody is told.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_venue_message_racing_the_guests_deletion_links_no_account()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, _) = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+
+        var booking = await CreatedAsync(diner, AppBooking(factory, branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        factory.Clock.UtcNow = booking.GetProperty("startUtc").GetDateTime().AddDays(-1);
+
+        Guid dinerUserId;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            dinerUserId = (await db.Reservations.SingleAsync(r => r.Id == id)).DinerUserId!.Value;
+        }
+
+        // The waiter's write has read the booking - and its account - and is about to take the account's lock.
+        var race = new BeforeFirstCommandMatching(
+            sql => sql.Contains("FROM DinerUsers WITH (UPDLOCK", StringComparison.OrdinalIgnoreCase),
+            async () =>
+            {
+                await using var eraseDb = fixture.CreateContext(factory.Clock);
+                var account = await eraseDb.DinerUsers.SingleAsync(d => d.Id == dinerUserId);
+                await DinerAccountDeletion.EraseAsync(
+                    eraseDb, null!, new RefreshTokenStore(eraseDb, factory.Clock), account, factory.Clock.UtcNow, CancellationToken.None);
+            });
+
+        await using (var writeDb = fixture.CreateContext(factory.Clock, race))
+        {
+            var actor = TestActor.Waiter(branch.WaiterId);
+            var messages = new GuestMessageService(
+                writeDb,
+                factory.Clock,
+                actor,
+                new AuthorizationQueries(writeDb),
+                fixture.CreateBranchGuard(writeDb, actor),
+                new Outbox(writeDb, factory.Clock, NullLogger<Outbox>.Instance),
+                NullLogger<GuestMessageService>.Instance);
+
+            await messages.WriteAsStaffAsync(ConversationSubject.Reservation(id), "Your table is ready.", Guid.CreateVersion7());
+        }
+
+        Assert.True(race.Fired, "The deletion never ran mid-write, so this proves nothing.");
+
+        await using var verify = fixture.CreateContext(factory.Clock);
+        var thread = await verify.Conversations.SingleAsync(c => c.ReservationId == id);
+        Assert.Null(thread.DinerUserId);
+        Assert.False(await verify.OutboxMessages.AnyAsync(m => m.Type == OutboxMessageTypes.MessageToGuest
+                                                              && m.PayloadJson.Contains(thread.Id.ToString())));
+        Assert.False(await verify.DinerNotifications.AnyAsync(n => n.DinerUserId == dinerUserId));
     }
 
     // ---------------------------------------------------------------- helpers

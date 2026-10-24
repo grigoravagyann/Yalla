@@ -1125,7 +1125,7 @@ internal static class ApiExceptionMapper
                     ["perMinute"] = Domain.Messages.ConversationRules.GuestMessagesPerMinute,
                     ["perConversation"] = Domain.Messages.ConversationRules.GuestMessagesPerConversation,
                 },
-            RetryAfterSeconds: e.RetryAfterUtc is { } until ? RetryAfterSeconds(until - DateTime.UtcNow) : null),
+            RetryAfterSeconds: e.RetryAfter is { } wait ? RetryAfterSeconds(wait) : null),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.
         NoShowUndoWindowClosedException e => new MappedError(

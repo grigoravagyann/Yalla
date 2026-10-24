@@ -8,8 +8,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
     /// <summary>
     /// Guest messages (2026-10-23): <c>Conversations</c> - one per booking or takeaway order, made by its first message -
     /// and <c>ConversationMessages</c>; the branch's message settings (guests and waiters may write, the app's own quick
-    /// replies, a reminder after 3 minutes); and the <c>venue-message</c> feed kind. No backfill: every branch starts with
-    /// the defaults and no thread. See <c>docs/messages.md</c>.
+    /// replies, a reminder after 3 minutes); the <c>venue-message</c> feed kind; and <c>IX_Reservations_BranchId_EndUtc_Live</c>,
+    /// the live bookings by end, which the tablet's threads in view seek on every floor poll. No backfill: every branch
+    /// starts with the defaults and no thread. See <c>docs/messages.md</c>.
     /// </summary>
     public partial class GuestMessages : Migration
     {
@@ -177,11 +178,21 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 column: "TakeawayOrderId",
                 unique: true,
                 filter: "[TakeawayOrderId] IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Reservations_BranchId_EndUtc_Live",
+                table: "Reservations",
+                columns: new[] { "BranchId", "EndUtc" },
+                filter: "[Status] IN (1, 2, 4)");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropIndex(
+                name: "IX_Reservations_BranchId_EndUtc_Live",
+                table: "Reservations");
+
             migrationBuilder.DropTable(
                 name: "ConversationMessages");
 

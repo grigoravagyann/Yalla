@@ -143,6 +143,15 @@ public static class ConversationRules
         closesAtUtc is null || nowUtc < closesAtUtc.Value.AddDays(ReadableAfterCloseDays);
 
     /// <summary>
+    /// Where a "read" moves a side's read mark to: up to the newest message the reader's screen showed
+    /// (<paramref name="upToUtc"/>, its <c>createdAtUtc</c>) - never past now, so a client's clock or a made-up instant
+    /// cannot mark unread what has not been written yet. No <paramref name="upToUtc"/>: now. The caller still never moves
+    /// a mark backwards.
+    /// </summary>
+    public static DateTime ReadMarkAt(DateTime nowUtc, DateTime? upToUtc) =>
+        upToUtc is { } upTo && upTo < nowUtc ? upTo : nowUtc;
+
+    /// <summary>
     /// Whether "are you coming?" may still be answered: a confirmed booking from two hours before its start until its
     /// end - the window <c>on-my-way</c> and <c>running-late</c> take answers in.
     /// </summary>

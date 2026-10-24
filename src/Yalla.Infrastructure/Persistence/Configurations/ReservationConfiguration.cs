@@ -83,6 +83,13 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
         // The branch day view: the staff app's booking list for a service.
         builder.HasIndex(r => new { r.BranchId, r.StartUtc });
 
+        // The branch's bookings still live - pending, confirmed or seated - by when they end: the guest-message threads
+        // the tablet keeps in view (GuestThreads.RelevantAt, on every floor poll) seek it from two hours ago, so the read
+        // costs what is live now rather than everything the branch was ever booked for.
+        builder.HasIndex(r => new { r.BranchId, r.EndUtc })
+            .HasFilter("[Status] IN (1, 2, 4)")
+            .HasDatabaseName("IX_Reservations_BranchId_EndUtc_Live");
+
         // The code the diner quotes at the door.
         builder.HasIndex(r => r.Code)
             .IsUnique()

@@ -204,7 +204,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         // Guest messages are about now whatever instant the floor is drawn for: the threads the Messages tab shows - and,
         // for the remind, those of them that can still be answered.
         var nowUtc = clock.UtcNow;
-        var threads = GuestThreads.RelevantAt(db, nowUtc);
+        var threads = GuestThreads.RelevantAt(db, branchId, nowUtc);
         var answerable = GuestThreads.OpenAt(threads, db, nowUtc);
 
         return db.Branches
@@ -230,16 +230,16 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     .Max(c => (long?)c.Sequence) ?? 0L,
 
                 // The Messages tab's badge and the remind, folded in for the same reason: the tablet badges from the
-                // floor it already polls. Unread is what the guest wrote after the venue last read; unanswered is a
-                // guest message with no venue message after it, in a thread still open - a closed one cannot be answered.
+                // floor it already polls. Unread is what the guest wrote after the venue last read - words and answers;
+                // unanswered is a guest's typed message with no venue message after it, in a thread still open - a
+                // closed one cannot be answered, and "on my way" asks nothing back.
                 MessagesUnreadTotal = threads
-                    .Where(c => c.BranchId == b.Id)
                     .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
                                                            && (c.VenueLastReadUtc == null || m.CreatedAtUtc > c.VenueLastReadUtc)))
                     .Count(),
                 MessagesOldestUnansweredUtc = answerable
-                    .Where(c => c.BranchId == b.Id)
                     .SelectMany(c => c.Messages.Where(m => m.Author == MessageAuthor.Guest
+                                                           && m.Kind == MessageKind.Text
                                                            && !c.Messages.Any(v => v.Author == MessageAuthor.Venue
                                                                                    && (v.CreatedAtUtc > m.CreatedAtUtc
                                                                                        || (v.CreatedAtUtc == m.CreatedAtUtc

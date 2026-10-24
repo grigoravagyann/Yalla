@@ -48,12 +48,13 @@ public sealed record BranchFloorState
 
 /// <summary>The branch's guest messages on the floor.</summary>
 /// <param name="UnreadTotal">
-/// Guest messages nobody at the venue has read, in threads that are open or had a message in the last 24 hours - the
-/// same threads as the Messages tab.
+/// Guest messages nobody at the venue has read - typed ones and answers - in threads that are open or had a message in
+/// the last 24 hours: the same threads as the Messages tab.
 /// </param>
 /// <param name="OldestUnansweredUtc">
-/// The oldest guest message the venue has not answered since, across those threads that are still open: ring once it
-/// has waited the venue's <c>remindAfterMinutes</c>. Absent when every open thread has the venue's last word.
+/// The oldest typed guest message the venue has not answered since (with a text or an ask), across those threads that
+/// are still open: ring once it has waited the venue's <c>remindAfterMinutes</c>. A guest's answer to "are you
+/// coming?" never waits - it is counted in <paramref name="UnreadTotal"/> only. Absent when nothing waits.
 /// </param>
 public sealed record FloorMessages(int UnreadTotal, DateTime? OldestUnansweredUtc);
 
