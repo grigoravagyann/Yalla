@@ -210,6 +210,15 @@ public static class DependencyInjection
         services.AddScoped<IOutboxHandler, TakeawayDeclinedHandler>();
         services.AddScoped<IOutboxHandler, VenueMessageHandler>();
 
+        // Staff push: Web Push to the staff app's phones and tablets. The VAPID identity is configured, generated for
+        // the run in Development, or absent - and then every push is logged instead of sent. See WebPushOptions.
+        services.AddSingleton(Bind<WebPushOptions>(configuration, WebPushOptions.SectionName));
+        services.AddSingleton<VapidKeys>();
+        services.AddHttpClient(StaffPushSender.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10));
+        services.AddScoped<StaffPushSender>();
+        services.AddScoped<IStaffPushService, StaffPushService>();
+        services.AddScoped<IOutboxHandler, StaffPushHandler>();
+
         // Ordering and the live bill. TabLedger is the shared piece: every mutation to a tab goes
         // through it, so the totals cache and the event stream are written in the same SaveChanges
         // as the change itself and neither can drift from the lines.

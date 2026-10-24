@@ -206,6 +206,14 @@ public static class OutboxMessageTypes
 
     public const string OrderReady = "tab.order-ready";
 
+    /// <summary>
+    /// To the staff devices of a branch: something on the floor needs somebody - a booking to approve, a guest's
+    /// message, a table calling, a takeaway order, an order up. Written by the save that causes it
+    /// (<c>StaffPushSignals</c>), keyed <c>staff-push:{what}:{id}</c>, and fanned out at send time to the devices that
+    /// want it. See <c>docs/notifications.md</c>, "Staff push".
+    /// </summary>
+    public const string StaffPush = "staff.push";
+
     /// <summary>The key that names what caused a message, so cancelling the cause can find it.</summary>
     public static string KeyFor(string subject, Guid id, string what) => $"{subject}:{id}:{what}";
 

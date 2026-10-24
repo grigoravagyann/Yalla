@@ -56,6 +56,7 @@ anything looking wrong. The interface enforces the pattern rather than documenti
 | `takeaway.ready` | A takeaway order is marked ready (kitchen or floor) | Immediately | The order's guest - "come and pick it up" |
 | `takeaway.declined` | Staff decline a takeaway order, or the sweep declines one nobody answered within five minutes | Immediately | The order's guest - the reason, or the apology |
 | `message.to-guest` | Somebody at the venue writes in a booking's or a takeaway order's thread, or asks "are you coming?" (`ask-on-my-way`) | Immediately | The thread's guest - the venue's name over the text, or the question; see [messages.md](messages.md) |
+| `staff.push` | A booking waits for approval, a guest writes, a table calls, a takeaway order arrives, an order is up | Immediately | The branch's staff devices that want it - see [6a](#6a-staff-push---web-push-to-the-staff-app-2026-10-24) |
 
 Both reservation messages are written when the booking is made, hours before either is due. A
 reminder whose moment has **already passed** is not written at all: a booking made an hour before it
@@ -281,6 +282,7 @@ participant:{participantId}:join-requested
 order:{orderId}:ready
 reservation:{reservationId}:on-your-way:asked:{yyyyMMddHHmmss}    (the venue's "Ask: are you coming?")
 takeaway:{orderId}:accepted   (or :ready, :declined)
+staff-push:{approval|message|call|takeaway|ready}:{id}[:{fresh id}]   (staff push, section 6a)
 ```
 
 It is **unique across the table**, enforced by an index rather than by a check in a service — two
@@ -426,6 +428,97 @@ the default behaviour of every naive push implementation, and it is why push que
 garbage that hides the real failures.
 
 Re-registering a revoked token brings it back, because that is what a reinstall looks like.
+
+---
+
+## 6a. Staff push - Web Push to the staff app (2026-10-24)
+
+Everything above is a diner's. The staff app - `/staff`, on a personal phone ([auth.md](auth.md#personal-phones-2026-10-24))
+or a floor tablet - is pushed too, by **Web Push** rather than Expo: it is a PWA in a browser, and the browser's push
+service is the only thing that wakes a phone in a pocket.
+
+### The five kinds
+
+One outbox type, **`staff.push`**, written by the save that causes it - `StaffPushSignals`, beside the change-stream
+signals in `YallaDbContext.SaveChanges`, for their reason: each of these happens on several paths, and a rule every
+path had to remember is a rule one of them forgets. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is
+told, in which words and whether it is still true are decided at send time, seconds later.
+
+| Switch (`kind`) | Written when | Key | Still true at send time when | Deep link (`url`) | Collapse (`tag`) |
+|---|---|---|---|---|---|
+| `approvals` | A booking is added as `PendingApproval`, moved into it, moved to another time while waiting, or waits for another reason (the guest before it stepped aside: the floor decides now) | `staff-push:approval:{reservationId}:{fresh id}` | The floor's awaiting list would show it: waiting, not started, inside its answer window, not waiting on the earlier guest's own answer in the app | `/staff/approve/{reservationId}` | `approval:{reservationId}` |
+| `guestMessages` | A guest's text, or answer to "are you coming?" (coming / late / not coming), lands in a booking's or a takeaway order's thread | `staff-push:message:{messageId}` | Nobody at the venue has opened the thread since | `/staff/messages/{conversationId}` | `message:{conversationId}` |
+| `tableCalls` | A service request is raised - a waiter, water, napkins, the bill: what the floor shows as calling | `staff-push:call:{serviceRequestId}` | Nobody said "I'm on it" and no newer request replaced it | `/staff/now?call={serviceRequestId}` | `call:{tableId}` |
+| `takeaway` | A takeaway order is placed and waits to be accepted (one a branch accepts automatically needs nobody) | `staff-push:takeaway:{orderId}` | Still `Sent` | `/staff/takeaway/{orderId}` | `takeaway:{orderId}` |
+| `kitchenReady` | A tab order moves to `Ready` | `staff-push:ready:{orderId}:{fresh id}` | Still `Ready` - not served, not voided | `/staff/floor?table={tableId}` | `ready:{orderId}` |
+
+There is no "on the way to pick up" for takeaway: the guest has no such answer today, so nothing writes it.
+
+### Who is told
+
+The live devices of the event's branch with a push subscription whose switches include the kind:
+
+- **A tablet** is the branch's - pushed whenever it wants the kind. It has no person and no shift.
+- **A phone** only while its person still opens it there - active, of the venue, at the branch or venue-wide, not
+  kitchen - and, when its **"only during my shift"** is on, only while they are on a `StaffShift` at the branch now
+  (decided on instants, as the PIN roster decides it). The switch defaults on for a waiter and off for a manager,
+  general manager or owner.
+- **An order up** goes to the table's own waiter - who seated the party, else who placed the order - on their
+  phones, and to the branch's tablets that want it. With no such person, every phone **on shift** that wants it.
+
+### What is sent
+
+The service worker receives exactly this JSON (RFC 8291 `aes128gcm`, one record, VAPID per RFC 8292):
+
+```json
+{ "title": "Table 2 · asking for the bill", "body": "The guests are ready to pay",
+  "url": "/staff/now?call=0193…", "tag": "call:0193…", "kind": "tableCalls" }
+```
+
+The words (`StaffPushText`) are in the device's language - `StaffDevice.Locale`, which the app sets with its
+notification switches when the person picks a language - else Armenian. Never a guest's phone number, never the
+colleague who caused it; a guest's message is quoted to 140 characters. Headers: `TTL` (`WebPush:TtlSeconds`, 900),
+`Urgency: high`, and `Topic` - the tag hashed - so a newer push about the same thing replaces one the phone has not
+fetched.
+
+### Delivery
+
+- **2xx**: delivered. **404 or 410**: the browser unsubscribed or the app was removed - the subscription row is
+  **deleted** on the spot, and the device subscribes again if it wants pushes.
+- **Anything else** - 429, 5xx, a refused VAPID token, no answer - is logged (the push service's host and the status,
+  never the endpoint's path, the keys or the words). The message is **retried only when nothing at all was delivered**,
+  so a retry never buzzes a phone twice; otherwise the outbox's backoff and dead-lettering apply as to every message.
+- **Older than `WebPush:TtlSeconds`** when its turn comes (a sleeping laptop), it is dropped: a call from twenty minutes
+  ago is not news.
+
+### Configuration
+
+| Setting | Default | What it is |
+|---|---|---|
+| `WebPush:Subject` | - | The VAPID contact, `mailto:` or `https:`. Required with keys |
+| `WebPush:PublicKey` | - | The VAPID public key, base64url (65 bytes uncompressed P-256) |
+| `WebPush:PrivateKey` | - | **A secret**: user secrets locally, `WebPush__PrivateKey` elsewhere, never committed |
+| `WebPush:TtlSeconds` | 900 | How long a push is worth delivering |
+| `WebPush:AllowedEndpointHosts` | Google's, Mozilla's, Apple's, Microsoft's push services | Host suffixes a subscription's endpoint may name - the server POSTs there, so it is not any URL a client sends |
+
+The three VAPID values come together or not at all, and the keys must be a matching pair: the host refuses to start
+otherwise. **None of them** and pushes are written to the log (kind, tag and device - not the words) instead of sent,
+like the `Log` channel; `GET /api/staff/push-config` then says `enabled: false`. **In Development** with none, a key
+pair is generated at startup for that run; the staff app compares the public key it is given with the one its
+subscription was made with and subscribes again when they differ. Generate a deployment's pair once
+(`npx web-push generate-vapid-keys`) and keep it - a new pair makes every phone subscribe again.
+
+### The device's side
+
+| Route | What it does |
+|---|---|
+| `GET /api/staff/push-config` | `{ enabled, publicKey }` - device token or PIN session |
+| `PUT /api/staff/device/push-subscription` | `{ endpoint, keys: { p256dh, auth } }` - one per device; one browser's subscription belongs to one device |
+| `DELETE /api/staff/device/push-subscription` | Forget it |
+| `GET /api/staff/device/notification-preferences` | `{ approvals, guestMessages, tableCalls, takeaway, kitchenReady, onlyDuringShift, locale, subscribed, isDefault }` |
+| `PUT /api/staff/device/notification-preferences` | The six switches, and optionally `locale` |
+
+All but the first need the person's PIN session on the device and act on that device only.
 
 ---
 

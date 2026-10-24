@@ -1,11 +1,13 @@
 using Yalla.Api.Authorization;
 using Yalla.Application.Auth;
+using Yalla.Application.Notifications;
 using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.Endpoints;
 
 /// <summary>
-/// What a staff device does about itself, with a person signed in on it: a phone unpairing itself.
+/// What a staff device does about itself, with a person signed in on it: its Web Push subscription and switches, and
+/// a phone unpairing itself.
 /// </summary>
 /// <remarks>
 /// Addressed by nothing: the device and the person are the session token's own claims, so there is no id a caller
@@ -15,9 +17,82 @@ public static class StaffDeviceEndpoints
 {
     public static IEndpointRouteBuilder MapStaffDeviceEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapGet("/api/staff/push-config", GetPushConfig)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.StaffDeviceToken)
+            .WithName("getStaffPushConfig")
+            .WithSummary("Whether staff pushes are sent, and the key to subscribe with")
+            .WithDescription(
+                "`{ enabled, publicKey }`. `publicKey` is the VAPID public key, base64url - the "
+                + "`applicationServerKey` for `pushManager.subscribe`. **When it differs from the key the browser's "
+                + "current subscription was made with, unsubscribe and subscribe again**: a Development server "
+                + "generates a new pair every time it starts, and a key rotated in a deployment does the same.\n\n"
+                + "`enabled: false` (no `publicKey`) means this server has no VAPID keys and logs pushes instead of "
+                + "sending them - offer no switch. Readable with the device token alone, so the install screen can "
+                + "say so before anybody signs in.")
+            .Produces<StaffPushConfig>()
+            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No staff device token, or the device was revoked.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a staff device or a PIN session on one.");
+
         var device = app.MapGroup("/api/staff/device")
             .WithTags(EndpointConventions.StaffTag)
             .RequireAuthorization(YallaPolicies.StaffDeviceSession);
+
+        device.MapPut("/push-subscription", SaveSubscriptionAsync)
+            .WithName("saveStaffPushSubscription")
+            .WithSummary("Store this device's Web Push subscription")
+            .WithDescription(
+                "Send `PushSubscription.toJSON()` - `{ endpoint, keys: { p256dh, auth } }` - after subscribing, and "
+                + "again whenever the browser's subscription changes. One subscription per device: this replaces the "
+                + "device's earlier one, and a subscription another device row held (the phone was paired again) "
+                + "moves here. Phones and tablets alike; it acts on the device the PIN session is open on.\n\n"
+                + "`endpoint` must be an https URL on a known push service (Google's, Mozilla's, Apple's, Microsoft's - "
+                + "`WebPush:AllowedEndpointHosts`), `keys.p256dh` a P-256 public key and `keys.auth` a 16-byte secret, "
+                + "both base64url; otherwise `422 validation-failed` naming the field. A subscription the push "
+                + "service later answers 404 or 410 for is deleted by the server; subscribe again.")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No session, or the device was revoked.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a PIN session on a staff device.")
+            .ProducesProblemDetails(
+                StatusCodes.Status422UnprocessableEntity,
+                "`endpoint`, `keys.p256dh` or `keys.auth` is not usable - `context.field` names it.");
+
+        device.MapDelete("/push-subscription", DeleteSubscriptionAsync)
+            .WithName("deleteStaffPushSubscription")
+            .WithSummary("Forget this device's Web Push subscription")
+            .WithDescription(
+                "After `pushSubscription.unsubscribe()`, or when the person turns notifications off. Answers 204 "
+                + "whether or not there was one.")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No session, or the device was revoked.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a PIN session on a staff device.");
+
+        device.MapGet("/notification-preferences", GetPreferencesAsync)
+            .WithName("getStaffNotificationPreferences")
+            .WithSummary("This device's notification switches")
+            .WithDescription(
+                "`{ approvals, guestMessages, tableCalls, takeaway, kitchenReady, onlyDuringShift, locale, subscribed, "
+                + "isDefault }`. Until somebody chooses (`isDefault: true`) everything is on except `kitchenReady`, and "
+                + "`onlyDuringShift` is on for a waiter's phone and off for a manager's and above. On a tablet "
+                + "`onlyDuringShift` is always false: it has no person and so no shift. `locale` is the language "
+                + "pushes are written in (absent: Armenian); `subscribed` whether a push subscription is on file.")
+            .Produces<StaffNotificationSettings>()
+            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No session, or the device was revoked.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a PIN session on a staff device.");
+
+        device.MapPut("/notification-preferences", SavePreferencesAsync)
+            .WithName("saveStaffNotificationPreferences")
+            .WithSummary("Set this device's notification switches")
+            .WithDescription(
+                "All six switches every time - `{ approvals, guestMessages, tableCalls, takeaway, kitchenReady, "
+                + "onlyDuringShift }` - and optionally `locale` (`hy`, `ru`, `en`) when the person changes the app's "
+                + "language, so pushes are written in it. Answers the settings as `GET` does. A device's switches are "
+                + "the device's: on a phone, its person's.")
+            .Produces<StaffNotificationSettings>()
+            .ProducesProblemDetails(StatusCodes.Status401Unauthorized, "No session, or the device was revoked.")
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not a PIN session on a staff device.")
+            .ProducesProblemDetails(
+                StatusCodes.Status422UnprocessableEntity, "A switch is missing, or `locale` is not hy, ru or en.");
 
         device.MapPost("/unpair", UnpairOwnPhoneAsync)
             .WithName("unpairOwnStaffPhone")
@@ -35,6 +110,80 @@ public static class StaffDeviceEndpoints
             .ProducesProblemDetails(StatusCodes.Status409Conflict, "The device is a tablet.");
 
         return app;
+    }
+
+    private static IResult GetPushConfig(IStaffPushService service) => Results.Ok(service.GetConfig());
+
+    private static async Task<IResult> SaveSubscriptionAsync(
+        SaveStaffPushSubscriptionRequest request,
+        HttpContext http,
+        IStaffPushService service,
+        CancellationToken cancellationToken)
+    {
+        if (http.User.Guid(YallaClaims.DeviceId) is not { } deviceId)
+        {
+            return Results.Unauthorized();
+        }
+
+        await service.SaveSubscriptionAsync(
+            deviceId,
+            new StaffPushSubscriptionInput(request.Endpoint, request.Keys?.P256dh!, request.Keys?.Auth!),
+            cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> DeleteSubscriptionAsync(
+        HttpContext http,
+        IStaffPushService service,
+        CancellationToken cancellationToken)
+    {
+        if (http.User.Guid(YallaClaims.DeviceId) is not { } deviceId)
+        {
+            return Results.Unauthorized();
+        }
+
+        await service.DeleteSubscriptionAsync(deviceId, cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> GetPreferencesAsync(
+        HttpContext http,
+        IStaffPushService service,
+        CancellationToken cancellationToken)
+    {
+        if (http.User.Guid(YallaClaims.DeviceId) is not { } deviceId
+            || http.User.Guid(YallaClaims.StaffMemberId) is not { } staffMemberId)
+        {
+            return Results.Unauthorized();
+        }
+
+        return Results.Ok(await service.GetSettingsAsync(deviceId, staffMemberId, cancellationToken));
+    }
+
+    private static async Task<IResult> SavePreferencesAsync(
+        SaveStaffNotificationPreferencesRequest request,
+        HttpContext http,
+        IStaffPushService service,
+        CancellationToken cancellationToken)
+    {
+        if (http.User.Guid(YallaClaims.DeviceId) is not { } deviceId
+            || http.User.Guid(YallaClaims.StaffMemberId) is not { } staffMemberId)
+        {
+            return Results.Unauthorized();
+        }
+
+        // The validation filter has refused a missing switch before this runs.
+        var preferences = new StaffNotificationPreferences(
+            request.Approvals!.Value,
+            request.GuestMessages!.Value,
+            request.TableCalls!.Value,
+            request.Takeaway!.Value,
+            request.KitchenReady!.Value,
+            request.OnlyDuringShift!.Value);
+
+        return Results.Ok(await service.SaveSettingsAsync(deviceId, staffMemberId, preferences, request.Locale, cancellationToken));
     }
 
     private static async Task<IResult> UnpairOwnPhoneAsync(

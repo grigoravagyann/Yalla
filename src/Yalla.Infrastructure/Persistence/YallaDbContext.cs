@@ -180,6 +180,7 @@ public sealed class YallaDbContext : DbContext
         await VoidHeldPreOrdersOfEndedBookingsAsync(sync: false, cancellationToken);
         await SignalBookingChangesAsync(sync: false, cancellationToken);
         await SignalPreOrderChangesAsync(sync: false, cancellationToken);
+        StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
         return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
@@ -190,6 +191,7 @@ public sealed class YallaDbContext : DbContext
         VoidHeldPreOrdersOfEndedBookingsAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
+        StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
