@@ -105,10 +105,56 @@ public interface IStaffAuthService
     /// <summary>Ends a session immediately - the tablet's sign-out button.</summary>
     Task SignOutSessionAsync(string renewalToken, CancellationToken cancellationToken = default);
 
-    /// <summary>Every device enrolled to a branch, revoked ones included.</summary>
+    /// <summary>Every device enrolled to a branch, revoked ones included - tablets and phones, or one kind.</summary>
     Task<IReadOnlyList<StaffDeviceSummary>> ListDevicesAsync(
         Guid branchId,
+        Domain.Enums.StaffDeviceKind? kind = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Issues a ten-minute, single-use code that pairs <paramref name="staffMemberId"/>'s own phone to them at
+    /// this branch. Any unused code for the same person is superseded.
+    /// </summary>
+    /// <remarks>
+    /// The caller is checked from their stored row with the staff-admin rules: manager or above in the branch's
+    /// venue, the person someone they may manage (or themselves), and - for a branch manager - at their own
+    /// branch. The person must sign in at this branch (at it, or venue-wide) and must not be kitchen staff.
+    /// </remarks>
+    /// <exception cref="Domain.Staff.StaffPermissionException">The caller may not manage this person.</exception>
+    /// <exception cref="KeyNotFoundException">No such branch, or nobody by that id signs in there.</exception>
+    /// <exception cref="Domain.Identity.KitchenPhoneNotAllowedException">The person is kitchen staff.</exception>
+    Task<PhonePairingCodeResult> CreatePhonePairingCodeAsync(
+        Guid branchId,
+        Guid staffMemberId,
+        Guid actingStaffMemberId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Who a still-usable pairing code is for. Does not spend it.</summary>
+    /// <exception cref="Domain.Identity.AuthenticationFailedException">The code is unknown, expired or replaced.</exception>
+    /// <exception cref="Yalla.Domain.DomainStateException">The code was already used.</exception>
+    Task<PhonePairingPreview> PreviewPhonePairingAsync(string code, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Redeems a pairing code with its person's PIN: creates (or reuses) their phone and signs them in on it.
+    /// </summary>
+    /// <remarks>
+    /// A wrong PIN counts toward the person's lockout exactly as on a tablet and leaves the code usable until it
+    /// expires. A live phone of theirs with the same <paramref name="clientDeviceId"/> at the branch is reused; a
+    /// live phone of somebody else's with it is unpaired, because the browser now belongs to this person.
+    /// </remarks>
+    Task<PhonePairingResult> PairPhoneAsync(
+        string code,
+        string pin,
+        string clientDeviceId,
+        string deviceName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The phone's own "unpair this phone": revokes the calling phone and ends its sessions. Tablets are refused -
+    /// a shared device is a manager's to revoke.
+    /// </summary>
+    /// <exception cref="Yalla.Domain.DomainStateException">The device is a tablet.</exception>
+    Task UnpairOwnPhoneAsync(Guid deviceId, Guid staffMemberId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Kills a tablet. Its device token stops working on the next request, and every session open

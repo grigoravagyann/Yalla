@@ -1,5 +1,6 @@
 using Yalla.Api.Authorization;
 using Yalla.Application.Auth;
+using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.Endpoints;
@@ -37,19 +38,56 @@ public static class AdminDeviceEndpoints
 
         group.MapGet("/devices", ListDevicesAsync)
             .WithName("listBranchDevices")
-            .WithSummary("Every tablet enrolled to this branch")
-            .WithDescription("Revoked devices are included, so the list is an audit trail rather than a roster.")
-            .Produces<IReadOnlyList<StaffDeviceSummary>>();
+            .WithSummary("Every tablet and personal phone enrolled to this branch")
+            .WithDescription(
+                "Revoked devices are included, so the list is an audit trail rather than a roster.\n\n"
+                + "`kind` narrows it: `1` tablets, `2` personal phones; absent, both. Each item says its `kind`; a "
+                + "phone also names its person in `boundStaffMember` (`id`, `fullName`, `role`), and its `name` is "
+                + "what the phone called itself when it paired - its platform and browser, \"iPhone · Safari\". "
+                + "`lastSeenAtUtc` moves with every PIN sign-in and session renewal on the device; `revokedAtUtc` "
+                + "is when it was revoked or unpaired.")
+            .Produces<IReadOnlyList<StaffDeviceSummary>>()
+            .ProducesProblemDetails(StatusCodes.Status400BadRequest, "`kind` is not 1 or 2.");
+
+        group.MapPost("/staff/{staffMemberId:guid}/phone-pairings", CreatePhonePairingAsync)
+            .WithName("createStaffPhonePairing")
+            .WithSummary("Show a QR that pairs one person's own phone to them")
+            .WithDescription(
+                "Returns `{ code, expiresAtUtc, pairingUrl, staffMemberId, branchId }` **once**: only the code's "
+                + "hash is stored. `code` is ten characters shown as `XXXXX-XXXXX`; `pairingUrl` is what the QR "
+                + "carries - the staff app's `/staff/pair#code=XXXXX-XXXXX` on the console's own origin, the code "
+                + "in the fragment so it never reaches a server log. The phone redeems it with the person's own PIN "
+                + "(`POST /api/auth/staff/phone-pair`).\n\n"
+                + "**Ten minutes and one use.** Issuing another code for the same person supersedes their unused "
+                + "one, so *show a new code* takes a lost one back.\n\n"
+                + "**Who may.** Manager or above, from their stored row, by the staff-admin rules: the person must "
+                + "be someone the caller may manage, or the caller themselves - a general manager pairs branch "
+                + "managers, waiters and themselves, never an owner. A branch manager pairs at their own branch, "
+                + "and only their own branch's people. The person must sign in at this branch (at it, or "
+                + "venue-wide) - anybody else is 404 here - and be active.\n\n"
+                + "**Not kitchen staff**: `409 kitchen-phone-not-allowed`. The kitchen stays on its tablet.\n\n"
+                + "Audited as `staff.phone-pairing-issued` (who, for whom, which branch, the expiry - never the code).")
+            .Produces<PhonePairingCodeResult>(StatusCodes.Status201Created)
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a manager or above here, a rank the caller may not manage, or a branch manager reaching past "
+                + "their own branch.")
+            .ProducesProblemDetails(
+                StatusCodes.Status404NotFound, "No such branch, or nobody by that id signs in at it.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict, "`kitchen-phone-not-allowed`, or the person is deactivated.");
 
         group.MapPost("/devices/{deviceId:guid}/revoke", RevokeDeviceAsync)
             .WithName("revokeBranchDevice")
-            .WithSummary("Kill a lost or stolen tablet")
+            .WithSummary("Kill a lost or stolen tablet, or unpair somebody's phone")
             .WithDescription(
                 "Takes effect on the tablet's next request, not when its token expires - every "
                 + "request carrying a device or session token checks this row. Any session open on "
                 + "the tablet is ended at the same time, because the session is the thing that can "
                 + "act.\n\n"
-                + "Permanent. A tablet that turns up again is enrolled afresh.")
+                + "Permanent. A tablet that turns up again is enrolled afresh.\n\n"
+                + "The same for a personal phone (`kind` 2): unpairing it ends its session now, and it is paired "
+                + "again only with a new code. A phone's unpairing is audited as `staff.phone-unpaired`.")
             .Produces(StatusCodes.Status204NoContent)
             .ProducesProblemDetails(
                 StatusCodes.Status404NotFound, "No such device at this branch.");
@@ -88,9 +126,37 @@ public static class AdminDeviceEndpoints
 
     private static async Task<IResult> ListDevicesAsync(
         Guid branchId,
+        StaffDeviceKind? kind,
         IStaffAuthService service,
-        CancellationToken cancellationToken) =>
-        Results.Ok(await service.ListDevicesAsync(branchId, cancellationToken));
+        CancellationToken cancellationToken)
+    {
+        if (kind is { } wanted && !Enum.IsDefined(wanted))
+        {
+            throw new ArgumentOutOfRangeException(nameof(kind), (int)wanted, "kind is 1 (tablets) or 2 (phones).");
+        }
+
+        return Results.Ok(await service.ListDevicesAsync(branchId, kind, cancellationToken));
+    }
+
+    private static async Task<IResult> CreatePhonePairingAsync(
+        Guid branchId,
+        Guid staffMemberId,
+        HttpContext http,
+        IStaffAuthService service,
+        CancellationToken cancellationToken)
+    {
+        var actingId = http.User.Guid(YallaClaims.StaffMemberId);
+
+        if (actingId is null)
+        {
+            return Results.Forbid();
+        }
+
+        var result = await service.CreatePhonePairingCodeAsync(
+            branchId, staffMemberId, actingId.Value, cancellationToken);
+
+        return Results.Created($"/api/branches/{branchId}/devices?kind=2", result);
+    }
 
     private static async Task<IResult> RevokeDeviceAsync(
         Guid branchId,

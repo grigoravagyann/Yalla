@@ -525,6 +525,60 @@ person in the venue. PINs are hashed, so the check verifies the candidate agains
 clash, and duplicates already in the data are left alone. Moving a person to another branch does not
 re-check their PIN; two PINs set at the same instant are not serialised against each other.
 
+### Personal phones (2026-10-24)
+
+**A phone is a tablet that belongs to one person.** Same `StaffDevice` row, same device token, same PIN
+sign-in, same revocation - with `Kind = 2` (a tablet is `1`) and `BoundStaffMemberId` naming the person.
+The table holds the pairing (`CK_StaffDevices_KindBinding`): a phone always names somebody, a tablet never.
+The staff web app on a phone is the same `/staff` app, installed as a PWA.
+
+**Pairing.** A manager opens the person on the console's Phones tab and issues a code:
+`POST /api/branches/{branchId}/staff/{staffMemberId}/phone-pairings` (`ManagerOrAbove` + `BranchScoped`)
+answers `{ code: "XXXXX-XXXXX", expiresAtUtc, pairingUrl, staffMemberId, branchId }` once - only the hash is
+stored, in `StaffEnrolmentCodes` beside the tablets' codes with `ForStaffMemberId` set. The QR carries
+`pairingUrl`, `<console origin>/staff/pair#code=XXXXX-XXXXX`: the origin is the one
+`Auth:PasswordResetUrlTemplate` already names (the staff app and the console are one web app), and the code
+rides in the fragment so it never reaches a host's access log. **Ten minutes, one use**, and a newer code for
+the same person supersedes their unused one (`SupersededAtUtc`), so *show a new code* takes a lost one back.
+
+- **Who may issue one** is the staff-admin rule, from the caller's stored row: manager or above in the
+  venue; the person someone they may manage (`StaffRoleRules.MayManage`) or the caller themselves; a branch
+  manager only at their own branch and only for their own branch's people. The person must sign in at this
+  branch (at it or venue-wide; anybody else is `404` here) and be active. **Kitchen staff get no phone**:
+  `409 kitchen-phone-not-allowed` - the kitchen stays on its tablet. Audited `staff.phone-pairing-issued`.
+- **The phone redeems it** with the person's own PIN: `POST /api/auth/staff/phone-pair
+  { code, pin, clientDeviceId, deviceName }` (anonymous, `pin` rate limit) answers `{ device, session }` -
+  `device` exactly `enrolStaffDevice`'s body, `session` exactly `signInStaffWithPin`'s. The PIN check is the
+  tablet's, lockout included; a wrong PIN leaves the code usable until it expires. Before the PIN, the phone
+  may ask *is this you?* with `POST /api/auth/staff/phone-pair/preview { code }`, which names the person,
+  role, venue and branch and spends nothing. Refusals: `401 pairing-code-invalid` (unknown, or a tablet's
+  enrolment code - and the tablet's `enrol` answers a phone's code as `enrolment-code-invalid`, so neither
+  code does the other's job), `401 pairing-code-expired` (past ten minutes or superseded), `409` (already
+  used; the person deactivated or moved; the browser is one of the branch's live tablets),
+  `409 kitchen-phone-not-allowed`.
+- **The same browser again** - a live phone of this person's at the branch with the same `clientDeviceId` -
+  is reused, renamed and given a new device token. A live phone of somebody else's with that id (the phone
+  was handed on), or this person's at another branch, is unpaired in the same request: a browser holds one
+  device token. A tablet's browser is refused rather than paired over.
+
+**Opening it.** On a phone `GET /api/auth/staff/roster` lists the bound person only, and
+`POST /api/auth/staff/pin` accepts only their id. **Anybody else's id is refused as a wrong PIN** -
+`401 pin-invalid`, word for word - before their row is read, so nothing counts against them, no lockout is
+revealed and the phone cannot be used to lock a colleague out. `GET /api/auth/staff/device` says `kind` and
+names `boundStaffMember { id, fullName, role }`. The session is the tablet's: thirty minutes idle, sixteen
+hours at most, confined to the phone's branch like any PIN session - with one read-only exception, the
+manager's *Today* summary (`GET /api/staff/today`, below), which reaches what the person's stored row reaches
+**only on a phone**, never on a shared tablet.
+
+**Taking it away.** The console's device list covers phones (`GET /api/branches/{branchId}/devices?kind=2`;
+each item `kind`, `boundStaffMember`, `name` - the platform and browser the phone reported, "iPhone ·
+Safari" - `lastSeenAtUtc` and `revokedAtUtc`), and `revoke` unpairs one: its token and its session stop on
+the next request, exactly as for a tablet, audited `staff.phone-unpaired`. The phone can unpair itself -
+`POST /api/staff/device/unpair` with its own PIN session (a tablet is `409`: a shared device is a manager's to
+revoke). **Deactivating somebody unpairs their phones** in the same save (and kills their unused codes); so does
+moving them to the kitchen, and moving them to another branch unpairs the phone at the old one
+(`StaffPhones.RevokeUnusableAsync`).
+
 ## 4. Venue owner and manager — email and password
 
 ### Ending admin-panel sessions
@@ -799,7 +853,7 @@ a counter for a year:
 | **Bearer only** | No cookie, no session affinity. It is sent as a header and nothing else. |
 | **Branch-scoped** | It carries one `branchId`, copied onto every session opened on it. A waiter at branch A cannot act on branch B however the request is addressed. |
 | **Revocable** | `StaffDevice.RevokedAtUtc` is checked on **every** request, so a laptop left in a taxi stops working on its next call rather than when its year-long token expires — and so does any PIN session already open on it. |
-| **Grants nothing** | It carries a branch and a device and **no role claim at all**, so every staff policy fails on it. The tablet is not a person; it can offer a PIN, read which venue it is bound to, and read the names of who may sign in on it, and that is the whole list. |
+| **Grants nothing** | It carries a branch and a device and **no role claim at all**, so every staff policy fails on it. The tablet is not a person; it can offer a PIN, read which venue it is bound to, and read the names of who may sign in on it, and that is the whole list. (A phone's token is the same token; it also reads the Web Push public key, `GET /api/staff/push-config`. Its push subscription and switches need a PIN session.) |
 
 `StaffAuthTests.A_device_token_alone_can_do_nothing_but_offer_a_pin` asserts the last one across
 reads and a write, because "by construction" is exactly the kind of claim that stops being true the

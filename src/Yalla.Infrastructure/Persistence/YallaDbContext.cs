@@ -134,6 +134,9 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<StaffSession> StaffSessions => Set<StaffSession>();
 
+    /// <summary>Where staff devices receive Web Push - see <see cref="StaffPushSubscription"/>.</summary>
+    public DbSet<StaffPushSubscription> StaffPushSubscriptions => Set<StaffPushSubscription>();
+
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();

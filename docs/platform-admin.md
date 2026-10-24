@@ -520,6 +520,8 @@ ones they had then. `detail` is the row's JSON as written:
 | `branch.relocate` | owner or platform | `old`, `new` address and coordinates |
 | `staff.create` | owner, manager or platform | `role`, `branchId`, `canSignIn` - never a PIN or password |
 | `staff.sign-in-issued` | owner, manager or platform | `email`, `emailBefore`, `expiresAtUtc`, `replacedExistingSignIn` - never the link |
+| `staff.phone-pairing-issued` | owner, manager or platform | `branchId`, `expiresAtUtc`, `supersededUnused` (unused codes of the person's it replaced) - never the code |
+| `staff.phone-unpaired` | owner, manager, platform, or the phone's own person | `deviceId`, `branchId`, `deviceName`, `byItsOwner` |
 | `review.hide`, `review.unhide` | venue or platform | `actorType`, `branchId`, `reason`, `before` |
 | `review.dismiss-reports` | platform | `actorType`, `branchId`, `dismissed`, `reasons` (count per report reason) |
 | `review.restore-reports` | platform | `actorType`, `branchId`, `restored`, `dismissedAtUtc` (the dismissal it undid) |

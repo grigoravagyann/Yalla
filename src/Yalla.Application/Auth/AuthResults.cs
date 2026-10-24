@@ -140,6 +140,8 @@ public sealed record VenueUserSignInResult(
 /// <param name="VenueName">The venue, for a chain where two branches share a name.</param>
 /// <param name="EnrolledAtUtc">When it was set up.</param>
 /// <param name="LastSeenAtUtc">When it was last used.</param>
+/// <param name="Kind">1 Tablet (the branch's, anybody's PIN), 2 Phone (one person's, only their PIN).</param>
+/// <param name="BoundStaffMember">On a phone, the one person whose PIN opens it; absent on a tablet.</param>
 public sealed record EnrolledDeviceView(
     Guid DeviceId,
     string ClientDeviceId,
@@ -148,7 +150,53 @@ public sealed record EnrolledDeviceView(
     string BranchName,
     string VenueName,
     DateTime EnrolledAtUtc,
-    DateTime? LastSeenAtUtc);
+    DateTime? LastSeenAtUtc,
+    StaffDeviceKind Kind = StaffDeviceKind.Tablet,
+    BoundStaffMemberView? BoundStaffMember = null);
+
+/// <summary>The person a phone belongs to.</summary>
+/// <param name="Id">Their staff member id - what <c>POST /api/auth/staff/pin</c> takes on this phone.</param>
+/// <param name="FullName">Their name.</param>
+/// <param name="Role">Their role: 1 Owner, 6 GeneralManager, 2 Manager, 3 Waiter.</param>
+public sealed record BoundStaffMemberView(Guid Id, string FullName, StaffRole Role);
+
+/// <summary>A code that pairs one person's phone to them, as the console shows it in a QR.</summary>
+/// <param name="Code">
+/// Ten characters, shown as <c>XXXXX-XXXXX</c>. Returned once; only its hash is stored. Case and the dash do not
+/// matter when typed.
+/// </param>
+/// <param name="ExpiresAtUtc">Ten minutes from now. A newer code for the same person replaces this one.</param>
+/// <param name="PairingUrl">What the QR carries: the staff app's pairing page with the code in the fragment.</param>
+/// <param name="StaffMemberId">Whose phone it pairs.</param>
+/// <param name="BranchId">The branch the phone will be bound to.</param>
+public sealed record PhonePairingCodeResult(
+    string Code,
+    DateTime ExpiresAtUtc,
+    string PairingUrl,
+    Guid StaffMemberId,
+    Guid BranchId);
+
+/// <summary>Who a pairing code is for, so the phone can ask "is this you?" before the PIN.</summary>
+/// <param name="StaffMemberId">The person.</param>
+/// <param name="FullName">Their name.</param>
+/// <param name="Role">Their role.</param>
+/// <param name="BranchId">The branch the phone will be bound to.</param>
+/// <param name="BranchName">That branch.</param>
+/// <param name="VenueName">Its venue.</param>
+/// <param name="ExpiresAtUtc">When the code stops working.</param>
+public sealed record PhonePairingPreview(
+    Guid StaffMemberId,
+    string FullName,
+    StaffRole Role,
+    Guid BranchId,
+    string BranchName,
+    string VenueName,
+    DateTime ExpiresAtUtc);
+
+/// <summary>A paired phone: its device token and a session for its person, as enrolment and a PIN would give.</summary>
+/// <param name="Device">Exactly what <c>POST /api/auth/staff/enrol</c> answers - keep the device token.</param>
+/// <param name="Session">Exactly what <c>POST /api/auth/staff/pin</c> answers - the person is signed in.</param>
+public sealed record PhonePairingResult(DeviceEnrolmentResult Device, StaffSessionResult Session);
 
 /// <summary>
 /// One person who may tap a PIN on this tablet, as its PIN screen lists them - and whether they are on
@@ -206,10 +254,20 @@ public sealed record StaffRosterEntry(
 /// <param name="EnrolledAtUtc">When it redeemed its enrolment code.</param>
 /// <param name="LastSeenAtUtc">Last time a token from it was used. Null if never.</param>
 /// <param name="IsRevoked">True once a manager killed it. Revocation is permanent; re-enrol instead.</param>
+/// <param name="Kind">1 Tablet, 2 Phone.</param>
+/// <param name="BoundStaffMember">A phone's person; absent on a tablet.</param>
+/// <param name="RevokedAtUtc">When it was revoked or unpaired; absent while live.</param>
+/// <remarks>
+/// A phone's <paramref name="Name"/> is what the phone called itself when it paired - its platform and browser,
+/// such as "iPhone · Safari" - so the console's Phones tab shows it as the device column.
+/// </remarks>
 public sealed record StaffDeviceSummary(
     Guid Id,
     string Name,
     Guid BranchId,
     DateTime EnrolledAtUtc,
     DateTime? LastSeenAtUtc,
-    bool IsRevoked);
+    bool IsRevoked,
+    StaffDeviceKind Kind = StaffDeviceKind.Tablet,
+    BoundStaffMemberView? BoundStaffMember = null,
+    DateTime? RevokedAtUtc = null);

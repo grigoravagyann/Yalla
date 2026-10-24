@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.Staff;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -29,6 +30,7 @@ internal sealed class StaffManagementService(
     SecretHasher hasher,
     RefreshTokenStore accountLock,
     IOptions<AuthOptions> authOptions,
+    ITokenAuthorityCheck authority,
     ILogger<StaffManagementService> logger) : IStaffManagementService
 {
     /// <summary>The audit action for adding somebody to a venue's staff.</summary>
@@ -242,11 +244,27 @@ internal sealed class StaffManagementService(
             ? await DropFutureShiftsElsewhereAsync(staff.Id, newBranchId!.Value, cancellationToken)
             : 0;
 
+        // Deactivated, moved to the kitchen or to another branch: the phones they can no longer open are unpaired
+        // in the same save. See StaffPhones.
+        var unpaired = await StaffPhones.RevokeUnusableAsync(db, staff, clock.UtcNow, cancellationToken);
+
         await SaveAsync(cancellationToken);
 
         if (transaction is not null)
         {
             await transaction.CommitAsync(cancellationToken);
+        }
+
+        foreach (var deviceId in unpaired)
+        {
+            authority.InvalidateDevice(deviceId);
+        }
+
+        if (unpaired.Count > 0)
+        {
+            logger.LogInformation(
+                "Staff member {StaffMemberId} changed by {ActorId}; {Count} phone(s) they can no longer use unpaired.",
+                staff.Id, acting.Id, unpaired.Count);
         }
 
         if (droppedShifts > 0)
