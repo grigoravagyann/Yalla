@@ -65,6 +65,15 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.UnprocessableEntity, foreignHost.StatusCode);
         Assert.Contains("endpoint", await foreignHost.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
+        // A known push service's host is not enough: not on another port, and not with somebody's credentials in it.
+        foreach (var crafted in (string[])["https://push.test:8443/w/x", "https://user:secret@push.test/w/x", "http://push.test/w/x"])
+        {
+            var refused = await rig.WaiterPhone.PutAsJsonAsync(
+                "/api/staff/device/push-subscription",
+                new { endpoint = crafted, keys = new { p256dh = browser.P256dh, auth = browser.Auth } });
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
+        }
+
         var badKey = await rig.WaiterPhone.PutAsJsonAsync(
             "/api/staff/device/push-subscription",
             new { endpoint = browser.Endpoint, keys = new { p256dh = "not-a-key", auth = browser.Auth } });
@@ -176,6 +185,70 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task One_device_that_cannot_be_pushed_to_does_not_stop_the_others_or_get_them_buzzed_twice()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var rig = await Rig.StartAsync(fixture);
+        var managerBrowser = new Browser();
+        var tabletBrowser = new Browser();
+
+        await rig.SubscribeAsync(rig.ManagerPhone, managerBrowser);
+        await rig.SubscribeAsync(rig.Tablet, tabletBrowser);
+
+        // The tablet's stored key no longer decodes to a point - encrypting to it throws.
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            await db.StaffPushSubscriptions
+                .Where(s => s.Endpoint == tabletBrowser.Endpoint)
+                .ExecuteUpdateAsync(set => set.SetProperty(s => s.P256dh, "AAAA"));
+        }
+
+        var tab = await rig.OpenTabAsync();
+        var call = await rig.RaiseCallAsync(tab, ServiceRequestPreset.TheBill);
+
+        // Delivered to the manager, so the message is done: no exception, and so no retry to buzz the manager again.
+        await rig.DispatchAsync($"staff-push:call:{call}");
+
+        var only = Assert.Single(rig.Push.Sent);
+        Assert.Equal(managerBrowser.Endpoint, only.Endpoint);
+    }
+
+    [SkippableFact]
+    public async Task A_revoked_phone_is_pushed_nothing_and_its_subscription_is_gone()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var rig = await Rig.StartAsync(fixture);
+        var managerBrowser = new Browser();
+        var tabletBrowser = new Browser();
+
+        await rig.SubscribeAsync(rig.ManagerPhone, managerBrowser);
+        await rig.SubscribeAsync(rig.Tablet, tabletBrowser);
+
+        using (var console = rig.Factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(rig.Factory, rig.Branch)))
+        {
+            var phones = await (await console.GetAsync($"/api/branches/{rig.Branch.BranchId}/devices?kind=2"))
+                .Content.ReadFromJsonAsync<JsonElement>();
+            var managersPhone = phones.EnumerateArray()
+                .Single(d => d.GetProperty("boundStaffMember").GetProperty("id").GetGuid() == rig.Branch.ManagerId)
+                .GetProperty("id").GetGuid();
+
+            Assert.Equal(
+                HttpStatusCode.NoContent,
+                (await console.PostAsync($"/api/branches/{rig.Branch.BranchId}/devices/{managersPhone}/revoke", null)).StatusCode);
+
+            await using var db = fixture.CreateContext(rig.Factory.Clock);
+            Assert.False(await db.StaffPushSubscriptions.AnyAsync(s => s.StaffDeviceId == managersPhone));
+        }
+
+        var tab = await rig.OpenTabAsync();
+        await rig.DispatchAsync($"staff-push:call:{await rig.RaiseCallAsync(tab, ServiceRequestPreset.Water)}");
+
+        Assert.Equal(tabletBrowser.Endpoint, Assert.Single(rig.Push.Sent).Endpoint);
+    }
+
+    [SkippableFact]
     public async Task An_order_up_goes_to_the_tables_own_waiter_and_not_to_every_phone()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
@@ -279,6 +352,18 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         new { approvals, guestMessages, tableCalls, takeaway, kitchenReady, onlyDuringShift, locale };
 
     /// <summary>A browser's push subscription: a P-256 key pair and an auth secret, and the endpoint it was given.</summary>
+    /// <summary>A real browser's subscription on <paramref name="host"/>: an endpoint and a usable key pair.</summary>
+    internal static (string Endpoint, string P256dh, string Auth) NewBrowserSubscription(string host)
+    {
+        using var key = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var q = key.ExportParameters(false).Q;
+
+        return (
+            $"https://{host}/w/{Guid.NewGuid():N}",
+            Yalla.Infrastructure.Notifications.Base64Url.Encode([0x04, .. q.X!, .. q.Y!]),
+            Yalla.Infrastructure.Notifications.Base64Url.Encode(RandomNumberGenerator.GetBytes(16)));
+    }
+
     private sealed class Browser
     {
         private readonly ECDiffieHellman _key = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);

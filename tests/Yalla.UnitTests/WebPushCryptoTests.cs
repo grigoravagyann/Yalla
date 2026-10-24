@@ -64,6 +64,24 @@ public sealed class WebPushCryptoTests
     }
 
     [Fact]
+    public void A_push_body_never_passes_the_4096_bytes_a_push_service_must_accept()
+    {
+        using var browser = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var q = browser.ExportParameters(false).Q;
+        byte[] publicKey = [0x04, .. q.X!, .. q.Y!];
+        var auth = RandomNumberGenerator.GetBytes(16);
+
+        // RFC 8291 section 4: 3993 bytes of plaintext is the most, and makes a body of exactly 4096.
+        Assert.Equal(3993, WebPushCrypto.MaxPlaintext);
+
+        var largest = WebPushCrypto.Encrypt(new byte[WebPushCrypto.MaxPlaintext], publicKey, auth);
+        Assert.Equal(4096, largest.Length);
+        Assert.Equal(new byte[WebPushCrypto.MaxPlaintext], Decrypt(largest, browser, auth));
+
+        Assert.Throws<ArgumentException>(() => WebPushCrypto.Encrypt(new byte[WebPushCrypto.MaxPlaintext + 1], publicKey, auth));
+    }
+
+    [Fact]
     public void The_rfc_vector_decrypts_with_the_user_agents_key()
     {
         using var browser = ECDiffieHellman.Create(new ECParameters

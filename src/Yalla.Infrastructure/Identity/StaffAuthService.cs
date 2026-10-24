@@ -619,6 +619,10 @@ internal sealed class StaffAuthService(
             session.End(nowUtc);
         }
 
+        // Its push subscription goes with it: the send already skips a revoked device, and an endpoint kept for a
+        // device nobody can use again is a capability to that browser stored for nothing.
+        await StaffPhones.ForgetPushSubscriptionsAsync(db, [device.Id], cancellationToken);
+
         // A phone is somebody's way in, so taking it away is a staff admin action with an author, as issuing its
         // code was. A tablet's revocation stays what it was: a log line.
         if (wasLive && device.Kind == StaffDeviceKind.Phone)
@@ -978,6 +982,8 @@ internal sealed class StaffAuthService(
         {
             session.End(nowUtc);
         }
+
+        await StaffPhones.ForgetPushSubscriptionsAsync(db, ids, cancellationToken);
     }
 
     /// <summary>Who took a phone away from whom - the console, or the phone's own person. Never a token.</summary>

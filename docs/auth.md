@@ -540,6 +540,8 @@ stored, in `StaffEnrolmentCodes` beside the tablets' codes with `ForStaffMemberI
 `Auth:PasswordResetUrlTemplate` already names (the staff app and the console are one web app), and the code
 rides in the fragment so it never reaches a host's access log. **Ten minutes, one use**, and a newer code for
 the same person supersedes their unused one (`SupersededAtUtc`), so *show a new code* takes a lost one back.
+`SupersededAtUtc` is a concurrency token beside `RedeemedAtUtc`: a phone redeeming the old code at the moment
+the manager asks for a new one cannot both succeed - whichever saves second gets `409` and asks again.
 
 - **Who may issue one** is the staff-admin rule, from the caller's stored row: manager or above in the
   venue; the person someone they may manage (`StaffRoleRules.MayManage`) or the caller themselves; a branch
@@ -577,7 +579,8 @@ the next request, exactly as for a tablet, audited `staff.phone-unpaired`. The p
 `POST /api/staff/device/unpair` with its own PIN session (a tablet is `409`: a shared device is a manager's to
 revoke). **Deactivating somebody unpairs their phones** in the same save (and kills their unused codes); so does
 moving them to the kitchen, and moving them to another branch unpairs the phone at the old one
-(`StaffPhones.RevokeUnusableAsync`).
+(`StaffPhones.RevokeUnusableAsync`). Every way a device is revoked or unpaired also deletes its Web Push
+subscription in the same save; the fan-out skips a revoked device in any case.
 
 ## 4. Venue owner and manager — email and password
 

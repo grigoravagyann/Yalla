@@ -613,6 +613,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime?>("SupersededAtUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.Property<Guid>("VenueId")

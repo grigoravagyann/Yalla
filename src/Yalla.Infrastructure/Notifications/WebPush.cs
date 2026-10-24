@@ -262,8 +262,18 @@ internal static class WebPushCrypto
     /// <summary>The record size written in the header. One record carries the whole message.</summary>
     public const int RecordSize = 4096;
 
-    /// <summary>The largest plaintext one record holds: the record, less the tag and the padding delimiter.</summary>
-    public const int MaxPlaintext = RecordSize - 16 - 1;
+    /// <summary>
+    /// The largest plaintext a push may carry: 3993 bytes (RFC 8291 section 4). A push service need accept no more than
+    /// 4096 bytes of body, and the body is the 86-byte header, the plaintext, the padding delimiter and the 16-byte tag.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="RecordSize"/> less the tag and the delimiter: one record that size fits the content coding but
+    /// not a push service, which answers 413 to a body over 4096 bytes.
+    /// </remarks>
+    public const int MaxPlaintext = 4096 - HeaderLength - 16 - 1;
+
+    /// <summary>The header in front of the record: salt (16), record size (4), key id length (1), the server's key (65).</summary>
+    public const int HeaderLength = 16 + 4 + 1 + 65;
 
     /// <summary>Encrypts <paramref name="plaintext"/> for one browser subscription.</summary>
     /// <param name="plaintext">The JSON the service worker receives.</param>

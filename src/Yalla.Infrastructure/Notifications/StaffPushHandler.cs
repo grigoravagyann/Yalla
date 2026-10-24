@@ -74,18 +74,39 @@ internal sealed class StaffPushHandler(
             return;
         }
 
-        var (delivered, failed) = (0, 0);
         var kind = KindName(notice.Kind);
 
-        foreach (var target in targets)
+        // All at once rather than one after another: ten unreachable phones in a row at the client's ten-second timeout
+        // would outlast the outbox lease, and a second dispatcher taking the message over would buzz every phone the
+        // first had already reached. Each send is its own outcome - one subscription that cannot be encrypted to, or a
+        // push service that throws, must not abort the loop after others were delivered and so get them buzzed again
+        // on the retry.
+        var outcomes = await Task.WhenAll(targets.Select(async target =>
         {
             var (title, body) = subject.Render(target.Locale);
 
             var payload = JsonSerializer.Serialize(
                 new StaffPushPayload(title, body, subject.Url, subject.Tag, kind), Json);
 
-            var outcome = await sender.SendAsync(target.Push, payload, kind, subject.Tag, cancellationToken);
+            try
+            {
+                return (target, Outcome: await sender.SendAsync(target.Push, payload, kind, subject.Tag, cancellationToken));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The type only: the message could quote the payload or the endpoint.
+                logger.LogWarning(
+                    "Staff push {Kind} to device {DeviceId} failed before it was sent: {Error}.",
+                    kind, target.Push.DeviceId, ex.GetType().Name);
 
+                return (target, Outcome: StaffPushOutcome.Failed);
+            }
+        }));
+
+        var (delivered, failed) = (0, 0);
+
+        foreach (var (target, outcome) in outcomes)
+        {
             switch (outcome)
             {
                 case StaffPushOutcome.Delivered:
@@ -93,12 +114,23 @@ internal sealed class StaffPushHandler(
                     break;
 
                 case StaffPushOutcome.Gone:
-                    await db.StaffPushSubscriptions
-                        .Where(s => s.Id == target.Push.SubscriptionId)
-                        .ExecuteDeleteAsync(cancellationToken);
+                    try
+                    {
+                        await db.StaffPushSubscriptions
+                            .Where(s => s.Id == target.Push.SubscriptionId)
+                            .ExecuteDeleteAsync(cancellationToken);
 
-                    logger.LogInformation(
-                        "Push subscription of device {DeviceId} is gone at its push service; deleted.", target.Push.DeviceId);
+                        logger.LogInformation(
+                            "Push subscription of device {DeviceId} is gone at its push service; deleted.", target.Push.DeviceId);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // Tidying, not delivery: the next push to it is answered 410 again and tries once more.
+                        logger.LogWarning(
+                            "Push subscription of device {DeviceId} is gone but could not be deleted: {Error}.",
+                            target.Push.DeviceId, ex.GetType().Name);
+                    }
+
                     break;
 
                 default:

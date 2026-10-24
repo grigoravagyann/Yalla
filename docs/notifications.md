@@ -468,7 +468,9 @@ The live devices of the event's branch with a push subscription whose switches i
 
 ### What is sent
 
-The service worker receives exactly this JSON (RFC 8291 `aes128gcm`, one record, VAPID per RFC 8292):
+The service worker receives exactly this JSON (RFC 8291 `aes128gcm`, one record, at most 3993 bytes of plaintext so
+the body stays within the 4096 a push service must accept; VAPID per RFC 8292, a JWT for the endpoint's origin good
+for twelve hours):
 
 ```json
 { "title": "Table 2 · asking for the bill", "body": "The guests are ready to pay",
@@ -483,6 +485,9 @@ fetched.
 
 ### Delivery
 
+- **All of a message's devices at once**, not one after another, so a few unreachable phones at the client's
+  ten-second timeout cannot outlast the outbox lease and let a second dispatcher send the message again. A device
+  whose push fails before it is sent (a key that will not encrypt) counts as failed; it never aborts the others.
 - **2xx**: delivered. **404 or 410**: the browser unsubscribed or the app was removed - the subscription row is
   **deleted** on the spot, and the device subscribes again if it wants pushes.
 - **Anything else** - 429, 5xx, a refused VAPID token, no answer - is logged (the push service's host and the status,
@@ -499,7 +504,7 @@ fetched.
 | `WebPush:PublicKey` | - | The VAPID public key, base64url (65 bytes uncompressed P-256) |
 | `WebPush:PrivateKey` | - | **A secret**: user secrets locally, `WebPush__PrivateKey` elsewhere, never committed |
 | `WebPush:TtlSeconds` | 900 | How long a push is worth delivering |
-| `WebPush:AllowedEndpointHosts` | Google's, Mozilla's, Apple's, Microsoft's push services | Host suffixes a subscription's endpoint may name - the server POSTs there, so it is not any URL a client sends |
+| `WebPush:AllowedEndpointHosts` | Google's, Mozilla's, Apple's, Microsoft's push services | Host suffixes a subscription's endpoint may name - the server POSTs there, so it is not any URL a client sends. The endpoint must also be `https` on the default port with no user info, and the push client follows no redirects |
 
 The three VAPID values come together or not at all, and the keys must be a matching pair: the host refuses to start
 otherwise. **None of them** and pushes are written to the log (kind, tag and device - not the words) instead of sent,

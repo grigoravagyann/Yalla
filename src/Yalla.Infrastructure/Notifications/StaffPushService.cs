@@ -155,6 +155,8 @@ internal sealed class StaffPushService(
         endpoint.Length is > 0 and <= StaffPushSubscription.EndpointMaxLength
         && Uri.TryCreate(endpoint, UriKind.Absolute, out var url)
         && url.Scheme == Uri.UriSchemeHttps
+        && url.IsDefaultPort
+        && string.IsNullOrEmpty(url.UserInfo)
         && !url.IsLoopback
         && keys.Options.EffectiveEndpointHosts.Any(
             host => url.Host.Equals(host, StringComparison.OrdinalIgnoreCase)

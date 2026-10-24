@@ -157,6 +157,57 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_code_superseded_while_it_is_being_redeemed_pairs_nothing_and_the_other_way_round()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await SeedBranchAsync(factory);
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+        var now = factory.Clock.UtcNow;
+
+        // The phone has read the code and is checking the PIN; the manager taps "show a new code" and it saves first.
+        await IssueAsync(manager, branch, branch.WaiterId);
+
+        await using (var redeeming = fixture.CreateContext(factory.Clock))
+        {
+            var read = await redeeming.StaffEnrolmentCodes.SingleAsync(
+                c => c.ForStaffMemberId == branch.WaiterId && c.RedeemedAtUtc == null && c.SupersededAtUtc == null);
+
+            await using (var superseding = fixture.CreateContext(factory.Clock))
+            {
+                (await superseding.StaffEnrolmentCodes.SingleAsync(c => c.Id == read.Id)).Supersede(now);
+                await superseding.SaveChangesAsync();
+            }
+
+            read.Redeem(Guid.NewGuid(), now);
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => redeeming.SaveChangesAsync());
+        }
+
+        // And the other way: redeemed first, the supersession of the same code matches nothing.
+        await IssueAsync(manager, branch, branch.WaiterId);
+
+        await using (var superseding = fixture.CreateContext(factory.Clock))
+        {
+            var read = await superseding.StaffEnrolmentCodes.SingleAsync(
+                c => c.ForStaffMemberId == branch.WaiterId && c.RedeemedAtUtc == null && c.SupersededAtUtc == null);
+
+            await using (var redeeming = fixture.CreateContext(factory.Clock))
+            {
+                (await redeeming.StaffEnrolmentCodes.SingleAsync(c => c.Id == read.Id)).Redeem(Guid.NewGuid(), now);
+                await redeeming.SaveChangesAsync();
+            }
+
+            read.Supersede(now);
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => superseding.SaveChangesAsync());
+        }
+
+        await using var verify = fixture.CreateContext(factory.Clock);
+        Assert.False(await verify.StaffEnrolmentCodes.AnyAsync(
+            c => c.ForStaffMemberId == branch.WaiterId && c.RedeemedAtUtc != null && c.SupersededAtUtc != null));
+    }
+
+    [SkippableFact]
     public async Task A_tablet_code_pairs_no_phone_and_a_phone_code_enrols_no_tablet()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
@@ -282,6 +333,16 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
         Assert.Empty(tablets.EnumerateArray());
 
         var deviceId = listed.GetProperty("id").GetGuid();
+
+        // Subscribed to pushes: the endpoint goes with the phone.
+        using (var signedIn = factory.CreateClientWithToken(sessionToken))
+        {
+            var (endpoint, p256dh, auth) = StaffPushTests.NewBrowserSubscription("fcm.googleapis.com");
+            (await signedIn.PutAsJsonAsync(
+                    "/api/staff/device/push-subscription", new { endpoint, keys = new { p256dh, auth } }))
+                .EnsureSuccessStatusCode();
+        }
+
         Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsync($"/api/branches/{branch.BranchId}/devices/{deviceId}/revoke", null)).StatusCode);
 
         using var session = factory.CreateClientWithToken(sessionToken);
@@ -293,6 +354,7 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
         await using var verify = fixture.CreateContext(factory.Clock);
         Assert.True(await verify.PlatformAuditLogs.AnyAsync(
             a => a.Action == StaffAuthService.PhoneUnpairedAuditAction && a.TargetId == branch.WaiterId));
+        Assert.False(await verify.StaffPushSubscriptions.AnyAsync(s => s.StaffDeviceId == deviceId));
     }
 
     [SkippableFact]

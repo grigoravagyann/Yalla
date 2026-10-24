@@ -194,6 +194,12 @@ internal sealed class StaffEnrolmentCodeConfiguration : EntityConfiguration<Staf
         // update matches no rows and its whole transaction - device row included - rolls back.
         builder.Property(c => c.RedeemedAtUtc).IsConcurrencyToken();
 
+        // And a phone pairing code's supersession, for the same reason the other way round: "show a new code" and the
+        // phone redeeming the old one at the same moment cannot both win. Whichever saves second matches no rows -
+        // the manager asks again, or the phone is told its code was replaced - instead of a code the manager took
+        // back pairing a phone anyway.
+        builder.Property(c => c.SupersededAtUtc).IsConcurrencyToken();
+
         builder.HasOne(c => c.Branch)
             .WithMany()
             .HasForeignKey(c => c.BranchId)

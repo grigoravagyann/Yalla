@@ -215,7 +215,10 @@ public static class DependencyInjection
         // the run in Development, or absent - and then every push is logged instead of sent. See WebPushOptions.
         services.AddSingleton(Bind<WebPushOptions>(configuration, WebPushOptions.SectionName));
         services.AddSingleton<VapidKeys>();
-        services.AddHttpClient(StaffPushSender.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10));
+        // No redirects: the endpoint was held to the push services' hosts when it was saved, and a redirect would take
+        // the POST - and its VAPID signature - somewhere that check never saw.
+        services.AddHttpClient(StaffPushSender.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(10))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
         services.AddScoped<StaffPushSender>();
         services.AddScoped<IStaffPushService, StaffPushService>();
         services.AddScoped<IOutboxHandler, StaffPushHandler>();

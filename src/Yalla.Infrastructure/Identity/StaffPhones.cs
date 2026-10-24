@@ -75,6 +75,32 @@ internal static class StaffPhones
             session.End(nowUtc);
         }
 
+        await ForgetPushSubscriptionsAsync(db, ids, cancellationToken);
+
         return ids;
+    }
+
+    /// <summary>
+    /// Stages the deletion of the push subscriptions of devices being revoked, in the caller's save.
+    /// </summary>
+    /// <remarks>
+    /// The fan-out already skips a revoked device; this is so the endpoint - a capability to push to that browser -
+    /// is not kept for a device nobody can open again. A browser paired again subscribes again.
+    /// </remarks>
+    public static async Task ForgetPushSubscriptionsAsync(
+        YallaDbContext db,
+        IReadOnlyCollection<Guid> deviceIds,
+        CancellationToken cancellationToken)
+    {
+        if (deviceIds.Count == 0)
+        {
+            return;
+        }
+
+        var subscriptions = await db.StaffPushSubscriptions
+            .Where(s => deviceIds.Contains(s.StaffDeviceId))
+            .ToListAsync(cancellationToken);
+
+        db.StaffPushSubscriptions.RemoveRange(subscriptions);
     }
 }
