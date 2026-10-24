@@ -267,7 +267,8 @@ item    { conversationId,
 - **`label`** is the table for a booking and the `T-` code for an order; `localDate`/`localTime` the booking's start, or
   the order's ready time (asked-for time before it was accepted), on the branch's clock.
 - **`outcome`**: a booking `came` (seated or completed), `no-show`, `declined` (the venue's no, or nobody's answer in
-  time - `CancelledByVenue` with a `DeclineReason`), `cancelled` (by the guest, or by the venue without one) or
+  time - `CancelledByVenue` with a `DeclineReason`, which only a decline leaves: a booking the venue let go after a
+  change of it was declined has none, so it is `cancelled`), `cancelled` (by the guest, or by the venue without one) or
   `upcoming` (pending or confirmed). An order `collected`, `no-show` (not collected), `declined`, `cancelled` or
   `in-progress` (sent, accepted or ready).
 - **`messageCount`** counts the guest's and the venue's messages - texts, asks and answers - not the system's status

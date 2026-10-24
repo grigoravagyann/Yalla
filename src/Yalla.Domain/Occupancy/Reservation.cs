@@ -122,9 +122,13 @@ public sealed class Reservation : Entity
     /// because nobody answered in time. Null for one that was not declined.
     /// </summary>
     /// <remarks>
-    /// On a <see cref="ReservationStatus.CancelledByVenue"/> booking it is why the booking ended. On a
-    /// confirmed one it is why the last change asked for did not go through and the booking went back
-    /// to the slot it had (see <see cref="KeepConfirmedSlot"/>). A new change clears it.
+    /// On a <see cref="ReservationStatus.CancelledByVenue"/> booking it is why the booking ended - set
+    /// only by a decline (<see cref="Reject"/>, <see cref="DeclineForNoAnswer"/>), so a booking the venue
+    /// let go is one with none. On a confirmed one it is why the last change asked for did not go through
+    /// and the booking went back to the slot it had (see <see cref="KeepConfirmedSlot"/>) - kept so a
+    /// decision arriving after that is told the change was already declined. A new change clears it, and
+    /// so does every cancellation: the venue releasing the booking, the no-show block, or the guest
+    /// cancelling ends it for a reason that is not that declined change.
     /// </remarks>
     public DeclineReason? DeclineReason { get; private set; }
 
@@ -1420,6 +1424,12 @@ public sealed class Reservation : Entity
         // No longer waiting for anybody, so nothing for the sweep to find - and nothing to go back to.
         ApprovalExpiresAtUtc = null;
         ForgetConfirmedSlot();
+
+        // A confirmed booking may still carry why its last change was declined (KeepConfirmedSlot). That was
+        // about the change, not this ending: left on, a venue letting the booking go, or the guest cancelling,
+        // would read as a decline everywhere that tells the two apart by it. A decline sets its own reason
+        // straight after this (Reject, DeclineForNoAnswer).
+        DeclineReason = null;
     }
 
     /// <summary>

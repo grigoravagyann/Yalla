@@ -491,7 +491,17 @@ walk-in may be sitting into it, the table may be out of service, the slot may be
 have booked another table at the branch for that time meanwhile), and committed in
 the same transaction - the booking `Confirmed` again with its old start, end, table, party and
 `ConfirmedAtUtc`, its reminder and late nudge rewritten for that slot, `DeclineReason` recording why the
-change did not go through (the view's `declinedBecause` stays null - the booking is not declined). When
+change did not go through (the view's `declinedBecause` stays null - the booking is not declined). That
+reason lasts only while the booking does: a new change clears it, and so does **every cancellation** -
+the venue releasing the booking, the no-show block, the guest cancelling - so a booking let go after its
+change was declined is `CancelledByVenue` with no `DeclineReason`, a cancellation, not a decline
+(`declinedBecause` absent, `cancelled` in the message history). Only a decline itself (`Reject`,
+`DeclineForNoAnswer`) leaves a cancelled booking with a reason. Rows cancelled before this fix were
+cleared by the `ClearStaleChangeDeclineReasons` migration wherever the row shows the cancel was not a
+decline (the no-show block's; one that had been approved, `ConfirmedAtUtc` set, which a waiting booking
+never has; a no-answer or guest-before reason with a cancellation text, which those declines never write;
+the release's default text); a staff-declined change of a booking confirmed on the spot and then released
+with a typed reason cannot be told from a staff decline and was left as it was. When
 the slot has gone, the booking is declined as any other. Either way the diner is told which: the
 `reservation.decided` push carries `wasChange` and `originalKept`, and so does the `booking-declined`
 feed entry, with the slot the change asked for in `requestedDate`/`requestedTime`.

@@ -273,4 +273,82 @@ public class ShortNoticeRuleTests
         Assert.Equal(ReservationStatus.Confirmed, booking.Status);
         Assert.Null(booking.ApprovalExpiresAtUtc);
     }
+
+    // ---------------------------------------------------------------- a declined change, then the booking ends
+
+    /// <summary>
+    /// Confirmed, then a change of it waiting until the window runs out at <c>movedAt + 15</c>: the booking a declined
+    /// change sends back to its slot.
+    /// </summary>
+    private static (Reservation Booking, DateTime MovedAt) ConfirmedWithAChangeWaiting()
+    {
+        var booking = ShortNoticeBooking();
+        booking.Confirm(MadeAtUtc.AddMinutes(2));
+
+        var movedAt = MadeAtUtc.AddMinutes(30);
+        var newStart = StartUtc.AddHours(1);
+
+        booking.Reschedule(
+            booking.DiningTableId, newStart, new DateOnly(2026, 9, 10), new TimeOnly(21, 0), 2, Policy,
+            ReservationStatus.PendingApproval, movedAt,
+            ApprovalTrigger.ShortNotice, ShortNoticeRule.AnswerDeadline(movedAt, newStart));
+
+        return (booking, movedAt);
+    }
+
+    [Fact]
+    public void A_venue_letting_go_a_booking_whose_change_was_declined_is_a_cancellation_not_a_decline()
+    {
+        var (released, movedAt) = ConfirmedWithAChangeWaiting();
+        released.KeepConfirmedSlot(movedAt.AddMinutes(3), DeclineReason.StaffDeclined);
+
+        // The change's no stays on the confirmed booking until it ends.
+        Assert.Equal(ReservationStatus.Confirmed, released.Status);
+        Assert.Equal(DeclineReason.StaffDeclined, released.DeclineReason);
+
+        released.CancelByVenue(StartUtc.AddMinutes(30), "released: the venue let the booking go");
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, released.Status);
+        Assert.Null(released.DeclineReason);
+
+        // Nobody answered the change; then the guest was blocked for no-shows. Not a decline either - and a waiter
+        // opening the old request is told the booking is not waiting, not that their answer came too late.
+        var (blocked, blockedMovedAt) = ConfirmedWithAChangeWaiting();
+        blocked.KeepConfirmedSlot(blockedMovedAt.AddMinutes(15), DeclineReason.NoAnswer);
+        blocked.CancelForNoShowBlock(blockedMovedAt.AddMinutes(40));
+
+        Assert.Null(blocked.DeclineReason);
+        Assert.Equal(CancellationCause.NoShowBlock, blocked.CancelledBecause);
+        Assert.Throws<DomainStateException>(() => blocked.Confirm(blockedMovedAt.AddMinutes(41)));
+
+        // And the guest cancelling it themselves.
+        var (cancelled, cancelledMovedAt) = ConfirmedWithAChangeWaiting();
+        cancelled.KeepConfirmedSlot(cancelledMovedAt.AddMinutes(3), DeclineReason.StaffDeclined);
+        cancelled.CancelByDiner(cancelledMovedAt.AddMinutes(10), reason: null, afterDeadline: false);
+
+        Assert.Equal(ReservationStatus.CancelledByDiner, cancelled.Status);
+        Assert.Null(cancelled.DeclineReason);
+    }
+
+    [Fact]
+    public void A_declined_change_that_ends_the_booking_and_a_declined_booking_stay_declines()
+    {
+        // The change declined with nothing to go back to: the booking ends declined, through the same cancel.
+        var (lost, movedAt) = ConfirmedWithAChangeWaiting();
+        lost.Reject(movedAt.AddMinutes(3), "full tonight");
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, lost.Status);
+        Assert.Equal(DeclineReason.StaffDeclined, lost.DeclineReason);
+        Assert.Equal("full tonight", lost.CancellationReason);
+
+        var (lapsed, lapsedMovedAt) = ConfirmedWithAChangeWaiting();
+        lapsed.DeclineForNoAnswer(lapsedMovedAt.AddMinutes(15), DeclineReason.EarlierGuestNoAnswer);
+
+        Assert.Equal(ReservationStatus.CancelledByVenue, lapsed.Status);
+        Assert.Equal(DeclineReason.EarlierGuestNoAnswer, lapsed.DeclineReason);
+
+        // A booking declined twice over keeps its first reason: the second cancel is refused before it clears anything.
+        Assert.Throws<DomainStateException>(() => lapsed.CancelByVenue(lapsedMovedAt.AddMinutes(20), "again"));
+        Assert.Equal(DeclineReason.EarlierGuestNoAnswer, lapsed.DeclineReason);
+    }
 }
