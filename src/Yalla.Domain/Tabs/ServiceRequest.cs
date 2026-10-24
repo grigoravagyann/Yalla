@@ -91,6 +91,35 @@ public sealed class ServiceRequest : Entity
     public StaffMember? AcknowledgedByStaff { get; private set; }
 
     /// <summary>
+    /// When a waiter said "I'm on it". The call stays on the list, now showing who has it, until it is acknowledged;
+    /// acknowledging a call nobody claimed claims it in the same moment. Its time from the call is the waiter's response
+    /// time. See <c>docs/activity.md</c>.
+    /// </summary>
+    public DateTime? ClaimedAtUtc { get; private set; }
+
+    /// <summary>Who claimed it - the first to; nobody takes a claim over.</summary>
+    public Guid? ClaimedByStaffId { get; private set; }
+
+    public StaffMember? ClaimedByStaff { get; private set; }
+
+    /// <summary>
+    /// A waiter says "I'm on it". The first claim stands; a second, or one on a call already answered or replaced, is a
+    /// no-op answering false. The guest is not told and the call does not leave the list.
+    /// </summary>
+    public bool Claim(DateTime claimedAtUtc, Guid staffId)
+    {
+        if (!IsOpen || ClaimedAtUtc is not null)
+        {
+            return false;
+        }
+
+        ClaimedAtUtc = Guard.NotLocalTime(claimedAtUtc, nameof(claimedAtUtc));
+        ClaimedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        return true;
+    }
+
+    /// <summary>
     /// When the same participant asked for the bill again on this tab, and this request stopped being
     /// the one to bring. Null while it still is, and on every request that is not for the bill.
     /// </summary>
@@ -233,6 +262,10 @@ public sealed class ServiceRequest : Entity
 
         AcknowledgedAtUtc = Guard.NotLocalTime(acknowledgedAtUtc, nameof(acknowledgedAtUtc));
         AcknowledgedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        // Answered without anybody claiming it first: whoever answered had it.
+        ClaimedAtUtc ??= AcknowledgedAtUtc;
+        ClaimedByStaffId ??= AcknowledgedByStaffId;
 
         return true;
     }

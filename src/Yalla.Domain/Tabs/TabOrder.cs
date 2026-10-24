@@ -66,6 +66,17 @@ public sealed class TabOrder : Entity
 
     public DateTime PlacedAtUtc { get; private set; }
 
+    /// <summary>
+    /// The table's waiter when this order was placed - the person the sale is theirs from. Null when the table had
+    /// none yet (a guest's phone ordered before any waiter touched it). A transfer later does not move it: what was
+    /// done before stays with the earlier person. See <c>docs/activity.md</c>.
+    /// </summary>
+    public Guid? ServerStaffMemberId { get; private set; }
+
+    /// <summary>Records whose table this was when the order was placed. Set once, as the order is built.</summary>
+    public void TakenUnder(Guid? serverStaffMemberId) =>
+        ServerStaffMemberId = serverStaffMemberId == Guid.Empty ? null : serverStaffMemberId;
+
     public TabOrderStatus Status { get; private set; }
 
     public IReadOnlyCollection<TabOrderLine> Lines => _lines;

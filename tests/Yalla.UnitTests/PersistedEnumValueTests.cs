@@ -343,7 +343,7 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(DeclineReason),
+            nameof(ActivityActorKind), nameof(ActivityCategory), nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(DeclineReason),
             nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
@@ -446,6 +446,29 @@ public class PersistedEnumValueTests
 
         // Pre-orders (2026-10-21): any pre-order change, and the guest's "on my way".
         Assert.Equal(6, (int)TableChangeSignal.PreOrderChanged);
+
+        // Activity history (2026-10-24): a table handed to another waiter.
+        Assert.Equal(7, (int)TableChangeSignal.TableTransferred);
+    }
+
+    /// <summary>The activity log's two stored enums (2026-10-24). On the wire they are words; on disk, these numbers.</summary>
+    [Fact]
+    public void Activity_values_are_pinned_to_what_is_stored()
+    {
+        Assert.Equal(1, (int)ActivityCategory.Booking);
+        Assert.Equal(2, (int)ActivityCategory.Table);
+        Assert.Equal(3, (int)ActivityCategory.Order);
+        Assert.Equal(4, (int)ActivityCategory.Payment);
+        Assert.Equal(5, (int)ActivityCategory.Takeaway);
+        Assert.Equal(6, (int)ActivityCategory.Message);
+        Assert.Equal(7, (int)ActivityCategory.Settings);
+        Assert.Equal(8, (int)ActivityCategory.Staff);
+        Assert.Equal(9, (int)ActivityCategory.Device);
+
+        Assert.Equal(1, (int)ActivityActorKind.Staff);
+        Assert.Equal(2, (int)ActivityActorKind.Diner);
+        Assert.Equal(3, (int)ActivityActorKind.System);
+        Assert.Equal(4, (int)ActivityActorKind.PlatformAdmin);
     }
 
     /// <summary>

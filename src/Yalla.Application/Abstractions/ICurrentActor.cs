@@ -59,4 +59,14 @@ public interface ICurrentActor
 
     /// <summary>The acting staff member's role, used for the manager-only operations.</summary>
     StaffRole? Role { get; }
+
+    /// <summary>
+    /// The enrolled device the request came from - a tablet's staff session carries one - or null from the console
+    /// and for everybody else. Only the activity log reads it, to say which device acted.
+    /// </summary>
+    /// <remarks>
+    /// A default member, null, so a double that has no device needs nothing; the claims actor reads the
+    /// <c>deviceId</c> claim off any staff token that carries one.
+    /// </remarks>
+    Guid? DeviceId => null;
 }

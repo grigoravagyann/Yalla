@@ -65,6 +65,22 @@ public sealed class Payment : Entity
     /// </remarks>
     public Guid ClientCommandId { get; private set; }
 
+    /// <summary>The staff member who took it - cash in hand. Null on payments from before it was recorded.</summary>
+    public Guid? RecordedByStaffId { get; private set; }
+
+    /// <summary>
+    /// The table's waiter when it was paid: the tip is theirs. Null when the table had none, and on payments from
+    /// before it was recorded. See <c>docs/activity.md</c>.
+    /// </summary>
+    public Guid? ServerStaffMemberId { get; private set; }
+
+    /// <summary>Records who took the payment and whose table it was. Set once, before it is saved.</summary>
+    public void TakenBy(Guid? recordedByStaffId, Guid? serverStaffMemberId)
+    {
+        RecordedByStaffId = recordedByStaffId == Guid.Empty ? null : recordedByStaffId;
+        ServerStaffMemberId = serverStaffMemberId == Guid.Empty ? null : serverStaffMemberId;
+    }
+
     private Payment()
     {
     }

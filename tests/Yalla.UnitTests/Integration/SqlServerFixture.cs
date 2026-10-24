@@ -211,6 +211,10 @@ public sealed class SqlServerFixture : IAsyncLifetime
         BookingLockOptions? lockOptions = null) =>
         new(db, clock, actor, CreateTableLock(db, lockOptions), NullLogger<TableStateService>.Instance);
 
+    /// <summary>The activity log over one context, acting as the given caller - what every writing service records through.</summary>
+    internal static ActivityLog CreateActivityLog(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, actor, clock);
+
     internal FloorQuery CreateFloorQuery(YallaDbContext db, IClock clock) => new(db, clock);
 
     /// <summary>
@@ -733,6 +737,9 @@ public sealed class TestActor(
     public Guid? ParticipantId { get; } = participantId;
 
     public StaffRole? Role { get; } = role;
+
+    /// <summary>The tablet acting, when a test says so; null - the console - otherwise.</summary>
+    public Guid? DeviceId { get; init; }
 
     public static TestActor Waiter(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Waiter);
 

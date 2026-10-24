@@ -43,6 +43,14 @@ internal sealed class TableSessionConfiguration : EntityConfiguration<TableSessi
             .HasForeignKey(s => s.SeatedByStaffId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // The table's waiter now. A key, not a log column: the sitting is live data and staff rows are never deleted.
+        builder.HasOne<Domain.Staff.StaffMember>()
+            .WithMany()
+            .HasForeignKey(s => s.ServerStaffMemberId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Property(s => s.ServerAssignedAtUtc);
+
         // Occupancy history for one table, newest last: the turnover reporting reads this.
         builder.HasIndex(s => new { s.DiningTableId, s.SeatedAtUtc });
 

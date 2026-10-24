@@ -102,6 +102,9 @@ public sealed class YallaDbContext : DbContext
 
     public DbSet<PlatformAuditLog> PlatformAuditLogs => Set<PlatformAuditLog>();
 
+    /// <summary>Who did what at a venue - the console's History. See <c>docs/activity.md</c>.</summary>
+    public DbSet<ActivityEntry> ActivityEntries => Set<ActivityEntry>();
+
     public DbSet<ProcessedCommand> ProcessedCommands => Set<ProcessedCommand>();
 
     public DbSet<TabAdjustment> TabAdjustments => Set<TabAdjustment>();

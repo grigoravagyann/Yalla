@@ -119,6 +119,18 @@ internal sealed class ServiceRequestConfiguration : EntityConfiguration<ServiceR
             .HasForeignKey(r => r.AcknowledgedByStaffId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // "I'm on it" - and the response times Staff -> Results reads by the branch and the claim's instant.
+        builder.Property(r => r.ClaimedAtUtc);
+
+        builder.HasOne(r => r.ClaimedByStaff)
+            .WithMany()
+            .HasForeignKey(r => r.ClaimedByStaffId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasIndex(r => new { r.BranchId, r.ClaimedAtUtc })
+            .HasFilter("[ClaimedAtUtc] IS NOT NULL")
+            .HasDatabaseName("IX_ServiceRequests_BranchId_ClaimedAtUtc");
+
         // The floor screen's question, several times a minute: what is outstanding in this branch.
         // Filtered on the open ones - neither acknowledged nor superseded - because that is the only
         // set anybody ever asks for, and the closed rows accumulate for the whole evening.
