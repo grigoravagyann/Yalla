@@ -29,7 +29,7 @@ public sealed class YallaDbContext : DbContext
 
     private readonly DomainEventDispatcher _domainEvents;
 
-    /// <summary>Bookings whose pre-order rail card changed without their pre-order row changing - see <see cref="SignalPreOrderRail"/>.</summary>
+    /// <summary>Bookings whose pre-order rail card changed in this save - see <see cref="SignalPreOrderRail"/>.</summary>
     private readonly HashSet<Guid> _preOrderRailSignals = [];
 
     /// <summary>A transaction a domain-event handler asked for (<see cref="EnsureTransactionAsync"/>), committed by the save.</summary>
@@ -423,9 +423,8 @@ public sealed class YallaDbContext : DbContext
     }
 
     /// <summary>
-    /// Asks for a signal 6 naming each of these bookings in the next save, for a change that alters their rail card
-    /// without touching their pre-order row - the branch's pre-order settings (when the card appears, which dishes are
-    /// still available).
+    /// Asks for a signal 6 naming each of these bookings in this save - from <c>PreOrderRailSignal</c>, the handler of
+    /// every pre-order event - written by <see cref="SignalPreOrderChangesAsync"/> after the hooks.
     /// </summary>
     internal void SignalPreOrderRail(IEnumerable<Guid> reservationIds) => _preOrderRailSignals.UnionWith(reservationIds);
 
@@ -437,8 +436,10 @@ public sealed class YallaDbContext : DbContext
     /// <para>
     /// Here, beside the signals, for their reason: a booking is ended in six places (the app's and the link's cancel,
     /// the floor's release, a decline or an expiry, a block, a crowded-out request), and a rule each of them had to
-    /// remember is a rule one of them forgets. The voided ticket is a modified pre-order, so the signal hook below puts
-    /// it on the change stream (signal 6) in the same save; the kitchen's list drops it as it drops any voided ticket.
+    /// remember is a rule one of them forgets. The void raises the pre-order's <c>HeldTicketVoided</c>, which this
+    /// hook dispatches itself - it runs after the save's dispatch - so its handler puts the ticket on the change stream
+    /// (signal 6) in the same save; the kitchen's list drops it as it drops any voided ticket. (The bookings' to move
+    /// onto their own events, where the dispatcher's next round handles it.)
     /// </para>
     /// <para>
     /// A no-show is not an end here: a sent pre-order followed by a no-show is an ordinary no-show, and its ticket is
@@ -463,44 +464,45 @@ public sealed class YallaDbContext : DbContext
         var held = sync ? query.ToList() : await query.ToListAsync(cancellationToken);
         var now = _clock.UtcNow;
 
+        var voided = false;
+
         foreach (var preOrder in held)
         {
-            preOrder.VoidHeldBecauseBookingEnded(now);
+            voided |= preOrder.VoidHeldBecauseBookingEnded(now);
+        }
+
+        if (!voided)
+        {
+            return;
+        }
+
+        if (sync)
+        {
+            _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        else
+        {
+            await _domainEvents.DispatchAsync(this, cancellationToken);
         }
     }
 
     /// <summary>
-    /// Puts every pre-order change on its booking's table's change stream - signal
+    /// Writes the signal 6 rows this save's pre-order events asked for (<see cref="SignalPreOrderRail"/>) - signal
     /// <see cref="TableChangeSignal.PreOrderChanged"/>, one same-status row per booking per save, naming it - so a tablet
-    /// re-reads its pre-order rail: a pre-order saved, edited or cleared by the guest, sent, marked not coming, put on the
-    /// party's tab, its held ticket moved by the kitchen, or the guest answering "on my way".
+    /// re-reads its pre-order rail.
     /// </summary>
     /// <remarks>
-    /// Here, beside signal 5, for signal 5's reason: a pre-order changes from the app, the manage link, the tablet, the
-    /// kitchen and the seating paths, and a rail that hears about only some of them shows a waiter a card that is wrong.
+    /// <para>
+    /// The pre-order events' handler (<c>PreOrderRailSignal</c>) decides which bookings; the rows are written here,
+    /// after the change-tracker hooks, where the tracker hook that detected pre-order changes wrote them: after signal
+    /// 5's rows for the same bookings, which signal 5's "already signalled in this save" would otherwise take a signal 6
+    /// row for, and with the table's status as the save leaves it. When signal 5 moves onto the bookings' events, the
+    /// handler can write the row itself.
+    /// </para>
     /// </remarks>
     private async Task SignalPreOrderChangesAsync(bool sync, CancellationToken cancellationToken)
     {
         var bookings = new HashSet<Guid>();
-
-        foreach (var entry in ChangeTracker.Entries<PreOrder>())
-        {
-            if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
-            {
-                bookings.Add(entry.Entity.ReservationId);
-            }
-        }
-
-        foreach (var entry in ChangeTracker.Entries<Reservation>())
-        {
-            if (entry.State == EntityState.Modified
-                && (entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified
-                    || entry.Property(r => r.GuestRunningLateAtUtc).IsModified
-                    || entry.Property(r => r.StaffAskedOnMyWayAtUtc).IsModified))
-            {
-                bookings.Add(entry.Entity.Id);
-            }
-        }
 
         bookings.UnionWith(_preOrderRailSignals);
         _preOrderRailSignals.Clear();

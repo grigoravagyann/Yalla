@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Activity;
 using Yalla.Application.Auth;
-using Yalla.Application.Messaging;
 using Yalla.Application.Public;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
@@ -21,6 +20,13 @@ namespace Yalla.Infrastructure.Services;
 /// Pre-orders on a booking: the guest's edits (app and manage link), "on my way", the floor tablet's rail with its two
 /// actions, and the console's settings. See <c>docs/reservations.md</c>, "Pre-orders".
 /// </summary>
+/// <remarks>
+/// What a change tells the rest of the system - the History's line, the "are you on your way?" question moved or
+/// withdrawn, the tab's stream when a pre-order lands on a tab, signal 6 - hangs on the pre-order's and the booking's
+/// domain events (<c>docs/domain-events.md</c>, pre-orders), handled in the save. Each save here dispatches first with
+/// the scope's dispatcher, as the ledger does, so a test composing this service over a bare context runs production's
+/// handlers. The settings' own History line stays here: one path, the settings'.
+/// </remarks>
 internal sealed class PreOrderService(
     YallaDbContext db,
     IClock clock,
@@ -28,9 +34,9 @@ internal sealed class PreOrderService(
     IAuthorizationQueries authorization,
     IStaffBranchGuard branchGuard,
     TableLock tableLock,
-    IOutbox outbox,
     TabLedger ledger,
     IActivityLog activity,
+    DomainEventDispatcher domainEvents,
     ILogger<PreOrderService> logger) : IPreOrderService
 {
     /// <summary>What a guest's save is recorded as in <c>ProcessedCommands</c>.</summary>
@@ -114,8 +120,9 @@ internal sealed class PreOrderService(
     {
         ArgumentNullException.ThrowIfNull(lines);
 
+        // The account's lock first, held to the commit; whether it is live is read again by the question's handler.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var live = await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
+        await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
 
         if (await IsReplayAsync(clientCommandId, ReplaceCommandType, account, reservation.Id, cancellationToken))
         {
@@ -134,13 +141,13 @@ internal sealed class PreOrderService(
 
         RequireUnlocked(reservation, preOrder, nowUtc);
 
-        var branch = await db.Branches
+        var acceptsPreOrders = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == reservation.BranchId)
-            .Select(b => new { b.AcceptsPreOrders, b.Name, VenueName = b.Venue.Name })
+            .Select(b => b.AcceptsPreOrders)
             .FirstAsync(cancellationToken);
 
-        if (!branch.AcceptsPreOrders)
+        if (!acceptsPreOrders)
         {
             throw new PreOrdersNotAcceptedException(reservation.BranchId);
         }
@@ -184,25 +191,7 @@ internal sealed class PreOrderService(
             note,
             nowUtc);
 
-        // Every booking is asked at 30 minutes; a pre-order waiting for the kitchen moves its question to 45. Saved
-        // again, it is already there and stays put.
-        var key = PreOrderQuestions.KeyFor(reservation, preOrderWaiting: true);
-
-        if (!await db.OutboxMessages.AnyAsync(m => m.IdempotencyKey == key, cancellationToken))
-        {
-            await PreOrderQuestions.AskAgainAsync(
-                db,
-                outbox,
-                reservation,
-                await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
-                branch.VenueName,
-                branch.Name,
-                writeFeed: live,
-                preOrderWaiting: true,
-                nowUtc,
-                cancellationToken);
-        }
-
+        // The "on your way" question moves to 45 minutes with the first save (PreOrderSaved).
         Record(clientCommandId, ReplaceCommandType, account, reservation.Id, nowUtc);
 
         if (await SaveGuestChangeAsync(clientCommandId, ReplaceCommandType, account, reservation.Id, cancellationToken))
@@ -227,7 +216,7 @@ internal sealed class PreOrderService(
         Reservation reservation, Guid account, Guid clientCommandId, CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var live = await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
+        await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
 
         if (await IsReplayAsync(clientCommandId, ClearCommandType, account, reservation.Id, cancellationToken))
         {
@@ -245,28 +234,11 @@ internal sealed class PreOrderService(
 
         if (preOrder is not null)
         {
+            // Without a pre-order the booking is still asked, at 30 minutes like every other (PreOrderCleared). A booking
+            // that had none is asked as it was: its question is not written again - not to a guest who has answered it.
             RequireUnlocked(reservation, preOrder, nowUtc);
+            preOrder.Clear(nowUtc);
             db.PreOrders.Remove(preOrder);
-
-            // Without a pre-order the booking is still asked, at 30 minutes like every other. A booking that had none
-            // is asked as it was: its question is not written again - not to a guest who has already answered it.
-            var branch = await db.Branches
-                .AsNoTracking()
-                .Where(b => b.Id == reservation.BranchId)
-                .Select(b => new { b.Name, VenueName = b.Venue.Name })
-                .FirstAsync(cancellationToken);
-
-            await PreOrderQuestions.AskAgainAsync(
-                db,
-                outbox,
-                reservation,
-                await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
-                branch.VenueName,
-                branch.Name,
-                writeFeed: live,
-                preOrderWaiting: false,
-                nowUtc,
-                cancellationToken);
         }
 
         Record(clientCommandId, ClearCommandType, account, reservation.Id, nowUtc);
@@ -296,8 +268,9 @@ internal sealed class PreOrderService(
 
     /// <summary>
     /// "Yes, on my way": recorded once, and the waiter's card says "Guest confirmed". The question is answered, so its
-    /// push and feed entry that have not gone out yet are withdrawn. The answer and the system line after it go into the
-    /// booking's thread (made if there is none) in the same transaction, under the booking's lock.
+    /// push and feed entry that have not gone out yet are withdrawn, and the History says so - both on the booking's
+    /// <c>GuestOnTheirWay</c>. The answer and the system line after it go into the booking's thread (made if there is
+    /// none) in the same transaction, under the booking's lock.
     /// </summary>
     private async Task<OnMyWayResult> ConfirmOnMyWayCoreAsync(Reservation reservation, CancellationToken cancellationToken)
     {
@@ -308,17 +281,12 @@ internal sealed class PreOrderService(
             return new OnMyWayResult(reservation.Id, reservation.GuestConfirmedOnWayAtUtc!.Value, WasReplay: true);
         }
 
-        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
-
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Coming, null, nowUtc, cancellationToken);
 
-        await BookingActivity.RecordAsync(
-            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
-            extra: new { answer = "coming" }, byGuest: true);
-
         try
         {
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
@@ -355,8 +323,8 @@ internal sealed class PreOrderService(
 
     /// <summary>
     /// "I'm running late": recorded, overwriting an earlier answer, and - an answer to the question - the question's push
-    /// and feed entry not yet out are withdrawn, as "on my way" withdraws them. The answer and the system line ("held
-    /// until 19:45") go into the booking's thread, as "on my way"'s do.
+    /// and feed entry not yet out are withdrawn, as "on my way" withdraws them (<c>GuestRunningLate</c>). The answer and
+    /// the system line ("held until 19:45") go into the booking's thread, as "on my way"'s do.
     /// </summary>
     private async Task<RunningLateResult> ReportRunningLateCoreAsync(
         Reservation reservation, int minutes, CancellationToken cancellationToken, bool retried = false)
@@ -364,18 +332,13 @@ internal sealed class PreOrderService(
         var nowUtc = clock.UtcNow;
         reservation.ReportRunningLate(minutes, nowUtc);
 
-        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
-
         // The answer and "held until 19:45" into the booking's thread, in the same transaction.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         await GuestThreads.AnswerAsync(db, reservation, Domain.Messages.GuestAnswer.Late, minutes, nowUtc, cancellationToken);
 
-        await BookingActivity.RecordAsync(
-            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
-            extra: new { answer = "late", minutes }, byGuest: true);
-
         try
         {
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
@@ -418,11 +381,13 @@ internal sealed class PreOrderService(
         var accountLive = reservation.DinerUserId is { } account
                           && await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
 
-        // The guest told and the History's line hang on the ask's event (VenueAskedComing), in the save below.
+        // The guest told and the History's line hang on the ask's event (VenueAskedComing), in the save below; signal 6 on
+        // the booking's stamp (OnMyWayAskRecorded).
         var notified = await GuestThreads.AskAsync(db, reservation, staffId, accountLive, nowUtc, cancellationToken);
 
         try
         {
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
@@ -593,49 +558,22 @@ internal sealed class PreOrderService(
             var nowUtc = clock.UtcNow;
             var session = await RequireSendableAsync(reservation, nowUtc, cancellationToken);
 
-            preOrder.MarkSent(staffId, nowUtc);
-
-            var preOrderAmount = preOrder.Lines.Sum(l => l.LineTotalAmd);
-
-            await activity.RecordAsync(
-                new ActivityRecord(
-                    ActivityCategory.Order,
-                    ActivityActions.OrderPreOrderSent,
-                    session?.TabId is not null ? ActivitySubjects.Tab : ActivitySubjects.Reservation,
-                    session?.TabId ?? reservation.Id)
-                {
-                    BranchId = reservation.BranchId,
-                    TableSessionId = session?.Id,
-                    TableLabel = tableLabel,
-                    GuestName = reservation.GuestName,
-                    SubjectCode = reservation.Code,
-                    ItemNames = [.. preOrder.Lines.Select(l => l.NameSnapshot)],
-                    AmountAmd = preOrderAmount,
-                    Summary = new
-                    {
-                        reservationId = reservation.Id,
-                        items = preOrder.Lines.Sum(l => l.Quantity),
-                        amountAmd = preOrderAmount,
-                        seated = session is not null,
-                        lines = preOrder.Lines.OrderBy(l => l.Position).Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
-                    },
-                },
-                cancellationToken);
-
-            // Sent: "are you on your way?" has nothing left to decide - its push and feed entry not yet out are withdrawn.
-            await PreOrderQuestions.WithdrawAsync(db, outbox, reservationId, nowUtc, cancellationToken);
+            // The History's line and the question withdrawn - "are you on your way?" has nothing left to decide - hang on
+            // PreOrderSent; on a tab, its arrival tells the tab's stream (PreOrderArrivedOnTab).
+            preOrder.MarkSent(staffId, session, nowUtc);
 
             Guid? recomputeTab = null;
 
             if (session is null)
             {
                 // Not seated yet: the pre-order is the kitchen's ticket now, held until the party sits.
+                await domainEvents.DispatchAsync(db, cancellationToken);
                 await db.SaveChangesAsync(cancellationToken);
             }
             else if (session.TabId is { } tabId)
             {
                 var tab = await ledger.LoadForWriteAsync(tabId, cancellationToken);
-                PreOrderSittings.AddToTab(db, ledger, preOrder, tab, nowUtc);
+                PreOrderSittings.AddToTab(db, preOrder, tab, nowUtc);
                 await ledger.SaveAppendedAsync(cancellationToken);
                 recomputeTab = tabId;
             }
@@ -651,6 +589,7 @@ internal sealed class PreOrderService(
 
                 try
                 {
+                    await domainEvents.DispatchAsync(db, cancellationToken);
                     await db.SaveChangesAsync(cancellationToken);
                 }
                 catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabPerSession))
@@ -719,17 +658,13 @@ internal sealed class PreOrderService(
             throw NotSendable(reservation, "Only a confirmed booking within two hours of its start can be marked not coming.");
         }
 
+        // The History's line, and the question withdrawn - the waiter has called and decided: the guest is not asked
+        // "are you on your way?" on top - hang on PartyMarkedNotComing.
         preOrder.MarkNotComing(staffId, nowUtc);
-
-        await BookingActivity.RecordAsync(
-            activity, db, reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
-            extra: new { answer = "not-coming", recordedByStaff = true });
-
-        // The waiter has called and decided: the guest is not asked "are you on your way?" on top.
-        await PreOrderQuestions.WithdrawAsync(db, outbox, reservation.Id, nowUtc, cancellationToken);
 
         try
         {
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
@@ -819,7 +754,8 @@ internal sealed class PreOrderService(
             excludedMenuItemIds = items.Where(i => !i.AvailableForPreOrder).Select(i => i.Id).ToList(),
         };
 
-        branch.SetPreOrders(settings.AcceptsPreOrders, settings.MinutesBefore);
+        // Signal 6 for every card on a rail now, and the next one, hangs on PreOrderSettingsSaved.
+        branch.SetPreOrders(settings.AcceptsPreOrders, settings.MinutesBefore, clock.UtcNow);
 
         await activity.RecordAsync(
             new ActivityRecord(ActivityCategory.Settings, ActivityActions.SettingsPreOrders, ActivitySubjects.Branch, branchId)
@@ -843,11 +779,7 @@ internal sealed class PreOrderService(
             item.SetAvailableForPreOrder(!excluded.Contains(item.Id));
         }
 
-        // The tablets' rails change with this - when a card appears, its "sold out now" flags, the next card's time -
-        // and nothing about a pre-order row did. Signal 6 for every card that is or could be on a rail now, and for the
-        // next one after them, so every tablet re-reads the rail and its nextDueAtUtc.
-        db.SignalPreOrderRail(await RailBookingsAsync(branchId, cancellationToken));
-
+        await domainEvents.DispatchAsync(db, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -855,35 +787,6 @@ internal sealed class PreOrderService(
             branchId, settings.AcceptsPreOrders ? "on" : "off", settings.MinutesBefore, excluded.Count);
 
         return await SettingsViewAsync(branchId, cancellationToken);
-    }
-
-    /// <summary>
-    /// The bookings a settings change reaches on the rail: every one whose card could show under any setting now (a
-    /// pre-order on a confirmed booking starting within the longest <c>minutesBefore</c> and not over, or a seated one
-    /// not yet on its tab), and the first confirmed one after those - the rail's <c>nextDueAtUtc</c>.
-    /// </summary>
-    private async Task<IReadOnlyList<Guid>> RailBookingsAsync(Guid branchId, CancellationToken cancellationToken)
-    {
-        var nowUtc = clock.UtcNow;
-        var horizon = nowUtc.AddMinutes(PreOrderRules.MaxMinutesBefore);
-
-        var withPreOrders = db.PreOrders.AsNoTracking().Where(p => p.BranchId == branchId && p.Lines.Any());
-
-        var onRail = await withPreOrders
-            .Where(p => (p.Reservation.Status == ReservationStatus.Confirmed
-                         && p.Reservation.StartUtc <= horizon
-                         && p.Reservation.EndUtc > nowUtc)
-                        || (p.Reservation.Status == ReservationStatus.Seated && p.TabOrderId == null))
-            .Select(p => p.ReservationId)
-            .ToListAsync(cancellationToken);
-
-        var next = await withPreOrders
-            .Where(p => p.Reservation.Status == ReservationStatus.Confirmed && p.Reservation.StartUtc > horizon)
-            .OrderBy(p => p.Reservation.StartUtc)
-            .Select(p => (Guid?)p.ReservationId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return next is { } first ? [.. onRail, first] : onRail;
     }
 
     private async Task<PreOrderSettingsView> SettingsViewAsync(Guid branchId, CancellationToken cancellationToken)
@@ -1160,6 +1063,7 @@ internal sealed class PreOrderService(
     {
         try
         {
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
 
             return false;
@@ -1185,28 +1089,6 @@ internal sealed class PreOrderService(
                 : throw new DbUpdateConcurrencyException(
                     "Another change to this pre-order was saved at the same moment. Read it again and retry.", ex);
         }
-    }
-
-    /// <summary>The question's payload: the reminder's notice, so its handler reads the same shape.</summary>
-    private async Task<object> NoticeAsync(
-        Reservation reservation, string venueName, string branchName, Guid account, CancellationToken cancellationToken)
-    {
-        var tableLabel = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.Id == reservation.DiningTableId)
-            .Select(t => t.Label)
-            .FirstAsync(cancellationToken);
-
-        return new
-        {
-            reservationId = reservation.Id,
-            dinerUserId = account,
-            venueName,
-            branchName,
-            tableLabel,
-            localStartTime = reservation.LocalStartTime,
-            reservationCode = reservation.Code,
-        };
     }
 
     private async Task<Reservation> OwnBookingAsync(Guid reservationId, Guid dinerUserId, CancellationToken cancellationToken) =>

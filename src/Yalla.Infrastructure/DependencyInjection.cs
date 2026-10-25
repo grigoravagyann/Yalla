@@ -401,6 +401,10 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueMessageWritten>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.VenueMessageGuestNotice>());
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueAskedComing>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.MessageActivity>());
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueAskedComing>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.VenueMessageGuestNotice>());
+        // Pre-orders and the booking's "are you on your way?": saved, cleared, moved with the booking, sent, not coming, a
+        // held ticket moved or voided, arriving on the tab, the settings; the guest's answers, the venue's ask, a move
+        // forgetting them. The History's line, the question moved or withdrawn, the tab's stream, then signal 6.
+        Yalla.Infrastructure.DomainEvents.PreOrders.PreOrderEventHandlers.Add(services);
 
         return services;
     }
