@@ -294,6 +294,10 @@ public sealed class CallSideEffectsSnapshotTests(SqlServerFixture fixture)
             .Where(e => tabIds.Contains(e.TabId))
             .ToListAsync();
         var changes = await db.TableStateChanges.AsNoTracking().Where(c => c.BranchId == branch.BranchId).ToListAsync();
+
+        // The change stream's number is the database's, shared with every other test in the class: from 1 at this
+        // branch's first row, which keeps the order the floor reads them in.
+        var firstChange = changes.Count == 0 ? 0L : changes.Min(c => c.Sequence);
         var tabs = await db.Tabs.AsNoTracking().Where(t => tabIds.Contains(t.Id)).ToListAsync();
 
         var place = await db.Branches.AsNoTracking()
@@ -320,7 +324,13 @@ public sealed class CallSideEffectsSnapshotTests(SqlServerFixture fixture)
                 sorted: false);
         }
 
-        Section(text, "TableStateChanges", changes, Normalised, sorted: true);
+        Section(
+            text,
+            "TableStateChanges",
+            changes,
+            Normalised,
+            sorted: true,
+            adjust: row => row["sequence"] = row["sequence"]!.GetValue<long>() - firstChange + 1L);
         Section(text, "ServiceRequests", calls, Normalised, sorted: true);
         Section(text, "Tabs", tabs, Normalised, sorted: true);
         Section(text, "TableSessions", sittings, Normalised, sorted: true);
@@ -334,10 +344,21 @@ public sealed class CallSideEffectsSnapshotTests(SqlServerFixture fixture)
     /// contract.
     /// </summary>
     private static void Section<T>(
-        StringBuilder text, string title, IEnumerable<T> rows, Func<string, string> normalise, bool sorted)
+        StringBuilder text,
+        string title,
+        IEnumerable<T> rows,
+        Func<string, string> normalise,
+        bool sorted,
+        Action<JsonObject>? adjust = null)
     {
         var rendered = rows
-            .Select(row => SortArrays(JsonNode.Parse(normalise(RenderRow(row!))))!.ToJsonString(Render))
+            .Select(row =>
+            {
+                var node = SortArrays(JsonNode.Parse(normalise(RenderRow(row!))))!.AsObject();
+                adjust?.Invoke(node);
+
+                return node.ToJsonString(Render);
+            })
             .ToList();
 
         text.Append("## ").Append(title).Append(" (").Append(rendered.Count).Append(")\n");
