@@ -70,7 +70,8 @@ public sealed class UnverifiedGuestsMigrationRollbackTests(SqlServerFixture fixt
                 session.AttachTab(phantom.Id);
                 await db.SaveChangesAsync();
 
-                Assert.True(phantom.RejectAdmission(now, branch.WaiterId));
+                Assert.True(phantom.RejectAdmission(now, branch.WaiterId, reason: null, tableFreed: false));
+                phantom.DequeueEvents();
                 session.DetachRejectedTab(phantom.Id);
                 await db.SaveChangesAsync();
                 phantomId = phantom.Id;

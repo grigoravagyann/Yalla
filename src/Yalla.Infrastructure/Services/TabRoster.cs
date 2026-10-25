@@ -4,7 +4,6 @@ using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
 using Yalla.Application.Media;
-using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -24,7 +23,6 @@ internal sealed class TabRoster(
     ITokenAuthorityCheck authority,
     IOptions<TabOptions> options,
     TabLedger ledger,
-    IOutbox outbox,
     ILogger<TabService> logger,
     TabLookups lookups)
 {
@@ -73,8 +71,7 @@ internal sealed class TabRoster(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Approving a participant",
-            TabEventType.ParticipantApproved,
-            (participant, nowUtc) => participant.Approve(nowUtc), cancellationToken,
+            (tab, participant, nowUtc) => tab.ApproveParticipant(participant, nowUtc, asBooker: false), cancellationToken,
             alreadyAnswered: participant => participant.IsApproved);
 
     public Task<TabParticipantView> RejectParticipantAsync(
@@ -84,8 +81,7 @@ internal sealed class TabRoster(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Rejecting a participant",
-            TabEventType.ParticipantRejected,
-            (participant, nowUtc) => participant.Reject(nowUtc), cancellationToken,
+            (tab, participant, nowUtc) => tab.RejectParticipant(participant, nowUtc), cancellationToken,
             alreadyAnswered: participant => participant.WasTurnedAway);
 
     /// <summary>
@@ -99,8 +95,7 @@ internal sealed class TabRoster(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Removing a participant",
-            TabEventType.ParticipantRemoved,
-            (participant, nowUtc) => participant.Remove(nowUtc), cancellationToken);
+            (tab, participant, nowUtc) => tab.RemoveParticipant(participant, nowUtc), cancellationToken);
 
     /// <summary>
     /// A participant takes themself off the tab - the same status change a host's remove makes, so
@@ -138,32 +133,10 @@ internal sealed class TabRoster(
                     "You are the only one on this tab, so there is nobody to hand it to. Ask a waiter "
                     + "to take it over or close it.");
 
-            // The order ReassignHostAsync keeps: the tab refuses a closed bill before either row is
-            // touched, and the new host must be approved before they can take the role.
-            tab.ReassignHost(successor.Id);
-            successor.BecomeHost();
-            leaving.BecomeGuest();
-
-            ledger.Append(tab.Id, TabEventType.HostReassigned, new
-            {
-                fromParticipantId = leaving.Id,
-                toParticipantId = successor.Id,
-            });
         }
 
-        leaving.Remove(clock.UtcNow);
-
-        // The roster event every phone at the table already handles, marked as their own doing.
-        ledger.Append(tab.Id, TabEventType.ParticipantRemoved, new
-        {
-            participantId = leaving.Id,
-            displayName = leaving.DisplayName,
-            status = (int)leaving.Status,
-            canOrder = leaving.CanOrder,
-            canSeeTableTotal = leaving.CanSeeTableTotal,
-            canPay = leaving.CanPay,
-            left = true,
-        });
+        // Raises TabHostMoved (a host handing on), then TabParticipantRemoved marked as their own doing.
+        tab.Leave(leaving, successor, clock.UtcNow);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -195,9 +168,8 @@ internal sealed class TabRoster(
         CancellationToken cancellationToken = default) =>
         ChangeParticipantAsync(
             tabId, actingParticipantId, participantId, "Changing permissions",
-            TabEventType.ParticipantPermissionsChanged,
-            (participant, _) => participant.SetPermissions(
-                permissions.CanOrder, permissions.CanSeeTableTotal, permissions.CanPay),
+            (tab, participant, nowUtc) => tab.SetParticipantPermissions(
+                participant, permissions.CanOrder, permissions.CanSeeTableTotal, permissions.CanPay, nowUtc),
             cancellationToken);
 
     public async Task<TabParticipantView> SetDisplayNameAsync(
@@ -211,13 +183,7 @@ internal sealed class TabRoster(
         var participant = tab.Participants.FirstOrDefault(p => p.Id == participantId && !p.IsRemoved)
                           ?? throw new KeyNotFoundException("No such participant on that tab.");
 
-        participant.SetDisplayName(displayName);
-
-        ledger.Append(tab.Id, TabEventType.ParticipantRenamed, new
-        {
-            participantId = participant.Id,
-            displayName = participant.DisplayName,
-        });
+        tab.RenameParticipant(participant, displayName, clock.UtcNow);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -229,8 +195,7 @@ internal sealed class TabRoster(
         Guid actingParticipantId,
         Guid participantId,
         string operation,
-        TabEventType eventType,
-        Action<TabParticipant, DateTime> change,
+        Action<Tab, TabParticipant, DateTime> change,
         CancellationToken cancellationToken,
         Func<TabParticipant, bool>? alreadyAnswered = null)
     {
@@ -249,37 +214,9 @@ internal sealed class TabRoster(
             return await ToViewAsync(target, tab.Status, tab.Admission, cancellationToken);
         }
 
-        change(target, clock.UtcNow);
-
-        // The one message worth pushing on this path: the guest is sitting at the table with the
-        // phone in their pocket, on a screen that says "waiting for the host". Only reaches somebody
-        // whose phone was carrying a diner token when it scanned - see TabParticipant.UserId.
-        if (eventType == TabEventType.ParticipantApproved && target.UserId is { } dinerUserId)
-        {
-            outbox.Enqueue(
-                OutboxMessageTypes.ParticipantApproved,
-                new
-                {
-                    tabId = tab.Id,
-                    participantId = target.Id,
-                    dinerUserId,
-                    tableLabel = tab.DiningTable?.Label ?? string.Empty,
-                },
-                clock.UtcNow,
-                OutboxMessageTypes.KeyFor("participant", target.Id, "approved"));
-        }
-
-        // The other phones at the table are showing this roster. Written in the same SaveChanges as
-        // the change, so the stream can never disagree with the tab.
-        ledger.Append(tab.Id, eventType, new
-        {
-            participantId = target.Id,
-            displayName = target.DisplayName,
-            status = (int)target.Status,
-            canOrder = target.CanOrder,
-            canSeeTableTotal = target.CanSeeTableTotal,
-            canPay = target.CanPay,
-        });
+        // The tab raises the change: the other phones at the table, showing this roster, read it on the
+        // stream written in the same save - and an approval is pushed to the guest's account.
+        change(tab, target, clock.UtcNow);
 
         try
         {
@@ -342,13 +279,7 @@ internal sealed class TabRoster(
         }
 
         // Throws DomainStateException when locked.
-        tab.SetSettlementMode(settlementMode);
-
-        ledger.Append(tab.Id, TabEventType.SettlementModeChanged, new
-        {
-            settlementMode = (int)settlementMode,
-            lockedAtUtc = tab.SettlementModeLockedAtUtc,
-        });
+        tab.SetSettlementMode(settlementMode, clock.UtcNow);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 

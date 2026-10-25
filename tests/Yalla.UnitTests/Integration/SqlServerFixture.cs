@@ -175,9 +175,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             tokens,
             Microsoft.Extensions.Options.Options.Create(new TabOptions()),
             CreateLedger(db, clock, actor),
-            CreateOutbox(db, clock),
             CreateBranchGuard(db, actor),
-            CreateActivityLog(db, clock, actor),
             NullLogger<TabService>.Instance);
     }
 

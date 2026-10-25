@@ -44,12 +44,14 @@ public class TabTests
     {
         var tab = NewTab();
 
-        tab.SetSettlementMode(SettlementMode.EveryonePaysOwnItems);
+        tab.SetSettlementMode(SettlementMode.EveryonePaysOwnItems, OpenedAt.AddMinutes(10));
         tab.LockSettlementMode(OpenedAt.AddMinutes(50));
+        tab.DequeueEvents();
 
         Assert.Throws<DomainStateException>(
-            () => tab.SetSettlementMode(SettlementMode.HostPaysEverything));
+            () => tab.SetSettlementMode(SettlementMode.HostPaysEverything, OpenedAt.AddMinutes(51)));
         Assert.Equal(SettlementMode.EveryonePaysOwnItems, tab.SettlementMode);
+        Assert.Empty(tab.DequeueEvents());
     }
 
     [Fact]
@@ -62,14 +64,20 @@ public class TabTests
         Assert.False(tab.IsAdmitted);
 
         Assert.True(tab.Admit(OpenedAt.AddMinutes(2), TabAdmissionReason.Waiter, waiter));
+
+        var admitted = Assert.IsType<TabAdmitted>(Assert.Single(tab.DequeueEvents()).Event);
+        Assert.Equal((TabAdmissionReason.Waiter, waiter, OpenedAt.AddMinutes(2)), (admitted.Because, admitted.ByStaffId, admitted.OccurredAtUtc));
+
         Assert.False(tab.Admit(OpenedAt.AddMinutes(3), TabAdmissionReason.Booker, null));
+        Assert.Empty(tab.DequeueEvents());
 
         Assert.Equal(TabAdmission.Admitted, tab.Admission);
         Assert.Equal(TabAdmissionReason.Waiter, tab.AdmittedBecause);
         Assert.Equal(waiter, tab.AdmissionDecidedByStaffId);
         Assert.Equal(OpenedAt.AddMinutes(2), tab.AdmissionDecidedAtUtc);
 
-        Assert.Throws<TabAdmissionDecidedException>(() => tab.RejectAdmission(OpenedAt.AddMinutes(4), waiter));
+        Assert.Throws<TabAdmissionDecidedException>(() => tab.RejectAdmission(OpenedAt.AddMinutes(4), waiter, null, tableFreed: false));
+        Assert.Empty(tab.DequeueEvents());
     }
 
     [Fact]
@@ -78,8 +86,13 @@ public class TabTests
         var tab = AwaitingTab();
         var waiter = Guid.CreateVersion7();
 
-        Assert.True(tab.RejectAdmission(OpenedAt.AddMinutes(5), waiter));
-        Assert.False(tab.RejectAdmission(OpenedAt.AddMinutes(6), waiter));
+        Assert.True(tab.RejectAdmission(OpenedAt.AddMinutes(5), waiter, "nobody there", tableFreed: true));
+
+        var turnedAway = Assert.IsType<TabTurnedAway>(Assert.Single(tab.DequeueEvents()).Event);
+        Assert.Equal(("nobody there", true, waiter), (turnedAway.Reason, turnedAway.TableFreed, turnedAway.ByStaffId));
+
+        Assert.False(tab.RejectAdmission(OpenedAt.AddMinutes(6), waiter, null, tableFreed: false));
+        Assert.Empty(tab.DequeueEvents());
 
         Assert.Equal(TabAdmission.Rejected, tab.Admission);
         Assert.Equal(TabStatus.Closed, tab.Status);

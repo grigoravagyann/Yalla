@@ -107,7 +107,9 @@ internal static class ConsoleTestData
 
         if (status == TabStatus.Closing)
         {
-            tab.BeginClosing();
+            // Seeded straight to the rows: the bill presented is history here, told when it happened.
+            tab.BeginClosing(atUtc);
+            tab.DequeueEvents();
         }
         else if (status == TabStatus.Closed)
         {
