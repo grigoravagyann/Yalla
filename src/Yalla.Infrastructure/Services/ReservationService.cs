@@ -1,7 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
@@ -108,7 +107,6 @@ internal sealed class ReservationService : IReservationService
         NoShowBlocks noShowBlocks,
         IOutbox outbox,
         IOptions<PublicWebOptions> publicWeb,
-        IActivityLog activity,
         ILogger<ReservationService> logger)
     {
         var lookups = new ReservationLookups(db, clock, actor, authorization);
