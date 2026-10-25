@@ -181,16 +181,4 @@ internal static class ReservationNotices
             DinerNotices.BookingCancelledByLink(db, reservation, venueName, branch.Name, nowUtc);
         }
     }
-
-    /// <summary>"You can book again" - the push and the feed entry, in the caller's unit of work.</summary>
-    internal static void TellDinerUnblocked(YallaDbContext db, IOutbox outbox, BookingBlock block, DateTime nowUtc)
-    {
-        outbox.Enqueue(
-            OutboxMessageTypes.DinerBookingsUnblocked,
-            new { dinerUserId = block.DinerUserId, liftedBecause = block.LiftedBecause },
-            nowUtc,
-            OutboxMessageTypes.KeyFor("booking-block", block.Id, "lifted"));
-
-        DinerNotices.BookingsUnblocked(db, block.DinerUserId, block.LiftedBecause!.Value, nowUtc);
-    }
 }

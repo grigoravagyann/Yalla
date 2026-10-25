@@ -123,7 +123,7 @@ internal sealed class ReservationService : IReservationService
         decisions = new ReservationDecisions(db, clock, actor, reservations, logger, lookups, views);
         reads = new ReservationReads(db, clock, actor, branchGuard, lookups);
         release = new ReservationRelease(
-            db, clock, actor, reservations, tableState, noShowBlocks, outbox, activity, logger, lookups, views);
+            db, clock, actor, reservations, tableState, noShowBlocks, logger, lookups, views);
     }
 
     // ---------------------------------------------------------------- booking

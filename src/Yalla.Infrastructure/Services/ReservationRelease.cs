@@ -25,8 +25,6 @@ internal sealed class ReservationRelease(
     ReservationWriter reservations,
     ITableStateService tableState,
     NoShowBlocks noShowBlocks,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationViews views)
@@ -64,12 +62,9 @@ internal sealed class ReservationRelease(
         var branch = await lookups.LoadBranchAsync(reservation.BranchId, cancellationToken);
         var minutes = branch.ReservationPolicy.GraceExtensionMinutes;
 
-        // Throws when the one extension is spent, or the booking is not confirmed.
+        // Throws when the one extension is spent, or the booking is not confirmed. Its History's line is the
+        // extension's handler's.
         reservation.ExtendHold(clock.UtcNow, minutes);
-
-        await BookingActivity.RecordAsync(
-            activity, db, reservation, ActivityActions.BookingHoldExtended, cancellationToken,
-            extra: new { minutes, holdExpiresAtUtc = reservation.HoldExpiresAtUtc }, byGuest: true);
 
         await reservations.SaveAsync(cancellationToken);
 
@@ -158,11 +153,11 @@ internal sealed class ReservationRelease(
                     graceEndsUtc = hold;
                 }
 
-                reservation.MarkNoShow(nowUtc, staffId, countsTowardBlock: nowUtc >= graceEndsUtc);
+                reservation.MarkNoShow(nowUtc, staffId, countsTowardBlock: nowUtc >= graceEndsUtc, command.Reason);
             }
             else
             {
-                reservation.CancelByVenue(nowUtc, reason);
+                reservation.CancelByVenue(nowUtc, command.Reason);
             }
 
             // As for a cancellation: the table is free of this booking, so a question it asked goes, and a
@@ -170,38 +165,10 @@ internal sealed class ReservationRelease(
             await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
             await TableShares.EarlierChangedAsync(db, reservation, releasedFrom, nowUtc, cancellationToken);
 
-            // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
-            // after a waiter has already given the table away is the worst of both.
-            await outbox.CancelAsync(
-                OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
-
-            await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
-
-            await BookingActivity.RecordAsync(
-                activity,
-                db,
-                reservation,
-                command.Outcome == ReleaseOutcome.NoShow ? ActivityActions.BookingNoShow : ActivityActions.BookingReleased,
-                cancellationToken,
-                extra: new { countsTowardBlock = reservation.NoShowCountsTowardBlock },
-                reason: command.Reason);
-
-            if (reservation.DinerUserId is not null)
-            {
-                if (command.Outcome == ReleaseOutcome.NoShow)
-                {
-                    // Every no-show is told to the guest, so a mistake is put right with the venue before it counts
-                    // (review B1d). After the cancel above, which would otherwise take it with the reminder.
-                    TellDinerNoShow(reservation, releasedFrom, nowUtc);
-                }
-                else
-                {
-                    // The venue let an accepted booking go, and the diner's feed hears about it (K12).
-                    DinerNotices.BookingCancelledByVenue(
-                        db, reservation, releasedFrom.Venue?.Name ?? releasedFrom.Name, releasedFrom.Name, nowUtc);
-                }
-            }
-
+            // Whatever is left unsent for this booking goes with it (a nudge asking "still coming?" after a waiter has
+            // already given the table away is the worst of both), the History's line, the guest told - of every no-show,
+            // so a mistake is put right before it counts (review B1d); in the feed when the venue let it go (K12) - and
+            // the change stream: the no-show's or the cancellation's handlers.
             await reservations.SaveAsync(cancellationToken);
 
             // Saved first, so the count reads this one as it reads the others.
@@ -296,9 +263,6 @@ internal sealed class ReservationRelease(
         {
             reservation.UndoNoShow(nowUtc, staffId, command.Reason);
 
-            await BookingActivity.RecordAsync(
-                activity, db, reservation, ActivityActions.BookingNoShowUndone, cancellationToken, reason: command.Reason);
-
             await reservations.SaveAsync(cancellationToken);
 
             // The block this no-show helped make, judged again without it: fewer than three left, and it is lifted.
@@ -341,46 +305,10 @@ internal sealed class ReservationRelease(
     }
 
     /// <summary>
-    /// "Marked as a no-show at {venue}" - the push and the feed entry beside it, in the caller's unit of work. Keyed
-    /// under the booking with the instant, so a no-show withdrawn and marked again is told again.
-    /// </summary>
-    private void TellDinerNoShow(Reservation reservation, Branch branch, DateTime nowUtc)
-    {
-        if (reservation.DinerUserId is not { } dinerUserId)
-        {
-            return;
-        }
-
-        var venueName = branch.Venue?.Name ?? branch.Name;
-
-        outbox.Enqueue(
-            OutboxMessageTypes.ReservationNoShow,
-            new
-            {
-                reservationId = reservation.Id,
-                dinerUserId,
-                venueName,
-                branchName = branch.Name,
-                tableLabel = string.Empty,
-                localStartTime = reservation.LocalStartTime,
-                reservationCode = reservation.Code,
-                localDate = reservation.LocalDate,
-                partySize = reservation.PartySize,
-                status = reservation.Status,
-            },
-            nowUtc,
-            OutboxMessageTypes.KeyFor(
-                "reservation",
-                reservation.Id,
-                "no-show:" + nowUtc.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture)));
-
-        DinerNotices.BookingNoShow(db, reservation, venueName, branch.Name, nowUtc);
-    }
-
-    /// <summary>
     /// Lifts the guest's block in force when, without the no-show just withdrawn, fewer than
     /// <see cref="NoShowBlockRules.Threshold"/> are left to hold it - counted as of when it began. Nothing it
-    /// cancelled comes back; the guest is told they can book again. Stages in the caller's unit of work.
+    /// cancelled comes back; the guest is told they can book again, by the lift's handler. Stages in the caller's unit of
+    /// work.
     /// </summary>
     private async Task LiftBlockIfNoLongerHeldAsync(
         Guid account,
@@ -402,7 +330,6 @@ internal sealed class ReservationRelease(
         }
 
         block.Lift(nowUtc, BookingBlockLiftCause.NoShowUndone, staffId, reason);
-        ReservationNotices.TellDinerUnblocked(db, outbox, block, nowUtc);
 
         logger.LogInformation(
             "The no-show block on diner {DinerUserId} was lifted: a no-show was withdrawn and fewer than {Threshold} remain.",
@@ -415,7 +342,7 @@ internal sealed class ReservationRelease(
     private static string DefaultReleaseReason(ReleaseOutcome outcome) =>
         outcome == ReleaseOutcome.NoShow
             ? "released: nobody arrived"
-            : "released: the venue let the booking go";
+            : Reservation.ReleasedByVenueReason;
 
     private async Task<ReservationReleaseResult> BuildReleaseAsync(
         Reservation reservation,

@@ -26,9 +26,7 @@ namespace Yalla.Infrastructure.Services;
 /// </remarks>
 internal sealed class NoShowBlocks(
     YallaDbContext db,
-    IOutbox outbox,
     ITableStateService tableState,
-    IActivityLog activity,
     ILogger<NoShowBlocks> logger)
 {
     /// <summary>
@@ -94,90 +92,30 @@ internal sealed class NoShowBlocks(
 
         foreach (var booking in toCancel)
         {
+            // As for any cancellation: its questions go and the guest before it is settled. Its unsent reminders and
+            // feed entries, its History's line - the platform's doing, not the staff member's at the venue whose no-show
+            // made it - and a row on its table's change stream naming it (signal 4, review S8) are the cancellation's
+            // handlers'.
             booking.CancelForNoShowBlock(nowUtc);
 
-            // As for any cancellation: its questions go, the guest before it is settled, and its unsent reminders
-            // and feed entries go with it.
             var branch = await LoadBranchAsync(booking.BranchId, cancellationToken);
 
             await TableShares.CloseForLaterAsync(db, booking.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
             await TableShares.EarlierChangedAsync(db, booking, branch, nowUtc, cancellationToken);
-            await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", booking.Id), cancellationToken);
-            await DinerNotices.CancelUnshownAsync(db, booking.Id, nowUtc, cancellationToken);
-
-            // In each venue's History as the platform's doing, not the staff member's at the venue whose no-show made it.
-            await BookingActivity.RecordAsync(
-                activity, db, booking, ActivityActions.BookingCancelled, cancellationToken,
-                extra: new { because = "no-show-block" }, bySystem: true);
         }
 
-        // Each venue is told on its change stream: a row on the booking's table, naming it (review S8).
-        await SignalBlockCancellationsAsync(toCancel, nowUtc, cancellationToken);
-
-        // One push and one feed entry for the whole block: what happened, and the day they can book again - on the
-        // wall clock of the venue whose no-show made it (review N3).
+        // One push and one feed entry for the whole block - what happened, and the day they can book again, on the wall
+        // clock of the venue whose no-show made it (review N3) - the block's handler's.
         var until = block.BlockedUntilUtc;
         var untilLocal = BranchZone.For(triggeredAt.TimeZoneId).LocalDateAt(until);
 
-        outbox.Enqueue(
-            OutboxMessageTypes.DinerBookingsBlocked,
-            new
-            {
-                dinerUserId = account,
-                blockedUntilUtc = until,
-                blockedUntilLocalDate = untilLocal,
-                cancelledCount = toCancel.Count,
-            },
-            nowUtc,
-            OutboxMessageTypes.KeyFor("booking-block", block.Id, "notice"));
-
-        DinerNotices.BookingsBlockedForNoShows(db, account, until, untilLocal, toCancel.Count, nowUtc);
+        block.Impose(toCancel.Count, untilLocal);
 
         logger.LogInformation(
             "Diner {DinerUserId} missed bookings at {Days} venue-days in {Hours} hours; blocked until {BlockedUntilUtc} and {Cancelled} bookings cancelled.",
             account, counted, NoShowBlockRules.WindowHours, until, toCancel.Count);
 
         return (toCancel, until);
-    }
-
-    /// <summary>
-    /// Puts each booking a block cancelled on its branch's change stream: a same-status row on its table, naming the
-    /// booking, with signal <see cref="TableChangeSignal.BookingCancelledByBlock"/> - so the floor and the console
-    /// refetch and see why. A table held for it is freed afterwards, through the state machine.
-    /// </summary>
-    private async Task SignalBlockCancellationsAsync(
-        IReadOnlyList<Reservation> cancelled,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
-    {
-        if (cancelled.Count == 0)
-        {
-            return;
-        }
-
-        var tableIds = cancelled.Select(r => r.DiningTableId).Distinct().ToList();
-        var statuses = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => tableIds.Contains(t.Id))
-            .ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
-
-        foreach (var booking in cancelled)
-        {
-            var status = statuses.GetValueOrDefault(booking.DiningTableId, TableStatus.Free);
-
-            db.TableStateChanges.Add(
-                new Domain.Audit.TableStateChange(
-                    booking.BranchId,
-                    booking.DiningTableId,
-                    status,
-                    status,
-                    NoShowBlockRules.CancellationReason,
-                    ActorType.System,
-                    nowUtc,
-                    Guid.CreateVersion7(),
-                    reservationId: booking.Id)
-                .WithSignal(TableChangeSignal.BookingCancelledByBlock));
-        }
     }
 
     /// <summary>

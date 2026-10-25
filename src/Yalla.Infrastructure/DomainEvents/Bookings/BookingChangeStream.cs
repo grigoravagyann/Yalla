@@ -42,7 +42,9 @@ internal sealed class BookingChangeStream(YallaDbContext db, IClock clock) :
     IDomainEventHandler<ReservationCancelled>,
     IDomainEventHandler<ReservationMarkedNoShow>,
     IDomainEventHandler<ReservationNoShowWithdrawn>,
-    IDomainEventHandler<ReservationOnMyWayChanged>
+    IDomainEventHandler<GuestOnTheirWay>,
+    IDomainEventHandler<GuestRunningLate>,
+    IDomainEventHandler<OnMyWayAskRecorded>
 {
     public Task HandleAsync(ReservationMade domainEvent, CancellationToken cancellationToken) =>
         SignalAsync(domainEvent, cancellationToken);
@@ -73,21 +75,35 @@ internal sealed class BookingChangeStream(YallaDbContext db, IClock clock) :
     public Task HandleAsync(ReservationNoShowWithdrawn domainEvent, CancellationToken cancellationToken) =>
         SignalAsync(domainEvent, cancellationToken);
 
-    public Task HandleAsync(ReservationOnMyWayChanged domainEvent, CancellationToken cancellationToken) =>
-        SignalAsync(domainEvent, cancellationToken, answered: true);
+    // The guest's answer to "are you coming?" - and the venue asking it - are the pre-orders' events; the line beside the
+    // table's next booking that shows it is the booking's.
+    public Task HandleAsync(GuestOnTheirWay domainEvent, CancellationToken cancellationToken) =>
+        SignalAsync(domainEvent.Reservation, before: null, answered: true, cancellationToken);
+
+    public Task HandleAsync(GuestRunningLate domainEvent, CancellationToken cancellationToken) =>
+        SignalAsync(domainEvent.Reservation, before: null, answered: true, cancellationToken);
+
+    public Task HandleAsync(OnMyWayAskRecorded domainEvent, CancellationToken cancellationToken) =>
+        SignalAsync(domainEvent.Reservation, before: null, answered: true, cancellationToken);
+
+    private Task SignalAsync(IReservationEvent domainEvent, CancellationToken cancellationToken) =>
+        SignalAsync(domainEvent.Reservation, domainEvent.Before, answered: false, cancellationToken);
 
     /// <summary>Signal 5 on each table the booking's change touched.</summary>
-    private async Task SignalAsync(IReservationEvent domainEvent, CancellationToken cancellationToken, bool answered = false)
+    private async Task SignalAsync(
+        Reservation reservation,
+        ReservationStanding? before,
+        bool answered,
+        CancellationToken cancellationToken)
     {
-        var reservation = domainEvent.Reservation;
         var tables = new List<Guid>();
 
-        if (domainEvent.Before is not { } before || answered || Moved(before, reservation))
+        if (before is null || answered || Moved(before, reservation))
         {
             tables.Add(reservation.DiningTableId);
         }
 
-        if (domainEvent.Before is { } left && left.DiningTableId != reservation.DiningTableId)
+        if (before is { } left && left.DiningTableId != reservation.DiningTableId)
         {
             tables.Add(left.DiningTableId);
         }

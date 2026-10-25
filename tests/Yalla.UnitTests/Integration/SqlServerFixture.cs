@@ -470,7 +470,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             noShowPolicy ?? new NoShowPolicy(),
             CreateReservationWriter(db, clock, lockOptions, actor),
             tableState,
-            new NoShowBlocks(db, outbox, tableState, CreateActivityLog(db, clock, actor), NullLogger<NoShowBlocks>.Instance),
+            new NoShowBlocks(db, tableState, NullLogger<NoShowBlocks>.Instance),
             outbox,
 
             // The manage-link template. Its default is the local dev page, which is all a test

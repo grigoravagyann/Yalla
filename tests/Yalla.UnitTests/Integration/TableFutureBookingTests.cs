@@ -138,6 +138,9 @@ public sealed class TableFutureBookingTests(SqlServerFixture fixture)
         if (cancel)
         {
             booking.CancelByVenue(Now, "Test");
+
+            // History, written straight to the row: what the cancellation told is not this test's subject.
+            booking.DequeueEvents();
         }
 
         db.Reservations.Add(booking);

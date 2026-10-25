@@ -471,7 +471,9 @@ public static class DependencyInjection
 
         Add<Yalla.Domain.Occupancy.ReservationHoldExtended, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
 
-        Add<Yalla.Domain.Occupancy.ReservationOnMyWayChanged, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.GuestOnTheirWay, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.GuestRunningLate, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.OnMyWayAskRecorded, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
 
         Add<Yalla.Domain.Occupancy.BookingBlockImposed, Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>(services);
         Add<Yalla.Domain.Occupancy.BookingBlockLifted, Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>(services);

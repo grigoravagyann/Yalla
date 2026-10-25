@@ -65,19 +65,6 @@ public enum ReservationCanceller
     NoShowBlock = 3,
 }
 
-/// <summary>What changed about the guest's "are you coming?".</summary>
-public enum OnMyWayChange
-{
-    /// <summary>The guest said they are on their way.</summary>
-    OnMyWay = 1,
-
-    /// <summary>The guest said they are running late.</summary>
-    RunningLate = 2,
-
-    /// <summary>Somebody at the venue asked.</summary>
-    AskedByStaff = 3,
-}
-
 /// <summary>A diner made the booking - from the app, the public page or the staff channel.</summary>
 /// <param name="Reservation">The booking, Confirmed or PendingApproval, its reason stored.</param>
 /// <param name="OccurredAtUtc">When.</param>
@@ -191,17 +178,6 @@ public sealed record ReservationNoShowWithdrawn(
 /// <param name="OccurredAtUtc">When.</param>
 public sealed record ReservationHoldExtended(
     Reservation Reservation, ReservationStanding Before, int Minutes, DateTime OccurredAtUtc) : IReservationEvent;
-
-/// <summary>
-/// The answer to "are you coming?" changed: the guest is on their way, or running late, or somebody at the venue asked -
-/// what the floor shows beside the table's next booking.
-/// </summary>
-/// <param name="Reservation">The booking, the answer or the question recorded.</param>
-/// <param name="Before">Its standing before (the answer is not on it).</param>
-/// <param name="What">What changed.</param>
-/// <param name="OccurredAtUtc">When.</param>
-public sealed record ReservationOnMyWayChanged(
-    Reservation Reservation, ReservationStanding Before, OnMyWayChange What, DateTime OccurredAtUtc) : IReservationEvent;
 
 /// <summary>
 /// A later booking asks the booking before it on the same table to free the table in time - put to the earlier guest in

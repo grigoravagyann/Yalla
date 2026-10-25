@@ -822,10 +822,13 @@ public sealed class Reservation : Entity
                 + "you are running late.");
         }
 
+        var before = Standing();
         var from = HoldExpiresAtUtc is { } current && current > nowUtc ? current : nowUtc;
 
         HoldExpiresAtUtc = from.AddMinutes(extensionMinutes);
         GraceExtensionsUsed++;
+
+        Raise(new ReservationHoldExtended(this, before, extensionMinutes, nowUtc));
     }
 
     /// <summary>
@@ -1447,9 +1450,20 @@ public sealed class Reservation : Entity
         Raise(new ReservationCancelled(this, before, ReservationCanceller.Guest, reason, viaManageLink, atUtc));
     }
 
-    /// <summary>The venue cancelled a booking it had already accepted.</summary>
-    public void CancelByVenue(DateTime atUtc, string? reason) =>
-        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
+    /// <summary>What a booking the venue let go records as why, when nobody said.</summary>
+    public const string ReleasedByVenueReason = "released: the venue let the booking go";
+
+    /// <summary>The venue cancelled a booking it had already accepted - the floor letting a late booking go.</summary>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="reason">Why, as the floor typed it; <see cref="ReleasedByVenueReason"/> is recorded when nobody did.</param>
+    public void CancelByVenue(DateTime atUtc, string? reason)
+    {
+        var before = Standing();
+
+        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason ?? ReleasedByVenueReason, afterDeadline: false);
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.Venue, reason, ViaManageLink: false, atUtc));
+    }
 
     /// <summary>
     /// The platform cancelled it: its guest was just blocked for three no-shows in three days
@@ -1457,8 +1471,12 @@ public sealed class Reservation : Entity
     /// </summary>
     public void CancelForNoShowBlock(DateTime atUtc)
     {
+        var before = Standing();
+
         Cancel(ReservationStatus.CancelledByVenue, atUtc, NoShowBlockRules.CancellationReason, afterDeadline: false);
         CancelledBecause = CancellationCause.NoShowBlock;
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.NoShowBlock, null, ViaManageLink: false, atUtc));
     }
 
     /// <summary>
@@ -1510,7 +1528,8 @@ public sealed class Reservation : Entity
     /// <param name="atUtc">Now.</param>
     /// <param name="byStaffId">Who marked it.</param>
     /// <param name="countsTowardBlock">Whether it was marked after the guest's grace - see <see cref="NoShowCountsTowardBlock"/>.</param>
-    public void MarkNoShow(DateTime atUtc, Guid? byStaffId = null, bool countsTowardBlock = false)
+    /// <param name="reason">Why, as the floor typed it - for the History; not stored.</param>
+    public void MarkNoShow(DateTime atUtc, Guid? byStaffId = null, bool countsTowardBlock = false, string? reason = null)
     {
         if (Status != ReservationStatus.Confirmed)
         {
@@ -1523,6 +1542,8 @@ public sealed class Reservation : Entity
             throw new ReservationNotStartedException(Id, Code, StartUtc);
         }
 
+        var before = Standing();
+
         Status = ReservationStatus.NoShow;
         CancelledAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         HoldExpiresAtUtc = null;
@@ -1531,6 +1552,8 @@ public sealed class Reservation : Entity
         NoShowUndoneAtUtc = null;
         NoShowUndoneByStaffId = null;
         NoShowUndoReason = null;
+
+        Raise(new ReservationMarkedNoShow(this, before, reason, atUtc));
     }
 
     /// <summary>
@@ -1546,12 +1569,16 @@ public sealed class Reservation : Entity
             throw new DomainStateException($"Only a no-show can be withdrawn; {Code} is {Status}.");
         }
 
+        var before = Standing();
+
         Status = ReservationStatus.Confirmed;
         CancelledAtUtc = null;
         NoShowCountsTowardBlock = false;
         NoShowUndoneAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         NoShowUndoneByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
         NoShowUndoReason = Guard.OptionalText(reason, nameof(reason), FieldLengths.Reason);
+
+        Raise(new ReservationNoShowWithdrawn(this, before, reason, atUtc));
     }
 
     private void Cancel(ReservationStatus to, DateTime atUtc, string? reason, bool afterDeadline)
