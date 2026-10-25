@@ -12,9 +12,8 @@ namespace Yalla.Infrastructure.DomainEvents.TabOrders;
 /// </summary>
 /// <remarks>
 /// It used to be detected by <see cref="StaffPushSignals"/> from the change tracker - an order modified into
-/// <see cref="TabOrderStatus.Ready"/> - and is the first staff push kind to hang on a domain event instead. The key
-/// carries a fresh id, as before: an order can be up again after a move back is ever allowed, and a collision would fail
-/// the save.
+/// <see cref="TabOrderStatus.Ready"/> - and is the first staff push kind to hang on a domain event instead. The key is
+/// the one the tracker wrote, a fresh id after the order's (<see cref="StaffPushSignals.Again"/>).
 /// </remarks>
 internal sealed class KitchenReadyStaffPush(YallaDbContext db, IClock clock) : IDomainEventHandler<TabOrderMoved>
 {
