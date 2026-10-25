@@ -29,12 +29,14 @@ namespace Yalla.Infrastructure.Services;
 /// Each order on its own, under its row version: a waiter who accepted it a moment ago wins, and the sweep writes
 /// nothing for it. One that fails is logged and left for the next pass.
 /// </para>
+/// <para>
+/// The order's move raises its event (<see cref="TakeawayDeclined"/> for nobody's answer, <see cref="TakeawayAccepted"/>
+/// by nobody), whose handlers write the History's line - the system's - and tell the guest, in this save.
+/// </para>
 /// </remarks>
 internal sealed class TakeawayExpirySweep(
     YallaDbContext db,
     IClock clock,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<TakeawayExpirySweep> logger)
 {
     internal const int BatchSize = 50;
@@ -99,8 +101,6 @@ internal sealed class TakeawayExpirySweep(
             .Select(b => b.TakeawayAutoAccept)
             .FirstAsync(cancellationToken);
 
-        TakeawayNotices.Step step;
-
         if (autoAccept)
         {
             if (order.Status != TakeawayStatus.Sent)
@@ -109,26 +109,14 @@ internal sealed class TakeawayExpirySweep(
             }
 
             order.Accept(order.RequestedPickupUtc > nowUtc ? order.RequestedPickupUtc : nowUtc, null, nowUtc);
-            step = TakeawayNotices.Step.Accepted;
         }
-        else if (order.DeclineForNoAnswer(nowUtc))
-        {
-            step = TakeawayNotices.Step.Declined;
-        }
-        else
+        else if (!order.DeclineForNoAnswer(nowUtc))
         {
             return false;
         }
 
+        // The guest's notice takes the account's lock in it; a race lost rolls it back with the rest.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        await TakeawayNotices.WriteAsync(db, outbox, order, step, nowUtc, cancellationToken);
-
-        await TakeawayActivity.RecordAsync(
-            activity,
-            order,
-            step == TakeawayNotices.Step.Accepted ? ActivityActions.TakeawayAccepted : ActivityActions.TakeawayAutoDeclined,
-            cancellationToken,
-            bySystem: true);
 
         try
         {

@@ -171,6 +171,97 @@ public class TakeawayOrderTests
             Guid.CreateVersion7(), Now));
     }
 
+    // ---------------------------------------------------------------- domain events
+
+    /// <summary>
+    /// What an order tells its handlers (docs/domain-events.md): building raises nothing, placing raises TakeawayPlaced,
+    /// each move its own event with who made it and when; a repeated or refused move raises nothing.
+    /// </summary>
+    [Fact]
+    public void An_order_raises_one_event_for_each_thing_that_happens_to_it_and_none_for_a_repeat_or_a_refusal()
+    {
+        var order = Sent();
+        Assert.Empty(order.DequeueEvents());
+
+        order.Place(acceptAutomatically: false);
+        var placed = Assert.IsType<TakeawayPlaced>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.Equal((order, false, Now), (placed.Order, placed.AcceptedOnPlacing, placed.OccurredAtUtc));
+        Assert.Equal(TakeawayStatus.Sent, order.Status);
+        Assert.Throws<DomainStateException>(() => order.Place(acceptAutomatically: false));
+
+        Assert.Throws<TakeawayStatusConflictException>(() => order.MarkReady(Staff, Now.AddMinutes(1)));
+        Assert.Empty(order.DequeueEvents());
+
+        order.Accept(Now.AddMinutes(25), Staff, Now.AddMinutes(1));
+        Assert.False(order.Accept(Now.AddMinutes(30), Staff, Now.AddMinutes(2)));
+        var accepted = Assert.IsType<TakeawayAccepted>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.Equal(((Guid?)Staff, Now.AddMinutes(1)), (accepted.ByStaffId, accepted.OccurredAtUtc));
+
+        order.MarkReady(Staff, Now.AddMinutes(24));
+        Assert.Equal(Staff, Assert.IsType<TakeawayMarkedReady>(Assert.Single(order.DequeueEvents()).Event).ByStaffId);
+
+        order.Collect(TakeawayPaymentMethod.Cash, Staff, Now.AddMinutes(40));
+        Assert.False(order.Collect(TakeawayPaymentMethod.Cash, Staff, Now.AddMinutes(41)));
+        Assert.Equal(Now.AddMinutes(40), Assert.IsType<TakeawayCollected>(Assert.Single(order.DequeueEvents()).Event).OccurredAtUtc);
+
+        var missed = Sent();
+        missed.Accept(Now.AddMinutes(25), Staff, Now.AddMinutes(1));
+        missed.MarkReady(Staff, Now.AddMinutes(25));
+        missed.DequeueEvents();
+        Assert.Throws<TakeawayNoShowTooEarlyException>(() => missed.MarkNoShow(Staff, Now.AddMinutes(54)));
+        Assert.Empty(missed.DequeueEvents());
+        missed.MarkNoShow(Staff, Now.AddMinutes(55));
+        Assert.IsType<TakeawayMarkedNoShow>(Assert.Single(missed.DequeueEvents()).Event);
+    }
+
+    /// <summary>
+    /// At a branch that accepts automatically, placing is accepting - ready when the guest asked, by nobody - told as one
+    /// event that says so, not a separate acceptance; the sweep accepting a late one is an acceptance by nobody.
+    /// </summary>
+    [Fact]
+    public void Placing_at_an_automatic_branch_accepts_in_the_same_event_and_the_sweeps_acceptance_is_nobodys()
+    {
+        var order = Sent();
+        order.Place(acceptAutomatically: true);
+
+        var placed = Assert.IsType<TakeawayPlaced>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.True(placed.AcceptedOnPlacing);
+        Assert.Equal(TakeawayStatus.Accepted, order.Status);
+        Assert.Equal(order.RequestedPickupUtc, order.ReadyAtUtc);
+        Assert.Equal(Now, order.AcceptedAtUtc);
+        Assert.Null(order.AcceptedByStaffId);
+        Assert.Null(order.AcceptDeadlineUtc);
+
+        var late = Sent();
+        late.Place(acceptAutomatically: false);
+        late.DequeueEvents();
+        late.Accept(late.RequestedPickupUtc, null, Now.AddMinutes(6));
+        Assert.Null(Assert.IsType<TakeawayAccepted>(Assert.Single(late.DequeueEvents()).Event).ByStaffId);
+    }
+
+    /// <summary>Somebody's no and nobody's answer are one event, by cause; a cancel is the guest's.</summary>
+    [Fact]
+    public void A_decline_says_whose_and_a_cancel_is_told_once()
+    {
+        var declined = Sent();
+        declined.Decline(" Out of lamb ", Staff, Now.AddMinutes(1));
+        Assert.False(declined.Decline("again", Staff, Now.AddMinutes(2)));
+        var no = Assert.IsType<TakeawayDeclined>(Assert.Single(declined.DequeueEvents()).Event);
+        Assert.Equal((TakeawayDeclineCause.StaffDeclined, (Guid?)Staff), (no.Cause, no.ByStaffId));
+
+        var lapsed = Sent();
+        Assert.False(lapsed.DeclineForNoAnswer(Now.AddMinutes(4)));
+        Assert.Empty(lapsed.DequeueEvents());
+        lapsed.DeclineForNoAnswer(Now.AddMinutes(5));
+        var nobody = Assert.IsType<TakeawayDeclined>(Assert.Single(lapsed.DequeueEvents()).Event);
+        Assert.Equal((TakeawayDeclineCause.NoAnswer, (Guid?)null), (nobody.Cause, nobody.ByStaffId));
+
+        var cancelled = Sent();
+        cancelled.CancelByGuest(Now.AddMinutes(1));
+        Assert.False(cancelled.CancelByGuest(Now.AddMinutes(2)));
+        Assert.IsType<TakeawayCancelled>(Assert.Single(cancelled.DequeueEvents()).Event);
+    }
+
     // ---------------------------------------------------------------- "I'm coming"
 
     private static readonly DateTime StartUtc = new(2026, 10, 22, 15, 30, 0, DateTimeKind.Utc);

@@ -822,6 +822,8 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
                 order.Accept(at.AddMinutes(-30), aram, at.AddMinutes(-39));
                 order.MarkReady(aram, at.AddMinutes(-30));
                 order.Collect(method, aram, at);
+                // History, written straight to the rows: its moves were told when they happened.
+                order.DequeueEvents();
                 db.TakeawayOrders.Add(order);
             }
 

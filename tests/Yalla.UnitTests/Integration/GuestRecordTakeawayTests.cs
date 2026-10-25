@@ -219,6 +219,8 @@ public partial class GuestRecordTests
             order.Collect(TakeawayPaymentMethod.Card, branch.WaiterId, readyAtUtc.AddMinutes(5));
         }
 
+        // History, written straight to the rows: its moves were told when they happened.
+        order.DequeueEvents();
         db.TakeawayOrders.Add(order);
         await db.SaveChangesAsync();
 

@@ -6,7 +6,6 @@ using Yalla.Domain.Messages;
 using Yalla.Domain.Messaging;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Tabs;
-using Yalla.Domain.Takeaway;
 
 namespace Yalla.Infrastructure.Persistence;
 
@@ -45,7 +44,8 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// <item><b>guestMessages</b> - a guest's text or answer ("I'm coming", "late", "not coming") added to a thread.</item>
 /// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill.</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
-/// needs nobody, and is not pushed).</item>
+/// needs nobody, and is not pushed). Staged by the <c>TakeawayPlaced</c> domain-event handler
+/// (<c>TakeawayStaffPush</c>) rather than detected here.</item>
 /// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
 /// handler (<c>KitchenReadyStaffPush</c>) rather than detected here: see <c>docs/domain-events.md</c>.</item>
 /// </list>
@@ -120,16 +120,9 @@ internal static class StaffPushSignals
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<TakeawayOrder>())
-        {
-            if (entry.State == EntityState.Added && entry.Entity.Status == TakeawayStatus.Sent)
-            {
-                events.Add((StaffPushKinds.Takeaway, entry.Entity.Id, $"{KeyPrefix}takeaway:{entry.Entity.Id}"));
-            }
-        }
-
         // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
         // first kind to move onto domain events (docs/domain-events.md). The other four follow their verticals.
+        // takeaway is not either: it is the TakeawayPlaced handler's (TakeawayStaffPush).
         if (events.Count == 0)
         {
             return;
