@@ -131,31 +131,43 @@ internal sealed class TabLedger(
     public TabBill ComputeTogglingAdjustment(Tab tab, Guid adjustmentId) =>
         Compute(tab, countingAsLive: null, togglingAdjustment: adjustmentId);
 
+    /// <summary>
+    /// What one standing adjustment takes off the bill as it now stands: its own reduction, worked out in the bill's
+    /// order (<see cref="TabBilling.Reductions"/>) - the rule the revenue report and Staff → Results read back
+    /// (<c>AdjustmentReductions</c>), so the History's amount for a discount or a comp is the one the reports count.
+    /// Zero for an adjustment not standing on the tab.
+    /// </summary>
+    /// <remarks>
+    /// Not the subtotal with it against the subtotal without it: a line's own adjustments come off before the tab-wide
+    /// ones, so a comp of a 3,200 dish under a standing 10 % discount drops the subtotal by 2,880 (the discount now
+    /// takes 320 less) while the comp itself took 3,200.
+    /// </remarks>
+    public long ReductionOf(Tab tab, Guid adjustmentId)
+    {
+        ArgumentNullException.ThrowIfNull(tab);
+
+        var adjustments = StandingAdjustments(tab, togglingAdjustment: null);
+        var index = adjustments.FindIndex(a => a.Id == adjustmentId);
+
+        if (index < 0)
+        {
+            return 0;
+        }
+
+        var reductions = TabBilling.Reductions(
+            LinesOf(tab, countingAsLive: null),
+            [.. adjustments.Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))]);
+
+        return reductions[index];
+    }
+
     private TabBill Compute(Tab tab, Guid? countingAsLive, Guid? togglingAdjustment)
     {
         ArgumentNullException.ThrowIfNull(tab);
 
-        var orders = db.TabOrders.Local.Where(o => o.TabId == tab.Id).ToList();
+        var lines = LinesOf(tab, countingAsLive);
 
-        var lines = orders
-            .SelectMany(order => order.Lines.Select(line => new BillingLine(
-                line.Id,
-                order.OwnerOf(line),
-                line.UnitPriceAmdSnapshot,
-                line.Quantity,
-                line.IsVoided && line.Id != countingAsLive,
-                line.IsSplitAcrossParticipants,
-                [.. line.Shares.Select(s => s.TabParticipantId)])))
-            .ToList();
-
-        // In the order they were given. Two tab-wide ones - 10 % and 200 off - come to a different bill in the other
-        // order, and the tracker's own order is not one: a just-added adjustment is enumerated before the loaded ones,
-        // so the bill would change on its next recompute. The reads that add the reductions up use the same order
-        // (AdjustmentReductions).
-        var adjustments = db.TabAdjustments.Local
-            .Where(a => a.TabId == tab.Id && a.IsActive != (a.Id == togglingAdjustment))
-            .OrderBy(a => a.CreatedAtUtc)
-            .ThenBy(a => a.Id)
+        var adjustments = StandingAdjustments(tab, togglingAdjustment)
             .Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))
             .ToList();
 
@@ -185,6 +197,34 @@ internal sealed class TabLedger(
 
         return TabBilling.Compute(lines, adjustments, participants, tab.ServiceChargePercentSnapshot, paid);
     }
+
+    /// <summary>The tab's lines from the tracker, as the bill reads them.</summary>
+    private List<BillingLine> LinesOf(Tab tab, Guid? countingAsLive) =>
+        [.. db.TabOrders.Local
+            .Where(o => o.TabId == tab.Id)
+            .SelectMany(order => order.Lines.Select(line => new BillingLine(
+                line.Id,
+                order.OwnerOf(line),
+                line.UnitPriceAmdSnapshot,
+                line.Quantity,
+                line.IsVoided && line.Id != countingAsLive,
+                line.IsSplitAcrossParticipants,
+                [.. line.Shares.Select(s => s.TabParticipantId)])))];
+
+    /// <summary>
+    /// The adjustments standing on the tab, from the tracker, in the order they were given (one toggled the other way).
+    /// </summary>
+    /// <remarks>
+    /// In the order they were given. Two tab-wide ones - 10 % and 200 off - come to a different bill in the other order,
+    /// and the tracker's own order is not one: a just-added adjustment is enumerated before the loaded ones, so the bill
+    /// would change on its next recompute. The reads that add the reductions up use the same order
+    /// (<c>AdjustmentReductions</c>).
+    /// </remarks>
+    private List<TabAdjustment> StandingAdjustments(Tab tab, Guid? togglingAdjustment) =>
+        [.. db.TabAdjustments.Local
+            .Where(a => a.TabId == tab.Id && a.IsActive != (a.Id == togglingAdjustment))
+            .OrderBy(a => a.CreatedAtUtc)
+            .ThenBy(a => a.Id)];
 
     /// <summary>
     /// Appends an event to the tab's stream. Saved by whoever saves the change it describes.

@@ -130,7 +130,7 @@ summary also carries `localDate`, `localTime`, `partySize`, `status` and `tableI
 | `order.in-kitchen`, `order.ready`, `order.served` | staff | tab | `orderId`, `from`, `to`, `items`, `lines` |
 | `order.voided` (m), `order.line-voided` (m) | staff | tab | `lineId`/`orderId`, `name`, `quantity`, `totalBeforeAmd`, `totalAfterAmd`; `reason` |
 | `payment.cash` (m) | staff | tab | `paymentId`, `amountAmd`, `tipAmd`, `remainingAmd`, `totalAmd`, `closed`, `serverStaffMemberId` |
-| `payment.discount` (m), `payment.comp` (m) | manager | tab | `adjustmentId`, `percent` or `amountAmd`, `lineName`, `totalBeforeAmd`, `totalAfterAmd`; `reason` |
+| `payment.discount` (m), `payment.comp` (m) | manager | tab | `adjustmentId`, `percent` or `amountAmd`, `lineName`, `totalBeforeAmd`, `totalAfterAmd`; `reason`. The entry's amount is its own reduction in the bill's order, as the reports count it (since 2026-10-26) |
 | `payment.adjustment-reversed` (m) | manager | tab | `adjustmentId`, `kind`, `totalBeforeAmd`, `totalAfterAmd` |
 | `payment.unpaid` (m) | manager | tab | `writtenOffAmd`, `totalAmd`, `paidAmd`; `reason` |
 | `takeaway.placed`, `takeaway.cancelled` | guest | takeaway | `code`, `items`, `totalAmd`, `status`, `pickupLocal` |

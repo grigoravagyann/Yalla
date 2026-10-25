@@ -330,6 +330,93 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A comp of the 3,200 khachapuri under a standing 10 % discount: the subtotal drops by 2,880 (the discount now takes
+    /// 320 less), but the comp itself took 3,200 - and the History's line says 3,200, as the revenue report and Staff →
+    /// Results count it (<c>AdjustmentReductions</c>), not the subtotal's drop it used to read. The totals before and
+    /// after stay the bill's.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_comp_under_a_standing_discount_reads_in_the_History_what_the_reports_count()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt);
+        var (branch, menu, _, _) = await ArrangeAsync(clock);
+        var lilit = branch.WaiterId;
+
+        var tabId = await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+        {
+            await fixture.CreateService(db, clock, actor)
+                .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, branch.FirstTableId, 2, Guid.CreateVersion7()));
+
+            return (await fixture.CreateTabService(db, clock, actor)
+                .OpenForStaffAsync(new OpenTabForStaffCommand(branch.BranchId, branch.FirstTableId, Guid.CreateVersion7()))).TabId;
+        });
+
+        var khachapuri = Assert.Single((await OrderAsync(clock, lilit, tabId, menu.Khachapuri, quantity: 1)).Lines).LineId;
+        await OrderAsync(clock, lilit, tabId, menu.Coffee, quantity: 3);
+
+        clock.UtcNow = SeatedAt.AddMinutes(10);
+        await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
+                tabId, null, AdjustmentKind.Discount, 10m, null, "Birthday", Guid.CreateVersion7())));
+
+        long totalBeforeComp;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            totalBeforeComp = (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId)).TotalAmd;
+        }
+
+        clock.UtcNow = SeatedAt.AddMinutes(11);
+        await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
+                tabId, khachapuri, AdjustmentKind.Comp, null, 5_000L, "Came cold", Guid.CreateVersion7())));
+
+        long total;
+        long subtotal;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            var tab = await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId);
+            (total, subtotal) = (tab.TotalAmd, tab.SubtotalAmd);
+        }
+
+        await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+            await fixture.CreatePaymentService(db, clock, actor)
+                .RecordCashAsync(new RecordCashPaymentCommand(tabId, total, null, 0L, Guid.CreateVersion7())));
+
+        var report = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            Performance(db, clock, actor).GetBranchAsync(branch.BranchId, new StaffPerformanceQuery()));
+        var revenue = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            SqlServerFixture.CreateReportQuery(db, actor).GetRevenueAsync(new ReportRequest(branch.BranchId, Today, Today)));
+
+        await using var verify = fixture.CreateContext(clock);
+        var comp = await verify.ActivityEntries.AsNoTracking()
+            .SingleAsync(e => e.BranchId == branch.BranchId && e.Action == ActivityActions.PaymentComp);
+
+        // The subtotal's drop the History used to read: the comp, less the 320 the discount no longer takes.
+        var discountWithKhachapuri = Domain.Common.Money.PercentOf(TestMenu.KhachapuriAmd + 3 * TestMenu.CoffeeAmd, 10m);
+        var discountWithout = Domain.Common.Money.PercentOf(3 * TestMenu.CoffeeAmd, 10m);
+        Assert.Equal(
+            TestMenu.KhachapuriAmd + 3 * TestMenu.CoffeeAmd - discountWithKhachapuri - subtotal,
+            TestMenu.KhachapuriAmd - (discountWithKhachapuri - discountWithout));
+
+        Assert.Equal(TestMenu.KhachapuriAmd, comp.AmountAmd);
+        Assert.Equal(
+            TestMenu.KhachapuriAmd,
+            Assert.Single(revenue.Adjustments, a => a.Kind == AdjustmentKind.Comp).TotalAmd);
+        Assert.Equal(
+            TestMenu.KhachapuriAmd,
+            report.Staff.Single(r => r.StaffMemberId == branch.ManagerId).AdjustmentsAmd - discountWithout);
+
+        // The totals before and after are still the bill's.
+        Assert.True(comp.IsMoney);
+        Assert.Contains($"\"totalAmd\":{totalBeforeComp}", comp.BeforeJson, StringComparison.Ordinal);
+        Assert.Contains($"\"totalAmd\":{total}", comp.AfterJson, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A void and a discount after the transfer: still the bill's total that is split, the void counted for who voided
     /// it and the discount for the manager who gave it - and the totals still the report's.
     /// </summary>

@@ -16,9 +16,12 @@ namespace Yalla.Infrastructure.DomainEvents.Payments;
 /// device is the request's, read by the activity log.
 /// </summary>
 /// <remarks>
-/// The amounts are the bill's own arithmetic (<see cref="TabLedger"/>), read from the tracker as the save will write it:
-/// what a discount took off is the subtotal with it standing against the subtotal without it, and the totals before and
-/// after are the same two bills - so the History says what the diner's bill said.
+/// The amounts are the bill's own arithmetic (<see cref="TabLedger"/>), read from the tracker as the save will write it.
+/// What a discount or comp took off is its own reduction in the bill's order (<see cref="TabLedger.ReductionOf"/>), the
+/// rule the revenue report and Staff → Results count (<see cref="AdjustmentReductions"/>), so the History and the
+/// reports name the same amount; the totals before and after are the bill with it not standing and with it - so the
+/// History says what the diner's bill said. Until 2026-10-26 the amount was the subtotal's drop, which differs when
+/// another adjustment stands (a comp under a 10 % discount read 10 % less); entries written before then keep it.
 /// </remarks>
 internal sealed class PaymentActivity(YallaDbContext db, IActivityLog activity, TabLedger ledger) :
     IDomainEventHandler<TabPaymentRecorded>,
@@ -54,7 +57,7 @@ internal sealed class PaymentActivity(YallaDbContext db, IActivityLog activity, 
             cancellationToken);
     }
 
-    /// <summary>A discount or comp given: what it took off the subtotal, the line it is on, the total before and after.</summary>
+    /// <summary>A discount or comp given: its own reduction (as the reports count it), the line it is on, the total before and after.</summary>
     public async Task HandleAsync(TabAdjustmentAdded domainEvent, CancellationToken cancellationToken)
     {
         var adjustment = domainEvent.Adjustment;
@@ -75,7 +78,7 @@ internal sealed class PaymentActivity(YallaDbContext db, IActivityLog activity, 
                 TableSessionId = tab.TableSessionId,
                 TableLabel = await TabOrderReads.TableLabelAsync(db, tab, cancellationToken),
                 ItemNames = lineName is null ? null : [lineName],
-                AmountAmd = before.SubtotalAmd - after.SubtotalAmd,
+                AmountAmd = ledger.ReductionOf(tab, adjustment.Id),
                 IsMoney = true,
                 Reason = adjustment.Reason,
                 Before = new { totalAmd = before.TotalAmd },
