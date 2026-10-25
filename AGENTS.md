@@ -54,7 +54,7 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
 - **Side effects hang on domain events** (`docs/domain-events.md`): the aggregate raises (`Entity.Raise`) from the
   method that makes the change, and handlers in `Infrastructure/DomainEvents/` write the activity entry, outbox
   message, feed row, tab-stream event and staff push in the same save - dispatched by `SaveChanges` before it writes
-  (and by `TabLedger` before it numbers the stream). Migrated: **tab orders**. On a migrated vertical never write a
+  (and by `TabLedger` before it numbers the stream). Migrated verticals are listed in `docs/domain-events.md`. On a migrated vertical never write a
   side effect in a service; on the others, prefer moving the vertical over adding another hand-written call.
 - **Idempotency**: device writes carry `clientCommandId` (`IClientCommandRequest` in
   `Endpoints/TableStateRequests.cs`, enforced by `ClientCommandIdFilter`); the service records it in
