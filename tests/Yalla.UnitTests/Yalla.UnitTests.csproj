@@ -3,6 +3,14 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+
+    <!--
+      The test host runs a dozen-plus API hosts at once (see xunit.runner.json). The workstation
+      collector does that on one GC thread with every test paused behind it; the server collector
+      measured about a fifth off a full local run. Only the test host reads this - the API's own
+      runtime settings are its project's.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +32,15 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!--
+    How many test classes run at once: every SQL-backed class has a database of its own
+    (Integration/TestDatabasePool.cs), so they run in parallel like the rest. See the README's test
+    section for the knobs.
+  -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

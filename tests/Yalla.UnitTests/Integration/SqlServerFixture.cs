@@ -15,7 +15,8 @@ using Yalla.Infrastructure.Services;
 namespace Yalla.UnitTests.Integration;
 
 /// <summary>
-/// A throwaway SQL Server database, migrated from scratch, shared by the integration tests.
+/// A throwaway SQL Server database for one integration test class, leased from <see cref="TestDatabasePool"/>
+/// for as long as the class runs.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,7 +32,15 @@ namespace Yalla.UnitTests.Integration;
 /// <para>
 /// The schema is created with <c>Migrate</c>, not <c>EnsureCreated</c>, so the migrations
 /// themselves are exercised - including the check constraints and filtered indexes that
-/// <c>EnsureCreated</c> would build from the model and never validate.
+/// <c>EnsureCreated</c> would build from the model and never validate. The pool migrates its
+/// first database and restores copies of it for the rest, so every class gets that schema.
+/// </para>
+/// <para>
+/// <b>One class per database at a time.</b> SQL-backed classes run in parallel, each with its
+/// own fixture and its own leased database, and no other class touches that database until it is
+/// handed back. Inside a class the tests still run one at a time against data earlier classes
+/// may have left, as they always did. <c>YALLA_TEST_SERIAL=1</c> puts every SQL-backed class back
+/// into one collection and one database; see <see cref="TestDatabasePool"/>.
 /// </para>
 /// </remarks>
 public sealed class SqlServerFixture : IAsyncLifetime
@@ -40,7 +49,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// Environment variable naming the server to test against, e.g. <c>localhost\SQLEXPRESS</c>.
     /// </summary>
     /// <remarks>
-    /// Set this in CI. Locally the probe below usually finds the right one on its own.
+    /// Set this in CI. Locally the probe in <see cref="TestDatabasePool"/> usually finds the right one on its own.
     /// </remarks>
     public const string ServerEnvironmentVariable = "YALLA_TEST_SQL_SERVER";
 
@@ -58,26 +67,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <summary>Password for <see cref="UserEnvironmentVariable"/>.</summary>
     public const string PasswordEnvironmentVariable = "YALLA_TEST_SQL_PASSWORD";
 
-    /// <summary>
-    /// Where a developer machine actually keeps SQL Server, in the order worth trying.
-    /// </summary>
-    /// <remarks>
-    /// The fixture used to hard-code <c>localhost</c>, which is the default instance. A machine
-    /// with SQL Server Express installed - the common case on Windows - has a <i>named</i> instance
-    /// and no default one, so every integration test skipped and the suite reported green while
-    /// proving nothing about the two things only a real server can prove: rowversion tokens and
-    /// the locking these bookings depend on.
-    /// </remarks>
-    private static readonly string[] CandidateServers =
-    [
-        "localhost",
-        @"localhost\SQLEXPRESS",
-        @"(localdb)\MSSQLLocalDB",
-    ];
-
-    private readonly string _databaseName = $"Yalla_Tests_{Guid.NewGuid():N}";
-
-    private string _server = string.Empty;
+    private TestDatabasePool.Lease? _lease;
 
     public bool IsAvailable { get; private set; }
 
@@ -85,104 +75,38 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     public string ConnectionString { get; private set; } = string.Empty;
 
+    /// <summary>The database this class has to itself while it runs.</summary>
+    public string DatabaseName => _lease?.Database ?? string.Empty;
+
     public async Task InitializeAsync()
     {
-        var attempts = new List<string>();
+        var lease = await TestDatabasePool.LeaseAsync();
 
-        foreach (var server in Candidates())
+        if (lease.SkipReason is { } reason)
         {
-            try
-            {
-                await using var connection = new SqlConnection(MasterConnectionString(server));
-                await connection.OpenAsync();
+            SkipReason = reason;
 
-                _server = server;
-                break;
-            }
-            catch (Exception ex)
-                when (ex is SqlException or InvalidOperationException or PlatformNotSupportedException)
-            {
-                attempts.Add($"{server}: {ex.Message.Split('\n')[0]}");
-            }
-        }
-
-        if (_server.Length == 0)
-        {
-            SkipReason =
-                $"No SQL Server reachable. Set {ServerEnvironmentVariable} to one. Tried - "
-                + string.Join(" | ", attempts);
             return;
         }
 
-        ConnectionString =
-            $"Server={_server};Database={_databaseName};{Credentials()}"
-            + "TrustServerCertificate=True;MultipleActiveResultSets=True";
-
-        await using var db = CreateContext(new TestClock(TestNow.UtcNow));
-        await db.Database.MigrateAsync();
-
+        _lease = lease;
+        ConnectionString = lease.ConnectionString!;
         IsAvailable = true;
     }
 
-    private static IEnumerable<string> Candidates()
-    {
-        var configured = Environment.GetEnvironmentVariable(ServerEnvironmentVariable);
-
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            yield return configured;
-        }
-
-        foreach (var server in CandidateServers)
-        {
-            yield return server;
-        }
-    }
-
-    private static string MasterConnectionString(string server) =>
-        $"Server={server};Database=master;{Credentials()}TrustServerCertificate=True;Connect Timeout=5";
-
     /// <summary>
-    /// How to authenticate: a SQL login when CI supplies one, Windows authentication otherwise.
+    /// Hands the database back for the next class. It is dropped with the rest when the run ends
+    /// (<see cref="TestDatabasePool.DropAllAsync"/>), not here.
     /// </summary>
-    /// <remarks>
-    /// Returns a fragment ending in a semicolon so both call sites can concatenate it without
-    /// caring which branch it took.
-    /// </remarks>
-    private static string Credentials()
+    public Task DisposeAsync()
     {
-        var user = Environment.GetEnvironmentVariable(UserEnvironmentVariable);
-        var password = Environment.GetEnvironmentVariable(PasswordEnvironmentVariable);
-
-        return string.IsNullOrWhiteSpace(user)
-            ? "Trusted_Connection=True;"
-            : $"User ID={user};Password={password};";
-    }
-
-    public async Task DisposeAsync()
-    {
-        if (!IsAvailable)
+        if (_lease is { } lease)
         {
-            return;
+            _lease = null;
+            TestDatabasePool.Return(lease);
         }
 
-        // Force it closed first: a lingering pooled connection makes DROP DATABASE hang.
-        SqlConnection.ClearAllPools();
-
-        await using var connection = new SqlConnection(MasterConnectionString(_server));
-        await connection.OpenAsync();
-
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            $"""
-             IF DB_ID(N'{_databaseName}') IS NOT NULL
-             BEGIN
-                 ALTER DATABASE [{_databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                 DROP DATABASE [{_databaseName}];
-             END
-             """;
-
-        await command.ExecuteNonQueryAsync();
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -633,7 +557,8 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <para>
     /// Scoping the assertions to our own keys instead would be weaker - it would say our message was
     /// handled, and say nothing about a dispatcher that also sent somebody else's twice. The
-    /// integration collection runs sequentially, so nothing else is mid-flight when this runs.
+    /// database is this class's alone while it runs and its tests run one at a time, so nothing
+    /// else is mid-flight when this runs.
     /// </para>
     /// <para>
     /// Call it <b>before</b> creating the bookings whose messages the test is about.
@@ -676,7 +601,16 @@ public sealed class SqlServerFixture : IAsyncLifetime
         new(db, lockOptions ?? new BookingLockOptions(), NullLogger<TableLock>.Instance);
 }
 
-/// <summary>Groups the integration tests so the database is created once, not per class.</summary>
+/// <summary>
+/// Marks a class as SQL-backed: it gets a <see cref="SqlServerFixture"/>, and with it a database of its own.
+/// </summary>
+/// <remarks>
+/// Every class marked <c>[Collection(SqlServerCollection.Name)]</c> used to be one collection - one fixture,
+/// one database, one class at a time, which made the suite as slow as the sum of its integration classes.
+/// <see cref="SqlServerClassCollectionFactory"/> now gives each such class a collection of its own built
+/// from this definition, so each gets its own fixture and they run in parallel. Mark new SQL-backed
+/// classes exactly as before.
+/// </remarks>
 [CollectionDefinition(Name)]
 public sealed class SqlServerCollection : ICollectionFixture<SqlServerFixture>
 {
