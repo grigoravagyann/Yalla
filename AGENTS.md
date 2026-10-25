@@ -176,8 +176,9 @@ catalogue table in `docs/error-contract.md`.
 1. A new power-of-two `StaffPushKinds` member (`Domain/Enums/IdentityEnums.cs`); decide `Defaults`, update `All`; pin it.
 2. Stage it from a **domain-event handler** of the event the floor is told about: `StaffPushSignals.StageOne(db, kind,
    id, $"{StaffPushSignals.KeyPrefix}<what>:{id}", clock.UtcNow)` (append `:{StaffPushSignals.Again()}` when it can
-   happen again) - model: `DomainEvents/TabOrders/KitchenReadyStaffPush`. Not in services. The four older kinds are still
-   detected in `StaffPushSignals.StageDetected` from the change tracker until their verticals move.
+   happen again) - models: `DomainEvents/TabOrders/KitchenReadyStaffPush`, `DomainEvents/TakeawayOrders/TakeawayStaffPush`.
+   Not in services. approvals, guestMessages and tableCalls are still detected in `StaffPushSignals.StageDetected` from
+   the change tracker until their verticals move.
 3. `StaffPushHandler`: `KindName`, the subject switch (return null when no longer true), text in `StaffPushText`.
 4. The switch: `StaffNotificationPreferences` + `StaffNotificationSettings` (`StaffPushContracts.cs`), both mappings in
    `StaffPushService`, the request in `StaffDeviceRequests.cs` and `StaffDeviceEndpoints.cs`.
@@ -190,8 +191,9 @@ catalogue table in `docs/error-contract.md`.
    `await activity.RecordAsync(new ActivityRecord(category, action, subjectType, id) { BranchId = ..., SubjectCode = ..., AmountAmd = ..., IsMoney = ..., Before = ..., After = ..., Summary = new { ... } }, ct)`.
    Model: `DomainEvents/TabOrders/TabOrderActivity` (one class, one entry per tab-order event). Who and which device are
    read by the log from the request, so attribution is the same as from a service; a sweep sets `BySystem = true`, a
-   manage link `ByGuest = true`. On a vertical not yet on events, the service records it before its save (models:
-   `TakeawayActivity.RecordAsync`, `BookingActivity`) - and a change with one path and one entry (a setting) may stay so.
+   manage link `ByGuest = true` (`DomainEvents/TakeawayOrders/TakeawayOrderActivity` does both). On a vertical not yet on
+   events, the service records it before its save (model: `BookingActivity`) - and a change with one path and one entry
+   (a setting) may stay so.
 3. `IsMoney` (payments, discounts, comps, voids, write-offs, takeaway collected) keeps it
    `ActivityEntry.MoneyRetentionDays` (1095) instead of `RetentionDays` (365); `ActivityRetention` purges on the
    outbox loop.
