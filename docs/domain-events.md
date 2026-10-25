@@ -530,6 +530,11 @@ written on every answer, where the tracker skipped a second answer with the same
   service the fixture composes (`StaffPushTests.An_order_up_goes_to_the_tables_own_waiter_and_not_to_every_phone`). A
   service that saves on the context itself, not through the ledger, gets `fixture.CreateContextWithHandlers(clock,
   actor)`: a context whose own saves dispatch to production's handlers, as that caller.
+- The rules themselves: `tests/Yalla.UnitTests/Architecture/` (`DomainEventRulesTests`, `HandWrittenSideEffectTests`,
+  `SaveChangesHookTests`; `AGENTS.md`, "Architecture tests") hold sections 2 to 5 to the compiled code - sealed event
+  records, `internal sealed` handlers registered by `AddDomainEventHandlers`, no handler saving, no service taking
+  `IOutbox`/`IActivityLog` outside the allow-list, no tracker hook in the save. An allow-list entry needs a comment with
+  its reason.
 
 ## 8. Moving the next vertical
 
