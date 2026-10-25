@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Audit;
@@ -26,11 +27,28 @@ public sealed class YallaDbContext : DbContext
 {
     private readonly IClock _clock;
 
+    private readonly DomainEventDispatcher _domainEvents;
+
     /// <summary>Bookings whose pre-order rail card changed without their pre-order row changing - see <see cref="SignalPreOrderRail"/>.</summary>
     private readonly HashSet<Guid> _preOrderRailSignals = [];
 
+    /// <summary>A transaction a domain-event handler asked for (<see cref="EnsureTransactionAsync"/>), committed by the save.</summary>
+    private IDbContextTransaction? _ownedTransaction;
+
+    /// <summary>A context with no domain-event handlers: the design-time factory, and tests seeding rows directly.</summary>
+    /// <remarks>A save on it that finds an event pending fails - see <see cref="DomainEventDispatcher.None"/>.</remarks>
     public YallaDbContext(DbContextOptions<YallaDbContext> options, IClock clock)
-        : base(options) => _clock = clock;
+        : this(options, clock, DomainEventDispatcher.None)
+    {
+    }
+
+    /// <summary>The context as the service provider composes it, dispatching domain events to the scope's handlers.</summary>
+    public YallaDbContext(DbContextOptions<YallaDbContext> options, IClock clock, DomainEventDispatcher domainEvents)
+        : base(options)
+    {
+        _clock = clock;
+        _domainEvents = domainEvents;
+    }
 
     public DbSet<Venue> Venues => Set<Venue>();
 
@@ -170,33 +188,108 @@ public sealed class YallaDbContext : DbContext
     }
 
     /// <summary>
-    /// Stamps <see cref="Entity.CreatedAtUtc"/> on every inserted row that does not already carry
-    /// one, so no caller has to remember to and no row is ever missing its creation time.
+    /// Dispatches the tracked entities' domain events, runs the change-tracker hooks, stamps
+    /// <see cref="Entity.CreatedAtUtc"/> on every inserted row that does not already carry one, and saves.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the overload every other <c>SaveChangesAsync</c> entry point funnels into.
+    /// </para>
+    /// <para>
+    /// <b>Domain events first</b> (<c>docs/domain-events.md</c>): their handlers add rows - an activity entry, an outbox
+    /// message - that the hooks after them then see like any other change. Each event is handled once: a save that fails
+    /// and is retried on the same context keeps what the handlers added and does not run them again.
+    /// </para>
     /// </remarks>
     public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        await _domainEvents.DispatchAsync(this, cancellationToken);
         await VoidHeldPreOrdersOfEndedBookingsAsync(sync: false, cancellationToken);
         await SignalBookingChangesAsync(sync: false, cancellationToken);
         await SignalPreOrderChangesAsync(sync: false, cancellationToken);
         StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
-        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+
+        if (_ownedTransaction is { } owned)
+        {
+            _ownedTransaction = null;
+            await owned.CommitAsync(cancellationToken);
+            await owned.DisposeAsync();
+        }
+
+        return saved;
     }
 
     /// <inheritdoc cref="SaveChangesAsync(bool, CancellationToken)"/>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
         VoidHeldPreOrdersOfEndedBookingsAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var saved = base.SaveChanges(acceptAllChangesOnSuccess);
+
+        if (_ownedTransaction is { } owned)
+        {
+            _ownedTransaction = null;
+            owned.Commit();
+            owned.Dispose();
+        }
+
+        return saved;
+    }
+
+    /// <summary>
+    /// Takes every pending event off the tracked entities, in the order they were raised. Walks the tracker without
+    /// detecting changes: an entity raises from a domain method, and anything that can raise is tracked - added to its
+    /// set, or loaded - so a save that raised nothing pays a list walk and no more.
+    /// </summary>
+    internal List<IDomainEvent> DequeueDomainEvents()
+    {
+        List<RaisedDomainEvent>? raised = null;
+        var detecting = ChangeTracker.AutoDetectChangesEnabled;
+        ChangeTracker.AutoDetectChangesEnabled = false;
+
+        try
+        {
+            foreach (var entry in ChangeTracker.Entries<Entity>())
+            {
+                if (entry.Entity.DequeueEvents() is { Count: > 0 } events)
+                {
+                    (raised ??= []).AddRange(events);
+                }
+            }
+        }
+        finally
+        {
+            ChangeTracker.AutoDetectChangesEnabled = detecting;
+        }
+
+        return raised is null ? [] : [.. raised.OrderBy(r => r.Order).Select(r => r.Event)];
+    }
+
+    /// <summary>
+    /// Makes sure what the save writes runs in a transaction that is open now - for a domain-event handler that takes a
+    /// lock which must be held to the commit (<c>DinerAccountLock.IsLiveAsync</c>). Joins the caller's transaction when
+    /// there is one (a lock scope's); otherwise begins one that the next successful save commits.
+    /// </summary>
+    /// <remarks>
+    /// A save that fails leaves it open, as a caller's own transaction would be, so a retried save on the same context
+    /// (the ledger's renumbering) still holds the lock; disposing the context rolls it back.
+    /// </remarks>
+    internal async Task EnsureTransactionAsync(CancellationToken cancellationToken)
+    {
+        if (Database.CurrentTransaction is not null)
+        {
+            return;
+        }
+
+        _ownedTransaction = await Database.BeginTransactionAsync(cancellationToken);
     }
 
     /// <summary>

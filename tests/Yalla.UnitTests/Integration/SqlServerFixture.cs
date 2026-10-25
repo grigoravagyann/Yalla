@@ -1,12 +1,14 @@
 ﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
+using Yalla.Infrastructure;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Messaging;
@@ -180,10 +182,38 @@ public sealed class SqlServerFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// The tab's books over one context: totals recomputation, the event stream, and the retry.
+    /// The tab's books over one context: totals recomputation, the event stream, and the retry - and the domain events
+    /// of whatever it saves, handled by the handlers production registers, for this caller (<see cref="CreateUnitOfWork"/>).
     /// </summary>
     internal TabLedger CreateLedger(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, NullLogger<TabLedger>.Instance);
+        CreateUnitOfWork(db, clock, actor).GetRequiredService<TabLedger>();
+
+    /// <summary>
+    /// What a request's scope holds for the domain-event handlers (<c>docs/domain-events.md</c>): this context, clock and
+    /// caller, the outbox, the activity log, the ledger and the dispatcher, and every handler
+    /// <c>DependencyInjection.AddDomainEventHandlers</c> registers - the same list production runs.
+    /// </summary>
+    /// <remarks>
+    /// Per caller, not per context: these tests often act as several people over one shared context, and a request
+    /// never does - so a ledger dispatches with its own caller's handlers, and the activity log names that caller. A bare
+    /// <see cref="CreateContext"/> has none, and a save on it that finds an event pending fails rather than drop its
+    /// side effects.
+    /// </remarks>
+    internal static IServiceProvider CreateUnitOfWork(YallaDbContext db, IClock clock, ICurrentActor actor)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(db);
+        services.AddSingleton(clock);
+        services.AddSingleton(actor);
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton<Yalla.Application.Messaging.IOutbox>(new Outbox(db, clock, NullLogger<Outbox>.Instance));
+        services.AddSingleton<Yalla.Application.Activity.IActivityLog>(CreateActivityLog(db, clock, actor));
+        services.AddSingleton<TabLedger>();
+        services.AddSingleton<DomainEventDispatcher>();
+        services.AddDomainEventHandlers();
+
+        return services.BuildServiceProvider();
+    }
 
     /// <summary>
     /// The branch boundary, over one context. Composed in rather than stubbed: it is the check

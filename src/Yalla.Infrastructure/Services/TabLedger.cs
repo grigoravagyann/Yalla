@@ -40,7 +40,8 @@ internal sealed class TabLedger(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
-    ILogger<TabLedger> logger)
+    ILogger<TabLedger> logger,
+    DomainEventDispatcher domainEvents)
 {
     /// <summary>
     /// How many times a totals recomputation may lose the row-version race before giving up.
@@ -208,6 +209,12 @@ internal sealed class TabLedger(
     /// </remarks>
     public async Task SaveAppendedAsync(CancellationToken cancellationToken)
     {
+        // The unit of work's domain events first: their handlers append to the stream (an order placed, moved, voided),
+        // and what they append has to be numbered below with the rest. The save's own dispatch then finds nothing. This
+        // ledger's dispatcher, not the context's: in a request they are the same, and a test composing a service per
+        // caller over one shared context gets that caller's handlers (docs/domain-events.md).
+        await domainEvents.DispatchAsync(db, cancellationToken);
+
         for (var attempt = 1; ; attempt++)
         {
             await NumberPendingAsync(cancellationToken);
