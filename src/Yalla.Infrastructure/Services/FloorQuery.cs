@@ -113,6 +113,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     OpenTabAwaitingAdmission = t.OpenTabAwaitingAdmission,
                     SeatedAtUtc = t.SeatedAtUtc,
                     PartySize = t.PartySize,
+                    ServerStaffMemberId = t.ServerStaffMemberId,
+                    ServerName = t.ServerName,
                     OccupancySource = t.OccupancySource,
                     NextReservationId = t.NextReservationId,
                     NextReservationStartUtc = t.NextReservationStartUtc,
@@ -297,6 +299,17 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                         OccupancySource = db.TableSessions
                             .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
                             .Select(s => (TableSessionSource?)s.Source)
+                            .FirstOrDefault(),
+
+                        // The table's waiter now (docs/activity.md), and their name - one more correlated read of the
+                        // same open sitting, in this one statement.
+                        ServerStaffMemberId = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .Select(s => s.ServerStaffMemberId)
+                            .FirstOrDefault(),
+                        ServerName = db.TableSessions
+                            .Where(s => s.DiningTableId == t.Id && s.ClosedAtUtc == null)
+                            .SelectMany(s => db.StaffMembers.Where(m => m.Id == s.ServerStaffMemberId).Select(m => m.FullName))
                             .FirstOrDefault(),
 
                         // The next booking that still matters: not yet over, not cancelled. This
@@ -503,6 +516,10 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public DateTime? SeatedAtUtc { get; init; }
 
         public int? PartySize { get; init; }
+
+        public Guid? ServerStaffMemberId { get; init; }
+
+        public string? ServerName { get; init; }
 
         public TableSessionSource? OccupancySource { get; init; }
 

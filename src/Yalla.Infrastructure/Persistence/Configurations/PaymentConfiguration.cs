@@ -39,6 +39,17 @@ internal sealed class PaymentConfiguration : EntityConfiguration<Payment>
         // Summing the reserved and succeeded rows for one tab is how RemainingAmd is recomputed.
         builder.HasIndex(p => new { p.TabId, p.Status });
 
+        // Who took it, and whose table it was - the cash and the tip in staff performance (docs/activity.md).
+        builder.HasOne<Domain.Staff.StaffMember>()
+            .WithMany()
+            .HasForeignKey(p => p.RecordedByStaffId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne<Domain.Staff.StaffMember>()
+            .WithMany()
+            .HasForeignKey(p => p.ServerStaffMemberId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         // Reconciliation against a provider's own report.
         builder.HasIndex(p => p.ProviderReference);
 

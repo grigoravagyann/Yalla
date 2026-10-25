@@ -140,6 +140,9 @@ money is the venue's revenue as much as a tab's (2026-10-23). The revenue report
   the total.
 - **`takeawayNotCollected`**: orders made and never collected, counted when marked so (`NoShowAtUtc`). They took no
   money - nothing is charged in the app - so they are in no amount; they are what a no-show costs the venue in food.
+- **Adjustments** are what each discount or comp took off its bill, by the bill's own arithmetic (`TabBilling.Reductions`,
+  2026-10-25): a 10 % discount on a 9,800 bill is 980 - not 10 % of the 8,820 subtotal stored after it, which the report
+  used to say.
 - **The hall's own numbers stay the hall's**: `averageTabAmd`, `averagePerHeadAmd` (a takeaway order has no party),
   `serviceChargeAmd` (it has none), `tabs`, adjustments.
 - **CSV.** The server's `?format=csv` day rows gain `hallAmd`, `takeawayAmd`, `takeawayOrders` beside `revenueAmd` and
@@ -163,6 +166,11 @@ software would be making that management decision on the venue's behalf without 
 
 If a venue wants per-person numbers, they can be given a report. A ranking that arrives unbidden
 every morning is a different thing, and the difference is the point.
+
+**2026-10-24: the venue asked, and got the page, not the ranking.** Staff → Results and a person's page
+([activity.md](activity.md) §8) are what a manager, the general manager or the owner opens - a waiter sees only their
+own numbers, and no screen ranks waiters for each other. The staff report here stays aggregated. Their money is this
+report's: the same bills, cash and adjustments for the same dates, split by whose each part was.
 
 ### No rollup pipeline, yet
 

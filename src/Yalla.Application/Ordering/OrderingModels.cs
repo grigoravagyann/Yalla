@@ -332,6 +332,11 @@ public sealed record KitchenPreOrder(
 /// That tip in whole dram, on top of <paramref name="BillAmountAmd"/> and outside the bill, like a
 /// cash payment's <c>tipAmd</c>. Absent with <paramref name="TipPercent"/>.
 /// </param>
+/// <param name="AcknowledgedByStaffMemberId">Who acknowledged it. Absent while nobody has.</param>
+/// <param name="AcknowledgedByName">That waiter's name as stored now. Absent with the id.</param>
+/// <param name="ClaimedAtUtc">When a waiter said "I'm on it" (<c>claimServiceRequest</c>); absent while nobody has.</param>
+/// <param name="ClaimedByStaffMemberId">Who - the first to claim it.</param>
+/// <param name="ClaimedByName">Their name as stored now, for "Aram is on it".</param>
 public sealed record ServiceRequestView(
     Guid ServiceRequestId,
     Guid TabId,
@@ -346,7 +351,12 @@ public sealed record ServiceRequestView(
     BillScope? BillScope,
     long? BillAmountAmd,
     int? TipPercent,
-    long? TipAmd);
+    long? TipAmd,
+    Guid? AcknowledgedByStaffMemberId = null,
+    string? AcknowledgedByName = null,
+    DateTime? ClaimedAtUtc = null,
+    Guid? ClaimedByStaffMemberId = null,
+    string? ClaimedByName = null);
 
 /// <summary>A cash payment, as recorded.</summary>
 /// <param name="PaymentId">The payment.</param>

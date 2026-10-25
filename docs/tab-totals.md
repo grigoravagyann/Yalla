@@ -74,7 +74,8 @@ This is the table to check before adding a new mutation.
 | Add or void an adjustment | Yes, inline | Same. |
 | **Record a cash payment** | **Yes, inline, and never retried** | See below. |
 | Abandon a tab | Yes, inline | Manager action, one at a time. |
-| Move an order along the kitchen rail | No | The rail does not touch money. It still goes through the ledger, because it appends an event and the numbering is what the stream rests on. |
+| Move an order along the kitchen rail | No | The rail's moves to InKitchen, Ready and Served do not touch money. They still go through the ledger, because they append an event and the numbering is what the stream rests on. |
+| Void a whole order (the rail's move to Voided) | Yes, inline | It voids the order's lines (`TabOrder.Void`), so it changes what is owed exactly as a line void does, and is saved the same way. Refused once the tab has been paid against. See `docs/billing.md`, "Voiding a whole order". |
 | Read the split (`GET /shares`) | Only if the cache is stale | The read-path repair. Writes nothing when the numbers already agree, which is the overwhelmingly common case. |
 
 ### Payments are the exception, deliberately

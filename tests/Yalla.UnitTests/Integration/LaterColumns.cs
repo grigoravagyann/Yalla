@@ -37,11 +37,23 @@ internal static class LaterColumns
         await AddGuestMessageColumnsAsync(db);
     }
 
-    /// <summary>The <c>GuestMessages</c> migration's columns on existing tables.</summary>
-    public static Task AddGuestMessageColumnsAsync(YallaDbContext db) =>
-        db.Database.ExecuteSqlRawAsync(
+    /// <summary>The <c>GuestMessages</c> migration's columns on existing tables - and every later migration's.</summary>
+    public static async Task AddGuestMessageColumnsAsync(YallaDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE dbo.Branches ADD GuestsCanMessage bit NOT NULL CONSTRAINT DF_Test_GuestsCanMessage DEFAULT 1, "
             + "WaitersCanMessage bit NOT NULL CONSTRAINT DF_Test_WaitersCanMessage DEFAULT 1, "
             + "MessageTemplatesJson nvarchar(max) NULL, "
             + "MessageRemindAfterMinutes int NOT NULL CONSTRAINT DF_Test_MessageRemind DEFAULT 3;");
+
+        await AddActivityColumnsAsync(db);
+    }
+
+    /// <summary>The <c>ActivityHistory</c> migration's columns on existing tables: whose each table, order, payment and claim was.</summary>
+    public static Task AddActivityColumnsAsync(YallaDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE dbo.TableSessions ADD ServerStaffMemberId uniqueidentifier NULL, ServerAssignedAtUtc datetime2 NULL; "
+            + "ALTER TABLE dbo.TabOrders ADD ServerStaffMemberId uniqueidentifier NULL; "
+            + "ALTER TABLE dbo.Payments ADD RecordedByStaffId uniqueidentifier NULL, ServerStaffMemberId uniqueidentifier NULL; "
+            + "ALTER TABLE dbo.ServiceRequests ADD ClaimedAtUtc datetime2 NULL, ClaimedByStaffId uniqueidentifier NULL;");
 }

@@ -1795,3 +1795,10 @@ facts under `context`:
 Short "hold this table for 10 minutes" holds, the late-nudge scheduler (a genuine scheduled action
 needing an outbox and a delivery record), table combining, deposits, SignalR broadcasting, ordering
 and payments.
+
+## In the History (2026-10-24)
+
+Every booking event the venue cares about is an entry in its History: made, moved and cancelled by the guest (app or
+link), approved and declined by staff (with the seconds it waited), declined by the system when nobody answered, seated,
+no-show, released, a no-show withdrawn, the hold extended, the guest's on-my-way answers. See
+[activity.md](activity.md).

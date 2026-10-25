@@ -211,6 +211,7 @@ api.MapDinerFavoriteEndpoints();
 api.MapDinerNotificationFeedEndpoints();
 api.MapPublicEndpoints();
 api.MapReportEndpoints();
+api.MapActivityEndpoints();
 
 // Development only: on start, log the LAN address with both ports - the value that goes into the
 // frontend config - so nobody hunts for it in ipconfig.

@@ -144,6 +144,15 @@ public sealed record TableFloorState
 
     public int? PartySize { get; init; }
 
+    /// <summary>
+    /// The waiter whose table this is - who seated it or opened its tab, or the first to order on it, until a transfer
+    /// (<c>POST /api/tabs/{tabId}/transfer</c>). Absent with nobody seated, or nobody on staff serving yet.
+    /// </summary>
+    public Guid? ServerStaffMemberId { get; init; }
+
+    /// <summary>That waiter's name as stored now.</summary>
+    public string? ServerName { get; init; }
+
     public TableSessionSource? OccupancySource { get; init; }
 
     /// <summary>The next relevant booking, so the staff app can seat it straight from the floor.</summary>

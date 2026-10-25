@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
@@ -29,6 +30,7 @@ internal sealed class TakeawayService(
     StaffBranchGuard branchGuard,
     IOutbox outbox,
     NoShowBlocks noShowBlocks,
+    IActivityLog activity,
     ILogger<TakeawayService> logger) : ITakeawayService
 {
     /// <summary>A code taken by a racing order is tried again this often, under the branch's lock it should never be.</summary>
@@ -247,12 +249,15 @@ internal sealed class TakeawayService(
 
             db.TakeawayOrders.Add(order);
 
+            await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayPlaced, cancellationToken, byGuest: true);
+
             // Auto-accept: ready when the guest asked for it, straight to the kitchen. The feed records it; no push - the
             // answer to this request already says so.
             if (branch.TakeawayAutoAccept)
             {
                 order.Accept(pickupUtc, null, nowUtc);
                 await TakeawayNotices.WriteAsync(db, outbox, order, TakeawayNotices.Step.Accepted, nowUtc, cancellationToken, push: false);
+                await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayAccepted, cancellationToken, bySystem: true);
             }
 
             try
@@ -301,6 +306,8 @@ internal sealed class TakeawayService(
         {
             return await GuestViewAsync(orderId, wasReplay: true, cancellationToken);
         }
+
+        await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayCancelled, cancellationToken, byGuest: true);
 
         try
         {
@@ -370,6 +377,7 @@ internal sealed class TakeawayService(
             "Accept a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Accepted,
+            ActivityActions.TakeawayAccepted,
             (order, staffId, nowUtc) => order.Accept(AsUtc(readyAtUtc), staffId, nowUtc),
             TakeawayNotices.Step.Accepted,
             cancellationToken);
@@ -394,6 +402,7 @@ internal sealed class TakeawayService(
             "Decline a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Declined,
+            ActivityActions.TakeawayDeclined,
             (order, staffId, nowUtc) => order.Decline(reason, staffId, nowUtc),
             TakeawayNotices.Step.Declined,
             cancellationToken);
@@ -405,6 +414,7 @@ internal sealed class TakeawayService(
             "Mark a takeaway order ready",
             kitchenMay: true,
             TakeawayStatus.Ready,
+            ActivityActions.TakeawayReady,
             (order, staffId, nowUtc) => order.MarkReady(staffId, nowUtc),
             TakeawayNotices.Step.Ready,
             cancellationToken);
@@ -416,6 +426,7 @@ internal sealed class TakeawayService(
             "Hand over a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Collected,
+            ActivityActions.TakeawayCollected,
             (order, staffId, nowUtc) => order.Collect(method, staffId, nowUtc),
             null,
             cancellationToken);
@@ -441,6 +452,8 @@ internal sealed class TakeawayService(
         {
             return await StaffViewAsync(orderId, wasReplay: true, cancellationToken);
         }
+
+        await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayNoShow, cancellationToken);
 
         IReadOnlyList<Domain.Occupancy.Reservation> cancelledByBlock = [];
 
@@ -498,6 +511,7 @@ internal sealed class TakeawayService(
         string operation,
         bool kitchenMay,
         TakeawayStatus target,
+        string action,
         Func<TakeawayOrder, Guid, DateTime, bool> act,
         TakeawayNotices.Step? tell,
         CancellationToken cancellationToken)
@@ -514,6 +528,9 @@ internal sealed class TakeawayService(
         {
             return await StaffViewAsync(orderId, wasReplay: true, cancellationToken);
         }
+
+        await TakeawayActivity.RecordAsync(
+            activity, order, action, cancellationToken, reason: action == ActivityActions.TakeawayDeclined ? order.DeclineReason : null);
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
@@ -564,8 +581,35 @@ internal sealed class TakeawayService(
         var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
                      ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
+        var before = new
+        {
+            enabled = branch.TakeawayEnabled,
+            autoAccept = branch.TakeawayAutoAccept,
+            prepMinutes = branch.TakeawayPrepMinutes,
+            lastOrderMinutes = branch.TakeawayLastOrderMinutes,
+            maxInProgress = branch.TakeawayMaxInProgress,
+        };
+
         branch.SetTakeaway(
             settings.Enabled, settings.AutoAccept, settings.PrepMinutes, settings.LastOrderMinutes, settings.MaxInProgress);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Settings, ActivityActions.SettingsTakeaway, ActivitySubjects.Branch, branchId)
+            {
+                BranchId = branchId,
+                VenueId = branch.VenueId,
+                Before = before,
+                After = new
+                {
+                    enabled = branch.TakeawayEnabled,
+                    autoAccept = branch.TakeawayAutoAccept,
+                    prepMinutes = branch.TakeawayPrepMinutes,
+                    lastOrderMinutes = branch.TakeawayLastOrderMinutes,
+                    maxInProgress = branch.TakeawayMaxInProgress,
+                },
+                Summary = new { settings.Enabled, settings.AutoAccept },
+            },
+            cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 

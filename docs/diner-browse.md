@@ -303,7 +303,10 @@ is where the rail left it; only which list it is on moves.
 ```
 
 Status map (`kitchenStatus` integer → `status`): 1 New → `confirmed`, 2 InKitchen → `preparing`,
-3 Ready → `ready`, 4 Served → `completed`, 5 Voided → `cancelled`.
+3 Ready → `ready`, 4 Served → `completed`, 5 Voided → `cancelled`. A `cancelled` order's lines come back
+`isVoided` with `lineTotalAmd` 0 and its `totalAmd` is 0: voiding an order voids its lines, so it is not on the bill
+(`docs/billing.md`, "Voiding a whole order") - except on a bill that was already paid against before 2026-10-25, which
+keeps what was paid.
 `timeline[0]` is always `confirmed` at `placedAtUtc`; later entries come from the tab's
 `OrderStatusChanged` events.
 

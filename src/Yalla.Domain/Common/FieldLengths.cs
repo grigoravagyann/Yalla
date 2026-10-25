@@ -110,4 +110,16 @@ public static class FieldLengths
     /// The widest of those is <see cref="Name"/>.
     /// </summary>
     public const int AuditTargetDisplay = 200;
+
+    /// <summary>An activity entry's action code, <c>category.verb</c>.</summary>
+    public const int ActivityAction = 64;
+
+    /// <summary>An activity entry's subject type, <c>reservation</c>, <c>tab</c>, <c>menu-item</c>.</summary>
+    public const int ActivitySubjectType = 32;
+
+    /// <summary>A subject's short code on an activity entry: <c>T-482</c>, a booking code.</summary>
+    public const int ActivitySubjectCode = 32;
+
+    /// <summary>The dish names an activity entry carries for search, comma-joined.</summary>
+    public const int ActivityItemNames = 400;
 }

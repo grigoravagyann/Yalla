@@ -144,6 +144,68 @@ public sealed record TabBill(
 public static class TabBilling
 {
     /// <summary>
+    /// What each adjustment takes off the bill, exactly as <see cref="Compute"/> takes it: a line's own adjustments off
+    /// that line in turn, then the tab-wide ones off what is left of the sum, each in turn. A tab-wide percentage is of
+    /// the sum before it - never of the subtotal stored after it.
+    /// </summary>
+    /// <param name="lines">Every line on the tab, voided ones included (they weigh nothing).</param>
+    /// <param name="adjustments">The standing adjustments, in the order the bill applies them.</param>
+    /// <returns>One reduction per adjustment, in the same order; zero for one on a line not among <paramref name="lines"/>.</returns>
+    public static IReadOnlyList<long> Reductions(IReadOnlyList<BillingLine> lines, IReadOnlyList<BillingAdjustment> adjustments)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        ArgumentNullException.ThrowIfNull(adjustments);
+
+        return Reduce(lines, adjustments).Reductions;
+    }
+
+    /// <summary>Steps 1 to 3 of the bill: the lines net of their own adjustments, the sum, and the tab-wide reductions.</summary>
+    private static (Dictionary<Guid, long> NetByLine, long GrossSubtotal, long TabReduction, long[] Reductions) Reduce(
+        IReadOnlyList<BillingLine> lines, IReadOnlyList<BillingAdjustment> adjustments)
+    {
+        var reductions = new long[adjustments.Count];
+
+        // ---------------------------------------------------------- 1 and 2. lines, net of their own adjustments
+        var netByLine = new Dictionary<Guid, long>(lines.Count);
+
+        foreach (var line in lines)
+        {
+            var net = line.GrossAmd;
+
+            for (var i = 0; i < adjustments.Count; i++)
+            {
+                if (adjustments[i].LineId == line.LineId)
+                {
+                    var off = adjustments[i].ReductionOn(net);
+                    reductions[i] += off;
+                    net -= off;
+                }
+            }
+
+            netByLine[line.LineId] = net;
+        }
+
+        var grossSubtotal = netByLine.Values.Sum();
+
+        // ---------------------------------------------------------- 3. tab-wide adjustments
+        var tabReduction = 0L;
+        var reducible = grossSubtotal;
+
+        for (var i = 0; i < adjustments.Count; i++)
+        {
+            if (adjustments[i].LineId is null)
+            {
+                var off = adjustments[i].ReductionOn(reducible);
+                reductions[i] = off;
+                tabReduction += off;
+                reducible -= off;
+            }
+        }
+
+        return (netByLine, grossSubtotal, tabReduction, reductions);
+    }
+
+    /// <summary>
     /// Computes the bill and every participant's share of it.
     /// </summary>
     /// <param name="lines">Every line on the tab, voided ones included.</param>
@@ -162,33 +224,8 @@ public static class TabBilling
         ArgumentNullException.ThrowIfNull(adjustments);
         ArgumentNullException.ThrowIfNull(participants);
 
-        // ---------------------------------------------------------- 1 and 2. lines, net of their own adjustments
-        var netByLine = new Dictionary<Guid, long>(lines.Count);
-
-        foreach (var line in lines)
-        {
-            var net = line.GrossAmd;
-
-            foreach (var adjustment in adjustments.Where(a => a.LineId == line.LineId))
-            {
-                net -= adjustment.ReductionOn(net);
-            }
-
-            netByLine[line.LineId] = net;
-        }
-
-        var grossSubtotal = netByLine.Values.Sum();
-
-        // ---------------------------------------------------------- 3. tab-wide adjustments
-        var tabReduction = 0L;
-        var reducible = grossSubtotal;
-
-        foreach (var adjustment in adjustments.Where(a => a.LineId is null))
-        {
-            var off = adjustment.ReductionOn(reducible);
-            tabReduction += off;
-            reducible -= off;
-        }
+        // ---------------------------------------------------------- 1, 2 and 3. lines net of their own adjustments, then the tab-wide ones
+        var (netByLine, grossSubtotal, tabReduction, _) = Reduce(lines, adjustments);
 
         var subtotal = grossSubtotal - tabReduction;
 

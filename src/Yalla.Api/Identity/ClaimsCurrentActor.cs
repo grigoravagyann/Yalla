@@ -66,6 +66,13 @@ internal sealed class ClaimsCurrentActor(IHttpContextAccessor accessor) : ICurre
             ? role
             : null;
 
+    /// <summary>
+    /// The device a staff token names. Read off any staff token carrying the claim, whatever kind of device issued
+    /// it, so a new kind needs nothing here; a console token carries none.
+    /// </summary>
+    public Guid? DeviceId =>
+        Type == ActorType.Staff ? ReadGuid(YallaClaims.DeviceId) : null;
+
     private PrincipalType? PrincipalType =>
         int.TryParse(
             Principal?.FindFirstValue(YallaClaims.PrincipalType),

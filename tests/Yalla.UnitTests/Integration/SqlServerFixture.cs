@@ -209,7 +209,12 @@ public sealed class SqlServerFixture : IAsyncLifetime
         IClock clock,
         ICurrentActor actor,
         BookingLockOptions? lockOptions = null) =>
-        new(db, clock, actor, CreateTableLock(db, lockOptions), NullLogger<TableStateService>.Instance);
+        new(db, clock, actor, CreateTableLock(db, lockOptions), CreateActivityLog(db, clock, actor),
+            NullLogger<TableStateService>.Instance);
+
+    /// <summary>The activity log over one context, acting as the given caller - what every writing service records through.</summary>
+    internal static ActivityLog CreateActivityLog(YallaDbContext db, IClock clock, ICurrentActor actor) =>
+        new(db, actor, clock);
 
     internal FloorQuery CreateFloorQuery(YallaDbContext db, IClock clock) => new(db, clock);
 
@@ -246,6 +251,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateLedger(db, clock, actor),
             CreateOutbox(db, clock),
             CreateBranchGuard(db, actor),
+            CreateActivityLog(db, clock, actor),
             NullLogger<TabService>.Instance);
     }
 
@@ -266,18 +272,18 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <summary>Ordering, voiding and adjusting, over one context.</summary>
     internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateOutbox(db, clock), NullLogger<TabOrderService>.Instance);
+            CreateOutbox(db, clock), CreateActivityLog(db, clock, actor), NullLogger<TabOrderService>.Instance);
 
     /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
     internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            NullLogger<TabPaymentService>.Instance);
+            CreateActivityLog(db, clock, actor), NullLogger<TabPaymentService>.Instance);
 
     /// <summary>Calling a waiter, over one context.</summary>
     internal ServiceRequestService CreateServiceRequests(
         YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            NullLogger<ServiceRequestService>.Instance);
+            CreateActivityLog(db, clock, actor), NullLogger<ServiceRequestService>.Instance);
 
     /// <summary>Shares and the event stream, over one context.</summary>
     internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>
@@ -381,9 +387,11 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateMenuQuery(db));
 
     internal BranchSettingsService CreateBranchSettingsService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateBranchGuard(db, actor), NullLogger<BranchSettingsService>.Instance);
+        new(db, clock, actor, CreateBranchGuard(db, actor), CreateActivityLog(db, clock, actor),
+            NullLogger<BranchSettingsService>.Instance);
 
-    internal MenuService CreateMenuService(YallaDbContext db) => new(db);
+    internal MenuService CreateMenuService(YallaDbContext db, ICurrentActor? actor = null, IClock? clock = null) =>
+        new(db, CreateActivityLog(db, clock ?? new TestClock(DateTime.UtcNow), actor ?? new TestActor(ActorType.System, null, null)));
 
     /// <summary>The Staff screen's shifts, guarded as the console's other branch writes are.</summary>
     internal StaffShiftService CreateStaffShiftService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
@@ -401,6 +409,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new SecretHasher(),
             new RefreshTokenStore(db, clock),
             Microsoft.Extensions.Options.Options.Create(new AuthOptions()),
+            CreateActivityLog(db, clock, actor),
             new TokenAuthorityCheck(
                 new AuthorizationQueries(db),
                 new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
@@ -474,12 +483,13 @@ public sealed class SqlServerFixture : IAsyncLifetime
             noShowPolicy ?? new NoShowPolicy(),
             CreateReservationWriter(db, clock, lockOptions),
             tableState,
-            new NoShowBlocks(db, outbox, tableState, NullLogger<NoShowBlocks>.Instance),
+            new NoShowBlocks(db, outbox, tableState, CreateActivityLog(db, clock, actor), NullLogger<NoShowBlocks>.Instance),
             outbox,
 
             // The manage-link template. Its default is the local dev page, which is all a test
             // asserting on the payload needs; the one test that pins the URL sets it explicitly.
             Options.Create(new PublicWebOptions()),
+            CreateActivityLog(db, clock, actor),
             NullLogger<ReservationService>.Instance);
     }
 
@@ -497,6 +507,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateTableLock(db),
             CreateOutbox(db, clock),
             CreateLedger(db, clock, actor),
+            CreateActivityLog(db, clock, actor),
             NullLogger<PreOrderService>.Instance);
     }
 
@@ -647,6 +658,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             clock,
             CreateOutbox(db, clock),
             CreateReservationWriter(db, clock),
+            CreateActivityLog(db, clock, new TestActor(ActorType.System, null, null)),
             logger ?? NullLogger<ApprovalExpirySweep>.Instance);
 
     /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
@@ -738,6 +750,9 @@ public sealed class TestActor(
     public Guid? ParticipantId { get; } = participantId;
 
     public StaffRole? Role { get; } = role;
+
+    /// <summary>The tablet acting, when a test says so; null - the console - otherwise.</summary>
+    public Guid? DeviceId { get; init; }
 
     public static TestActor Waiter(Guid staffId) => new(ActorType.Staff, staffId, StaffRole.Waiter);
 

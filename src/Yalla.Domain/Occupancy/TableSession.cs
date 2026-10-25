@@ -62,6 +62,16 @@ public sealed class TableSession : Entity
 
     public StaffMember? SeatedByStaff { get; private set; }
 
+    /// <summary>
+    /// The waiter whose table this is now: who seated it or opened its tab, or - when nobody did - the first staff
+    /// member to order on it; moved by a transfer. Sales, guests and tips are theirs from the moment they took it.
+    /// See <c>docs/activity.md</c>.
+    /// </summary>
+    public Guid? ServerStaffMemberId { get; private set; }
+
+    /// <summary>When <see cref="ServerStaffMemberId"/> took the table.</summary>
+    public DateTime? ServerAssignedAtUtc { get; private set; }
+
     /// <summary>How long the party occupied the table, once closed.</summary>
     public TimeSpan? Duration => ClosedAtUtc is null ? null : ClosedAtUtc - SeatedAtUtc;
 
@@ -88,6 +98,13 @@ public sealed class TableSession : Entity
         PartySize = Guard.Positive(partySize, nameof(partySize));
         SeatedAtUtc = Guard.NotLocalTime(seatedAtUtc, nameof(seatedAtUtc));
         SeatedByStaffId = seatedByStaffId;
+
+        // Whoever seats the party serves them, until somebody transfers the table.
+        if (seatedByStaffId is { } seatedBy)
+        {
+            ServerStaffMemberId = Guard.NotEmpty(seatedBy, nameof(seatedByStaffId));
+            ServerAssignedAtUtc = SeatedAtUtc;
+        }
 
         if (source == TableSessionSource.Reservation && reservationId is null)
         {
@@ -156,6 +173,52 @@ public sealed class TableSession : Entity
         {
             TabId = null;
         }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="staffMemberId"/> the table's waiter when it has none - the tab's opener, or the first
+    /// staff member to order on a table a guest's scan seated. Answers false, changing nothing, when it already has one.
+    /// </summary>
+    public bool ClaimServerIfNone(Guid staffMemberId, DateTime atUtc)
+    {
+        if (ServerStaffMemberId is not null)
+        {
+            return false;
+        }
+
+        ServerStaffMemberId = Guard.NotEmpty(staffMemberId, nameof(staffMemberId));
+        ServerAssignedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        return true;
+    }
+
+    /// <summary>
+    /// Hands the table to another waiter from now on. What was done before stays with whoever did it: orders and
+    /// payments carry the waiter they were taken under (<c>TabOrder.ServerStaffMemberId</c>,
+    /// <c>Payment.ServerStaffMemberId</c>).
+    /// </summary>
+    /// <returns>The waiter it was, or null when it had none.</returns>
+    /// <exception cref="DomainStateException">The party has left, or the table is already theirs.</exception>
+    public Guid? TransferServer(Guid toStaffMemberId, DateTime atUtc)
+    {
+        Guard.NotEmpty(toStaffMemberId, nameof(toStaffMemberId));
+
+        if (ClosedAtUtc is not null)
+        {
+            throw new DomainStateException("This sitting has ended; there is no table to hand over.");
+        }
+
+        if (ServerStaffMemberId == toStaffMemberId)
+        {
+            throw new DomainStateException("This table is already theirs.");
+        }
+
+        var previous = ServerStaffMemberId;
+
+        ServerStaffMemberId = toStaffMemberId;
+        ServerAssignedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        return previous;
     }
 
     /// <summary>Ends the occupancy. A session closes once and cannot close before it started.</summary>

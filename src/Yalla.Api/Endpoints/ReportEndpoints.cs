@@ -1,5 +1,4 @@
 ﻿using System.Globalization;
-using System.Text;
 using Yalla.Api.Authorization;
 using Yalla.Application.Reports;
 
@@ -27,9 +26,6 @@ namespace Yalla.Api.Endpoints;
 /// </remarks>
 public static class ReportEndpoints
 {
-    /// <summary>The media type a CSV export answers with, including the encoding browsers assume.</summary>
-    private const string CsvMediaType = "text/csv; charset=utf-8";
-
     public static IEndpointRouteBuilder MapReportEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/branches/{branchId:guid}/reports")
@@ -262,50 +258,9 @@ public static class ReportEndpoints
     ];
 
     /// <summary>
-    /// A CSV file, with the same numbers as the JSON.
+    /// A CSV file, with the same numbers as the JSON - whole dram and local dates, so the file matches what the venue
+    /// counts and what the screen said. Written by <see cref="CsvFile"/>, the one writer every export shares.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Whole dram and local dates, so the file matches what the venue counts and what the screen
-    /// said - a report exported in UTC would disagree with the report it was exported from.
-    /// </para>
-    /// <para>
-    /// A UTF-8 byte-order mark, deliberately. Excel opens a BOM-less UTF-8 CSV in the system code
-    /// page, which turns every Armenian venue name into mojibake - and the venue names are the part
-    /// somebody reads.
-    /// </para>
-    /// </remarks>
-    private static IResult Csv(string fileName, IReadOnlyList<string> header, IEnumerable<string[]> rows)
-    {
-        var csv = new StringBuilder();
-
-        csv.AppendLine(string.Join(',', header.Select(Escape)));
-
-        foreach (var row in rows)
-        {
-            csv.AppendLine(string.Join(',', row.Select(Escape)));
-        }
-
-        var bytes = new byte[Encoding.UTF8.GetPreamble().Length + Encoding.UTF8.GetByteCount(csv.ToString())];
-
-        Encoding.UTF8.GetPreamble().CopyTo(bytes, 0);
-        Encoding.UTF8.GetBytes(csv.ToString(), 0, csv.Length, bytes, Encoding.UTF8.GetPreamble().Length);
-
-        return Results.File(bytes, CsvMediaType, $"{fileName}.csv");
-    }
-
-    /// <summary>
-    /// One CSV field.
-    /// </summary>
-    /// <remarks>
-    /// Quoted whenever it contains a comma, a quote or a newline, with inner quotes doubled - the
-    /// RFC 4180 rules. A menu item called "Khachapuri, Adjarian" is not hypothetical.
-    /// </remarks>
-    private static string Escape(string value) =>
-        value.Contains(',', StringComparison.Ordinal)
-        || value.Contains('"', StringComparison.Ordinal)
-        || value.Contains('\n', StringComparison.Ordinal)
-        || value.Contains('\r', StringComparison.Ordinal)
-            ? $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\""
-            : value;
+    private static IResult Csv(string fileName, IReadOnlyList<string> header, IEnumerable<string[]> rows) =>
+        CsvFile.Result(fileName, header, rows);
 }

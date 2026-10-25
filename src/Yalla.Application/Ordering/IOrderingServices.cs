@@ -58,8 +58,15 @@ public interface ITabOrderService
     /// Moves an order along the kitchen rail. <b>Waiter or above</b>, with Kitchen confined to
     /// <c>InKitchen -> Ready</c>: cooking is what that role does, and serving is not.
     /// </summary>
+    /// <remarks>
+    /// <c>Voided</c> takes the order off the bill: its lines are voided with it (<c>TabOrder.Void</c>) and the tab's
+    /// totals are saved in the same unit of work, like a line void.
+    /// </remarks>
     /// <exception cref="Yalla.Domain.DomainStateException">The transition is not one the rail allows.</exception>
     /// <exception cref="Domain.Staff.StaffPermissionException">This role may not make that move.</exception>
+    /// <exception cref="Domain.Tabs.LineAlreadyPaidException">
+    /// A void on a tab that has been paid against, with something of the order still on the bill: a refund, not a void.
+    /// </exception>
     Task<KitchenOrderView> MoveOrderStatusAsync(
         Guid orderId,
         TabOrderStatus next,
@@ -155,6 +162,18 @@ public interface IServiceRequestService
     /// </summary>
     Task<IReadOnlyList<ServiceRequestView>> GetOpenAsync(
         Guid branchId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// "I'm on it": the first claim stands, a repeat answers as it stands. The guest is not told and the call stays on
+    /// the list, showing who has it, until acknowledged. <b>Waiter or above, at the call's branch.</b>
+    /// </summary>
+    /// <param name="branchId">The branch in the route - a call at another is not found.</param>
+    /// <param name="serviceRequestId">The call.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    Task<ServiceRequestView> ClaimAsync(
+        Guid branchId,
+        Guid serviceRequestId,
         CancellationToken cancellationToken = default);
 
     /// <summary>A waiter has seen it. <b>Waiter or above.</b></summary>

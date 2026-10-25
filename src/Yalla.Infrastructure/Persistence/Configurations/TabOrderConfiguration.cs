@@ -30,6 +30,12 @@ internal sealed class TabOrderConfiguration : EntityConfiguration<TabOrder>
             .HasForeignKey(o => o.PlacedByStaffId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Whose table it was when the order was placed - the sale's waiter (docs/activity.md).
+        builder.HasOne<Domain.Staff.StaffMember>()
+            .WithMany()
+            .HasForeignKey(o => o.ServerStaffMemberId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         // Only ever set alongside PlacedByStaffId: the waiter said who the spoken order was for.
         builder.HasOne(o => o.OnBehalfOfParticipant)
             .WithMany()

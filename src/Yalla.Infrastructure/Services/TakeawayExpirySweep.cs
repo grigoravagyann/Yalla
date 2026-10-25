@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Takeaway;
 using Yalla.Infrastructure.Persistence;
@@ -33,6 +34,7 @@ internal sealed class TakeawayExpirySweep(
     YallaDbContext db,
     IClock clock,
     IOutbox outbox,
+    IActivityLog activity,
     ILogger<TakeawayExpirySweep> logger)
 {
     internal const int BatchSize = 50;
@@ -120,6 +122,13 @@ internal sealed class TakeawayExpirySweep(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         await TakeawayNotices.WriteAsync(db, outbox, order, step, nowUtc, cancellationToken);
+
+        await TakeawayActivity.RecordAsync(
+            activity,
+            order,
+            step == TakeawayNotices.Step.Accepted ? ActivityActions.TakeawayAccepted : ActivityActions.TakeawayAutoDeclined,
+            cancellationToken,
+            bySystem: true);
 
         try
         {

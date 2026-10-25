@@ -141,4 +141,10 @@ public enum TableChangeSignal
     /// fold its status.
     /// </summary>
     PreOrderChanged = 6,
+
+    /// <summary>
+    /// The table was handed to another waiter (<c>POST /api/tabs/{tabId}/transfer</c>). A same-status row naming the tab:
+    /// re-read the floor - its <c>serverStaffMemberId</c> and <c>serverName</c> moved. See <c>docs/activity.md</c>.
+    /// </summary>
+    TableTransferred = 7,
 }

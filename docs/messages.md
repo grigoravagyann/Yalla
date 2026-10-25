@@ -313,3 +313,10 @@ Staff names are a snapshot on each message and leave with it. The history shows 
 - No push to the venue: the tablet polls the floor and the inbox.
 - No editing or deleting a message once sent.
 - No staff name, and no guest number, reaches the other side.
+
+## In the History, and reply times (2026-10-24)
+
+A venue text (`message.sent`, with `replySeconds` when it answered a waiting guest text) and "are you coming?"
+(`message.asked-on-my-way`) are entries in the venue's History; the settings change is `settings.messages`. Staff →
+Results reports each person's median reply time - from the guest's first unanswered text to the reply. See
+[activity.md](activity.md).

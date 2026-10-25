@@ -12,6 +12,16 @@ Two facts shape everything below:
 - **Billing is per branch, not per brand.** A chain with four locations is four paying customers,
   so every table, booking, tab and payment carries a `BranchId` from day one.
 
+## Activity history
+
+`ActivityEntries` - who did what at a venue, from which device, written in the same unit of work as the change; no
+foreign keys (the log outlives what it names); kept a year, money entries three. `TableSessions.ServerStaffMemberId`
+(+ `ServerAssignedAtUtc`) is the table's waiter; `TabOrders.ServerStaffMemberId` and `Payments.ServerStaffMemberId`
+the waiter each was taken under, `Payments.RecordedByStaffId` who took it, `ServiceRequests.ClaimedByStaffId` (+
+`ClaimedAtUtc`) who said "I'm on it" - each a Restrict key to `StaffMembers`.
+Migration `ActivityHistory` (2026-10-24), backfilled from the seat, the first staff order and the payment events. See
+[docs/activity.md](docs/activity.md).
+
 ## Conventions
 
 | Concern | Decision |

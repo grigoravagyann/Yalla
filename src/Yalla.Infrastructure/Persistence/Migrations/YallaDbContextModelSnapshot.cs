@@ -22,6 +22,126 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("Yalla.Domain.Audit.ActivityEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<int>("ActorKind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ActorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("AfterJson")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<long?>("AmountAmd")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("BeforeJson")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid?>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Category")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DeviceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DeviceLabel")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("GuestName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("IsMoney")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ItemNames")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid?>("StaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SubjectCode")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SubjectType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<string>("SummaryJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("TableLabel")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid?>("TableSessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("VenueId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsMoney", "OccurredAtUtc")
+                        .HasDatabaseName("IX_ActivityEntries_Retention");
+
+                    b.HasIndex("StaffMemberId", "OccurredAtUtc")
+                        .HasDatabaseName("IX_ActivityEntries_StaffMemberId_OccurredAtUtc")
+                        .HasFilter("[StaffMemberId] IS NOT NULL");
+
+                    b.HasIndex("TableSessionId", "OccurredAtUtc")
+                        .HasDatabaseName("IX_ActivityEntries_TableSessionId")
+                        .HasFilter("[TableSessionId] IS NOT NULL");
+
+                    b.HasIndex("BranchId", "OccurredAtUtc", "Id")
+                        .HasDatabaseName("IX_ActivityEntries_BranchId_OccurredAtUtc");
+
+                    b.HasIndex("SubjectType", "SubjectId", "OccurredAtUtc")
+                        .HasDatabaseName("IX_ActivityEntries_Subject");
+
+                    b.HasIndex("VenueId", "OccurredAtUtc", "Id")
+                        .HasDatabaseName("IX_ActivityEntries_VenueId_OccurredAtUtc")
+                        .HasFilter("[BranchId] IS NULL");
+
+                    b.ToTable("ActivityEntries", (string)null);
+                });
+
             modelBuilder.Entity("Yalla.Domain.Audit.PlatformAuditLog", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1533,6 +1653,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("SeatedByStaffId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("ServerAssignedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ServerStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<int>("Source")
                         .HasColumnType("int");
 
@@ -1553,6 +1679,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("ReservationId");
 
                     b.HasIndex("SeatedByStaffId");
+
+                    b.HasIndex("ServerStaffMemberId");
 
                     b.HasIndex("BranchId", "SeatedAtUtc")
                         .HasDatabaseName("IX_TableSessions_BranchId_SeatedAtUtc_Reporting");
@@ -1757,6 +1885,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<Guid?>("RecordedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ServerStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
@@ -1776,6 +1910,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("UX_Payments_ClientCommandId");
 
                     b.HasIndex("ProviderReference");
+
+                    b.HasIndex("RecordedByStaffId");
+
+                    b.HasIndex("ServerStaffMemberId");
 
                     b.HasIndex("TabParticipantId");
 
@@ -1802,6 +1940,12 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasColumnType("int");
 
                     b.Property<Guid>("BranchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ClaimedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ClaimedByStaffId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedAtUtc")
@@ -1836,9 +1980,15 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("AcknowledgedByStaffId");
 
+                    b.HasIndex("ClaimedByStaffId");
+
                     b.HasIndex("DiningTableId");
 
                     b.HasIndex("RequestedByParticipantId");
+
+                    b.HasIndex("BranchId", "ClaimedAtUtc")
+                        .HasDatabaseName("IX_ServiceRequests_BranchId_ClaimedAtUtc")
+                        .HasFilter("[ClaimedAtUtc] IS NOT NULL");
 
                     b.HasIndex("BranchId", "CreatedAtUtc")
                         .HasDatabaseName("IX_ServiceRequests_Open")
@@ -2111,6 +2261,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("PlacedByStaffId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<Guid?>("ServerStaffMemberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
@@ -2127,6 +2280,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("PlacedByParticipantId");
 
                     b.HasIndex("PlacedByStaffId");
+
+                    b.HasIndex("ServerStaffMemberId");
 
                     b.HasIndex("TabId", "ClientCommandId")
                         .IsUnique()
@@ -3353,6 +3508,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasForeignKey("SeatedByStaffId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("ServerStaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("Branch");
 
                     b.Navigation("DiningTable");
@@ -3415,6 +3575,16 @@ namespace Yalla.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Yalla.Domain.Tabs.Payment", b =>
                 {
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("RecordedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("ServerStaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Yalla.Domain.Tabs.Tab", "Tab")
                         .WithMany("Payments")
                         .HasForeignKey("TabId")
@@ -3444,6 +3614,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", "ClaimedByStaff")
+                        .WithMany()
+                        .HasForeignKey("ClaimedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Yalla.Domain.Venues.DiningTable", "DiningTable")
                         .WithMany()
                         .HasForeignKey("DiningTableId")
@@ -3464,6 +3639,8 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Navigation("AcknowledgedByStaff");
 
                     b.Navigation("Branch");
+
+                    b.Navigation("ClaimedByStaff");
 
                     b.Navigation("DiningTable");
 
@@ -3562,6 +3739,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasOne("Yalla.Domain.Staff.StaffMember", "PlacedByStaff")
                         .WithMany()
                         .HasForeignKey("PlacedByStaffId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Yalla.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("ServerStaffMemberId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("Yalla.Domain.Tabs.Tab", "Tab")

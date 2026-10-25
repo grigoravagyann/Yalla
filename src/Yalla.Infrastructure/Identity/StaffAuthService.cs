@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Application.Staff;
@@ -30,6 +31,7 @@ internal sealed class StaffAuthService(
     ITokenAuthorityCheck authority,
     IOptions<AuthOptions> authOptions,
     ICurrentActor actor,
+    IActivityLog activity,
     ILogger<StaffAuthService> logger) : IStaffAuthService
 {
     /// <summary>The audit action for issuing somebody a phone pairing code.</summary>
@@ -65,6 +67,15 @@ internal sealed class StaffAuthService(
             branch.VenueId, branch.Id, Secrets.Hash(code), createdByStaffMemberId, clock.UtcNow);
 
         db.StaffEnrolmentCodes.Add(entity);
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Device, ActivityActions.DeviceEnrolmentCodeCreated, ActivitySubjects.Branch, branch.Id)
+            {
+                BranchId = branch.Id,
+                Summary = new { expiresAtUtc = entity.ExpiresAtUtc },
+            },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -137,6 +148,16 @@ internal sealed class StaffAuthService(
         enrolment.Redeem(device.Id, nowUtc);
 
         db.StaffDevices.Add(device);
+
+        // Nobody is signed in to a tablet being enrolled: the system's entry, naming who made the code it used.
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Device, ActivityActions.DeviceEnrolled, ActivitySubjects.Device, device.Id)
+            {
+                BranchId = device.BranchId,
+                Summary = new { name = device.Name, codeCreatedByStaffMemberId = enrolment.CreatedByStaffMemberId },
+            },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         var (token, expiresAtUtc) = tokens.IssueDeviceToken(device.Id, device.BranchId, device.VenueId);
@@ -630,6 +651,12 @@ internal sealed class StaffAuthService(
             await AuditUnpairAsync(device, byItsOwner: false, cancellationToken);
         }
 
+        // The History's entry in the same save: a tablet revoked, or somebody's phone unpaired from the console.
+        if (wasLive)
+        {
+            await RecordDeviceGoneAsync(device, PhoneUnpairedBy.Console, cancellationToken);
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         // Before returning, so the very next request from that tablet is refused. The cache in
@@ -832,6 +859,8 @@ internal sealed class StaffAuthService(
             await db.SaveChangesAsync(cancellationToken);
         }
 
+        var repaired = device is not null;
+
         if (device is null)
         {
             device = StaffDevice.Phone(pairing.VenueId, pairing.BranchId, deviceName, clientDeviceId, staff.Id, nowUtc);
@@ -844,6 +873,31 @@ internal sealed class StaffAuthService(
 
         // Concurrency token on RedeemedAtUtc, as for a tablet: two phones racing for one code cannot both win.
         pairing.Redeem(device.Id, nowUtc);
+
+        // No token names anybody yet: the PIN just checked is who paired it, on the phone it paired - and who took
+        // the browser's earlier bindings away, recorded before the save that commits the pairing with them.
+        var provedBy = new ActivityProvedActor(staff.Id, device.Id);
+
+        foreach (var gone in unpaired)
+        {
+            await StaffPhones.RecordGoneAsync(db, activity, gone, PhoneUnpairedBy.Replaced, cancellationToken, provedBy);
+        }
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Device, ActivityActions.DevicePhonePaired, ActivitySubjects.Device, device.Id)
+            {
+                BranchId = device.BranchId,
+                ProvedBy = provedBy,
+                Summary = new
+                {
+                    name = device.Name,
+                    staffMemberId = staff.Id,
+                    staffName = staff.FullName,
+                    repaired,
+                    codeCreatedByStaffMemberId = pairing.CreatedByStaffMemberId,
+                },
+            },
+            cancellationToken);
 
         var (session, renewalToken) = await OpenSessionAsync(staff, device, nowUtc, cancellationToken);
 
@@ -911,6 +965,7 @@ internal sealed class StaffAuthService(
 
         await RevokeWithSessionsAsync([device], nowUtc, cancellationToken);
         await AuditUnpairAsync(device, byItsOwner: true, cancellationToken);
+        await RecordDeviceGoneAsync(device, PhoneUnpairedBy.ItsOwner, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
 
         authority.InvalidateDevice(device.Id);
@@ -1016,6 +1071,13 @@ internal sealed class StaffAuthService(
     }
 
     /// <summary>
+    /// The History's entry for a device that stopped working, staged in the caller's save: <c>device.revoked</c> for a
+    /// tablet, <c>device.phone-unpaired</c> for somebody's phone - with who it was and which way it went.
+    /// </summary>
+    private Task RecordDeviceGoneAsync(StaffDevice device, string unpairedBy, CancellationToken cancellationToken) =>
+        StaffPhones.RecordGoneAsync(db, activity, device, unpairedBy, cancellationToken);
+
+    /// <summary>
     /// What a pairing QR carries: the staff app's pairing page, on the console's own origin - the staff app and
     /// the console are one web app - with the code in the fragment, which never reaches a host's access log.
     /// </summary>
@@ -1073,6 +1135,15 @@ internal sealed class StaffAuthService(
         }
 
         staff.ClearPinLockout();
+
+        await activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Staff, ActivityActions.StaffPinLockoutCleared, ActivitySubjects.StaffMember, staff.Id)
+            {
+                BranchId = branchId,
+                Summary = new { name = staff.FullName },
+            },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("PIN lockout cleared for staff member {StaffMemberId}.", staffMemberId);

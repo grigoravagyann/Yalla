@@ -329,6 +329,20 @@ Each refusal has its own code (2026-10-22), so the app and the tablet say what i
 | `guest-already-answered` | 409 | `reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) | the guest said on my way or running late |
 | `ask-on-my-way-asked-recently` | 409 | `reservationId`, `askedAtUtc`, `nextAllowedAtUtc` | asked within the last 15 minutes |
 
+### Activity history and transfers
+
+2026-10-24, [activity.md](activity.md).
+
+| Code | Status | `context` | When |
+|---|---|---|---|
+| `transfer-target-ineligible` | 422 | `staffMemberId`, `reason` (`not-found`, `inactive`, `other-branch`, `does-not-serve`) | `POST /api/tabs/{tabId}/transfer` to somebody who cannot take the table |
+| `tab-not-transferable` | 409 | `tabId`, `status` | a transfer of a bill closed or written off, or whose party has gone |
+| `activity-export-too-large` | 422 | `rows` (at least), `maxRows` (20,000) | `GET .../activity.csv` over a window with more entries than a file carries |
+
+The History's and the results' queries are ordinary 422 `validation-failed` naming their fields: `date`, `from`, `to`,
+`staffMemberId`, `actorKind`, `category`, `q`, `cursor`, `limit`, `list`, `branchId`.
+Reading them without the role is 403 `forbidden`.
+
 The shape refusals are ordinary 422 `validation-failed` naming their fields: `lines`, `lines[i].quantity`, `note`,
 `pickup`, `pickup.at`, `readyAt`, `reason`, `method`, `prepMinutes`, `lastOrderMinutes`, `maxInProgress`, `minutes`.
 

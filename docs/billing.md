@@ -59,7 +59,7 @@ total         = subtotal + serviceCharge
 remaining     = total − paid
 ```
 
-Four things worth stating outright, because each is a decision:
+Five things worth stating outright, because each is a decision:
 
 - **The service charge is computed on the post-discount subtotal.** A manager who comps a dish comps
   its service charge with it. Charging service on a dish you have just apologised for is the opposite
@@ -70,10 +70,55 @@ Four things worth stating outright, because each is a decision:
 - **An adjustment can never take off more than it applies to.** A 2,000 AMD comp on a 1,500 AMD dish
   takes off 1,500. Without the clamp a generous manager drives the subtotal negative and every number
   downstream becomes arithmetic nobody can explain.
+- **Adjustments come off in the order they were given** (`CreatedAtUtc`, then id): each of a line's off what
+  is left of the line, each tab-wide one off what is left of the sum. 10 % then 200 off a 13,100 bill is 1,310 + 200;
+  the other way round it is 200 + 1,290. Until 2026-10-25 the order was whatever the change tracker enumerated - a
+  just-added adjustment first - so a bill could change on its next recompute. `TabBilling.Reductions` answers
+  what each took off, for the revenue report and Staff → Results.
 - **Tips are outside the balance entirely.** `Payment.TipAmd` is excluded from `paid` and
   `remaining`. A 10,000 AMD bill settled with 12,000 AMD is not overpaid by 2,000, and folding the
   tip in makes every subsequent number — the balance, each share, whether the tab may close —
   incomprehensible to everyone including us. Where tips *are* reported, see section 6.
+
+### Voiding a whole order
+
+**A line is on the bill until it is voided, and that is the only rule.** Every total reads it: the tab's cached
+totals and `TabBilling.Compute`, the staff and diner views, `/shares`, the balance a cash payment is reserved against,
+the diner's order history, the revenue and menu reports, Staff → Results, the History's timeline, and every CSV of
+them. None of them looks at the order's status.
+
+So voiding a whole order (`POST /api/orders/{id}/status` with `Voided`, from the rail or the floor) **voids every line
+of it still on the bill** (`TabOrder.Void`): `VoidedAtUtc` the moment of the void, `VoidedByStaffId` whoever voided it,
+`VoidReason` "The whole order was voided." A line voided on its own earlier keeps its own stamp and reason. The tab's
+totals are written inline in the same save, as for a line void. The lines stay on the bill marked and at zero, like
+any voided line.
+
+Until 2026-10-25 the order's status moved and its lines did not, so a voided order was still charged in full - live QA
+found a voided cappuccino on a bill of 3,762 - while the timeline and the Staff → Results split, which alone skipped
+voided orders, said 0. Voiding the lines, rather than teaching the ledger a second rule, was chosen because every
+reader already followed the line, and because a second rule would have re-priced bills that were already paid (below).
+The timeline and the split no longer skip voided orders either; they follow the line like everything else.
+
+- **The stream says it once.** One `OrderStatusChanged` to 5, as before - no `LineVoided` per line. Phones refetch on
+  it and find the lines voided.
+- **The History says it once.** One `order.voided` entry, its amount what the order came to on the bill. Staff →
+  Results counts **each line** it took off as a void for whoever voided it, as `Voids` always counted lines.
+- **Refused once money has changed hands.** On a tab with a `Reserved` or `Succeeded` payment, a void that would take
+  something off the bill is `409 line-already-paid` (`LineAlreadyPaidException`), exactly as a line's void is: taking
+  food off a bill somebody has paid against is a refund (section 8), and a void cannot leave the tab overpaid. An order
+  whose every line was already voided can still be voided - nothing comes off. A manager who wants a paid-against
+  guest not to pay for something comps it (an adjustment), which is recorded as what it is.
+
+**Rows voided the old way** were put right by the `ActivityHistory` migration (`VoidedOrderLinesBackfillSql`): on
+every tab **nobody has paid against**, a voided order's live lines are voided when its `OrderStatusChanged` event
+says the order was, by the staff member it names, and the tab's totals cache is recomputed where it is the plain sum
+(no standing adjustment; nothing paid). A tab with a standing adjustment is repaired by its next write or read of
+`/shares` (`TabLedger.EnsureTotalsFreshAsync`) - a payment always reserves against the lines, never the cache.
+
+**A tab already paid against keeps the bill it was paid on.** Its voided order's lines are left on it, charged, and
+every reader shows them charged, consistently - the bill, the reports and the timeline all agree with the money that
+changed hands. Taking them off now would silently turn a settled bill into an overpaid one; if the guest is owed
+something, that is a refund, with a manager, outside this arithmetic.
 
 ### VAT is not a line
 
@@ -397,9 +442,9 @@ next walk-in. Freeing stays an explicit waiter action.
 
 - **Any payment provider.** Idram, Telcell and cards are the next task; the reserve is the seam they
   plug into.
-- **Refunds.** A void is refused once a tab has been paid against, precisely because reversing money
-  that has changed hands is a different operation with its own audit and its own conversation with a
-  manager.
+- **Refunds.** A void - of a line or of a whole order - is refused once a tab has been paid against,
+  precisely because reversing money that has changed hands is a different operation with its own audit
+  and its own conversation with a manager. So a void can never leave a tab overpaid.
 - **Fiscal receipts**, as above.
 - **Per-participant payment allocation.** `Payment.TabParticipantId` records who handed the money
   over, and each share reports what that person has settled — but a share is a **pre-payment**

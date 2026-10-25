@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Activity;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Media;
 using Yalla.Application.Reservations;
@@ -49,6 +50,7 @@ internal sealed class BranchSettingsService(
     IClock clock,
     ICurrentActor actor,
     IStaffBranchGuard branchGuard,
+    IActivityLog activity,
     ILogger<BranchSettingsService> logger) : IBranchSettingsService
 {
     // ------------------------------------------------------------ the public page
@@ -190,7 +192,18 @@ internal sealed class BranchSettingsService(
 
         // Saving the form is what counts as having reviewed it, which is the line the onboarding
         // checklist reads. A branch ships with defaults, so "has a policy" was never the question.
+        var policyBefore = ReservationPolicyView.From(branch.ReservationPolicy);
+
         branch.UpdateReservationPolicy(policy, nowUtc);
+
+        await LogSettingsAsync(
+            branch,
+            ActivityActions.SettingsPolicy,
+            policyBefore,
+            ReservationPolicyView.From(policy),
+            new { affectedBookings = affected.Count },
+            cancellationToken);
+
         await db.SaveChangesAsync(cancellationToken);
 
         if (affected.Count > 0)
@@ -202,6 +215,20 @@ internal sealed class BranchSettingsService(
 
         return new ReservationPolicyChangeResult(ReservationPolicyView.From(policy), affected.Count, affected);
     }
+
+    /// <summary>A setting changed, for the History (docs/activity.md), in this unit of work.</summary>
+    private Task LogSettingsAsync(
+        Branch branch, string action, object before, object after, object summary, CancellationToken cancellationToken) =>
+        activity.RecordAsync(
+            new ActivityRecord(ActivityCategory.Settings, action, ActivitySubjects.Branch, branch.Id)
+            {
+                BranchId = branch.Id,
+                VenueId = branch.VenueId,
+                Before = before,
+                After = after,
+                Summary = summary,
+            },
+            cancellationToken);
 
     // ------------------------------------------------------------ opening hours
 
@@ -233,6 +260,16 @@ internal sealed class BranchSettingsService(
         var normalised = OpeningHoursRules.Normalise(blocks);
 
         var existing = await db.OpeningHours.Where(h => h.BranchId == branch.Id).ToListAsync(cancellationToken);
+
+        await LogSettingsAsync(
+            branch,
+            ActivityActions.SettingsHours,
+            existing.OrderBy(h => h.Day).ThenBy(h => h.OpensAt)
+                .Select(h => new OpeningHoursView(h.Day, h.OpensAt, h.ClosesAt, h.ClosesNextDay)).ToList(),
+            normalised,
+            new { blocks = normalised.Count },
+            cancellationToken);
+
         db.OpeningHours.RemoveRange(existing);
 
         foreach (var block in normalised)
@@ -334,6 +371,15 @@ internal sealed class BranchSettingsService(
         }
 
         branch.BumpSpecialDaysVersion();
+
+        await LogSettingsAsync(
+            branch,
+            ActivityActions.SettingsSpecialDays,
+            before.SpecialDays.Where(d => d.Date >= today).Select(SpecialOpeningDayView.From).ToList(),
+            normalised.Select(d => new { date = d.Date, note = d.Note, blocks = d.Blocks }).ToList(),
+            new { days = normalised.Count },
+            cancellationToken);
+
         await SaveUnderLockAsync(writeLock, branchId, cancellationToken);
 
         var after = await OpeningCalendars.ForBranchAsync(db, branchId, windowFrom, windowTo, cancellationToken);

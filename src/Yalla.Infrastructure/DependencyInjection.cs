@@ -52,6 +52,10 @@ public static class DependencyInjection
                 connectionString,
                 sql => sql.MigrationsAssembly(typeof(YallaDbContext).Assembly.GetName().Name)));
 
+        // Who did what, in the same unit of work as the change (docs/activity.md). Scoped: one request's actor and
+        // context, read once.
+        services.AddScoped<Yalla.Application.Activity.IActivityLog, ActivityLog>();
+
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
@@ -107,6 +111,12 @@ public static class DependencyInjection
 
         // Guest-message threads a year quiet, deleted on the same loop's daily pass (docs/messages.md, history).
         services.AddScoped<ConversationRetention>();
+
+        // The activity log: kept a year, money three, swept on the same daily pass (docs/activity.md). And its reads.
+        services.AddScoped<ActivityRetention>();
+        services.AddScoped<Yalla.Application.Activity.IActivityQuery, ActivityHistoryQuery>();
+        services.AddScoped<Yalla.Application.Activity.IStaffPerformanceQuery, StaffPerformanceReader>();
+        services.AddScoped<Yalla.Application.Activity.ITableTransferService, TableTransferService>();
         services.AddScoped<IPublicBookingService, PublicBookingService>();
         services.AddScoped<IReportQuery, ReportQuery>();
 
