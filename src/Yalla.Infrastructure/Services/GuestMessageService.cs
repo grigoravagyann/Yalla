@@ -4,7 +4,6 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Messages;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
@@ -24,7 +23,6 @@ internal sealed class GuestMessageService(
     ICurrentActor actor,
     IAuthorizationQueries authorization,
     IStaffBranchGuard branchGuard,
-    IOutbox outbox,
     IActivityLog activity,
     ILogger<GuestMessageService> logger) : IGuestMessageService
 {
@@ -61,7 +59,8 @@ internal sealed class GuestMessageService(
     /// </summary>
     /// <remarks>
     /// Under the account's lock and then the subject's, as every guest write is: a deletion that comes after waits, a
-    /// retry racing its own first try finds the message the first made, and two first messages make one thread.
+    /// retry racing its own first try finds the message the first made, and two first messages make one thread. The
+    /// floor's <c>guestMessages</c> push hangs on the message's <see cref="GuestMessageWritten"/> event.
     /// </remarks>
     public async Task<DinerMessageResult> WriteAsGuestAsync(
         ConversationSubject subject, string? text, Guid clientCommandId, CancellationToken cancellationToken = default)
@@ -534,8 +533,9 @@ internal sealed class GuestMessageService(
     }
 
     /// <summary>
-    /// Somebody at the venue writes, and the guest is told (push <c>message.to-guest</c>, feed <c>venue-message</c>). In
-    /// this order: the text (422); the subject (404); floor staff at its branch (403); a platform admin reads only and the
+    /// Somebody at the venue writes, and the guest is told (push <c>message.to-guest</c>, feed <c>venue-message</c>) and the
+    /// History says who answered - by the message's <see cref="VenueMessageWritten"/> handlers, in this save. In this
+    /// order: the text (422); the subject (404); floor staff at its branch (403); a platform admin reads only and the
     /// kitchen never writes (403 <c>forbidden</c>); a waiter where the venue keeps messages to managers (403
     /// <c>waiters-cannot-write</c>); a replay (answered as the message stands, nobody told twice); the thread open (409
     /// <c>conversation-closed</c>).
@@ -588,54 +588,16 @@ internal sealed class GuestMessageService(
         var staffName = await GuestThreads.StaffNameAsync(db, staffId, cancellationToken);
         var thread = existing
                      ?? await GuestThreads.FindOrStartAsync(db, subject, facts.BranchId, nowUtc, cancellationToken);
-        // How long the guest waited: from their first text the venue had not answered to this one. Null when this
-        // answers nothing - the venue writing first, or again before the guest replied (docs/activity.md).
-        var waitingSince = existing is null
-            ? null
-            : await db.ConversationMessages
-                .AsNoTracking()
-                .Where(m => m.ConversationId == existing.Id
-                            && m.Author == MessageAuthor.Guest
-                            && m.Kind == MessageKind.Text
-                            && !db.ConversationMessages.Any(v => v.ConversationId == existing.Id
-                                                                 && v.Author == MessageAuthor.Venue
-                                                                 && v.CreatedAtUtc >= m.CreatedAtUtc))
-                .OrderBy(m => m.CreatedAtUtc)
-                .Select(m => (DateTime?)m.CreatedAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
 
+        // The History's line (with how long the guest waited) and the guest told hang on the message's event.
         var message = thread.WriteAsVenue(body, staffId, staffName, clientCommandId, nowUtc);
         db.ConversationMessages.Add(message);
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Message,
-                ActivityActions.MessageSent,
-                subject.Kind == ConversationSubjectKind.Reservation ? ActivitySubjects.Reservation : ActivitySubjects.Takeaway,
-                subject.Id)
-            {
-                BranchId = facts.BranchId,
-                TableLabel = facts.TableLabel,
-                GuestName = facts.GuestName,
-                SubjectCode = facts.TakeawayCode,
-                Summary = new
-                {
-                    conversationId = thread.Id,
-                    messageId = message.Id,
-                    text = message.Body,
-                    replySeconds = waitingSince is { } since ? (int?)Math.Max(0d, (nowUtc - since).TotalSeconds) : null,
-                },
-            },
-            cancellationToken);
-
-        var told = await GuestThreads.TellGuestAsync(db, outbox, thread, message, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         logger.LogInformation(
-            "Venue message {MessageId} in thread {ConversationId} by staff {StaffId} ({Told}).",
-            message.Id, thread.Id, staffId, told ? "guest told" : "no account to tell");
+            "Venue message {MessageId} in thread {ConversationId} by staff {StaffId}.", message.Id, thread.Id, staffId);
 
         return StaffResult(message, wasReplay: false);
     }

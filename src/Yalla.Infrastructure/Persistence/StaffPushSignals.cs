@@ -2,7 +2,6 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Enums;
-using Yalla.Domain.Messages;
 using Yalla.Domain.Messaging;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Tabs;
@@ -23,12 +22,12 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Here, beside the change-stream signals, for their reason.</b> A booking lands in "waiting for approval" from the
-/// app, the public page, a reschedule, a change sent back for approval and the guest before it stepping aside; a guest
-/// message from the app, the manage link and the answer buttons; a table call from a scan and from the bill sheet. A
-/// rule each of those paths had to remember is a rule one of them forgets, and the symptom - a phone that stays quiet
-/// - looks exactly like a quiet evening. So the save itself notices, from the change tracker, and the message goes in
-/// the same transaction as its cause or not at all.
+/// <b>Here, beside the change-stream signals, for their reason</b> - for <b>approvals</b>, the one kind still detected
+/// rather than told; the others are staged by domain-event handlers through <see cref="StageOne"/>. A booking lands in
+/// "waiting for approval" from the app, the public page, a reschedule, a change sent back for approval and the guest
+/// before it stepping aside. A rule each of those paths had to remember is a rule one of them forgets, and the symptom -
+/// a phone that stays quiet - looks exactly like a quiet evening. So the save itself notices, from the change tracker,
+/// and the message goes in the same transaction as its cause or not at all.
 /// </para>
 /// <para>
 /// <b>Only the kind and an id.</b> Who is told, in which language, and whether it is still true are decided when the
@@ -41,7 +40,9 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// <item><b>approvals</b> - a booking added as <c>PendingApproval</c>, one moved into it, a waiting one moved to
 /// another time, or a waiting one now waiting for another reason (the guest before it stepped aside and the floor
 /// decides now).</item>
-/// <item><b>guestMessages</b> - a guest's text or answer ("I'm coming", "late", "not coming") added to a thread.</item>
+/// <item><b>guestMessages</b> - a guest's text or answer ("I'm coming", "late", "not coming") added to a thread, from the
+/// app, the manage link or the answer buttons. Staged by the <c>GuestMessageWritten</c> and <c>GuestAnswered</c>
+/// domain-event handler (<c>GuestMessageStaffPush</c>) rather than detected here.</item>
 /// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill. Staged by the
 /// <c>ServiceRequestRaised</c> domain-event handler (<c>TableCallStaffPush</c>) rather than detected here.</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
@@ -60,7 +61,7 @@ internal static class StaffPushSignals
 
     public static void Stage(YallaDbContext db, DateTime nowUtc)
     {
-        // One scan of the tracker for the six reads below, rather than one each: every save passes through here.
+        // One scan of the tracker for the reads below, rather than one each: every save passes through here.
         var detecting = db.ChangeTracker.AutoDetectChangesEnabled;
 
         if (detecting)
@@ -103,20 +104,10 @@ internal static class StaffPushSignals
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<ConversationMessage>())
-        {
-            if (entry.State == EntityState.Added
-                && entry.Entity.Author == MessageAuthor.Guest
-                && entry.Entity.Kind is MessageKind.Text or MessageKind.Answer)
-            {
-                events.Add((StaffPushKinds.GuestMessages, entry.Entity.Id, $"{KeyPrefix}message:{entry.Entity.Id}"));
-            }
-        }
-
         // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
         // first kind to move onto domain events (docs/domain-events.md). tableCalls and takeaway are the
-        // ServiceRequestRaised and TakeawayPlaced handlers' (TableCallStaffPush, TakeawayStaffPush). The other two
-        // follow their verticals.
+        // ServiceRequestRaised and TakeawayPlaced handlers' (TableCallStaffPush, TakeawayStaffPush), and guestMessages
+        // the GuestMessageWritten and GuestAnswered handler's (GuestMessageStaffPush). Approvals follow their vertical.
         if (events.Count == 0)
         {
             return;
