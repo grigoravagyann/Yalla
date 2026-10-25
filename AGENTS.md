@@ -13,7 +13,7 @@ in the frontend repo, `grigoravagyann/YallaFrontend`.
 | `src/Yalla.Application` | Contracts only: service interfaces, DTO records, application exceptions, one folder per area. `Abstractions/` (`IClock`, `ICurrentActor`, `IDomainEventHandler<T>`), `Messaging/OutboxContracts.cs`, `Activity/ActivityLogContracts.cs`, `Notifications/` (`NotificationText`, `StaffPushText`, `StaffPushContracts`), `Reservations/BranchZone.cs`. |
 | `src/Yalla.Infrastructure` | Implementations. `Services/` (one class per use case: `ReservationCreation`, `TabOrderService`, sweeps), `DomainEvents/<Area>/` (domain-event handlers: the side effects of a change), `Persistence/` (`YallaDbContext`, `DomainEventDispatcher`, `Configurations/`, `Migrations/`, `TableLock`, `ReservationWriter`, `StaffPushSignals`), `Notifications/` (one `IOutboxHandler` per file), `Messaging/` (outbox dispatcher and loop), `Identity/` (sign-in, tokens), `DependencyInjection.cs` (every registration). |
 | `src/Yalla.Api` | `Program.cs` (maps every group), `Endpoints/<Area>Endpoints.cs` + `<Area>Requests.cs`, `Authorization/YallaPolicies.cs` + `ScopeHandlers.cs`, `Errors/` (`ErrorCodes` - every problem code declared once - `ProblemCatalogue`, `ApiExceptionMapper`, `ProblemShapes`), `Filters/` (request validation, OpenAPI filters). |
-| `tests/Yalla.UnitTests` | The only test project. Root: pure unit tests. `Integration/`: real SQL Server plus the in-process API. `Contracts/`: contract tests every double must pass. |
+| `tests/Yalla.UnitTests` | The only test project. Root: pure unit tests. `Integration/`: real SQL Server plus the in-process API. `Contracts/`: contract tests every double must pass. `Architecture/`: the rules below, held by reflection. |
 | `scripts/ci/`, `verify.sh` | Shard planner and timings; `./verify.sh` (Git Bash) runs exactly what CI runs. |
 | `deploy/`, `SCHEMA.md` | Compose/Caddy/env (`.env.example` is checked by `DeployEnvExampleTests`); the schema and its decisions. |
 
@@ -67,6 +67,24 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
   `DinerAccountLock.RequireLiveAsync`; an app lock (`sp_getapplock`) in
   `TabAdmissionCommands.UnderTabAdmissionLockAsync`; unique-index races via `UniqueViolation.IsOn(ex, DatabaseIndexNames.X)`.
   Concurrency tests need the real server - that is why CI runs SQL Server.
+
+## Architecture tests
+
+`tests/Yalla.UnitTests/Architecture/` holds the rules above and in `docs/domain-events.md` to the compiled code -
+plain reflection and IL over the four production assemblies, no package, no database, under a second. Each failure
+names the rule, every offender, and what to do instead with the doc section. They check: the layers (`LayeringTests`:
+Domain references no other Yalla assembly, EF Core or ASP.NET; Application only Domain; Infrastructure never the Api);
+the domain events (`DomainEventRulesTests`: sealed records in Domain carrying `OccurredAtUtc`; handlers `internal
+sealed` under `Infrastructure.DomainEvents.*`, resolved from the real `AddDomainEventHandlers` for every event they
+implement, never saving however deep the call, taking nothing that leaves the process; every event handled; the
+fixture composing the same list); no hand-written side effects (`HandWrittenSideEffectTests`: who outside the handlers
+may take `IOutbox` or `IActivityLog`); no change-tracker hooks in `YallaDbContext.SaveChanges` (`SaveChangesHookTests`);
+no wall-clock reads (`ClockRuleTests`). Problem codes are held by `ProblemCatalogueTests`.
+
+Fix the code, not the test. Where a rule has an allow-list (`HandWrittenSideEffectTests.Allowed`,
+`DomainEventRulesTests.EventsWithoutHandlers`, `ClockRuleTests.Allowed`, `SaveChangesHookTests.SaveSteps`), an entry
+needs a comment giving its reason, and an entry that is no longer needed fails the test so the list only shrinks on
+purpose.
 
 ## Recipes
 
