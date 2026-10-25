@@ -100,6 +100,11 @@ public static class SwaggerExtensions
             // Enums are integers on the wire; this is what stops them being anonymous integers in
             // the generated types.
             options.SchemaFilter<EnumDescriptionSchemaFilter>();
+
+            // Every problem code - status, title, meaning, context - as the root `x-problem-codes`
+            // extension, from the catalogue ErrorCodes declares. The frontend generates its code
+            // constants and context types from it; nothing else in the document changes.
+            options.DocumentFilter<ProblemCodesDocumentFilter>();
         });
 
         return services;

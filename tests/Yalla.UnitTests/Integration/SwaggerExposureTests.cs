@@ -416,6 +416,64 @@ public class SwaggerExposureTests
     }
 
     /// <summary>
+    /// The catalogue rides on the document as <c>x-problem-codes</c>: every code, with the status, title
+    /// and context it is declared with, and every <c>$ref</c> in a context pointing at a real component.
+    /// The frontend generates its code constants and context types from exactly this.
+    /// </summary>
+    [Fact]
+    public async Task The_document_publishes_every_problem_code_as_x_problem_codes()
+    {
+        using var document = await GetDocumentAsync();
+
+        var codes = document.RootElement.GetProperty("x-problem-codes");
+        var components = document.RootElement.GetProperty("components").GetProperty("schemas");
+
+        Assert.Equal(
+            Yalla.Api.Errors.ProblemCatalogue.All.Select(d => d.Code),
+            codes.EnumerateObject().Select(p => p.Name));
+
+        foreach (var definition in Yalla.Api.Errors.ProblemCatalogue.All)
+        {
+            var entry = codes.GetProperty(definition.Code);
+
+            Assert.Equal(definition.Name, entry.GetProperty("name").GetString());
+            Assert.Equal(definition.Status, entry.GetProperty("status").GetInt32());
+            Assert.Equal(definition.Title, entry.GetProperty("title").GetString());
+            Assert.Equal(definition.Meaning, entry.GetProperty("description").GetString());
+
+            if (definition.Context.Count == 0)
+            {
+                Assert.False(entry.TryGetProperty("context", out _), definition.Code);
+                continue;
+            }
+
+            var context = entry.GetProperty("context");
+            Assert.Equal(
+                definition.Context.Select(c => c.Name),
+                context.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+
+            var required = context.TryGetProperty("required", out var list)
+                ? list.EnumerateArray().Select(r => r.GetString()!).ToList()
+                : [];
+            Assert.Equal(definition.Context.Where(c => c.Required).Select(c => c.Name), required);
+        }
+
+        foreach (var reference in References(codes))
+        {
+            Assert.StartsWith("#/components/schemas/", reference);
+            Assert.True(components.TryGetProperty(reference["#/components/schemas/".Length..], out _), reference);
+        }
+
+        static IEnumerable<string> References(JsonElement element) => element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject().SelectMany(p =>
+                p.Name == "$ref" ? [p.Value.GetString()!] : References(p.Value)),
+            JsonValueKind.Array => element.EnumerateArray().SelectMany(References),
+            _ => [],
+        };
+    }
+
+    /// <summary>
     /// Writes the document this build serves to <c>artifacts/openapi/swagger.json</c>, which CI uploads.
     /// </summary>
     /// <remarks>

@@ -109,6 +109,15 @@ and it can only do that if the shape is in the generated types.
 | `errors` | Field-level complaints, when the failure was about the payload. |
 | `context` | Machine-readable facts. A table conflict puts `currentStatus` here so the tablet can redraw. |
 
+**Every problem code, at the root.** The document carries an `x-problem-codes` extension (from
+`ProblemCodesDocumentFilter`): every code in `ErrorCodes` keyed by its slug, in ordinal order, each with
+the constant's `name`, its `status`, `title`, a one-line `description`, and - when it carries one - a
+`context` JSON schema (enums inline as integers with `x-enum-varnames` and `x-enum-name`; a type the
+document already has as a component is a `$ref` to it). It is the published form of the catalogue the
+codes are declared in once - see [error-contract.md](error-contract.md), "The catalogue". The frontend's
+`pnpm api:generate` writes `packages/api/src/generated/problemCodes.ts` (code constants, statuses, typed
+context interfaces) from it. Nothing else in the document changes because of it.
+
 **Correct nullability.** `SupportNonNullableReferenceTypes` and `NonNullableReferenceTypesAsRequired`
 are on, so a non-nullable C# `string` does not become `string | null` in TypeScript and a required
 property does not become optional. Without them every generated model is a sea of `?` and the

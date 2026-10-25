@@ -12,7 +12,7 @@ in the frontend repo, `grigoravagyann/YallaFrontend`.
 | `src/Yalla.Domain` | Entities and rules, no I/O. `Enums/` (persisted as int), `Common/` (`Guard`, `FieldLengths`, `Entity`), `DomainStateException.cs`, `FieldValidationException.cs`, `Audit/` (`ActivityEntry`, `ProcessedCommand`), one folder per area (`Occupancy` = bookings and tables, `Tabs`, `Takeaway`, `Messages`, `Staff`, `Venues`, `Identity`, `Menus`). |
 | `src/Yalla.Application` | Contracts only: service interfaces, DTO records, application exceptions, one folder per area. `Abstractions/` (`IClock`, `ICurrentActor`), `Messaging/OutboxContracts.cs`, `Activity/ActivityLogContracts.cs`, `Notifications/` (`NotificationText`, `StaffPushText`, `StaffPushContracts`), `Reservations/BranchZone.cs`. |
 | `src/Yalla.Infrastructure` | Implementations. `Services/` (one class per use case: `ReservationCreation`, `TabOrderService`, sweeps), `Persistence/` (`YallaDbContext`, `Configurations/`, `Migrations/`, `TableLock`, `ReservationWriter`, `StaffPushSignals`), `Notifications/` (one `IOutboxHandler` per file), `Messaging/` (outbox dispatcher and loop), `Identity/` (sign-in, tokens), `DependencyInjection.cs` (every registration). |
-| `src/Yalla.Api` | `Program.cs` (maps every group), `Endpoints/<Area>Endpoints.cs` + `<Area>Requests.cs`, `Authorization/YallaPolicies.cs` + `ScopeHandlers.cs`, `Errors/` (`ErrorCodes`, `ApiExceptionMapper`, `ProblemShapes`), `Filters/` (request validation, OpenAPI filters). |
+| `src/Yalla.Api` | `Program.cs` (maps every group), `Endpoints/<Area>Endpoints.cs` + `<Area>Requests.cs`, `Authorization/YallaPolicies.cs` + `ScopeHandlers.cs`, `Errors/` (`ErrorCodes` - every problem code declared once - `ProblemCatalogue`, `ApiExceptionMapper`, `ProblemShapes`), `Filters/` (request validation, OpenAPI filters). |
 | `tests/Yalla.UnitTests` | The only test project. Root: pure unit tests. `Integration/`: real SQL Server plus the in-process API. `Contracts/`: contract tests every double must pass. |
 | `scripts/ci/`, `verify.sh` | Shard planner and timings; `./verify.sh` (Git Bash) runs exactly what CI runs. |
 | `deploy/`, `SCHEMA.md` | Compose/Caddy/env (`.env.example` is checked by `DeployEnvExampleTests`); the schema and its decisions. |
@@ -89,17 +89,33 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
    record lacks fails); `SwaggerExposureTests` checks ids, tags, enums, required-ness and problem shapes.
 
 ### Add a problem code
+The code is declared once, in `Api/Errors/ErrorCodes.cs`; everything else is read or generated from that
+declaration (`ProblemCatalogue`): the mapper's status, `TitleFor`, the OpenAPI root extension
+`x-problem-codes` (the frontend generates `packages/api/src/generated/problemCodes.ts` from it) and the
+catalogue table in `docs/error-contract.md`.
 1. Exception carrying the context: derive from `DomainStateException` for a state refusal (model:
    `NoShowUndoWindowClosedException` in `Domain/Occupancy/BookingBlock.cs`), or an Application exception (model:
    `TabNotTransferableException` in `Application/Activity/TableTransferContracts.cs`). Field problems: throw
    `FieldValidationException`, or `ArgumentException` with a camelCase `nameof(param)` -> 422 with `context.field`.
-2. `Api/Errors/ErrorCodes.cs`: a kebab-case `const` with a doc comment, and a title in `TitleFor`.
-3. `Api/Errors/ApiExceptionMapper.cs`: a `MappedError(status, code, e.Message, LogAsError: false, Context: ...)` arm
-   placed ABOVE any arm for a type it derives from (`DomainStateException`, `KeyNotFoundException`, `ArgumentException`).
-4. If clients read the context: `XxxContext` + `XxxProblem : ProblemShape` in `Errors/ProblemShapes.cs`, and
-   `.ProducesProblem<XxxProblem>` on the endpoints.
-5. A row in `docs/error-contract.md` (dated section: code, status, context, when); a case in
-   `ApiExceptionMapperTests` (model: `Guest_message_refusals_map_to_their_own_codes`); an HTTP test asserting the `code`.
+   A code the exception mints (a booking rule's `ErrorCode`, a sign-in reason passed to
+   `AuthenticationFailedException`) is a literal or a `const`, never built at run time.
+2. `Api/Errors/ErrorCodes.cs`: a kebab-case `const` with a doc comment, `[Problem(status, "one-line meaning",
+   Title = "...")]` (no `Title` = the slug humanised) and one `[ProblemContext("name", typeof(T))]` per context
+   member, in wire order (`Optional = true` when left out of some contexts, `typeof(Guid?)` / `Nullable = true`
+   when it can be null; enums, arrays and records are fine). No `TitleFor` arm: there is none any more.
+3. `Api/Errors/ApiExceptionMapper.cs`: a `Refuse(ErrorCodes.X, e.Message, context: ...)` arm placed ABOVE any arm
+   for a type it derives from (`DomainStateException`, `KeyNotFoundException`, `ArgumentException`). Never write a
+   status there: `Refuse` takes it from the declaration.
+4. If clients read the context in the endpoint's own responses: `XxxContext` + `XxxProblem : ProblemShape` in
+   `Errors/ProblemShapes.cs`, and `.ProducesProblem<XxxProblem>` on the endpoints.
+5. Regenerate the catalogue table: `YALLA_UPDATE_DOCS=1 dotnet test tests/Yalla.UnitTests --filter
+   "FullyQualifiedName~ProblemCatalogueTests"` (it fails when stale), and add a dated prose section to
+   `docs/error-contract.md` when the code needs more than a line. `ProblemCatalogueTests` also fails on a code thrown
+   anywhere that is not declared, a declared code nothing sends, and a context member the mapper writes that the
+   declaration does not list (or a required one it leaves out). Add a case in `ApiExceptionMapperTests` (model:
+   `Guest_message_refusals_map_to_their_own_codes`) and an HTTP test asserting the `code`.
+6. Frontend: regenerate (`pnpm api:generate`) - the new code appears in `generated/problemCodes.ts`, and the
+   frontend's check lists it as unmapped until a typed error handles it.
 
 ### Add an entity, a column, or an enum (+ migration)
 1. Entity in `Domain/<Area>/` (private setters, guards in the constructor, lengths from `FieldLengths`), `DbSet` in
