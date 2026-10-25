@@ -208,7 +208,6 @@ public sealed class YallaDbContext : DbContext
         CancellationToken cancellationToken = default)
     {
         await _domainEvents.DispatchAsync(this, cancellationToken);
-        await SignalBookingChangesAsync(sync: false, cancellationToken);
         await SignalPreOrderChangesAsync(sync: false, cancellationToken);
         StampCreationTimes();
         var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
@@ -234,7 +233,6 @@ public sealed class YallaDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
-        SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StampCreationTimes();
         var saved = base.SaveChanges(acceptAllChangesOnSuccess);
@@ -324,100 +322,6 @@ public sealed class YallaDbContext : DbContext
         }
 
         _ownedTransaction = await Database.BeginTransactionAsync(cancellationToken);
-    }
-
-    /// <summary>
-    /// Puts every booking event on its table's change stream: a booking made, or one whose status, table, time or
-    /// party changed - approved, declined, moved (both tables), cancelled, marked a no-show, a no-show withdrawn - or
-    /// whose guest answered "on my way" (2026-10-21: the floor shows it beside the table's next booking, so the waiter
-    /// need not call; once per booking, so no flood) - writes one same-status row on each table it touches, naming the booking, with signal
-    /// <see cref="TableChangeSignal.BookingChanged"/>, in the same save and so the same transaction.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Here rather than at each call site because a booking changes in a dozen places - the services, the approval
-    /// sweep, a guest's answer about their table - and a tablet that follows the change stream instead of reading the
-    /// floor every few seconds must hear about all of them: a booking made at 12:50 for 13:00 has to make table 4
-    /// "reserved soon" on every tablet, or a waiter seats a walk-in there (GR-FE-REVIEW B1).
-    /// </para>
-    /// <para>
-    /// The row carries the table's status as this save sees it, and nothing a client should fold: on signal 5 a
-    /// tablet refreshes that table's booking line (re-reads the floor). A booking a no-show block cancelled already
-    /// has its signal-4 row and gets no second one; a save that retries (a door code collision) adds none twice.
-    /// </para>
-    /// </remarks>
-    private async Task SignalBookingChangesAsync(bool sync, CancellationToken cancellationToken)
-    {
-        var touched = new List<(Guid BranchId, Guid TableId, Guid ReservationId)>();
-
-        foreach (var entry in ChangeTracker.Entries<Reservation>())
-        {
-            if (entry.State == EntityState.Added)
-            {
-                touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
-                continue;
-            }
-
-            if (entry.State != EntityState.Modified
-                || !(entry.Property(r => r.Status).IsModified
-                     || entry.Property(r => r.DiningTableId).IsModified
-                     || entry.Property(r => r.StartUtc).IsModified
-                     || entry.Property(r => r.EndUtc).IsModified
-                     || entry.Property(r => r.PartySize).IsModified
-                     || entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified
-                     || entry.Property(r => r.GuestRunningLateAtUtc).IsModified
-                     || entry.Property(r => r.StaffAskedOnMyWayAtUtc).IsModified))
-            {
-                continue;
-            }
-
-            touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
-
-            if (entry.Property(r => r.DiningTableId).OriginalValue is var before && before != entry.Entity.DiningTableId)
-            {
-                touched.Add((entry.Entity.BranchId, before, entry.Entity.Id));
-            }
-        }
-
-        if (touched.Count == 0)
-        {
-            return;
-        }
-
-        // Already signalled in this save - a block's own row, or this method on an earlier attempt of the same save.
-        var signalled = ChangeTracker.Entries<TableStateChange>()
-            .Where(e => e.State == EntityState.Added && e.Entity.ReservationId is not null)
-            .Select(e => (e.Entity.DiningTableId, e.Entity.ReservationId!.Value))
-            .ToHashSet();
-
-        touched = touched.Distinct().Where(t => !signalled.Contains((t.TableId, t.ReservationId))).ToList();
-
-        if (touched.Count == 0)
-        {
-            return;
-        }
-
-        var tableIds = touched.Select(t => t.TableId).Distinct().ToList();
-        var query = DiningTables.AsNoTracking().Where(t => tableIds.Contains(t.Id)).Select(t => new { t.Id, t.Status });
-        var statuses = sync
-            ? query.ToDictionary(t => t.Id, t => t.Status)
-            : await query.ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
-
-        var now = _clock.UtcNow;
-
-        foreach (var (branchId, tableId, reservationId) in touched)
-        {
-            if (!statuses.TryGetValue(tableId, out var status))
-            {
-                continue;
-            }
-
-            TableStateChanges.Add(
-                new TableStateChange(
-                    branchId, tableId, status, status, "booking changed", ActorType.System, now, Guid.CreateVersion7(),
-                    reservationId: reservationId)
-                .WithSignal(TableChangeSignal.BookingChanged));
-        }
     }
 
     /// <summary>
