@@ -1,5 +1,6 @@
 using Yalla.Domain.Common;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Tabs;
 
 namespace Yalla.Domain.Occupancy;
 
@@ -120,10 +121,29 @@ public sealed class PreOrder : Entity
 
         Note = Guard.OptionalText(note, nameof(note), PreOrderRules.MaxNoteLength);
         UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        Raise(new PreOrderSaved(this, nowUtc));
+    }
+
+    /// <summary>
+    /// The guest clears it: the caller removes the row in the same save. Refused once sent - the kitchen has it. The
+    /// caller has already checked the guest may edit.
+    /// </summary>
+    public void Clear(DateTime nowUtc)
+    {
+        if (IsSent)
+        {
+            throw new PreOrderAlreadySentException(ReservationId, SentAtUtc!.Value);
+        }
+
+        Raise(new PreOrderCleared(this, Guard.NotLocalTime(nowUtc, nameof(nowUtc))));
     }
 
     /// <summary>"Coming → send to kitchen": a ticket at once, at <c>InKitchen</c>, as a waiter's own order is.</summary>
-    public void MarkSent(Guid staffId, DateTime nowUtc)
+    /// <param name="staffId">The waiter sending it.</param>
+    /// <param name="sitting">The party's open sitting, when they are seated - as it stands before the send.</param>
+    /// <param name="nowUtc">Now.</param>
+    public void MarkSent(Guid staffId, TableSession? sitting, DateTime nowUtc)
     {
         if (IsSent)
         {
@@ -134,6 +154,8 @@ public sealed class PreOrder : Entity
         SentByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
         KitchenStatus = TabOrderStatus.InKitchen;
         UpdatedAtUtc = nowUtc;
+
+        Raise(new PreOrderSent(this, staffId, sitting?.Id, sitting?.TabId, nowUtc));
     }
 
     /// <summary>"Not coming / no answer": nothing is sent, and sending stays possible.</summary>
@@ -147,6 +169,8 @@ public sealed class PreOrder : Entity
         NotComingAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         NotComingByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
         UpdatedAtUtc = nowUtc;
+
+        Raise(new PartyMarkedNotComing(this, staffId, nowUtc));
     }
 
     /// <summary>
@@ -163,6 +187,8 @@ public sealed class PreOrder : Entity
         NotComingAtUtc = null;
         NotComingByStaffId = null;
         UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        Raise(new PreOrderFollowedMove(this, nowUtc));
     }
 
     /// <summary>The held ticket moves along the kitchen rail, by the <c>TabOrder</c> rail's own rules.</summary>
@@ -191,6 +217,8 @@ public sealed class PreOrder : Entity
 
         KitchenStatus = next;
         UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        Raise(new HeldTicketMoved(this, from, next, nowUtc));
     }
 
     /// <summary>Sent before the party sat, still on no tab, and voided on the rail: nothing to put on a tab.</summary>
@@ -216,12 +244,24 @@ public sealed class PreOrder : Entity
         KitchenStatus = TabOrderStatus.Voided;
         UpdatedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
 
+        Raise(new HeldTicketVoided(this, nowUtc));
+
         return true;
     }
 
-    /// <summary>It is now the order with the same id on the party's tab.</summary>
-    public void MarkAttached(DateTime nowUtc)
+    /// <summary>It is now <paramref name="order"/>, the order with the same id on the party's tab.</summary>
+    /// <param name="order">The order it became, built from it.</param>
+    /// <param name="onNewTab">The tab was opened for it in the same unit of work.</param>
+    /// <param name="nowUtc">Now.</param>
+    public void MarkAttached(TabOrder order, bool onNewTab, DateTime nowUtc)
     {
+        ArgumentNullException.ThrowIfNull(order);
+
+        if (order.Id != Id)
+        {
+            throw new ArgumentException("A pre-order becomes the order with its own id.", nameof(order));
+        }
+
         if (!IsHeld)
         {
             throw new DomainStateException("Only a sent pre-order not yet on a tab can be put on one.");
@@ -235,6 +275,8 @@ public sealed class PreOrder : Entity
         TabOrderId = Id;
         AttachedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         UpdatedAtUtc = nowUtc;
+
+        Raise(new PreOrderArrivedOnTab(this, order, onNewTab, nowUtc));
     }
 }
 

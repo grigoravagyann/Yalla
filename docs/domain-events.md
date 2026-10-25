@@ -96,9 +96,8 @@ instead of silently dropping the side effects. Production contexts always come f
 
 ## 5. The change-tracker hooks that remain
 
-`YallaDbContext.SaveChanges` still runs four hooks that detect events from the change tracker rather than being told:
-the booking signal (signal 5), the pre-order signal (signal 6), voiding a held pre-order of an ended booking, and
-`StaffPushSignals` for **approvals**. They predate this mechanism and do the
+`YallaDbContext.SaveChanges` still runs three hooks that detect events from the change tracker rather than being told:
+the booking signal (signal 5), voiding a held pre-order of an ended booking, and `StaffPushSignals` for **approvals**. They predate this mechanism and do the
 same job for their verticals - one place, every path - by inspection. They stay until their verticals move (section
 7), each then becoming a handler of that vertical's event; they run after dispatch, so they also see what handlers
 wrote.
@@ -109,6 +108,9 @@ and `takeaway` is `TakeawayStaffPush`, a `TakeawayPlaced` handler (section 6, ta
 at service requests or takeaway orders. `guestMessages` is `GuestMessageStaffPush`, a `GuestMessageWritten` and
 `GuestAnswered` handler (section 6, guest messages); the hook no longer looks at messages. A new staff push kind goes on
 events: `AGENTS.md`, "Add a staff push kind".
+
+The pre-order signal (signal 6) was the fourth; it is now told by `PreOrderRailSignal`, a handler of every pre-order
+event (section 6, pre-orders), and only written by the save after signal 5's rows.
 
 ## 6. Tab orders - the migrated vertical
 
@@ -353,6 +355,67 @@ history; and the retention deleting a thread. Activity, outbox (the guest's push
 the order's own messages), feed, change stream and the end state of the threads, messages, bookings and order are
 unchanged byte for byte (`Integration/Snapshots/MessageSideEffects.approved.txt`).
 
+### Pre-orders - migrated
+
+A pre-order and the booking's "are you on your way?" - the guest's answers and the venue's ask live on the booking, so
+their events are raised by `Reservation`. Events in `Domain/Occupancy/PreOrderEvents.cs`.
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `PreOrder.Replace(lines, note, at)` (`PreOrderService`, the app and the link: the first save and every edit) | `PreOrderSaved(PreOrder)` | `OnYourWayQuestion`: the question moved to 45 minutes - push `reservation.on-your-way` and feed `booking-on-your-way` under the account's lock - unless the 45-minute key is already written or the question for this start went out. `PreOrderRailSignal`. |
+| `PreOrder.Clear(at)` (new; the service then removes the row) | `PreOrderCleared(PreOrder)` | `OnYourWayQuestion`: back to 30 minutes, as every booking is asked. `PreOrderRailSignal`. |
+| `PreOrder.MarkSent(staffId, sitting, at)` (the rail's send) | `PreOrderSent(PreOrder, ByStaffId, SittingId, TabId)` - the sitting and its tab as they stood before the send | `PreOrderActivity`: `order.pre-order-sent` (the tab's when the sitting had one, else the booking's; `seated`). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
+| `PreOrder.MarkNotComing(staffId, at)` (the rail) | `PartyMarkedNotComing(PreOrder, ByStaffId)` | `PreOrderActivity`: `booking.guest-answered` (`not-coming`, `recordedByStaff`). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
+| `PreOrder.MarkAttached(order, onNewTab, at)` (`PreOrderSittings`: the party seated with the ticket held - by the waiter, as a held party or opening with the booking code - or a send to a seated party) | `PreOrderArrivedOnTab(PreOrder, Order, OnNewTab)` | `PreOrderArrivalStream`: `OrderPlaced` then `OrderStatusChanged` New to where the kitchen had it, as the sending waiter's - numbered 1 and 2 on a tab opened for it, through the ledger on a tab the sitting had. `PreOrderRailSignal`. |
+| `PreOrder.MoveKitchenStatus(next, at)` (the kitchen, `TabOrderService`, which now saves it through the ledger for its dispatch) | `HeldTicketMoved(PreOrder, From, To)` | `PreOrderRailSignal`. |
+| `PreOrder.FollowMove(at)` (the bookings' `ReservationChanges`: the pre-order goes with a move) | `PreOrderFollowedMove(PreOrder)` | `PreOrderRailSignal`. |
+| `PreOrder.VoidHeldBecauseBookingEnded(at)` (the bookings' tracker hook, which dispatches what it raised: it runs after the save's dispatch) | `HeldTicketVoided(PreOrder)` | `PreOrderRailSignal`. |
+| `Branch.SetPreOrders(accepts, minutes, at)` (the console's settings) | `PreOrderSettingsSaved(Branch)` | `PreOrderRailSignal`: every booking whose card is or could be on a rail now, and the next one after them. |
+| `Reservation.ConfirmOnMyWay(at)` (app and link; a replay raises nothing) | `GuestOnTheirWay(Reservation)` | `PreOrderActivity`: `booking.guest-answered` (`coming`, the guest's). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
+| `Reservation.ReportRunningLate(minutes, at)` | `GuestRunningLate(Reservation, Minutes)` | `PreOrderActivity`: `booking.guest-answered` (`late`, `minutes`). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
+| `Reservation.RecordStaffAskOnMyWay(at)` (the tablet's "are you coming?"; the thread's message and the guest's notice are the messages vertical's `VenueAskedComing`) | `OnMyWayAskRecorded(Reservation)` | `PreOrderRailSignal`. |
+| `Reservation.Reschedule` / `KeepConfirmedSlot` to another start, when the guest had answered or the venue had asked | `OnMyWayAnswersForgotten(Reservation)` | `PreOrderRailSignal`. |
+
+Handlers live in `Infrastructure/DomainEvents/PreOrders/`, registered by `PreOrderEventHandlers.Add` from
+`AddDomainEventHandlers`, after the messages': the History's line, the question, the tab's stream, then signal 6.
+`PreOrderEventReads` reads the booking and the table from the tracker first. `OnYourWayQuestion` re-takes the account's
+lock (`db.EnsureTransactionAsync`, then `DinerAccountLock.IsLiveAsync`) the guest's save took first: one more round trip
+on a guest's save, the only one the move adds. `PreOrderQuestions` stays the question's helper, shared with the
+bookings' `ReservationReminders`.
+
+**Signal 6 is told, no longer detected.** The tracker hook that looked for changed pre-orders and on-my-way columns is
+gone: `PreOrderRailSignal` names the bookings (`YallaDbContext.SignalPreOrderRail`), and the save writes their rows
+where the hook did, after signal 5's (`SignalPreOrderChangesAsync`, now a writer only). Written in the handler, a
+signal 6 row would come before signal 5's in the stream and signal 5's "already signalled in this save" would take it
+for its own and drop the booking's signal 5. When signal 5 moves onto the bookings' events, the handler can write the
+row itself.
+
+What stayed in `PreOrderService`: who may act, the account's lock, the replays and the refusals in their order - the
+booking still to come, already sent, **the two-hour lock** (`pre-order-locked`, checked before any domain call, so a
+refused edit or clear raises and writes nothing), the branch taking pre-orders, the shape, the dishes - the table lock,
+the tab race, the totals recomputed after the commit, and the settings' own History line (`settings.pre-orders`, one
+path). Each of its saves dispatches first with the scope's dispatcher, as the ledger does
+(`SqlServerFixture.CreatePreOrderService` composes it per caller). `PreOrderSittings` builds the tab and the order and
+appends nothing. Bookings-owned, left as they were: the booking's own question when it is made, moved or cancelled
+(`ReservationReminders`, the cancel by prefix), signal 5 on the answers and the ask, and the hook that voids a held
+ticket when its booking ends - only its void now raises.
+
+**Proof it is the same.** `PreOrderSideEffectsSnapshotTests`, committed on the code before the move: pre-orders placed
+with their bookings (and a replay), edited from the link, a send refused two days ahead, a booking moved with its
+pre-order and cleared from the link, the edit refused inside the lock, the settings saved with cards on the rail, "are
+you coming?" with and without an account, "on my way" from the app and the link, "running late", a clear of a booking
+with no pre-order, "not coming" and its replay, held sends and a replayed one, the kitchen moving a held ticket, a
+cancel voiding a held ticket and one with a pre-order never sent, sends to seated parties onto an open tab and onto one
+the send opens, and held tickets arriving with the waiter's seating and the booker's code. Every answer, the change
+stream in sequence (signal 6 after signal 5 within a save), activity, outbox, feed, each tab's stream, the stored
+commands, and the end state of pre-orders, lines, bookings, sittings, tabs, orders and threads are unchanged byte for
+byte (`Integration/Snapshots/PreOrderSideEffects.approved.txt`). The events are unit-tested in `PreOrderEventTests`.
+
+**The one deliberate change**, in its own commit before the move: clearing a booking that has no pre-order no longer
+rewrites its question - it withdrew and re-wrote the 30-minute question whatever it found, so a guest who had already
+said they were on their way saw the feed entry again 30 minutes before the start
+(`PreOrderTests.Clearing_a_booking_with_no_pre_order_does_not_ask_an_answered_guest_again`).
+
 ## 7. Testing
 
 - The mechanism: `DomainEventDispatchTests` (handled once before the save; sync save; a failing save and a rollback
@@ -387,5 +450,4 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
-| **Pre-orders** | `PreOrderService`, `PreOrderSittings` (it appends the order's stream events on arrival itself), `PreOrderQuestions`; signal 6 hook | Arrival on the tab should raise its own event rather than append by hand | 1 day |
 | **Settings, menu, staff, platform, reviews** | One activity call (or a few) per path | One path per change already: an event buys little. Move only when a second path appears | as needed |

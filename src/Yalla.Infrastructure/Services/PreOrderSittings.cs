@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
@@ -26,11 +25,14 @@ namespace Yalla.Infrastructure.Services;
 /// with <b>the same id</b>, the locked prices, the waiter who sent it as its sender, and whatever the kitchen has done
 /// with it since. The kitchen screen's ticket gains a <c>tabId</c> and keeps its identity.
 /// </para>
+/// <para>
+/// <b>What the tab's stream hears</b> is the pre-order's <c>PreOrderArrivedOnTab</c>, raised by
+/// <see cref="PreOrder.MarkAttached"/>: its handler (<c>PreOrderArrivalStream</c>) tells the order placed and where the
+/// kitchen had got it. Nothing here writes a side effect.
+/// </para>
 /// </remarks>
 internal static class PreOrderSittings
 {
-    private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
-
     /// <summary>
     /// When the booking being seated has a held pre-order: opens the new sitting's tab and puts it on, in the caller's
     /// unit of work. Does nothing otherwise - nor for a held ticket the kitchen voided, which is never billed.
@@ -66,8 +68,7 @@ internal static class PreOrderSittings
 
     /// <summary>
     /// Opens the sitting's tab with the sent pre-order on it, in the caller's unit of work: the tab admitted and with
-    /// nobody on it, the order with the pre-order's id, its two events numbered from the start of the new tab's stream -
-    /// told as the sending waiter's, who placed it - and its totals.
+    /// nobody on it, the order with the pre-order's id, and its totals. Its arrival, on a new tab, starts the tab's stream.
     /// </summary>
     public static Guid OpenTabWithOrder(
         YallaDbContext db,
@@ -93,16 +94,6 @@ internal static class PreOrderSittings
         var order = BuildOrder(preOrder, tab.Id, session.ServerStaffMemberId);
         db.TabOrders.Add(order);
 
-        var sequence = 1L;
-
-        foreach (var (type, payload) in Events(order))
-        {
-            var record = new TabEvent(
-                tab.Id, type, JsonSerializer.Serialize(payload, PayloadJson), ActorType.Staff, preOrder.SentByStaffId, nowUtc);
-            record.PlaceAt(sequence++);
-            db.TabEvents.Add(record);
-        }
-
         // Nobody is on the tab yet, so the lines are the table's and there is nothing paid: the bill is the lines, and
         // the service charge on them, by the one arithmetic every bill uses.
         var bill = TabBilling.Compute(
@@ -113,17 +104,18 @@ internal static class PreOrderSittings
             0L);
 
         tab.ApplyComputedTotals(bill.SubtotalAmd, bill.ServiceChargeAmd, bill.PaidAmd);
-        preOrder.MarkAttached(nowUtc);
+        preOrder.MarkAttached(order, onNewTab: true, nowUtc);
 
         return tab.Id;
     }
 
     /// <summary>
-    /// Puts the sent pre-order on a tab the sitting already has, through the ledger, which numbers its events after the
-    /// tab's own. The caller saves through the ledger and recomputes the totals after committing, as an order does.
+    /// Puts the sent pre-order on a tab the sitting already has. Its arrival is appended to the tab's stream through the
+    /// ledger, which numbers it after the tab's own: the caller saves through the ledger and recomputes the totals after
+    /// committing, as an order does.
     /// </summary>
     /// <exception cref="TabNotAcceptingOrdersException">The bill has been asked for, or the tab is closed.</exception>
-    public static void AddToTab(YallaDbContext db, TabLedger ledger, PreOrder preOrder, Tab tab, DateTime nowUtc)
+    public static void AddToTab(YallaDbContext db, PreOrder preOrder, Tab tab, DateTime nowUtc)
     {
         if (tab.Status != TabStatus.Open)
         {
@@ -133,13 +125,7 @@ internal static class PreOrderSittings
         var order = BuildOrder(
             preOrder, tab.Id, db.TableSessions.Local.FirstOrDefault(s => s.Id == tab.TableSessionId)?.ServerStaffMemberId);
         db.TabOrders.Add(order);
-
-        foreach (var (type, payload) in Events(order))
-        {
-            ledger.Append(tab.Id, type, payload);
-        }
-
-        preOrder.MarkAttached(nowUtc);
+        preOrder.MarkAttached(order, onNewTab: false, nowUtc);
     }
 
     /// <summary>
@@ -163,44 +149,10 @@ internal static class PreOrderSittings
         }
 
         // The kitchen's progress, replayed through the rail's own transitions - silently: those moves were the pre-order's
-        // and were told then, so the order raises no events (no activity entry, no "ready" push) for arriving here.
+        // and were told then, so the order raises no events (no activity entry, no "ready" push) for arriving here. Its
+        // arrival is the pre-order's to tell (PreOrderArrivedOnTab, from MarkAttached).
         order.ArriveFromHeldTicket(preOrder.KitchenStatus ?? TabOrderStatus.InKitchen, preOrder.UpdatedAtUtc);
 
         return order;
-    }
-
-    /// <summary>What a phone reading the tab's stream learns: the order placed, then where it is on the rail.</summary>
-    private static IEnumerable<(TabEventType Type, object Payload)> Events(TabOrder order)
-    {
-        yield return (TabEventType.OrderPlaced, new
-        {
-            orderId = order.Id,
-            placedByParticipantId = order.PlacedByParticipantId,
-            placedByStaffId = order.PlacedByStaffId,
-            onBehalfOfParticipantId = order.OnBehalfOfParticipantId,
-            estimatedReadyAtUtc = order.EstimatedReadyAtUtc,
-            lines = order.Lines.Select(l => new
-            {
-                lineId = l.Id,
-                name = l.NameSnapshot,
-                unitPriceAmd = l.UnitPriceAmdSnapshot,
-                quantity = l.Quantity,
-                isShared = l.IsShared,
-                isTableAttributed = l.IsTableAttributed,
-                orderedAtUtc = order.PlacedAtUtc,
-                onBehalfOfParticipantId = (Guid?)null,
-            }),
-        });
-
-        if (order.Status != TabOrderStatus.New)
-        {
-            yield return (TabEventType.OrderStatusChanged, new
-            {
-                orderId = order.Id,
-                fromStatus = (int)TabOrderStatus.New,
-                toStatus = (int)order.Status,
-                byStaffId = order.PlacedByStaffId,
-            });
-        }
     }
 }

@@ -901,7 +901,7 @@ public sealed class Reservation : Entity
         }
 
         DiningTableId = PreviousDiningTableId!.Value;
-        ForgetOnMyWayUnlessStartingAt(PreviousStartUtc!.Value);
+        ForgetOnMyWayUnlessStartingAt(PreviousStartUtc!.Value, atUtc);
         StartUtc = PreviousStartUtc!.Value;
         EndUtc = PreviousEndUtc!.Value;
         LocalDate = PreviousLocalDate ?? LocalDate;
@@ -1208,7 +1208,7 @@ public sealed class Reservation : Entity
         }
 
         DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
-        ForgetOnMyWayUnlessStartingAt(startUtc);
+        ForgetOnMyWayUnlessStartingAt(startUtc, nowUtc);
         StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
         EndUtc = promisedFreeByUtc ?? naturalEnd;
         PromisedFreeByUtc = promisedFreeByUtc;
@@ -1232,15 +1232,25 @@ public sealed class Reservation : Entity
     /// <summary>
     /// "On my way" was said about the start the booking had: a move to another start forgets it, so the waiter's card
     /// does not say "Guest confirmed" for a time nobody confirmed, and the question is asked again for the new one.
+    /// Raises <see cref="OnMyWayAnswersForgotten"/> when there was something to forget.
     /// </summary>
-    private void ForgetOnMyWayUnlessStartingAt(DateTime startUtc)
+    private void ForgetOnMyWayUnlessStartingAt(DateTime startUtc, DateTime nowUtc)
     {
-        if (startUtc != StartUtc)
+        if (startUtc == StartUtc)
         {
-            GuestConfirmedOnWayAtUtc = null;
-            GuestRunningLateMinutes = null;
-            GuestRunningLateAtUtc = null;
-            StaffAskedOnMyWayAtUtc = null;
+            return;
+        }
+
+        var said = GuestConfirmedOnWayAtUtc is not null || GuestRunningLateAtUtc is not null || StaffAskedOnMyWayAtUtc is not null;
+
+        GuestConfirmedOnWayAtUtc = null;
+        GuestRunningLateMinutes = null;
+        GuestRunningLateAtUtc = null;
+        StaffAskedOnMyWayAtUtc = null;
+
+        if (said)
+        {
+            Raise(new OnMyWayAnswersForgotten(this, nowUtc));
         }
     }
 
@@ -1463,6 +1473,8 @@ public sealed class Reservation : Entity
         GuestRunningLateMinutes = null;
         GuestRunningLateAtUtc = null;
 
+        Raise(new GuestOnTheirWay(this, nowUtc));
+
         return true;
     }
 
@@ -1498,6 +1510,8 @@ public sealed class Reservation : Entity
 
         GuestRunningLateMinutes = minutes;
         GuestRunningLateAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        Raise(new GuestRunningLate(this, minutes, nowUtc));
     }
 
     /// <summary>
@@ -1541,5 +1555,7 @@ public sealed class Reservation : Entity
         }
 
         StaffAskedOnMyWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+
+        Raise(new OnMyWayAskRecorded(this, nowUtc));
     }
 }

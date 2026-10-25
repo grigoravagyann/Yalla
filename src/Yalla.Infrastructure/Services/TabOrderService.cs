@@ -623,7 +623,8 @@ internal sealed class TabOrderService(
         var from = preOrder.KitchenStatus!.Value;
         preOrder.MoveKitchenStatus(next, clock.UtcNow);
 
-        await db.SaveChangesAsync(cancellationToken);
+        // Through the ledger for its dispatch: the move is the pre-order's to tell (HeldTicketMoved - signal 6).
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogInformation(
             "Held pre-order ticket {OrderId} moved {From} to {To} by staff {StaffId}.", orderId, from, next, staffId);
