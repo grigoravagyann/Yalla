@@ -247,26 +247,27 @@ internal sealed class PreOrderService(
         {
             RequireUnlocked(reservation, preOrder, nowUtc);
             db.PreOrders.Remove(preOrder);
+
+            // Without a pre-order the booking is still asked, at 30 minutes like every other. A booking that had none
+            // is asked as it was: its question is not written again - not to a guest who has already answered it.
+            var branch = await db.Branches
+                .AsNoTracking()
+                .Where(b => b.Id == reservation.BranchId)
+                .Select(b => new { b.Name, VenueName = b.Venue.Name })
+                .FirstAsync(cancellationToken);
+
+            await PreOrderQuestions.AskAgainAsync(
+                db,
+                outbox,
+                reservation,
+                await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
+                branch.VenueName,
+                branch.Name,
+                writeFeed: live,
+                preOrderWaiting: false,
+                nowUtc,
+                cancellationToken);
         }
-
-        // Without a pre-order the booking is still asked, at 30 minutes like every other.
-        var branch = await db.Branches
-            .AsNoTracking()
-            .Where(b => b.Id == reservation.BranchId)
-            .Select(b => new { b.Name, VenueName = b.Venue.Name })
-            .FirstAsync(cancellationToken);
-
-        await PreOrderQuestions.AskAgainAsync(
-            db,
-            outbox,
-            reservation,
-            await NoticeAsync(reservation, branch.VenueName, branch.Name, account, cancellationToken),
-            branch.VenueName,
-            branch.Name,
-            writeFeed: live,
-            preOrderWaiting: false,
-            nowUtc,
-            cancellationToken);
 
         Record(clientCommandId, ClearCommandType, account, reservation.Id, nowUtc);
 

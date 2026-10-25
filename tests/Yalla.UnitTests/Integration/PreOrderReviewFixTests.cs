@@ -403,6 +403,38 @@ public partial class PreOrderTests
         }
     }
 
+    /// <summary>
+    /// Clearing a booking that has no pre-order changes nothing about its question: a guest who has already said they are
+    /// on their way is not asked again - no push waiting, no feed entry 30 minutes before the start (found by the
+    /// pre-order snapshot, 2026-10-25: the clear rewrote the question whatever it found).
+    /// </summary>
+    [SkippableFact]
+    public async Task Clearing_a_booking_with_no_pre_order_does_not_ask_an_answered_guest_again()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var x = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        var booking = await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        var startUtc = booking.GetProperty("startUtc").GetDateTime();
+
+        factory.Clock.UtcNow = startUtc.AddMinutes(-55);
+        await OkAsync(await diner.PostAsJsonAsync($"/api/reservations/{id}/on-my-way", new { }));
+        Assert.Equal(0, await QuestionsQueuedAsync(factory, id));
+
+        factory.Clock.UtcNow = startUtc.AddMinutes(-50);
+        var cleared = await OkAsync(await diner.PostAsJsonAsync(
+            $"/api/reservations/{id}/pre-order/clear", new { clientCommandId = Guid.CreateVersion7() }));
+        Assert.False(cleared.TryGetProperty("preOrder", out _));
+
+        Assert.Equal(0, await QuestionsQueuedAsync(factory, id));
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        Assert.Equal(0, await db.DinerNotifications.CountAsync(n => n.ReservationId == id && n.Kind == DinerNotificationKinds.BookingOnYourWay));
+    }
+
     // ---------------------------------------------------------------- nits: the floor's actions
 
     /// <summary>Sending a booking that has no pre-order is 404, as the wire says - not a 500.</summary>
