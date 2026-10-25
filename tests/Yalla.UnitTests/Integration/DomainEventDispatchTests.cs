@@ -292,6 +292,118 @@ public sealed class DomainEventDispatchTests(SqlServerFixture fixture)
         Assert.Empty(await KeysAsync(joined));
     }
 
+    /// <summary>
+    /// The owned transaction across a failed save: still open for the retry on the same context, which writes what the
+    /// handler added without running it again and commits; and when the caller ended the transaction itself in between,
+    /// the retry does not try to commit what is no longer there.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_save_retried_after_a_failure_keeps_the_handlers_rows_and_commits_the_owned_transaction_once(
+        bool callerRolledBackInBetween)
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var tag = Tag();
+
+        await using (var seed = fixture.CreateContext(_clock))
+        {
+            seed.OutboxMessages.Add(Subject(tag));
+            await seed.SaveChangesAsync();
+        }
+
+        await using var unit = Compose(s => s.AddScoped<IDomainEventHandler<Pinged>, NeedsATransaction>());
+
+        var subject = Subject(tag);
+        unit.Db.OutboxMessages.Add(subject);
+        Raise(subject, new Pinged(tag, _clock.UtcNow));
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => unit.Db.SaveChangesAsync());
+        Assert.NotNull(unit.Db.Database.CurrentTransaction);
+
+        if (callerRolledBackInBetween)
+        {
+            await unit.Db.Database.RollbackTransactionAsync();
+        }
+
+        // The retry: the clashing row given up, the rest saved again.
+        unit.Db.Entry(subject).State = EntityState.Detached;
+        await unit.Db.SaveChangesAsync();
+
+        Assert.Equal([$"needs-a-transaction:{tag}"], unit.Probe.Calls);
+        Assert.Null(unit.Db.Database.CurrentTransaction);
+        Assert.Equal([$"test:{tag}", $"test:{tag}:handled"], await KeysAsync(tag));
+    }
+
+    /// <summary>
+    /// An event raised on an entity the context only finds by detecting changes - a line added to a tracked order after
+    /// the order was added - is not dispatched (the walk does not detect changes), so the save refuses rather than write
+    /// the change without its side effects and leave the event for some later save.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_event_raised_where_dispatch_cannot_see_it_fails_the_save_instead_of_being_left_behind()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var unit = Compose(s => s.AddScoped<IDomainEventHandler<Pinged>, WritesARow>());
+
+        var order = Yalla.Domain.Tabs.TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), _clock.UtcNow);
+        unit.Db.TabOrders.Add(order);
+        var line = order.AddLine(Guid.CreateVersion7(), "Flat white", 1_200L, 1);
+        Raise(line, new Pinged(Tag(), _clock.UtcNow));
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => unit.Db.SaveChangesAsync());
+
+        Assert.Contains(nameof(Yalla.Domain.Tabs.TabOrderLine), refused.Message, StringComparison.Ordinal);
+        Assert.Empty(unit.Probe.Calls);
+        Assert.True(line.HasPendingEvents(), "The refused save should leave the event where it was, not drop it.");
+    }
+
+    /// <summary>
+    /// A handler appending to a tab's stream on a save that does not number it (anything but the ledger's) would write
+    /// the event at sequence 0, where no phone catching up reads it: the save refuses instead.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_tab_event_saved_without_its_place_on_the_stream_fails_the_save()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var tag = Tag();
+        await using var unit = Compose(s => s.AddScoped<IDomainEventHandler<Pinged>, AppendsToAStreamUnnumbered>());
+
+        var subject = Subject(tag);
+        unit.Db.OutboxMessages.Add(subject);
+        Raise(subject, new Pinged(tag, _clock.UtcNow));
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => unit.Db.SaveChangesAsync());
+
+        Assert.Contains("TabLedger.SaveAppendedAsync", refused.Message, StringComparison.Ordinal);
+        Assert.Empty(await KeysAsync(tag));
+    }
+
+    /// <summary>
+    /// The host composes the context with its scope's dispatcher - the one the ledger and the handlers share - and never
+    /// with <see cref="DomainEventDispatcher.None"/>. Nothing else would notice: every save that raises today goes
+    /// through the ledger, which dispatches first.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_hosts_context_dispatches_with_its_own_scopes_dispatcher()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+        await using var scope = factory.Services.CreateAsyncScope();
+
+        var db = scope.ServiceProvider.GetRequiredService<YallaDbContext>();
+        var dispatcher = typeof(YallaDbContext)
+            .GetField("_domainEvents", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(db);
+
+        Assert.NotSame(DomainEventDispatcher.None, dispatcher);
+        Assert.Same(scope.ServiceProvider.GetRequiredService<DomainEventDispatcher>(), dispatcher);
+    }
+
     // ------------------------------------------------------------------ composition
 
     private static string Tag() => $"de-{Guid.NewGuid():N}";
@@ -425,10 +537,24 @@ public sealed class DomainEventDispatchTests(SqlServerFixture fixture)
     {
         public async Task HandleAsync(Pinged domainEvent, CancellationToken cancellationToken)
         {
+            probe.Calls.Add($"needs-a-transaction:{domainEvent.Tag}");
             await db.EnsureTransactionAsync(cancellationToken);
             probe.SawTransaction = db.Database.CurrentTransaction is not null;
 
             db.OutboxMessages.Add(new OutboxMessage("test.handled", "{}", clock.UtcNow, $"test:{domainEvent.Tag}:handled", clock.UtcNow));
+        }
+    }
+
+    /// <summary>Appends to a tab's stream by hand, unnumbered - what a stream handler's append is on a save the ledger is not making.</summary>
+    private sealed class AppendsToAStreamUnnumbered(YallaDbContext db, IClock clock) : IDomainEventHandler<Pinged>
+    {
+        public Task HandleAsync(Pinged domainEvent, CancellationToken cancellationToken)
+        {
+            db.TabEvents.Add(new Yalla.Domain.Tabs.TabEvent(
+                Guid.CreateVersion7(), Yalla.Domain.Enums.TabEventType.OrderStatusChanged, "{}",
+                Yalla.Domain.Enums.ActorType.System, null, clock.UtcNow));
+
+            return Task.CompletedTask;
         }
     }
 

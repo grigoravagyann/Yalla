@@ -77,6 +77,12 @@ public abstract class Entity
         return raised;
     }
 
+    /// <summary>
+    /// Whether events are waiting to be dispatched, without taking them - for the save's check that nothing it writes
+    /// still carries an event its dispatch never saw. A method, not a property, so EF Core never maps it.
+    /// </summary>
+    public bool HasPendingEvents() => _domainEvents is { Count: > 0 };
+
     public override bool Equals(object? obj) =>
         obj is Entity other
         && GetType() == other.GetType()

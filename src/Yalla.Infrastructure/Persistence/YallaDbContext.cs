@@ -213,11 +213,18 @@ public sealed class YallaDbContext : DbContext
         StampCreationTimes();
         var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
 
-        if (_ownedTransaction is { } owned)
+        if (TakeOwnedTransaction() is { } owned)
         {
-            _ownedTransaction = null;
-            await owned.CommitAsync(cancellationToken);
-            await owned.DisposeAsync();
+            // Disposed whatever the commit does: a commit that throws must not leave the context joined to a dead
+            // transaction (and the diner account lock held) for whatever it does next.
+            try
+            {
+                await owned.CommitAsync(cancellationToken);
+            }
+            finally
+            {
+                await owned.DisposeAsync();
+            }
         }
 
         return saved;
@@ -234,14 +241,43 @@ public sealed class YallaDbContext : DbContext
         StampCreationTimes();
         var saved = base.SaveChanges(acceptAllChangesOnSuccess);
 
-        if (_ownedTransaction is { } owned)
+        if (TakeOwnedTransaction() is { } owned)
         {
-            _ownedTransaction = null;
-            owned.Commit();
-            owned.Dispose();
+            try
+            {
+                owned.Commit();
+            }
+            finally
+            {
+                owned.Dispose();
+            }
         }
 
         return saved;
+    }
+
+    /// <summary>
+    /// The transaction <see cref="EnsureTransactionAsync"/> began, for the save that just succeeded to commit - or null
+    /// when there is none, or when it is no longer the connection's (something rolled it back or committed it through
+    /// <c>Database</c>), in which case there is nothing of ours left to commit and only the handle to let go of.
+    /// </summary>
+    private IDbContextTransaction? TakeOwnedTransaction()
+    {
+        if (_ownedTransaction is not { } owned)
+        {
+            return null;
+        }
+
+        _ownedTransaction = null;
+
+        if (ReferenceEquals(Database.CurrentTransaction, owned))
+        {
+            return owned;
+        }
+
+        owned.Dispose();
+
+        return null;
     }
 
     /// <summary>
@@ -529,15 +565,49 @@ public sealed class YallaDbContext : DbContext
         }
     }
 
+    /// <summary>
+    /// The last walk before the write: stamps creation times, and refuses a save that would write a change without what
+    /// it tells the rest of the system (<c>docs/domain-events.md</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>An event still pending here</b> was raised where dispatch could not see it - on an entity the context only
+    /// started tracking when the hooks above detected changes (one reachable only through a navigation), or by a hook
+    /// itself. Saved, the change would go out without its side effects, and the event would wait on the entity for a
+    /// later save, in another unit of work. Raise on the tracked aggregate root.
+    /// </para>
+    /// <para>
+    /// <b>A tab event with no place on its stream</b> was appended by something whose save does not go through
+    /// <c>TabLedger.SaveAppendedAsync</c> - a tab-order event handled by this save's own dispatch, say. Written at
+    /// sequence 0, no phone catching up would ever read it.
+    /// </para>
+    /// </remarks>
     private void StampCreationTimes()
     {
         var now = _clock.UtcNow;
 
         foreach (var entry in ChangeTracker.Entries<Entity>())
         {
+            if (entry.Entity.HasPendingEvents())
+            {
+                throw new InvalidOperationException(
+                    $"A {entry.Entity.GetType().Name} is being saved with domain events its save never dispatched: they "
+                    + "were raised on an entity the context was not tracking when it dispatched (reachable only through a "
+                    + "navigation) or during the save's own hooks. Raise on the aggregate root the context tracks "
+                    + "(docs/domain-events.md).");
+            }
+
             if (entry.State != EntityState.Added)
             {
                 continue;
+            }
+
+            if (entry.Entity is TabEvent { Sequence: 0L } unnumbered)
+            {
+                throw new InvalidOperationException(
+                    $"A {unnumbered.Type} tab event is being saved with no place on tab {unnumbered.TabId}'s stream. "
+                    + "Whatever appends to the stream - a tab-order domain event's handler included - must be saved "
+                    + "through TabLedger.SaveAppendedAsync, which numbers it.");
             }
 
             var createdAt = entry.Property(e => e.CreatedAtUtc);

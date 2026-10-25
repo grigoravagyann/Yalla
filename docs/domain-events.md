@@ -35,7 +35,8 @@ and a few lines in `SaveChanges`.
   a void took off, the reason as the caller gave it (the entity stores it trimmed).
 - Raise on an entity the context **tracks** - added to its set, or loaded. Dispatch walks the tracker without
   `DetectChanges`, so a child reachable only through a navigation is not seen: raise on the aggregate root
-  (`TabOrder.VoidLine`, not the line).
+  (`TabOrder.VoidLine`, not the line). A save that would write an entity still carrying an event its dispatch never
+  saw fails, naming the entity, rather than write the change without its side effects.
 - A change that is history being replayed, not something happening now, raises nothing - say so in the method
   (`TabOrder.ArriveFromHeldTicket`: a booking's held kitchen ticket becoming an order when the party sits; its moves
   were the pre-order's and were told then).
@@ -58,7 +59,8 @@ and a few lines in `SaveChanges`.
   handler costs no round trip the hand-written code did not.
 - **A lock held to the commit** needs a transaction open when it is taken: call `db.EnsureTransactionAsync(ct)`. It
   joins the caller's transaction (a lock scope's) or begins one that the next successful save commits; a failed save
-  leaves it open for the retry on the same context, and disposing the context rolls it back. Model: `OrderReadyNotice`
+  leaves it open for the retry on the same context, and disposing the context rolls it back (a caller that ends it
+  through `Database` in between leaves the save nothing to commit). Model: `OrderReadyNotice`
   and `DinerAccountLock.IsLiveAsync`.
 - A handler may change an aggregate that raises another event; the next round handles it. A handler that re-raises
   what it handles is a loop: the save fails after 8 rounds.
@@ -83,6 +85,10 @@ handler sees the sweep's system actor. An event does not carry the actor.
 
 **No events, no cost.** A save that raised nothing walks the tracked entries once (no `DetectChanges`), resolves no
 handler, opens no transaction and sends no extra command (`DomainEventDispatchTests`).
+
+**The stream is numbered by the ledger.** A handler that appends to a tab's stream (`TabOrderStream`) needs its save
+to go through `TabLedger.SaveAppendedAsync`; a save that would write a `TabEvent` with no sequence fails instead of
+writing it where no phone catching up reads it.
 
 **A context without handlers refuses events.** `new YallaDbContext(options, clock)` - the design-time factory, a test
 seeding rows - uses `DomainEventDispatcher.None`; a save on it that finds an event pending throws, naming the event,
