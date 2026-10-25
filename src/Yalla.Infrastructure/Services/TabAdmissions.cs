@@ -8,7 +8,8 @@ namespace Yalla.Infrastructure.Services;
 /// <summary>
 /// A signal about a table's tab on the branch's change stream, written once for every path that puts one there: the
 /// tab-lifecycle handlers (<c>DomainEvents/Tabs/TabFloorSignal</c> - a scan waiting, the table let in, a scan turned
-/// away while the party stays) and a tab moved to another table (<see cref="TableTransferService"/>).
+/// away while the party stays) and a table handed to another waiter (<c>DomainEvents/Tables/TableChangeStream</c>, on
+/// <c>TableTransferred</c>).
 /// </summary>
 /// <remarks>
 /// See <see cref="TabAdmission"/> and <c>docs/tabs.md</c>. Nothing here saves: the row commits with the change it is

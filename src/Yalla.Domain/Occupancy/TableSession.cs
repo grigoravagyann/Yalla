@@ -197,11 +197,16 @@ public sealed class TableSession : Entity
     /// payments carry the waiter they were taken under (<c>TabOrder.ServerStaffMemberId</c>,
     /// <c>Payment.ServerStaffMemberId</c>).
     /// </summary>
+    /// <remarks>Raises <see cref="TableTransferred"/>: the History's line and the branch change stream's signal.</remarks>
+    /// <param name="toStaffMemberId">Who takes it.</param>
+    /// <param name="tabId">The tab the hand-over was asked through.</param>
+    /// <param name="atUtc">Now.</param>
     /// <returns>The waiter it was, or null when it had none.</returns>
     /// <exception cref="DomainStateException">The party has left, or the table is already theirs.</exception>
-    public Guid? TransferServer(Guid toStaffMemberId, DateTime atUtc)
+    public Guid? TransferServer(Guid toStaffMemberId, Guid tabId, DateTime atUtc)
     {
         Guard.NotEmpty(toStaffMemberId, nameof(toStaffMemberId));
+        Guard.NotEmpty(tabId, nameof(tabId));
 
         if (ClosedAtUtc is not null)
         {
@@ -217,6 +222,8 @@ public sealed class TableSession : Entity
 
         ServerStaffMemberId = toStaffMemberId;
         ServerAssignedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        Raise(new TableTransferred(this, tabId, previous, toStaffMemberId, atUtc));
 
         return previous;
     }

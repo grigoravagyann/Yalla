@@ -119,26 +119,26 @@ public class DiningTableTests
     {
         var table = NewTable();
 
-        Assert.Throws<ArgumentException>(() => table.Occupy(Guid.Empty));
+        Assert.Throws<ArgumentNullException>(
+            () => table.Occupy(null!, TableSeating.WalkIn, null, null, Guid.CreateVersion7(), new DateTime(2026, 10, 25, 12, 0, 0, DateTimeKind.Utc)));
     }
 
     [Fact]
     public void Seating_a_session_caches_it_on_the_table()
     {
         var table = NewTable();
-        var sessionId = Guid.CreateVersion7();
 
-        table.Occupy(sessionId);
+        var sitting = table.SeatAnyone();
 
         Assert.Equal(TableStatus.Occupied, table.Status);
-        Assert.Equal(sessionId, table.CurrentSessionId);
+        Assert.Equal(sitting.Id, table.CurrentSessionId);
     }
 
     [Fact]
     public void Vacating_clears_the_cached_session_pointer()
     {
         var table = NewTable();
-        table.Occupy(Guid.CreateVersion7());
+        table.SeatAnyone();
 
         table.Vacate();
 

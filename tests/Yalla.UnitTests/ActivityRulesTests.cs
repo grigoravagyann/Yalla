@@ -256,13 +256,13 @@ public class ActivityRulesTests
         Assert.Equal(lilit, session.ServerStaffMemberId);
         Assert.False(session.ClaimServerIfNone(aram, seatedAt.AddMinutes(3)));
 
-        Assert.Equal(lilit, session.TransferServer(aram, seatedAt.AddMinutes(28)));
+        Assert.Equal(lilit, session.TransferServer(aram, Guid.CreateVersion7(), seatedAt.AddMinutes(28)));
         Assert.Equal(aram, session.ServerStaffMemberId);
         Assert.Equal(seatedAt.AddMinutes(28), session.ServerAssignedAtUtc);
-        Assert.Throws<DomainStateException>(() => session.TransferServer(aram, seatedAt.AddMinutes(29)));
+        Assert.Throws<DomainStateException>(() => session.TransferServer(aram, Guid.CreateVersion7(), seatedAt.AddMinutes(29)));
 
         session.Close(seatedAt.AddHours(1));
-        Assert.Throws<DomainStateException>(() => session.TransferServer(lilit, seatedAt.AddHours(2)));
+        Assert.Throws<DomainStateException>(() => session.TransferServer(lilit, Guid.CreateVersion7(), seatedAt.AddHours(2)));
 
         var scanned = TableSession.SeatWalkIn(Guid.CreateVersion7(), Guid.CreateVersion7(), 2, seatedAt);
         Assert.Null(scanned.ServerStaffMemberId);
