@@ -21,8 +21,9 @@ public sealed class HandWrittenSideEffectTests
     {
         // Settings, menu, staff: one path and one entry per change (AGENTS.md, "Record an activity entry", step 2;
         // docs/domain-events.md section 8, "Settings, menu, staff, platform, reviews").
-        [("Yalla.Infrastructure.Services.BranchSettingsService", typeof(IActivityLog))] =
-            "settings.* History lines: one path per setting, an event buys nothing",
+        [("Yalla.Infrastructure.Services.BranchSettingsHistory", typeof(IActivityLog))] =
+            "settings.* History lines for BranchSettingsService's parts (policy, hours, special days): one path per "
+            + "setting, an event buys nothing",
         [("Yalla.Infrastructure.Services.MenuService", typeof(IActivityLog))] =
             "menu.* History lines: one path per change",
         [("Yalla.Infrastructure.Services.StaffManagementService", typeof(IActivityLog))] =
