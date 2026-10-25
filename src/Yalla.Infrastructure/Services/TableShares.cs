@@ -336,9 +336,9 @@ internal static class TableShares
             await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", later.Id), cancellationToken);
             await DinerNotices.CancelUnshownAsync(db, later.Id, nowUtc, cancellationToken);
 
-            var key = await ReservationService.DecisionKeyAsync(db, later.Id, "rejected", nowUtc, cancellationToken);
+            var key = await ReservationNotices.DecisionKeyAsync(db, later.Id, "rejected", nowUtc, cancellationToken);
 
-            ReservationService.TellDinerDecided(
+            ReservationNotices.TellDinerDecided(
                 db, outbox, later, branch, approved: false, expired: false, key, nowUtc,
                 because: DeclineReason.EarlierGuestDeclined);
         }
@@ -370,9 +370,9 @@ internal static class TableShares
             case null:
                 later.Confirm(nowUtc);
 
-                var key = await ReservationService.DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
+                var key = await ReservationNotices.DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
 
-                ReservationService.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
+                ReservationNotices.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
                 break;
 
             case ApprovalTrigger.ShortNotice:

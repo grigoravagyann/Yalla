@@ -99,7 +99,7 @@ public sealed class ManageLinkRescheduleTests(SqlServerFixture fixture)
         // Recorded as the booking's diner's change, as the app's is.
         await using var verify = fixture.CreateContext(clock);
         var recorded = await verify.ProcessedCommands.AsNoTracking()
-            .Where(c => c.CommandType == ReservationService.RescheduleCommandType && c.ResponseJson.Contains(link.Booked.Id.ToString()))
+            .Where(c => c.CommandType == ReservationChanges.RescheduleCommandType && c.ResponseJson.Contains(link.Booked.Id.ToString()))
             .SingleAsync();
 
         Assert.Equal(link.DinerUserId, recorded.ActorId);

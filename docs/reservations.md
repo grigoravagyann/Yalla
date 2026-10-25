@@ -413,7 +413,7 @@ so it is the **fourth** no-show in the window that costs instant confirmation.
 The same move from a booking's manage link, for a web visitor with no app, is
 `POST /api/public/bookings/{token}/reschedule` - see
 [public-surface.md](public-surface.md#changing-the-booking): one code path
-(`ReservationService.MoveAsync`), two ways of proving you may use it.
+(`ReservationChanges.MoveAsync`), two ways of proving you may use it.
 
 ```json
 { "date": "2026-09-13", "time": "20:00", "partySize": 3, "diningTableId": "guid", "clientCommandId": "guid" }

@@ -69,7 +69,7 @@ internal static class PendingDecline
         Func<CancellationToken, Task>? recordAsync = null)
     {
         var expired = Reservation.IsForNoAnswer(because);
-        var key = await ReservationService.DecisionKeyAsync(
+        var key = await ReservationNotices.DecisionKeyAsync(
             db, reservation.Id, expired ? "expired" : "rejected", nowUtc, cancellationToken);
 
         // The question this booking was waiting on - to the guest before it on the table - ends with it:
@@ -94,7 +94,7 @@ internal static class PendingDecline
 
             if (tell)
             {
-                ReservationService.TellDinerDecided(
+                ReservationNotices.TellDinerDecided(
                     db, outbox, reservation, branch, approved: false, expired, key, nowUtc, because: because);
             }
 
@@ -137,7 +137,7 @@ internal static class PendingDecline
                     reservation.KeepConfirmedSlot(nowUtc, because);
 
                     // Its reminder and late nudge were rewritten for the change; they go back to the slot.
-                    await ReservationService.ReplaceRemindersAsync(
+                    await ReservationReminders.ReplaceRemindersAsync(
                         db, outbox, reservation, branch, tableLabel, nowUtc, token);
                 }
                 else
@@ -157,7 +157,7 @@ internal static class PendingDecline
 
                 if (told)
                 {
-                    ReservationService.TellDinerDecided(
+                    ReservationNotices.TellDinerDecided(
                         db,
                         outbox,
                         reservation,

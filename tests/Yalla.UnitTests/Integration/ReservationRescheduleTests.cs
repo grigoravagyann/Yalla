@@ -455,7 +455,7 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
             var recorded = await verify.ProcessedCommands.AsNoTracking()
                 .SingleAsync(c => c.ClientCommandId == change.ClientCommandId);
 
-            Assert.Equal(ReservationService.RescheduleCommandType, recorded.CommandType);
+            Assert.Equal(ReservationChanges.RescheduleCommandType, recorded.CommandType);
             Assert.Equal(dinerId, recorded.ActorId);
 
             // Which booking and where it went - never the guest's name or number.
