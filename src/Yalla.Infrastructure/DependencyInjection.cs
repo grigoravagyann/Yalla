@@ -30,6 +30,9 @@ using Yalla.Application.Telegram;
 using Yalla.Infrastructure.Telegram;
 using Yalla.Infrastructure.Time;
 
+using Yalla.Domain.Tabs;
+using Yalla.Infrastructure.DomainEvents.TabOrders;
+
 namespace Yalla.Infrastructure;
 
 /// <summary>Registers everything the infrastructure layer provides.</summary>
@@ -55,6 +58,11 @@ public static class DependencyInjection
         // Who did what, in the same unit of work as the change (docs/activity.md). Scoped: one request's actor and
         // context, read once.
         services.AddScoped<Yalla.Application.Activity.IActivityLog, ActivityLog>();
+
+        // Domain events (docs/domain-events.md): the context dispatches what its entities raised to the scope's
+        // handlers before it saves. Scoped, so a handler sees the request's actor, ledger and activity log.
+        services.AddScoped<DomainEventDispatcher>();
+        services.AddDomainEventHandlers();
 
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
@@ -270,6 +278,33 @@ public static class DependencyInjection
         // the request's DbContext and the lock lives inside that context's connection.
         services.AddScoped<TableLock>();
         services.AddScoped<ReservationWriter>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Every domain-event handler, in the order each event's handlers run. Shared with the test fixture
+    /// (<c>SqlServerFixture.CreateUnitOfWork</c>), so a service-level test runs the handlers production runs.
+    /// </summary>
+    /// <remarks>
+    /// Per event, in this order: the activity entry, then the tab's stream, then the outbox (the diner's push and feed
+    /// entry, then the staff push) - the order the services wrote them in before the events existed.
+    /// </remarks>
+    internal static IServiceCollection AddDomainEventHandlers(this IServiceCollection services)
+    {
+        // Tab orders: placed, moved along the rail, voided whole, one line voided.
+        services.AddScoped<TabOrderActivity>();
+        services.AddScoped<TabOrderStream>();
+        services.AddScoped<IDomainEventHandler<TabOrderPlaced>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderPlaced>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>, OrderReadyNotice>();
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>, KitchenReadyStaffPush>();
+        services.AddScoped<IDomainEventHandler<TabOrderVoided>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderVoided>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderStream>());
 
         return services;
     }

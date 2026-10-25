@@ -359,7 +359,7 @@ internal sealed class ServiceRequestService(
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The same <see cref="TabLedger.Compute"/> the shares view and the cash endpoint read, so the
+    /// The same <see cref="TabLedger.Compute(Domain.Tabs.Tab)"/> the shares view and the cash endpoint read, so the
     /// amount on the waiter's screen is the amount the diner's split showed and the amount the cash
     /// keypad will accept. Read-only: nothing on the tab row changes, so raising a request still
     /// cannot collide with a payment.

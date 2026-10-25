@@ -320,13 +320,17 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
             var order = TabOrder.PlacedByStaffMember(tab.TabId, rig.Branch.ManagerId, rig.Factory.Clock.UtcNow);
             db.TabOrders.Add(order);
             await db.SaveChangesAsync();
-
-            order.MoveTo(TabOrderStatus.InKitchen);
-            await db.SaveChangesAsync();
-
-            order.MoveTo(TabOrderStatus.Ready);
-            await db.SaveChangesAsync();
             orderId = order.Id;
+        }
+
+        // Moved along the rail by the manager, through the service: the push hangs on the order's TabOrderMoved event,
+        // whose handlers a bare context does not have (docs/domain-events.md).
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            var orders = fixture.CreateOrderService(db, rig.Factory.Clock, TestActor.Manager(rig.Branch.ManagerId));
+
+            await orders.MoveOrderStatusAsync(orderId, TabOrderStatus.InKitchen);
+            await orders.MoveOrderStatusAsync(orderId, TabOrderStatus.Ready);
         }
 
         await rig.DispatchAsync($"staff-push:ready:{orderId}:");

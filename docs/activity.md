@@ -82,7 +82,8 @@ Staff actions throughout; the system's; the guest's only where they matter to th
   opened by staff, admitted, turned away; the host moved; the bill presented; **the table transferred**; **a call
   claimed**.
 - **Orders**: a waiter's order (straight to the kitchen), a guest's phone order, a pre-order sent, the kitchen rail's
-  moves (in kitchen, ready, served), a line voided, an order voided.
+  moves (in kitchen, ready, served), a line voided, an order voided. Written by `TabOrderActivity`, the handler of the
+  order's domain events ([domain-events.md](domain-events.md)), not by the service - the pre-order's own entry aside.
 - **Money**: cash taken (with its tip), a discount or comp and its reversal, a bill written off.
 - **Takeaway**: placed and cancelled by the guest; accepted, declined, ready, collected (cash or card), not collected
   by staff; accepted or declined by the system.

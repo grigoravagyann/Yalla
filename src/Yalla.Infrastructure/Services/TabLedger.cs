@@ -40,7 +40,8 @@ internal sealed class TabLedger(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
-    ILogger<TabLedger> logger)
+    ILogger<TabLedger> logger,
+    DomainEventDispatcher domainEvents)
 {
     /// <summary>
     /// How many times a totals recomputation may lose the row-version race before giving up.
@@ -113,7 +114,14 @@ internal sealed class TabLedger(
     /// two diners ordered at once, both succeeded, and the total showed only one of them.
     /// </para>
     /// </remarks>
-    public TabBill Compute(Tab tab)
+    public TabBill Compute(Tab tab) => Compute(tab, countingAsLive: null);
+
+    /// <summary>
+    /// The bill as it was before one line came off it: <see cref="Compute(Tab)"/> with that line counted as still on
+    /// it. For the History's "total before" of a line void, read after the void by the event's handler - nothing else
+    /// in the unit of work has changed since.
+    /// </summary>
+    public TabBill Compute(Tab tab, Guid? countingAsLive)
     {
         ArgumentNullException.ThrowIfNull(tab);
 
@@ -125,7 +133,7 @@ internal sealed class TabLedger(
                 order.OwnerOf(line),
                 line.UnitPriceAmdSnapshot,
                 line.Quantity,
-                line.IsVoided,
+                line.IsVoided && line.Id != countingAsLive,
                 line.IsSplitAcrossParticipants,
                 [.. line.Shares.Select(s => s.TabParticipantId)])))
             .ToList();
@@ -208,6 +216,12 @@ internal sealed class TabLedger(
     /// </remarks>
     public async Task SaveAppendedAsync(CancellationToken cancellationToken)
     {
+        // The unit of work's domain events first: their handlers append to the stream (an order placed, moved, voided),
+        // and what they append has to be numbered below with the rest. The save's own dispatch then finds nothing. This
+        // ledger's dispatcher, not the context's: in a request they are the same, and a test composing a service per
+        // caller over one shared context gets that caller's handlers (docs/domain-events.md).
+        await domainEvents.DispatchAsync(db, cancellationToken);
+
         for (var attempt = 1; ; attempt++)
         {
             await NumberPendingAsync(cancellationToken);

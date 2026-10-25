@@ -46,7 +46,8 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill.</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
 /// needs nobody, and is not pushed).</item>
-/// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>.</item>
+/// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
+/// handler (<c>KitchenReadyStaffPush</c>) rather than detected here: see <c>docs/domain-events.md</c>.</item>
 /// </list>
 /// </remarks>
 internal static class StaffPushSignals
@@ -80,10 +81,6 @@ internal static class StaffPushSignals
     private static void StageDetected(YallaDbContext db, DateTime nowUtc)
     {
         var events = new List<(StaffPushKinds Kind, Guid SubjectId, string Key)>();
-        // Events that can happen to the same thing more than once - a booking sent back for approval again, an order
-        // up again - carry a fresh id in their key: an instant would collide under a clock that stands still, and a
-        // collision on the unique key would fail the save that caused the event.
-        string Again() => Guid.CreateVersion7().ToString("N");
 
         foreach (var entry in db.ChangeTracker.Entries<Reservation>())
         {
@@ -131,21 +128,32 @@ internal static class StaffPushSignals
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<TabOrder>())
-        {
-            if (entry.State == EntityState.Modified
-                && entry.Entity.Status == TabOrderStatus.Ready
-                && entry.Property(o => o.Status).OriginalValue != TabOrderStatus.Ready)
-            {
-                events.Add((StaffPushKinds.KitchenReady, entry.Entity.Id, $"{KeyPrefix}ready:{entry.Entity.Id}:{Again()}"));
-            }
-        }
-
+        // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
+        // first kind to move onto domain events (docs/domain-events.md). The other four follow their verticals.
         if (events.Count == 0)
         {
             return;
         }
 
+        StageAll(db, events, nowUtc);
+    }
+
+    /// <summary>
+    /// Stages one staff push in the caller's unit of work - for a domain-event handler, which knows the event rather than
+    /// detecting it. The key carries a fresh id after the subject when the event can happen again (<see cref="Again"/>).
+    /// </summary>
+    public static void StageOne(YallaDbContext db, StaffPushKinds kind, Guid subjectId, string key, DateTime nowUtc) =>
+        StageAll(db, [(kind, subjectId, key)], nowUtc);
+
+    /// <summary>
+    /// A fresh id for the key of an event that can happen to the same thing more than once - a booking sent back for
+    /// approval again, an order up again: an instant would collide under a clock that stands still, and a collision on
+    /// the unique key would fail the save that caused the event.
+    /// </summary>
+    public static string Again() => Guid.CreateVersion7().ToString("N");
+
+    private static void StageAll(YallaDbContext db, List<(StaffPushKinds Kind, Guid SubjectId, string Key)> events, DateTime nowUtc)
+    {
         // Already staged in this save - a save that is retried runs this again, and the key is unique.
         var staged = db.ChangeTracker.Entries<OutboxMessage>()
             .Where(e => e.State == EntityState.Added && e.Entity.Type == OutboxMessageTypes.StaffPush)

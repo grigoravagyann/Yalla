@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Yalla.Application.Abstractions;
 using Yalla.Domain.Audit;
@@ -26,11 +27,28 @@ public sealed class YallaDbContext : DbContext
 {
     private readonly IClock _clock;
 
+    private readonly DomainEventDispatcher _domainEvents;
+
     /// <summary>Bookings whose pre-order rail card changed without their pre-order row changing - see <see cref="SignalPreOrderRail"/>.</summary>
     private readonly HashSet<Guid> _preOrderRailSignals = [];
 
+    /// <summary>A transaction a domain-event handler asked for (<see cref="EnsureTransactionAsync"/>), committed by the save.</summary>
+    private IDbContextTransaction? _ownedTransaction;
+
+    /// <summary>A context with no domain-event handlers: the design-time factory, and tests seeding rows directly.</summary>
+    /// <remarks>A save on it that finds an event pending fails - see <see cref="DomainEventDispatcher.None"/>.</remarks>
     public YallaDbContext(DbContextOptions<YallaDbContext> options, IClock clock)
-        : base(options) => _clock = clock;
+        : this(options, clock, DomainEventDispatcher.None)
+    {
+    }
+
+    /// <summary>The context as the service provider composes it, dispatching domain events to the scope's handlers.</summary>
+    public YallaDbContext(DbContextOptions<YallaDbContext> options, IClock clock, DomainEventDispatcher domainEvents)
+        : base(options)
+    {
+        _clock = clock;
+        _domainEvents = domainEvents;
+    }
 
     public DbSet<Venue> Venues => Set<Venue>();
 
@@ -170,33 +188,144 @@ public sealed class YallaDbContext : DbContext
     }
 
     /// <summary>
-    /// Stamps <see cref="Entity.CreatedAtUtc"/> on every inserted row that does not already carry
-    /// one, so no caller has to remember to and no row is ever missing its creation time.
+    /// Dispatches the tracked entities' domain events, runs the change-tracker hooks, stamps
+    /// <see cref="Entity.CreatedAtUtc"/> on every inserted row that does not already carry one, and saves.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the overload every other <c>SaveChangesAsync</c> entry point funnels into.
+    /// </para>
+    /// <para>
+    /// <b>Domain events first</b> (<c>docs/domain-events.md</c>): their handlers add rows - an activity entry, an outbox
+    /// message - that the hooks after them then see like any other change. Each event is handled once: a save that fails
+    /// and is retried on the same context keeps what the handlers added and does not run them again.
+    /// </para>
     /// </remarks>
     public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
+        await _domainEvents.DispatchAsync(this, cancellationToken);
         await VoidHeldPreOrdersOfEndedBookingsAsync(sync: false, cancellationToken);
         await SignalBookingChangesAsync(sync: false, cancellationToken);
         await SignalPreOrderChangesAsync(sync: false, cancellationToken);
         StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
-        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+
+        if (TakeOwnedTransaction() is { } owned)
+        {
+            // Disposed whatever the commit does: a commit that throws must not leave the context joined to a dead
+            // transaction (and the diner account lock held) for whatever it does next.
+            try
+            {
+                await owned.CommitAsync(cancellationToken);
+            }
+            finally
+            {
+                await owned.DisposeAsync();
+            }
+        }
+
+        return saved;
     }
 
     /// <inheritdoc cref="SaveChangesAsync(bool, CancellationToken)"/>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
         VoidHeldPreOrdersOfEndedBookingsAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var saved = base.SaveChanges(acceptAllChangesOnSuccess);
+
+        if (TakeOwnedTransaction() is { } owned)
+        {
+            try
+            {
+                owned.Commit();
+            }
+            finally
+            {
+                owned.Dispose();
+            }
+        }
+
+        return saved;
+    }
+
+    /// <summary>
+    /// The transaction <see cref="EnsureTransactionAsync"/> began, for the save that just succeeded to commit - or null
+    /// when there is none, or when it is no longer the connection's (something rolled it back or committed it through
+    /// <c>Database</c>), in which case there is nothing of ours left to commit and only the handle to let go of.
+    /// </summary>
+    private IDbContextTransaction? TakeOwnedTransaction()
+    {
+        if (_ownedTransaction is not { } owned)
+        {
+            return null;
+        }
+
+        _ownedTransaction = null;
+
+        if (ReferenceEquals(Database.CurrentTransaction, owned))
+        {
+            return owned;
+        }
+
+        owned.Dispose();
+
+        return null;
+    }
+
+    /// <summary>
+    /// Takes every pending event off the tracked entities, in the order they were raised. Walks the tracker without
+    /// detecting changes: an entity raises from a domain method, and anything that can raise is tracked - added to its
+    /// set, or loaded - so a save that raised nothing pays a list walk and no more.
+    /// </summary>
+    internal List<IDomainEvent> DequeueDomainEvents()
+    {
+        List<RaisedDomainEvent>? raised = null;
+        var detecting = ChangeTracker.AutoDetectChangesEnabled;
+        ChangeTracker.AutoDetectChangesEnabled = false;
+
+        try
+        {
+            foreach (var entry in ChangeTracker.Entries<Entity>())
+            {
+                if (entry.Entity.DequeueEvents() is { Count: > 0 } events)
+                {
+                    (raised ??= []).AddRange(events);
+                }
+            }
+        }
+        finally
+        {
+            ChangeTracker.AutoDetectChangesEnabled = detecting;
+        }
+
+        return raised is null ? [] : [.. raised.OrderBy(r => r.Order).Select(r => r.Event)];
+    }
+
+    /// <summary>
+    /// Makes sure what the save writes runs in a transaction that is open now - for a domain-event handler that takes a
+    /// lock which must be held to the commit (<c>DinerAccountLock.IsLiveAsync</c>). Joins the caller's transaction when
+    /// there is one (a lock scope's); otherwise begins one that the next successful save commits.
+    /// </summary>
+    /// <remarks>
+    /// A save that fails leaves it open, as a caller's own transaction would be, so a retried save on the same context
+    /// (the ledger's renumbering) still holds the lock; disposing the context rolls it back.
+    /// </remarks>
+    internal async Task EnsureTransactionAsync(CancellationToken cancellationToken)
+    {
+        if (Database.CurrentTransaction is not null)
+        {
+            return;
+        }
+
+        _ownedTransaction = await Database.BeginTransactionAsync(cancellationToken);
     }
 
     /// <summary>
@@ -436,15 +565,49 @@ public sealed class YallaDbContext : DbContext
         }
     }
 
+    /// <summary>
+    /// The last walk before the write: stamps creation times, and refuses a save that would write a change without what
+    /// it tells the rest of the system (<c>docs/domain-events.md</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>An event still pending here</b> was raised where dispatch could not see it - on an entity the context only
+    /// started tracking when the hooks above detected changes (one reachable only through a navigation), or by a hook
+    /// itself. Saved, the change would go out without its side effects, and the event would wait on the entity for a
+    /// later save, in another unit of work. Raise on the tracked aggregate root.
+    /// </para>
+    /// <para>
+    /// <b>A tab event with no place on its stream</b> was appended by something whose save does not go through
+    /// <c>TabLedger.SaveAppendedAsync</c> - a tab-order event handled by this save's own dispatch, say. Written at
+    /// sequence 0, no phone catching up would ever read it.
+    /// </para>
+    /// </remarks>
     private void StampCreationTimes()
     {
         var now = _clock.UtcNow;
 
         foreach (var entry in ChangeTracker.Entries<Entity>())
         {
+            if (entry.Entity.HasPendingEvents())
+            {
+                throw new InvalidOperationException(
+                    $"A {entry.Entity.GetType().Name} is being saved with domain events its save never dispatched: they "
+                    + "were raised on an entity the context was not tracking when it dispatched (reachable only through a "
+                    + "navigation) or during the save's own hooks. Raise on the aggregate root the context tracks "
+                    + "(docs/domain-events.md).");
+            }
+
             if (entry.State != EntityState.Added)
             {
                 continue;
+            }
+
+            if (entry.Entity is TabEvent { Sequence: 0L } unnumbered)
+            {
+                throw new InvalidOperationException(
+                    $"A {unnumbered.Type} tab event is being saved with no place on tab {unnumbered.TabId}'s stream. "
+                    + "Whatever appends to the stream - a tab-order domain event's handler included - must be saved "
+                    + "through TabLedger.SaveAppendedAsync, which numbers it.");
             }
 
             var createdAt = entry.Property(e => e.CreatedAtUtc);

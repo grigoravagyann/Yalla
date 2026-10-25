@@ -9,9 +9,9 @@ in the frontend repo, `grigoravagyann/YallaFrontend`.
 
 | Path | What lives there |
 |---|---|
-| `src/Yalla.Domain` | Entities and rules, no I/O. `Enums/` (persisted as int), `Common/` (`Guard`, `FieldLengths`, `Entity`), `DomainStateException.cs`, `FieldValidationException.cs`, `Audit/` (`ActivityEntry`, `ProcessedCommand`), one folder per area (`Occupancy` = bookings and tables, `Tabs`, `Takeaway`, `Messages`, `Staff`, `Venues`, `Identity`, `Menus`). |
-| `src/Yalla.Application` | Contracts only: service interfaces, DTO records, application exceptions, one folder per area. `Abstractions/` (`IClock`, `ICurrentActor`), `Messaging/OutboxContracts.cs`, `Activity/ActivityLogContracts.cs`, `Notifications/` (`NotificationText`, `StaffPushText`, `StaffPushContracts`), `Reservations/BranchZone.cs`. |
-| `src/Yalla.Infrastructure` | Implementations. `Services/` (one class per use case: `ReservationCreation`, `TabOrderService`, sweeps), `Persistence/` (`YallaDbContext`, `Configurations/`, `Migrations/`, `TableLock`, `ReservationWriter`, `StaffPushSignals`), `Notifications/` (one `IOutboxHandler` per file), `Messaging/` (outbox dispatcher and loop), `Identity/` (sign-in, tokens), `DependencyInjection.cs` (every registration). |
+| `src/Yalla.Domain` | Entities and rules, no I/O. `Enums/` (persisted as int), `Common/` (`Guard`, `FieldLengths`, `Entity` - which raises domain events - `IDomainEvent`), `DomainStateException.cs`, `FieldValidationException.cs`, `Audit/` (`ActivityEntry`, `ProcessedCommand`), one folder per area (`Occupancy` = bookings and tables, `Tabs`, `Takeaway`, `Messages`, `Staff`, `Venues`, `Identity`, `Menus`). |
+| `src/Yalla.Application` | Contracts only: service interfaces, DTO records, application exceptions, one folder per area. `Abstractions/` (`IClock`, `ICurrentActor`, `IDomainEventHandler<T>`), `Messaging/OutboxContracts.cs`, `Activity/ActivityLogContracts.cs`, `Notifications/` (`NotificationText`, `StaffPushText`, `StaffPushContracts`), `Reservations/BranchZone.cs`. |
+| `src/Yalla.Infrastructure` | Implementations. `Services/` (one class per use case: `ReservationCreation`, `TabOrderService`, sweeps), `DomainEvents/<Area>/` (domain-event handlers: the side effects of a change), `Persistence/` (`YallaDbContext`, `DomainEventDispatcher`, `Configurations/`, `Migrations/`, `TableLock`, `ReservationWriter`, `StaffPushSignals`), `Notifications/` (one `IOutboxHandler` per file), `Messaging/` (outbox dispatcher and loop), `Identity/` (sign-in, tokens), `DependencyInjection.cs` (every registration). |
 | `src/Yalla.Api` | `Program.cs` (maps every group), `Endpoints/<Area>Endpoints.cs` + `<Area>Requests.cs`, `Authorization/YallaPolicies.cs` + `ScopeHandlers.cs`, `Errors/` (`ErrorCodes` - every problem code declared once - `ProblemCatalogue`, `ApiExceptionMapper`, `ProblemShapes`), `Filters/` (request validation, OpenAPI filters). |
 | `tests/Yalla.UnitTests` | The only test project. Root: pure unit tests. `Integration/`: real SQL Server plus the in-process API. `Contracts/`: contract tests every double must pass. |
 | `scripts/ci/`, `verify.sh` | Shard planner and timings; `./verify.sh` (Git Bash) runs exactly what CI runs. |
@@ -21,7 +21,8 @@ Docs (`docs/`): `auth.md` identities, tokens, sessions, Telegram proof - `reserv
 and locking - `tabs.md` scan, join, visibility - `tab-totals.md` which commands write the tab row - `billing.md`
 (+ `billing-vectors.json`) money arithmetic - `takeaway.md` - `messages.md` guest threads - `notifications.md`
 outbox, pushes, staff push, the diner feed - `activity.md` History, action codes, retention, transfers -
-`reports.md` - `error-contract.md` every named problem code and its context - `openapi.md` the document and the
+`reports.md` - `domain-events.md` raising events, handlers, the rules, which verticals are migrated -
+`error-contract.md` every named problem code and its context - `openapi.md` the document and the
 frontend's copy - `contract-tests.md` why doubles have contracts - `public-surface.md` anonymous routes -
 `diner-browse.md` diner real-data contract, rate limits, dev seed - `platform-admin.md` - `menu-completeness.md`.
 
@@ -50,6 +51,11 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
 - **One unit of work**: the outbox row, the activity entry, the diner feed row and the staff push are added to the
   same `YallaDbContext` and saved by the caller's single `SaveChangesAsync` (or a lock scope's `CommitAsync`).
   `IOutbox` and `IActivityLog` deliberately have no save; `StaffPushSignals.Stage` runs inside `SaveChangesAsync`.
+- **Side effects hang on domain events** (`docs/domain-events.md`): the aggregate raises (`Entity.Raise`) from the
+  method that makes the change, and handlers in `Infrastructure/DomainEvents/` write the activity entry, outbox
+  message, feed row, tab-stream event and staff push in the same save - dispatched by `SaveChanges` before it writes
+  (and by `TabLedger` before it numbers the stream). Migrated: **tab orders**. On a migrated vertical never write a
+  side effect in a service; on the others, prefer moving the vertical over adding another hand-written call.
 - **Idempotency**: device writes carry `clientCommandId` (`IClientCommandRequest` in
   `Endpoints/TableStateRequests.cs`, enforced by `ClientCommandIdFilter`); the service records it in
   `ProcessedCommands` (or the row's own unique `ClientCommandId`) and answers a replay with the first result -
@@ -134,22 +140,44 @@ catalogue table in `docs/error-contract.md`.
    (`git show origin/master:<snapshot path> > <snapshot path>`), delete your two migration files, add again (as
    merge `0607257` did for `ActivityHistory`).
 
+### Raise a domain event and handle it
+1. The event: a past-tense record in `Domain/<Area>/<Aggregate>Events.cs`, `: IDomainEvent`, carrying the aggregate,
+   what a handler cannot read back afterwards (where it was, what came off, the reason as given) and `OccurredAtUtc`
+   (an `IClock` instant passed in). Model: `Domain/Tabs/TabOrderEvents.cs`.
+2. Raise it from the domain method that makes the change, after the change, on the aggregate root the context tracks
+   (`Raise(new TabOrderMoved(...))` in `TabOrder.MoveTo`). Refusals and replays raise nothing; a replay of history raises
+   nothing (`TabOrder.ArriveFromHeldTicket`). Make the non-raising route impossible (`TabOrderLine.Void` is `internal`).
+3. The handler: `internal sealed class X(...) : IDomainEventHandler<TEvent>` in `Infrastructure/DomainEvents/<Area>/`,
+   injecting what a service would; add or change tracked rows, never save, read the tracker before querying
+   (`TabOrderReads`); a lock held to the commit calls `db.EnsureTransactionAsync` first (model: `OrderReadyNotice`).
+4. Register it in `DependencyInjection.AddDomainEventHandlers`, in the order the event's side effects should be written
+   (activity, stream, outbox, staff push). The test fixture composes the same list (`SqlServerFixture.CreateUnitOfWork`).
+5. Tests: `DequeueEvents()` after the domain call in a unit test (`TabOrderTests`); a service or HTTP test asserting the
+   rows. A bare `fixture.CreateContext` refuses events - drive the change through a service the fixture composes. When
+   moving a vertical, write its characterisation snapshot first (model: `TabOrderSideEffectsSnapshotTests`).
+
 ### Add an outbox message (push to a diner) + feed entry
 1. `OutboxMessageTypes.<Name> = "area.what"` in `Application/Messaging/OutboxContracts.cs`, documenting its key.
-2. Enqueue in the service before its save: `outbox.Enqueue(type, new { ... }, nowUtc, OutboxMessageTypes.KeyFor("reservation", id, "what"))`;
-   withdraw with `outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", id))`. Model: `ReservationNotices.TellDinerUnblocked`.
+2. Enqueue from a **domain-event handler** of the event that causes it: `outbox.Enqueue(type, new { ... }, clock.UtcNow, OutboxMessageTypes.KeyFor("order", id, "ready"))`.
+   Model: `DomainEvents/TabOrders/OrderReadyNotice` (on `TabOrderMoved` to Ready). On a vertical not yet on events, the
+   service enqueues before its save (model: `ReservationNotices.TellDinerUnblocked`); withdraw with
+   `outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", id))`.
 3. Handler `Infrastructure/Notifications/<Name>Handler.cs : IOutboxHandler` (one per file): `Payload.Read<T>`,
    `Payload.LocaleForAsync`, text in `NotificationText` (hy/ru/en); re-check the subject is still true; throw = retry.
    Model: `DinerBookingsUnblockedHandler`. Register `services.AddScoped<IOutboxHandler, <Name>Handler>()`.
-4. The in-app feed: a `DinerNotices.<Name>(db, ...)` method and a `DinerNotificationKinds` const
-   (`Domain/Identity/DinerNotification.cs`). Kinds are in the `CK_DinerNotifications_Kind` check, so a new kind needs
+4. The in-app feed: a `DinerNotices.<Name>(db, ...)` method, called beside the enqueue (the same handler), and a
+   `DinerNotificationKinds` const (`Domain/Identity/DinerNotification.cs`). A diner's entry and push are written under
+   their account lock: `db.EnsureTransactionAsync` then `DinerAccountLock.IsLiveAsync` (as `OrderReadyNotice` does). Kinds are in the `CK_DinerNotifications_Kind` check, so a new kind needs
    a migration whose `Down` deletes that kind's rows first.
 5. Anything over an hour overdue is dead-lettered (`OutboxOptions.StaleAfterMinutes`): a deadline promised to someone
    is a sweep, not a message. Tests that count outbox rows filter by `Type`. Update `docs/notifications.md`.
 
 ### Add a staff push kind
 1. A new power-of-two `StaffPushKinds` member (`Domain/Enums/IdentityEnums.cs`); decide `Defaults`, update `All`; pin it.
-2. Detect it in `StaffPushSignals.StageDetected` from the change tracker, key `staff-push:<what>:<id>` - not in services.
+2. Stage it from a **domain-event handler** of the event the floor is told about: `StaffPushSignals.StageOne(db, kind,
+   id, $"{StaffPushSignals.KeyPrefix}<what>:{id}", clock.UtcNow)` (append `:{StaffPushSignals.Again()}` when it can
+   happen again) - model: `DomainEvents/TabOrders/KitchenReadyStaffPush`. Not in services. The four older kinds are still
+   detected in `StaffPushSignals.StageDetected` from the change tracker until their verticals move.
 3. `StaffPushHandler`: `KindName`, the subject switch (return null when no longer true), text in `StaffPushText`.
 4. The switch: `StaffNotificationPreferences` + `StaffNotificationSettings` (`StaffPushContracts.cs`), both mappings in
    `StaffPushService`, the request in `StaffDeviceRequests.cs` and `StaffDeviceEndpoints.cs`.
@@ -158,9 +186,12 @@ catalogue table in `docs/error-contract.md`.
 ### Record an activity entry
 1. `ActivityActions.<Area><Verb> = "area.verb"` (stable: the console routes and renders on it), the `ActivityCategory`,
    an `ActivitySubjects` type - all in `Application/Activity/ActivityLogContracts.cs` / `Domain/Enums/ActivityEnums.cs`.
-2. Inject `IActivityLog`; before your save: `await activity.RecordAsync(new ActivityRecord(category, action, subjectType, id) { BranchId = ..., SubjectCode = ..., AmountAmd = ..., IsMoney = ..., Before = ..., After = ..., Summary = new { ... } }, ct)`.
-   Who and which device are read by the log; a sweep sets `BySystem = true`, a manage link `ByGuest = true`. Models:
-   `TakeawayActivity.RecordAsync`, `BookingActivity`.
+2. Record it from a **domain-event handler** of the change: inject `IActivityLog` and call
+   `await activity.RecordAsync(new ActivityRecord(category, action, subjectType, id) { BranchId = ..., SubjectCode = ..., AmountAmd = ..., IsMoney = ..., Before = ..., After = ..., Summary = new { ... } }, ct)`.
+   Model: `DomainEvents/TabOrders/TabOrderActivity` (one class, one entry per tab-order event). Who and which device are
+   read by the log from the request, so attribution is the same as from a service; a sweep sets `BySystem = true`, a
+   manage link `ByGuest = true`. On a vertical not yet on events, the service records it before its save (models:
+   `TakeawayActivity.RecordAsync`, `BookingActivity`) - and a change with one path and one entry (a setting) may stay so.
 3. `IsMoney` (payments, discounts, comps, voids, write-offs, takeaway collected) keeps it
    `ActivityEntry.MoneyRetentionDays` (1095) instead of `RetentionDays` (365); `ActivityRetention` purges on the
    outbox loop.
@@ -199,7 +230,7 @@ catalogue table in `docs/error-contract.md`.
 - One class: `dotnet test tests/Yalla.UnitTests --filter "FullyQualifiedName~Integration.StaffTodayTests"`. Integration
   tests find SQL Server at `localhost`, `localhost\SQLEXPRESS` or `(localdb)\MSSQLLocalDB` (else set
   `YALLA_TEST_SQL_SERVER`) and **skip** when none answers - a skip proves nothing, and CI fails on any skip.
-- The full suite takes roughly 25 minutes serially (2,075 tests on 2026-10-24); run the classes you touched plus the
+- The full suite takes roughly 25 minutes serially (2,075 tests on 2026-10-24), about 3 locally in parallel; run the classes you touched plus the
   guard classes above. CI (`.github/workflows/backend.yml`): `build` (locked restore, strict build, model check, shard
   plan) -> 4 `test (shard n)` jobs by class (`scripts/ci/test_shards.py`, balanced by `test-timings.json`) ->
   `build-and-test`, the required gate, which checks every listed test ran exactly once.

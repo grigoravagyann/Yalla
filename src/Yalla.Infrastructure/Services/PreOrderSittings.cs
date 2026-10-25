@@ -162,29 +162,12 @@ internal static class PreOrderSittings
                 isTableAttributed: true, note: line.Note);
         }
 
-        foreach (var step in StepsTo(preOrder.KitchenStatus ?? TabOrderStatus.InKitchen))
-        {
-            order.MoveTo(step);
-        }
-
-        // A voided ticket never reaches a tab (MarkAttached refuses it), but if one did its lines would come off the bill with
-        // it, as any voided order's do - never a voided order still charging for its food.
-        if (preOrder.KitchenStatus == TabOrderStatus.Voided)
-        {
-            order.Void(preOrder.UpdatedAtUtc, null);
-        }
+        // The kitchen's progress, replayed through the rail's own transitions - silently: those moves were the pre-order's
+        // and were told then, so the order raises no events (no activity entry, no "ready" push) for arriving here.
+        order.ArriveFromHeldTicket(preOrder.KitchenStatus ?? TabOrderStatus.InKitchen, preOrder.UpdatedAtUtc);
 
         return order;
     }
-
-    /// <summary>The rail's moves from New to where the held ticket got.</summary>
-    private static IEnumerable<TabOrderStatus> StepsTo(TabOrderStatus reached) => reached switch
-    {
-        TabOrderStatus.InKitchen => [TabOrderStatus.InKitchen],
-        TabOrderStatus.Ready => [TabOrderStatus.InKitchen, TabOrderStatus.Ready],
-        TabOrderStatus.Served => [TabOrderStatus.InKitchen, TabOrderStatus.Ready, TabOrderStatus.Served],
-        _ => [],
-    };
 
     /// <summary>What a phone reading the tab's stream learns: the order placed, then where it is on the rail.</summary>
     private static IEnumerable<(TabEventType Type, object Payload)> Events(TabOrder order)
