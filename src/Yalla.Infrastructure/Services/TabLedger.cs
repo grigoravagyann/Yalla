@@ -121,7 +121,17 @@ internal sealed class TabLedger(
     /// it. For the History's "total before" of a line void, read after the void by the event's handler - nothing else
     /// in the unit of work has changed since.
     /// </summary>
-    public TabBill Compute(Tab tab, Guid? countingAsLive)
+    public TabBill Compute(Tab tab, Guid? countingAsLive) => Compute(tab, countingAsLive, togglingAdjustment: null);
+
+    /// <summary>
+    /// The bill with one adjustment standing the other way: for one just given, the bill before it went on; for one
+    /// just reversed, the bill before the reversal. For the History's "total before" of a discount, a comp or a
+    /// reversal, read by the event's handler - nothing else in the unit of work has changed since.
+    /// </summary>
+    public TabBill ComputeTogglingAdjustment(Tab tab, Guid adjustmentId) =>
+        Compute(tab, countingAsLive: null, togglingAdjustment: adjustmentId);
+
+    private TabBill Compute(Tab tab, Guid? countingAsLive, Guid? togglingAdjustment)
     {
         ArgumentNullException.ThrowIfNull(tab);
 
@@ -143,7 +153,7 @@ internal sealed class TabLedger(
         // so the bill would change on its next recompute. The reads that add the reductions up use the same order
         // (AdjustmentReductions).
         var adjustments = db.TabAdjustments.Local
-            .Where(a => a.TabId == tab.Id && a.IsActive)
+            .Where(a => a.TabId == tab.Id && a.IsActive != (a.Id == togglingAdjustment))
             .OrderBy(a => a.CreatedAtUtc)
             .ThenBy(a => a.Id)
             .Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))

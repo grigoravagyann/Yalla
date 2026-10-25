@@ -32,6 +32,7 @@ using Yalla.Infrastructure.Time;
 
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.DomainEvents.TabOrders;
+using Yalla.Infrastructure.DomainEvents.Payments;
 
 namespace Yalla.Infrastructure;
 
@@ -312,6 +313,18 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<ServiceRequestRaised>, Yalla.Infrastructure.DomainEvents.Calls.TableCallStaffPush>();
         services.AddScoped<IDomainEventHandler<ServiceRequestClaimed>, Yalla.Infrastructure.DomainEvents.Calls.CallClaimActivity>();
         services.AddScoped<IDomainEventHandler<ServiceRequestAcknowledged>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Calls.CallStream>());
+        // Payments: cash taken, the bill settled, a discount or comp given or reversed, a balance written off.
+        services.AddScoped<PaymentActivity>();
+        services.AddScoped<PaymentStream>();
+        services.AddScoped<IDomainEventHandler<TabPaymentRecorded>>(sp => sp.GetRequiredService<PaymentActivity>());
+        services.AddScoped<IDomainEventHandler<TabPaymentRecorded>>(sp => sp.GetRequiredService<PaymentStream>());
+        services.AddScoped<IDomainEventHandler<TabSettled>>(sp => sp.GetRequiredService<PaymentStream>());
+        services.AddScoped<IDomainEventHandler<TabAdjustmentAdded>>(sp => sp.GetRequiredService<PaymentActivity>());
+        services.AddScoped<IDomainEventHandler<TabAdjustmentAdded>>(sp => sp.GetRequiredService<PaymentStream>());
+        services.AddScoped<IDomainEventHandler<TabAdjustmentReversed>>(sp => sp.GetRequiredService<PaymentActivity>());
+        services.AddScoped<IDomainEventHandler<TabAdjustmentReversed>>(sp => sp.GetRequiredService<PaymentStream>());
+        services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentActivity>());
+        services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentStream>());
 
         return services;
     }

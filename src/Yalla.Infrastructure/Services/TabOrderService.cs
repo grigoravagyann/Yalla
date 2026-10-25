@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
@@ -33,8 +32,8 @@ namespace Yalla.Infrastructure.Services;
 /// voiding an order or a line raise domain events on the <see cref="TabOrder"/> (<c>docs/domain-events.md</c>), and
 /// their handlers in <c>DomainEvents/TabOrders</c> write the activity entry, the tab's stream, the diner's "ready"
 /// push and feed entry and the staff push in the same save. This class decides whether the change may happen and makes
-/// it; it cannot forget a side effect, because it no longer writes any. (Discounts and comps still record their own
-/// activity here, until the payments vertical moves.)
+/// it; it cannot forget a side effect, because it no longer writes any. Discounts and comps, and their reversal, raise
+/// theirs on the <see cref="TabAdjustment"/> (handlers in <c>DomainEvents/Payments</c>).
 /// </para>
 /// </remarks>
 internal sealed class TabOrderService(
@@ -43,7 +42,6 @@ internal sealed class TabOrderService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
-    IActivityLog activity,
     ILogger<TabOrderService> logger) : ITabOrderService
 {
     /// <summary>
@@ -462,53 +460,9 @@ internal sealed class TabOrderService(
         // sitting in Local is already reflected and "what did this take off" would come out zero.
         var before = ledger.Compute(tab).SubtotalAmd;
 
-        var totalBefore = ledger.Compute(tab).TotalAmd;
-
+        // TabAdjustmentAdded's handlers write the History's payment.discount / payment.comp (what it took off, the total
+        // before and after) and the stream's AdjustmentAdded, in the save below.
         db.TabAdjustments.Add(adjustment);
-
-        var after = ledger.Compute(tab);
-        var lineName = command.TabOrderLineId is { } adjustedLine
-            ? tab.Orders.SelectMany(o => o.Lines).First(l => l.Id == adjustedLine).NameSnapshot
-            : null;
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Payment,
-                adjustment.Kind == AdjustmentKind.Comp ? ActivityActions.PaymentComp : ActivityActions.PaymentDiscount,
-                ActivitySubjects.Tab,
-                tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                ItemNames = lineName is null ? null : [lineName],
-                AmountAmd = before - after.SubtotalAmd,
-                IsMoney = true,
-                Reason = adjustment.Reason,
-                Before = new { totalAmd = totalBefore },
-                After = new { totalAmd = after.TotalAmd },
-                Summary = new
-                {
-                    adjustmentId = adjustment.Id,
-                    percent = adjustment.Percent,
-                    amountAmd = adjustment.AmountAmd,
-                    lineId = adjustment.TabOrderLineId,
-                    lineName,
-                    totalBeforeAmd = totalBefore,
-                    totalAfterAmd = after.TotalAmd,
-                },
-            },
-            cancellationToken);
-
-        ledger.Append(tab.Id, TabEventType.AdjustmentAdded, new
-        {
-            adjustmentId = adjustment.Id,
-            tabOrderLineId = adjustment.TabOrderLineId,
-            kind = (int)adjustment.Kind,
-            percent = adjustment.Percent,
-            amountAmd = adjustment.AmountAmd,
-            reason = adjustment.Reason,
-        });
 
         var bill = await ledger.SaveWithTotalsAsync(tab, cancellationToken);
 
@@ -533,39 +487,9 @@ internal sealed class TabOrderService(
         await branchGuard.RequireAsync(
                 staffId, tab.BranchId, "Acting on this tab", "tab", cancellationToken);
 
-        var reversedFrom = ledger.Compute(tab).TotalAmd;
-
+        // TabAdjustmentReversed's handlers write the History's payment.adjustment-reversed (the total before and after)
+        // and the stream's AdjustmentVoided, in the save below.
         adjustment.Void(clock.UtcNow, staffId);
-
-        var reversedTo = ledger.Compute(tab).TotalAmd;
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Payment, ActivityActions.PaymentAdjustmentReversed, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                AmountAmd = reversedTo - reversedFrom,
-                IsMoney = true,
-                Reason = adjustment.Reason,
-                Before = new { totalAmd = reversedFrom },
-                After = new { totalAmd = reversedTo },
-                Summary = new
-                {
-                    adjustmentId = adjustment.Id,
-                    kind = adjustment.Kind == AdjustmentKind.Comp ? "comp" : "discount",
-                    totalBeforeAmd = reversedFrom,
-                    totalAfterAmd = reversedTo,
-                },
-            },
-            cancellationToken);
-
-        ledger.Append(tab.Id, TabEventType.AdjustmentVoided, new
-        {
-            adjustmentId = adjustment.Id,
-            reason = adjustment.Reason,
-        });
 
         await ledger.SaveWithTotalsAsync(tab, cancellationToken);
 
@@ -752,15 +676,6 @@ internal sealed class TabOrderService(
                 r.Marker)),
         ];
     }
-
-    /// <summary>The tab's table label, from the tracker when it is there.</summary>
-    private async Task<string?> TableLabelAsync(Tab tab, CancellationToken cancellationToken) =>
-        db.DiningTables.Local.FirstOrDefault(t => t.Id == tab.DiningTableId)?.Label
-        ?? await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.Id == tab.DiningTableId)
-            .Select(t => t.Label)
-            .FirstOrDefaultAsync(cancellationToken);
 
     /// <summary>
     /// The Kitchen role cooks and nothing else.
