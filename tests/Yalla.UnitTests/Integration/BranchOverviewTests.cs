@@ -852,7 +852,9 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
 
         if (closing)
         {
-            tab.BeginClosing();
+            // Seeded straight to the rows: the bill presented is history here, told when it happened.
+            tab.BeginClosing(seatedAtUtc);
+            tab.DequeueEvents();
         }
 
         db.Tabs.Add(tab);

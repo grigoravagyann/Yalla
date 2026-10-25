@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Auth;
-using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain;
 using Yalla.Domain.Enums;
@@ -22,10 +21,8 @@ internal sealed class TabJoining(
     ICurrentActor actor,
     ITokenAuthorityCheck authority,
     TabLedger ledger,
-    IOutbox outbox,
     ILogger<TabService> logger,
-    TabLookups lookups,
-    TabSignals signals)
+    TabLookups lookups)
 {
     // ---------------------------------------------------------------- joining
 
@@ -97,7 +94,7 @@ internal sealed class TabJoining(
             // opened on it is admitted - the booking is the proof a waiter would otherwise give.
             if (asBooker)
             {
-                signals.AdmitInContext(tab, TabAdmissionReason.Booker, staffId: null, nowUtc);
+                tab.Admit(nowUtc, TabAdmissionReason.Booker, byStaffId: null);
             }
 
             if (asBooker && !existing.IsApproved)
@@ -158,7 +155,7 @@ internal sealed class TabJoining(
         // host - the friend who scanned first - stays host, and the tab may order from now on.
         if (asBooker)
         {
-            signals.AdmitInContext(tab, TabAdmissionReason.Booker, staffId: null, nowUtc);
+            tab.Admit(nowUtc, TabAdmissionReason.Booker, byStaffId: null);
 
             await ApproveBookerAsync(tab, guest, nowUtc, cancellationToken);
 
@@ -168,7 +165,9 @@ internal sealed class TabJoining(
             return guest;
         }
 
-        AnnouncePendingJoin(tab, guest, displayName);
+        // Raises TabJoinRequested: the tab's stream tells every phone at the table, and the host's
+        // account is pushed when the host scanned with one.
+        tab.AskToJoin(guest, displayName, nowUtc);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -179,80 +178,8 @@ internal sealed class TabJoining(
     }
 
     /// <summary>
-    /// Tells the host somebody is waiting to be let on: on the tab's stream, which every phone at the
-    /// table polls, and on the host's lock screen when the host scanned with an account.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Only for a join that lands pending. The first phone onto a tab staff opened hosts it, and the
-    /// booker on their own booking's sitting is approved on the spot and announced by
-    /// <c>ParticipantApproved</c>. Neither is waiting for anybody, and a second event for the same
-    /// moment would only make every phone refetch twice.
-    /// </para>
-    /// <para>
-    /// The push has one address, the host's account - see <see cref="TabParticipant.UserId"/>. Most
-    /// hosts scanned without one, and then the stream is all there is. The host's own account on a
-    /// second phone lands pending like anybody else, and is not told that it wants to join itself.
-    /// </para>
-    /// <para>
-    /// Somebody the host already turned away on this tab - the same phone, or the same account on
-    /// another - is on the stream again but not pushed again. The host sees them on the bill and can
-    /// still let them on; they are not woken for every retry of a question they answered.
-    /// </para>
-    /// </remarks>
-    private void AnnouncePendingJoin(Tab tab, TabParticipant joiner, string? givenName)
-    {
-        // The shape of every other roster event, so the redactor's participant rule already decides
-        // it: a pending reader sees who it is about and nothing that says who they are.
-        ledger.Append(tab.Id, TabEventType.ParticipantJoined, new
-        {
-            participantId = joiner.Id,
-            displayName = joiner.DisplayName,
-            status = (int)joiner.Status,
-            canOrder = joiner.CanOrder,
-            canSeeTableTotal = joiner.CanSeeTableTotal,
-            canPay = joiner.CanPay,
-        });
-
-        var hostUserId = tab.Participants.FirstOrDefault(p => p.Id == tab.HostParticipantId)?.UserId;
-
-        if (hostUserId is not { } dinerUserId || joiner.UserId == dinerUserId)
-        {
-            return;
-        }
-
-        var askedBefore = tab.Participants.Any(p =>
-            p.WasTurnedAway
-            && (p.DeviceId == joiner.DeviceId || (joiner.UserId is { } account && p.UserId == account)));
-
-        if (askedBefore)
-        {
-            logger.LogInformation(
-                "Participant {ParticipantId} is back on tab {TabId} after the host turned them away; not pushing again.",
-                joiner.Id, tab.Id);
-
-            return;
-        }
-
-        outbox.Enqueue(
-            OutboxMessageTypes.JoinRequested,
-            new
-            {
-                tabId = tab.Id,
-                participantId = joiner.Id,
-                dinerUserId,
-                tableLabel = tab.DiningTable?.Label ?? string.Empty,
-                // The name they gave, or none. "Guest 3" is the roster's placeholder in English; the
-                // push says "a guest" in the host's own language instead.
-                guestName = string.IsNullOrWhiteSpace(givenName) ? null : joiner.DisplayName,
-            },
-            clock.UtcNow,
-            OutboxMessageTypes.KeyFor("participant", joiner.Id, "join-requested"));
-    }
-
-    /// <summary>
-    /// Lets the booker onto their own booking's tab without the host's tap, recorded on the ledger as
-    /// an approval so the other phones' rosters move as if the host had approved them.
+    /// Lets the booker onto their own booking's tab without the host's tap, told on the stream as an
+    /// approval so the other phones' rosters move as if the host had approved them - and pushed to nobody.
     /// </summary>
     private async Task ApproveBookerAsync(
         Tab tab,
@@ -260,17 +187,7 @@ internal sealed class TabJoining(
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        participant.Approve(nowUtc);
-
-        ledger.Append(tab.Id, TabEventType.ParticipantApproved, new
-        {
-            participantId = participant.Id,
-            displayName = participant.DisplayName,
-            status = (int)participant.Status,
-            canOrder = participant.CanOrder,
-            canSeeTableTotal = participant.CanSeeTableTotal,
-            canPay = participant.CanPay,
-        });
+        tab.ApproveParticipant(participant, nowUtc, asBooker: true);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 

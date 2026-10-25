@@ -222,6 +222,54 @@ activity entry, outbox row (the guest's pushes, the staff push, the block's noti
 the end state of the orders, lines, block and booking (`Integration/Snapshots/TakeawaySideEffects.approved.txt`). The
 refactor keeps it byte for byte.
 
+### Tabs (the lifecycle) - migrated
+
+Everything that happens to a tab apart from its orders, money and calls. The events are on `Tab`, the aggregate root,
+in `Domain/Tabs/TabLifecycleEvents.cs`; a participant's change is raised by the tab it is on (`tab.ApproveParticipant`,
+not `participant.Approve`).
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `Tab.OpenWithHost(host)` (from `TabOpener`: a scan, or a booker opening on a free table) | `TabOpenedByScan(Tab, Host)` | `TabFloorSignal`: when the tab waits for a waiter, signal 1 (`TabAwaitingAdmission`, "a scan is waiting to be let in"). |
+| `Tab.OpenByStaff(...)` (from `TabStaffActions.OpenForStaffAsync`) | `TabOpenedByStaff(Tab, ByStaffId)` | `TabLifecycleActivity`: `table.tab-opened` (the table, the party size). |
+| `Tab.Admit(at, because, byStaffId)` (a waiter's tap, `TabAdmissionCommands`; the booker arriving, `TabJoining`) | `TabAdmitted(Tab, Because, ByStaffId)` | `TabLifecycleActivity`: `table.tab-admitted`, a waiter's only. `TabLifecycleStream`: `TabAdmitted`. `TabFloorSignal`: signal 2 (`TabAdmitted`). |
+| `Tab.RejectAdmission(at, byStaffId, reason, tableFreed)` (`TabAdmissionCommands.RejectAdmissionAsync`) | `TabTurnedAway(Tab, Reason, TableFreed, ByStaffId)` | `TabLifecycleActivity`: `table.tab-turned-away` (the reason, `tableFreed`). `TabLifecycleStream`: `TabAdmissionRejected`. `TabFloorSignal`: signal 3, only when the party stays - a freed table's own transition row carries it. |
+| `Tab.AskToJoin(joiner, givenName, at)` (`TabJoining`: a join that lands pending) | `TabJoinRequested(Tab, Participant, GivenName)` | `TabLifecycleStream`: `ParticipantJoined`. `JoinRequestNotice`: `tab.join-requested` to the host's account, not to the host's own account and not again for somebody the host turned away. |
+| `Tab.ApproveParticipant(p, at, asBooker)` (the host's tap, `TabRoster`; the booker on their own booking's tab, `TabJoining`) | `TabParticipantApproved(Tab, Participant, AsBooker)` | `TabLifecycleStream`: `ParticipantApproved`. `ParticipantApprovedNotice`: `tab.participant-approved` to the guest's account - not for a booker. |
+| `Tab.RejectParticipant` / `RemoveParticipant` / `SetParticipantPermissions` / `RenameParticipant` (`TabRoster`) | `TabParticipantRejected`, `TabParticipantRemoved(Left: false)`, `TabParticipantPermissionsChanged`, `TabParticipantRenamed` | `TabLifecycleStream`: `ParticipantRejected`, `ParticipantRemoved`, `ParticipantPermissionsChanged`, `ParticipantRenamed`. |
+| `Tab.MoveHostTo(newHost, at, hostLeft)` (a waiter's move, `TabStaffActions`; inside `Tab.Leave` for a host handing on) | `TabHostMoved(Tab, From, To, HostLeft)` | `TabLifecycleActivity`: `table.host-reassigned` (the names), a waiter's move only. `TabLifecycleStream`: `HostReassigned`. |
+| `Tab.Leave(leaving, successor, at)` (`TabRoster.LeaveAsync`) | `TabHostMoved` first when the host leaves, then `TabParticipantRemoved(Left: true)` | `TabLifecycleStream`: `ParticipantRemoved` with `left: true`. |
+| `Tab.SetSettlementMode(mode, at)` (`TabRoster`) | `TabSettlementModeChanged(Tab)` | `TabLifecycleStream`: `SettlementModeChanged`. |
+| `Tab.BeginClosing(at)` (`TabStaffActions.BeginClosingAsync`) | `TabBillPresented(Tab)` | `TabLifecycleActivity`: `table.bill-presented` (total, remaining). `TabLifecycleStream`: `TabClosing`. |
+
+Handlers live in `Infrastructure/DomainEvents/Tabs/`, registered after the takeaway orders': the History's line, the
+tab's stream, the change stream, then the push. `TabSignals` is gone; `TabAdmissions` keeps only `Signal`, the one
+writer of a same-status tab row, shared with `TableChangeStream` (signal 7, the Tables vertical's hand-over). `TabService` and
+its command classes lose their outbox and activity dependencies; the scan and the staff open now save through
+`TabLedger.SaveAppendedAsync`, so a test's bare context dispatches with the caller's handlers as every other tab save does.
+
+What stayed in the services: who may act, the replays and refusals, the convergent opening and its races, the admission
+app lock, the server claim, the join tokens revoked, the cached standing dropped (`ITokenAuthorityCheck`), and the
+turn-away's table: freeing it (and holding it again for a late party) is `TableStateService`'s transition, and the
+service still tags that transition's row with signal 3. Raising nothing, on purpose: building a tab or a participant
+(seeders); `SetHostParticipant`, the first phone onto a tab a waiter opened, which today tells nobody; a rescan that
+renames somebody already on the tab (`TabParticipant.SetDisplayName`), which today writes no `ParticipantRenamed`; the
+participant's own `Approve`/`Reject`/`Remove`, kept public for test seeders as `Payment.Reserve` is. Seeders that put a
+tab straight into Closing (`ConsoleTestData`, `BranchOverviewTests`) or turned away
+(`UnverifiedGuestsMigrationRollbackTests`) dequeue its events before saving on a bare context.
+
+**Proof it is the same.** `TabLifecycleSideEffectsSnapshotTests`, committed on the code before the move: an unverified
+scan that seats the table and waits, and its replay; guests joining by scan and by invitation; the host approving
+(twice), rejecting and removing; a rejected guest scanning again (on the stream, not pushed); the waiter admitting, the
+replay and a second waiter's tap; permissions, a rename, the split; the host moved by the waiter and then leaving; the
+bill presented with an invitation live; a phantom turned away that frees the table, its replay and a refused admit; a
+scan turned away on a waiter-seated table; a staff-opened tab (twice) hosted by the first phone; a booker let straight
+onto a friend's waiting tab. Activity, outbox, feed, each tab's stream in sequence, the change stream in order, and the
+end state of the tabs, participants, invitations, sittings and admission commands are unchanged byte for byte
+(`Integration/Snapshots/TabLifecycleSideEffects.approved.txt`). One domain tightening, invisible there: `MoveHostTo`
+checks the new host is approved before it touches anything, where `ReassignHost` used to repoint the tab first and
+leave the refusal to the participant (the request failed and nothing was saved either way).
+
 ### Tables - migrated 2026-10-25
 
 | Raised by | Event | Handlers and what they write |
@@ -231,7 +279,7 @@ refactor keeps it byte for byte.
 | `DiningTable.PlaceHold(forReservationId, ...)` / `ReleaseHold(...)` | `TableHeld` / `TableHoldReleased` | `TableChangeStream`: to Held (naming the table's next booking) / back to Free. `TableActivity`: `table.held` / `table.hold-released`. |
 | `DiningTable.MarkOutOfService(strandedBookings, ...)` / `ReturnToService(...)` | `TableTakenOutOfService` / `TableReturnedToService` | `TableChangeStream`: to OutOfService / back to Free. `TableActivity`: `table.out-of-service` (`strandedBookings`) / `table.back-in-service`. |
 | `DiningTable.NoteHoldExtended(reservationId, holdExpiresAtUtc, ...)` (`RecordHoldExtendedAsync`, after the diner's extension is saved) | `TableHoldExtended` | `TableChangeStream`: a same-status row naming the booking. No History line here: `booking.hold-extended` is the booking's. |
-| `TableSession.TransferServer(to, tabId, at)` (`TableTransferService.TransferAsync`) | `TableTransferred(Sitting, TabId, FromStaffId, ToStaffId)` | `TableActivity`: `table.transferred` (who had it, who has it). `TableChangeStream`: the `TableTransferred` (7) signal naming the tab. |
+| `TableSession.TransferServer(to, tabId, at)` (`TableTransferService.TransferAsync`: a table handed to another waiter, the sitting's `ServerStaffMemberId` moved from now on - listed with the Tabs before, moved here) | `TableTransferred(Sitting, TabId, FromStaffId, ToStaffId)` | `TableActivity`: `table.transferred` (who had it, who has it). `TableChangeStream`: the `TableTransferred` (7) signal naming the tab, through `TabAdmissions.Signal`. |
 
 Handlers live in `Infrastructure/DomainEvents/Tables/`, registered after the takeaway orders' in the order the state
 machine wrote them: the change stream's row, then the History's line (a hand-over: the line, then the signal). The row
@@ -295,7 +343,6 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
-| **Tabs** - join, admit, turn away, host moved, bill presented | `TabRoster`, `TabJoining`, `TabAdmissions(Commands)`, `TabSignals`, `TabOpener`: tab stream, change-stream signals 1-3, activity, outbox | Many small paths and the admission app lock; `TabSignals` becomes handlers | 1.5-2 days |
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
 | **Pre-orders** | `PreOrderService`, `PreOrderSittings` (it appends the order's stream events on arrival itself), `PreOrderQuestions`; signal 6 hook | Arrival on the tab should raise its own event rather than append by hand | 1 day |
 | **Messages** | `GuestMessageService`, `GuestThreads`; `guestMessages` push in the hook | Small | 0.5-1 day |

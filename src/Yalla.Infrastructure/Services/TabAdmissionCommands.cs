@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
@@ -26,10 +25,8 @@ internal sealed class TabAdmissionCommands(
     ITokenAuthorityCheck authority,
     TabLedger ledger,
     StaffBranchGuard branchGuard,
-    IActivityLog activity,
     ILogger<TabService> logger,
-    TabLookups lookups,
-    TabSignals signals)
+    TabLookups lookups)
 {
     // ---------------------------------------------------------------- admission
 
@@ -78,15 +75,14 @@ internal sealed class TabAdmissionCommands(
 
         // Throws TabAdmissionDecidedException for a tab already turned away. An admitted tab is answered
         // as it is - two waiters tapping the same card is the normal case - and writes no second event.
-        if (signals.AdmitInContext(tab, TabAdmissionReason.Waiter, staffId, nowUtc))
+        // Raises TabAdmitted: the tab's stream, the branch stream's signal and the History's line.
+        if (tab.Admit(nowUtc, TabAdmissionReason.Waiter, staffId))
         {
             logger.LogInformation("Staff {StaffId} let tab {TabId} order.", staffId, tab.Id);
 
             // The waiter who came over and let the table in serves it, when nobody did yet.
             var sitting = await db.TableSessions.FirstOrDefaultAsync(s => s.Id == tab.TableSessionId, cancellationToken);
             sitting?.ClaimServerIfNone(staffId, nowUtc);
-
-            await signals.LogTabAsync(tab, ActivityActions.TableTabAdmitted, null, cancellationToken);
         }
 
         RecordAdmissionCommand(command.ClientCommandId, AdmitCommandType, tab.Id, staffId, nowUtc);
@@ -245,16 +241,6 @@ internal sealed class TabAdmissionCommands(
                 "A waiter has ordered on this tab, so it cannot be turned away. Move the host or remove the phone, then let it order.");
         }
 
-        // Throws TabAdmissionDecidedException for a tab already admitted. One already turned away is
-        // answered as it is.
-        if (!tab.RejectAdmission(nowUtc, staffId))
-        {
-            RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
-            await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken);
-
-            return await lookups.StaffViewAsync(tab.Id, cancellationToken);
-        }
-
         var session = await db.TableSessions.FirstAsync(s => s.Id == tab.TableSessionId, cancellationToken);
 
         // Did the scan seat the table? A walk-in sitting with no waiter and no booking behind it is one
@@ -265,6 +251,17 @@ internal sealed class TabAdmissionCommands(
                            && session.Source == TableSessionSource.WalkIn
                            && session.SeatedByStaffId is null
                            && session.ReservationId is null;
+
+        // Throws TabAdmissionDecidedException for a tab already admitted. One already turned away is
+        // answered as it is. Raises TabTurnedAway: the tab's stream, the History's line and - when the
+        // party stays - the branch stream's signal.
+        if (!tab.RejectAdmission(nowUtc, staffId, reason, tableFreed: seatedByScan))
+        {
+            RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
+            await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken);
+
+            return await lookups.StaffViewAsync(tab.Id, cancellationToken);
+        }
 
         // What the scan took the table from. A table held for a late booked party goes back to Held, not to
         // Free: the hold is exactly the window a phantom could use to take a table from a party on its way.
@@ -295,32 +292,11 @@ internal sealed class TabAdmissionCommands(
             call.AnswerForTurnedAwayTab(nowUtc, staffId);
         }
 
-        ledger.Append(tab.Id, TabEventType.TabAdmissionRejected, new
-        {
-            byStaffId = staffId,
-            atUtc = nowUtc,
-            tableFreed = seatedByScan,
-        });
-
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Table, ActivityActions.TableTabTurnedAway, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                VenueId = tab.Branch.VenueId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = tab.DiningTable.Label,
-                Reason = reason,
-                Summary = new { tableFreed = seatedByScan },
-            },
-            cancellationToken);
-
         RecordAdmissionCommand(command.ClientCommandId, RejectCommandType, tab.Id, staffId, nowUtc);
 
         if (!seatedByScan)
         {
             session.DetachRejectedTab(tab.Id);
-
-            signals.SignalTable(tab, TableChangeSignal.TabAdmissionRejected, reason ?? "scan turned away", staffId, nowUtc);
 
             await SaveAdmissionAsync(command.ClientCommandId, RejectCommandType, tab.Id, cancellationToken);
         }

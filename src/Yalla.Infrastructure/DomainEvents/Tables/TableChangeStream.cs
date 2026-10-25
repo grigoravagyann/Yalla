@@ -114,21 +114,10 @@ internal sealed class TableChangeStream(YallaDbContext db, ICurrentActor actor) 
     {
         var tab = await TableReads.TabAsync(db, domainEvent.TabId, cancellationToken);
         var toName = await TableReads.StaffNameAsync(db, domainEvent.ToStaffId, cancellationToken);
-        var (actorType, actorId) = TableStateActors.Resolve(actor);
-
-        db.TableStateChanges.Add(new TableStateChange(
-                tab.BranchId,
-                tab.DiningTableId,
-                TableStatus.Occupied,
-                TableStatus.Occupied,
-                $"handed to {toName}",
-                actorId is null ? ActorType.System : actorType,
-                domainEvent.OccurredAtUtc,
-                Guid.CreateVersion7(),
-                actorId,
-                tabId: tab.Id,
-                tableSessionId: tab.TableSessionId)
-            .WithSignal(TableChangeSignal.TableTransferred));
+        // The one writer of a same-status tab row, shared with the tab-lifecycle handlers.
+        TabAdmissions.Signal(
+            db, tab, TableChangeSignal.TableTransferred, $"handed to {toName}", TableStateActors.Resolve(actor),
+            domainEvent.OccurredAtUtc);
     }
 
     private void Add(
