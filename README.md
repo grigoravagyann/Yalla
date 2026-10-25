@@ -6,6 +6,9 @@ Table reservation and in-app ordering for restaurants and cafes, launching in Ye
 Core 9, EF Core, SQL Server, minimal APIs. Three clients consume this API: the diner app, the staff
 tablet, and the owner's admin panel.
 
+Starting a feature, as an agent or by hand? Read [`AGENTS.md`](AGENTS.md) first: the repo map, the rules,
+and step lists for endpoints, problem codes, migrations, pushes, activity entries, sweeps and tests.
+
 - [`SCHEMA.md`](SCHEMA.md) — the database schema and the decisions behind it.
 - `docs/` — one document per subsystem:
   - [`auth.md`](docs/auth.md) — the four identity types, tokens, diner sessions and account deletion
