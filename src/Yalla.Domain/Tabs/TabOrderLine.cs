@@ -154,7 +154,11 @@ public sealed class TabOrderLine : Entity
         return share;
     }
 
-    public void Void(DateTime voidedAtUtc, string reason, Guid? voidedByStaffId = null)
+    /// <summary>
+    /// Takes the line off the bill. Internal: a line is voided through its order - <see cref="TabOrder.VoidLine"/> on
+    /// its own, <see cref="TabOrder.Void"/> with the rest - which raises the event its side effects hang on.
+    /// </summary>
+    internal void Void(DateTime voidedAtUtc, string reason, Guid? voidedByStaffId = null)
     {
         if (IsVoided)
         {

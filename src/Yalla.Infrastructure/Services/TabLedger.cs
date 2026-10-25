@@ -114,7 +114,14 @@ internal sealed class TabLedger(
     /// two diners ordered at once, both succeeded, and the total showed only one of them.
     /// </para>
     /// </remarks>
-    public TabBill Compute(Tab tab)
+    public TabBill Compute(Tab tab) => Compute(tab, countingAsLive: null);
+
+    /// <summary>
+    /// The bill as it was before one line came off it: <see cref="Compute(Tab)"/> with that line counted as still on
+    /// it. For the History's "total before" of a line void, read after the void by the event's handler - nothing else
+    /// in the unit of work has changed since.
+    /// </summary>
+    public TabBill Compute(Tab tab, Guid? countingAsLive)
     {
         ArgumentNullException.ThrowIfNull(tab);
 
@@ -126,7 +133,7 @@ internal sealed class TabLedger(
                 order.OwnerOf(line),
                 line.UnitPriceAmdSnapshot,
                 line.Quantity,
-                line.IsVoided,
+                line.IsVoided && line.Id != countingAsLive,
                 line.IsSplitAcrossParticipants,
                 [.. line.Shares.Select(s => s.TabParticipantId)])))
             .ToList();

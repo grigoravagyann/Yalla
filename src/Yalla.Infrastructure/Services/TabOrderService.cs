@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Activity;
-using Yalla.Application.Messaging;
 using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
@@ -29,6 +28,14 @@ namespace Yalla.Infrastructure.Services;
 /// Every mutation here goes through <see cref="TabLedger"/>, so the totals cache and the tab's
 /// event stream are written in the same <c>SaveChanges</c> as the change itself.
 /// </para>
+/// <para>
+/// <b>What an order's change tells the rest of the system is not written here.</b> Placing, moving along the rail,
+/// voiding an order or a line raise domain events on the <see cref="TabOrder"/> (<c>docs/domain-events.md</c>), and
+/// their handlers in <c>DomainEvents/TabOrders</c> write the activity entry, the tab's stream, the diner's "ready"
+/// push and feed entry and the staff push in the same save. This class decides whether the change may happen and makes
+/// it; it cannot forget a side effect, because it no longer writes any. (Discounts and comps still record their own
+/// activity here, until the payments vertical moves.)
+/// </para>
 /// </remarks>
 internal sealed class TabOrderService(
     YallaDbContext db,
@@ -36,7 +43,6 @@ internal sealed class TabOrderService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
-    IOutbox outbox,
     IActivityLog activity,
     ILogger<TabOrderService> logger) : ITabOrderService
 {
@@ -110,48 +116,9 @@ internal sealed class TabOrderService(
 
         order.TakenUnder(sitting?.ServerStaffMemberId);
 
-        await LogOrderAsync(tab, order, cancellationToken);
-
-        ledger.Append(tab.Id, TabEventType.OrderPlaced, new
-        {
-            orderId = order.Id,
-            placedByParticipantId = order.PlacedByParticipantId,
-            placedByStaffId = order.PlacedByStaffId,
-            onBehalfOfParticipantId = order.OnBehalfOfParticipantId,
-            estimatedReadyAtUtc = order.EstimatedReadyAtUtc,
-            lines = order.Lines.Select(l => new
-            {
-                lineId = l.Id,
-                name = l.NameSnapshot,
-                unitPriceAmd = l.UnitPriceAmdSnapshot,
-                quantity = l.Quantity,
-                isShared = l.IsShared,
-                isTableAttributed = l.IsTableAttributed,
-                orderedAtUtc = order.PlacedAtUtc,
-
-                // Each line's guest, as the tab reads it: its own when the waiter named one for it,
-                // otherwise the order's, and nobody's on a shared line. A phone catching up
-                // attributes the line from this.
-                onBehalfOfParticipantId = OnBehalfOf(order, l),
-            }),
-        });
-
-        // A waiter's order is in the kitchen the moment it is sent (decided by the user, 2026-10-20).
-        // The waiter who took it at the table is already the check a phone's order waits at New for,
-        // so a second "send" tap could only be forgotten. Told as the rail's own event, right after
-        // the placing, so every phone and tablet reading the stream sees the move it already knows.
-        if (order.PlacedByStaffId is { } placedBy)
-        {
-            order.MoveTo(TabOrderStatus.InKitchen);
-
-            ledger.Append(tab.Id, TabEventType.OrderStatusChanged, new
-            {
-                orderId = order.Id,
-                fromStatus = (int)TabOrderStatus.New,
-                toStatus = (int)TabOrderStatus.InKitchen,
-                byStaffId = placedBy,
-            });
-        }
+        // On the tab: a waiter's order goes straight to the kitchen. TabOrderPlaced's handlers write the activity entry
+        // and the stream's OrderPlaced (and OrderStatusChanged) in the save below.
+        order.Place();
 
         // The order, its lines and the event, in one transaction - and deliberately nothing else.
         // The tab's totals are a cache, and the authoritative total is the sum of the lines, so the
@@ -449,42 +416,9 @@ internal sealed class TabOrderService(
             throw new LineAlreadyPaidException(tab.Id, line.Id);
         }
 
-        var beforeVoid = ledger.Compute(tab).TotalAmd;
-
-        line.Void(clock.UtcNow, command.Reason, staffId);
-
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Order, ActivityActions.OrderLineVoided, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                ItemNames = [line.NameSnapshot],
-                AmountAmd = line.UnitPriceAmdSnapshot * line.Quantity,
-                IsMoney = true,
-                Reason = command.Reason,
-                Before = new { name = line.NameSnapshot, quantity = line.Quantity, amountAmd = line.UnitPriceAmdSnapshot * line.Quantity },
-                After = new { voided = true },
-                Summary = new
-                {
-                    lineId = line.Id,
-                    orderId = order.Id,
-                    name = line.NameSnapshot,
-                    quantity = line.Quantity,
-                    totalBeforeAmd = beforeVoid,
-                    totalAfterAmd = ledger.Compute(tab).TotalAmd,
-                },
-            },
-            cancellationToken);
-
-        ledger.Append(tab.Id, TabEventType.LineVoided, new
-        {
-            lineId = line.Id,
-            orderId = order.Id,
-            name = line.NameSnapshot,
-            reason = command.Reason,
-            voidedByStaffId = staffId,
-        });
+        // TabOrderLineVoided's handlers write the History's entry (with the total before and after) and the stream's
+        // LineVoided, in the save below.
+        order.VoidLine(line, clock.UtcNow, command.Reason, staffId);
 
         await ledger.SaveWithTotalsAsync(tab, cancellationToken);
 
@@ -690,10 +624,6 @@ internal sealed class TabOrderService(
 
         var from = order.Status;
 
-        // What the order came to while it was still on the bill - the History's amount for a void, read before the
-        // void takes the lines off.
-        var onTheBillAmd = order.Lines.Sum(l => l.LineTotalAmd);
-
         // Voiding is the one move on the rail that touches money: the order's lines come off the bill with it
         // (TabOrder.Void), so the tab is loaded the way every money path loads it and saved with its totals.
         var voidingTab = next == TabOrderStatus.Voided
@@ -716,97 +646,12 @@ internal sealed class TabOrderService(
         }
         else
         {
-            order.MoveTo(next);
+            order.MoveTo(next, clock.UtcNow, staffId);
         }
 
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Order,
-                next switch
-                {
-                    TabOrderStatus.InKitchen => ActivityActions.OrderInKitchen,
-                    TabOrderStatus.Ready => ActivityActions.OrderReady,
-                    TabOrderStatus.Served => ActivityActions.OrderServed,
-                    _ => ActivityActions.OrderVoided,
-                },
-                ActivitySubjects.Tab,
-                order.TabId)
-            {
-                BranchId = order.Tab.BranchId,
-                VenueId = order.Tab.Branch.VenueId,
-                TableSessionId = order.Tab.TableSessionId,
-                TableLabel = order.Tab.DiningTable.Label,
-                ItemNames = [.. order.Lines.Select(l => l.NameSnapshot)],
-                AmountAmd = next == TabOrderStatus.Voided ? onTheBillAmd : null,
-                Summary = new
-                {
-                    orderId = order.Id,
-                    from = (int)from,
-                    to = (int)next,
-                    items = order.Lines.Sum(l => l.Quantity),
-                    lines = order.Lines.Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
-                },
-            },
-            cancellationToken);
-
-        // Food is up. Per-branch and off by default: noisy in a cafe where a waiter carries the
-        // plate ten feet, useful in a canteen where the diner collects it. Defaulting it on would
-        // train a city to switch our notifications off, taking the reminder and the nudge with them.
-        var recipients = next == TabOrderStatus.Ready && order.Tab.Branch.NotifyOnOrderReady
-            ? ReadyRecipients(order)
-            : [];
-
-        // The place was read above, and the diner can have deleted the account since - which cut the
-        // place loose and emptied their feed. The entry and its push are the person's, so they are
-        // written under the account's lock (DinerAccountLock), held to the save below, and only for a
-        // live account: a deletion that comes after waits for this commit and removes the entry.
-        await using var feedTransaction = recipients.Count == 0
-            ? null
-            : await db.Database.BeginTransactionAsync(cancellationToken);
-
-        foreach (var (recipient, dinerUserId) in recipients)
-        {
-            if (!await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
-            {
-                continue;
-            }
-
-            outbox.Enqueue(
-                OutboxMessageTypes.OrderReady,
-                new
-                {
-                    tabId = order.TabId,
-                    participantId = recipient.Id,
-                    dinerUserId,
-                    tableLabel = order.Tab.DiningTable.Label,
-                },
-                clock.UtcNow,
-
-                // The order's own guest keeps the key a single-owner order always had; a guest with
-                // a line of their own on it gets one of their own beside it.
-                OutboxMessageTypes.KeyFor(
-                    "order", order.Id, recipient.Id == order.OwningParticipantId ? "ready" : $"ready:{recipient.Id}"));
-
-            // Into the diner's feed beside the push, saved with it by the ledger below (K12).
-            DinerNotices.OrderReady(
-                db,
-                dinerUserId,
-                order.Tab.BranchId,
-                order.Tab.Branch.Venue?.Name ?? order.Tab.Branch.Name,
-                order.Tab.Branch.Name,
-                order.TabId,
-                order.Id,
-                order.Tab.DiningTable.Label,
-                clock.UtcNow);
-        }
-
-        ledger.Append(order.TabId, TabEventType.OrderStatusChanged, new
-        {
-            orderId = order.Id,
-            fromStatus = (int)from,
-            toStatus = (int)next,
-            byStaffId = staffId,
-        });
+        // TabOrderMoved / TabOrderVoided's handlers write the History's entry and the stream's OrderStatusChanged - and,
+        // when food is up, the diner's push and feed entry (under the account's lock) and the floor's staff push - in the
+        // save below.
 
         // The rail's other moves do not touch money, so no totals recomputation - nothing on them can change what the
         // tab owes. A void does: its lines came off the bill, so the tab is saved with its totals, inline, like a line
@@ -818,11 +663,6 @@ internal sealed class TabOrderService(
         else
         {
             await ledger.SaveAppendedAsync(cancellationToken);
-        }
-
-        if (feedTransaction is not null)
-        {
-            await feedTransaction.CommitAsync(cancellationToken);
         }
 
         logger.LogInformation(
@@ -911,72 +751,6 @@ internal sealed class TabOrderService(
                 r.PlacedByName,
                 r.Marker)),
         ];
-    }
-
-    /// <summary>
-    /// Who to tell that an order is ready: everybody with an account it is for.
-    /// </summary>
-    /// <remarks>
-    /// The diner who ordered it from their phone, as it always was, and each guest who owns a line of
-    /// it that is still on the bill - named on the line, or by the order for a line that names nobody
-    /// (<see cref="TabOrder.OwnerOf"/>). One round for the table can be three people's dinners, and
-    /// each of them is waiting for theirs. The order-level guest is <b>not</b> told as such: an order
-    /// "for Ani" whose every line the waiter put on Bob, or whose lines for Ani were all voided, has
-    /// nothing of hers left to be ready. One entry per account, in account order, which is the order
-    /// the account locks are then taken in.
-    /// </remarks>
-    private static List<(TabParticipant Participant, Guid DinerUserId)> ReadyRecipients(TabOrder order)
-    {
-        var owners = order.Lines
-            .Where(l => !l.IsVoided)
-            .Select(order.OwnerOf)
-            .Prepend(order.PlacedByParticipantId)
-            .OfType<Guid>()
-            .ToHashSet();
-
-        return
-        [
-            .. order.Tab.Participants
-                .Where(p => owners.Contains(p.Id) && p.UserId is not null)
-                .Select(p => (Participant: p, DinerUserId: p.UserId!.Value))
-                .GroupBy(r => r.DinerUserId)
-                .Select(g => g.OrderBy(r => r.Participant.Id != order.OwningParticipantId).First())
-                .OrderBy(r => r.DinerUserId),
-        ];
-    }
-
-    /// <summary>An order placed: <c>order.sent</c> by a waiter (it goes straight to the kitchen), <c>order.placed-by-guest</c> from a phone.</summary>
-    private async Task LogOrderAsync(Tab tab, TabOrder order, CancellationToken cancellationToken)
-    {
-        var guest = order.PlacedByParticipantId is { } participantId
-            ? tab.Participants.FirstOrDefault(p => p.Id == participantId)?.DisplayName
-            : null;
-
-        var amount = order.Lines.Sum(l => l.UnitPriceAmdSnapshot * l.Quantity);
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Order,
-                order.PlacedByStaffId is null ? ActivityActions.OrderPlacedByGuest : ActivityActions.OrderSent,
-                ActivitySubjects.Tab,
-                tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                GuestName = guest,
-                ItemNames = [.. order.Lines.Select(l => l.NameSnapshot)],
-                AmountAmd = amount,
-                Summary = new
-                {
-                    orderId = order.Id,
-                    items = order.Lines.Sum(l => l.Quantity),
-                    amountAmd = amount,
-                    lines = order.Lines.Select(l => new { name = l.NameSnapshot, quantity = l.Quantity }),
-                    serverStaffMemberId = order.ServerStaffMemberId,
-                },
-            },
-            cancellationToken);
     }
 
     /// <summary>The tab's table label, from the tracker when it is there.</summary>
@@ -1280,12 +1054,8 @@ internal sealed class TabOrderService(
             [.. line.Shares.Select(s => s.TabParticipantId)],
             OnBehalfOf(order, line));
 
-    /// <summary>
-    /// The guest a waiter keyed this line in for, as every read reports it: the line's own, else the
-    /// order's - and nobody on a split line, which belongs to the table whatever the order says.
-    /// </summary>
-    private static Guid? OnBehalfOf(TabOrder order, TabOrderLine line) =>
-        line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? order.OnBehalfOfParticipantId;
+    /// <summary>The guest a waiter keyed this line in for, as every read reports it - see <see cref="TabOrder.OnBehalfOf"/>.</summary>
+    private static Guid? OnBehalfOf(TabOrder order, TabOrderLine line) => order.OnBehalfOf(line);
 
     private static KitchenOrderView ToKitchenView(
         TabOrder order, string tableLabel, string? placedByName, DateTime nowUtc) =>

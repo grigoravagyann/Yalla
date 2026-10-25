@@ -155,7 +155,7 @@ public class TabOrderTests
         var order = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
         var line = order.AddLine(Guid.CreateVersion7(), "Flat white", 1_400L, quantity: 2);
 
-        line.Void(PlacedAt.AddMinutes(3), "sent back");
+        order.VoidLine(line, PlacedAt.AddMinutes(3), "sent back", Guid.CreateVersion7());
 
         Assert.True(line.IsVoided);
         Assert.Equal(0L, line.LineTotalAmd);
@@ -217,8 +217,8 @@ public class TabOrderTests
         var order = TabOrder.PlacedByStaffMember(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
         var coffee = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 2);
         var cake = order.AddLine(Guid.CreateVersion7(), "Gata", 1_800L, 1);
-        cake.Void(PlacedAt.AddMinutes(1), "Sold out");
-        order.MoveTo(TabOrderStatus.InKitchen);
+        order.VoidLine(cake, PlacedAt.AddMinutes(1), "Sold out", Guid.CreateVersion7());
+        order.MoveTo(TabOrderStatus.InKitchen, PlacedAt.AddMinutes(2), null);
 
         var waiter = Guid.CreateVersion7();
         var takenOff = order.Void(PlacedAt.AddMinutes(4), waiter);
@@ -240,12 +240,12 @@ public class TabOrderTests
         var order = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
         var line = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 1);
 
-        Assert.Throws<DomainStateException>(() => order.MoveTo(TabOrderStatus.Voided));
+        Assert.Throws<DomainStateException>(() => order.MoveTo(TabOrderStatus.Voided, PlacedAt.AddMinutes(1), null));
         Assert.Equal(TabOrderStatus.New, order.Status);
         Assert.False(line.IsVoided);
 
-        order.MoveTo(TabOrderStatus.InKitchen);
-        order.MoveTo(TabOrderStatus.Ready);
+        order.MoveTo(TabOrderStatus.InKitchen, PlacedAt.AddMinutes(2), null);
+        order.MoveTo(TabOrderStatus.Ready, PlacedAt.AddMinutes(3), null);
 
         Assert.Throws<DomainStateException>(() => order.Void(PlacedAt.AddMinutes(5), null));
         Assert.Equal(TabOrderStatus.Ready, order.Status);
@@ -256,6 +256,86 @@ public class TabOrderTests
         fresh.Void(PlacedAt.AddMinutes(1), null);
 
         Assert.Throws<DomainStateException>(() => fresh.Void(PlacedAt.AddMinutes(2), null));
+    }
+
+    /// <summary>
+    /// What an order tells its handlers (docs/domain-events.md): placing raises TabOrderPlaced - a waiter's order already
+    /// in the kitchen, and saying so - each move one TabOrderMoved, a void TabOrderVoided with exactly the lines it took
+    /// off, a line on its own TabOrderLineVoided; a refused move raises nothing.
+    /// </summary>
+    [Fact]
+    public void An_order_raises_one_event_for_each_thing_that_happens_to_it_and_none_for_a_refusal()
+    {
+        var waiter = Guid.CreateVersion7();
+        var order = TabOrder.PlacedByStaffMember(Guid.CreateVersion7(), waiter, PlacedAt);
+        var coffee = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 2);
+        var cake = order.AddLine(Guid.CreateVersion7(), "Gata", 1_800L, 1);
+
+        Assert.Empty(order.DequeueEvents());
+
+        order.Place();
+
+        var placed = Assert.IsType<TabOrderPlaced>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.True(placed.WentStraightToKitchen);
+        Assert.Equal(TabOrderStatus.InKitchen, order.Status);
+        Assert.Throws<DomainStateException>(order.Place);
+
+        order.VoidLine(cake, PlacedAt.AddMinutes(1), " Sold out ", waiter);
+
+        var lineVoided = Assert.IsType<TabOrderLineVoided>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.Equal((cake, " Sold out ", waiter), (lineVoided.Line, lineVoided.Reason, lineVoided.ByStaffId));
+
+        Assert.Throws<DomainStateException>(() => order.MoveTo(TabOrderStatus.Served, PlacedAt.AddMinutes(2), waiter));
+        Assert.Empty(order.DequeueEvents());
+
+        order.Void(PlacedAt.AddMinutes(3), waiter);
+
+        var voided = Assert.IsType<TabOrderVoided>(Assert.Single(order.DequeueEvents()).Event);
+        Assert.Equal(TabOrderStatus.InKitchen, voided.From);
+        Assert.Equal(new[] { coffee }, voided.LinesTakenOff);
+        Assert.Equal(2_800L, voided.AmountTakenOffAmd);
+    }
+
+    /// <summary>A guest's order waits at New when placed; the rail's moves are told one by one, from and to.</summary>
+    [Fact]
+    public void A_guests_order_waits_at_new_and_each_move_along_the_rail_is_told()
+    {
+        var order = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 1);
+
+        order.Place();
+        Assert.False(Assert.IsType<TabOrderPlaced>(Assert.Single(order.DequeueEvents()).Event).WentStraightToKitchen);
+        Assert.Equal(TabOrderStatus.New, order.Status);
+
+        var cook = Guid.CreateVersion7();
+        order.MoveTo(TabOrderStatus.InKitchen, PlacedAt.AddMinutes(1), cook);
+        order.MoveTo(TabOrderStatus.Ready, PlacedAt.AddMinutes(9), cook);
+
+        Assert.Equal(
+            [(TabOrderStatus.New, TabOrderStatus.InKitchen), (TabOrderStatus.InKitchen, TabOrderStatus.Ready)],
+            order.DequeueEvents().Select(r => (TabOrderMoved)r.Event).Select(e => (e.From, e.To)));
+    }
+
+    /// <summary>
+    /// A booking's held ticket arriving on the party's tab replays the kitchen's progress silently: those moves were the
+    /// pre-order's and were told then, so arriving raises nothing - no second "ready", no History line.
+    /// </summary>
+    [Theory]
+    [InlineData(TabOrderStatus.New)]
+    [InlineData(TabOrderStatus.InKitchen)]
+    [InlineData(TabOrderStatus.Ready)]
+    [InlineData(TabOrderStatus.Served)]
+    [InlineData(TabOrderStatus.Voided)]
+    public void A_held_ticket_arriving_on_a_tab_reaches_its_place_on_the_rail_and_raises_nothing(TabOrderStatus reached)
+    {
+        var order = TabOrder.FromPreOrder(Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        var line = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 1, isTableAttributed: true);
+
+        order.ArriveFromHeldTicket(reached, PlacedAt.AddMinutes(5));
+
+        Assert.Equal(reached, order.Status);
+        Assert.Equal(reached == TabOrderStatus.Voided, line.IsVoided);
+        Assert.Empty(order.DequeueEvents());
     }
 }
 

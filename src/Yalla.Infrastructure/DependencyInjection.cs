@@ -30,6 +30,8 @@ using Yalla.Application.Telegram;
 using Yalla.Infrastructure.Telegram;
 using Yalla.Infrastructure.Time;
 
+using Yalla.Domain.Tabs;
+using Yalla.Infrastructure.DomainEvents.TabOrders;
 
 namespace Yalla.Infrastructure;
 
@@ -290,7 +292,20 @@ public static class DependencyInjection
     /// </remarks>
     internal static IServiceCollection AddDomainEventHandlers(this IServiceCollection services)
     {
-        // No vertical raises events yet.
+        // Tab orders: placed, moved along the rail, voided whole, one line voided.
+        services.AddScoped<TabOrderActivity>();
+        services.AddScoped<TabOrderStream>();
+        services.AddScoped<IDomainEventHandler<TabOrderPlaced>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderPlaced>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>, OrderReadyNotice>();
+        services.AddScoped<IDomainEventHandler<TabOrderMoved>, KitchenReadyStaffPush>();
+        services.AddScoped<IDomainEventHandler<TabOrderVoided>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderVoided>>(sp => sp.GetRequiredService<TabOrderStream>());
+        services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderStream>());
+
         return services;
     }
 

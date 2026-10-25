@@ -226,7 +226,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <summary>Ordering, voiding and adjusting, over one context.</summary>
     internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateOutbox(db, clock), CreateActivityLog(db, clock, actor), NullLogger<TabOrderService>.Instance);
+            CreateActivityLog(db, clock, actor), NullLogger<TabOrderService>.Instance);
 
     /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
     internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>

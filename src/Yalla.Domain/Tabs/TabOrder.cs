@@ -16,6 +16,9 @@ public sealed class TabOrder : Entity
 {
     private readonly List<TabOrderLine> _lines = [];
 
+    /// <summary>Set by <see cref="Place"/>, so an order goes on the tab once. Not persisted: only a new order is placed.</summary>
+    private bool _placed;
+
     public Guid TabId { get; private set; }
 
     public Tab Tab { get; private set; } = null!;
@@ -147,6 +150,74 @@ public sealed class TabOrder : Entity
             id: Guard.NotEmpty(preOrderId, nameof(preOrderId)));
 
     /// <summary>
+    /// Puts the built order on the tab - its lines added, its estimate and its server recorded - and raises
+    /// <see cref="TabOrderPlaced"/>, which is what writes its activity entry and its tab-stream events.
+    /// </summary>
+    /// <remarks>
+    /// A waiter's order is in the kitchen the moment it is sent (decided 2026-10-20): the waiter who took it at the table
+    /// is already the check a phone's order waits at New for, so a second "send" tap could only be forgotten. It moves
+    /// here, as part of being placed, and the event says so.
+    /// </remarks>
+    /// <exception cref="DomainStateException">The order was already placed.</exception>
+    public void Place()
+    {
+        if (_placed || Status != TabOrderStatus.New)
+        {
+            throw new DomainStateException("This order is already on the tab.");
+        }
+
+        _placed = true;
+
+        var straightToKitchen = PlacedByStaffId is not null;
+
+        if (straightToKitchen)
+        {
+            Advance(TabOrderStatus.InKitchen);
+        }
+
+        Raise(new TabOrderPlaced(this, straightToKitchen, PlacedAtUtc));
+    }
+
+    /// <summary>
+    /// Replays a booking's held kitchen ticket onto the order it becomes when the party sits: the rail's own moves up to
+    /// where the ticket got, and a voided ticket's lines off the bill. Raises nothing - the kitchen's moves happened to
+    /// the pre-order and were told then (its activity entry, signal 6); arriving on the tab is not a new one.
+    /// </summary>
+    /// <exception cref="DomainStateException">The rail does not reach <paramref name="reached"/> from New.</exception>
+    public void ArriveFromHeldTicket(TabOrderStatus reached, DateTime voidedAtUtc)
+    {
+        if (reached == TabOrderStatus.Voided)
+        {
+            // A voided ticket never reaches a tab (MarkAttached refuses it), but if one did its lines would come off the
+            // bill with it, as any voided order's do - never a voided order still charging for its food.
+            TakeOff(voidedAtUtc, null, WholeOrderVoidReason);
+
+            return;
+        }
+
+        foreach (var step in new[] { TabOrderStatus.InKitchen, TabOrderStatus.Ready, TabOrderStatus.Served })
+        {
+            if (Status == reached)
+            {
+                break;
+            }
+
+            Advance(step);
+        }
+    }
+
+    /// <summary>
+    /// The guest a waiter keyed this line in for, as every read reports it: the line's own, else the order's - and
+    /// nobody on a split line, which belongs to the table whatever the order says.
+    /// </summary>
+    public Guid? OnBehalfOf(TabOrderLine line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        return line.IsSplitAcrossParticipants ? null : line.OnBehalfOfParticipantId ?? OnBehalfOfParticipantId;
+    }
+
+    /// <summary>
     /// Who owns the items on this order, or null when it belongs to the table. A line can say
     /// otherwise for itself - see <see cref="OwnerOf"/>.
     /// </summary>
@@ -219,7 +290,7 @@ public sealed class TabOrder : Entity
     /// The rail does not allow the move - or it is <see cref="TabOrderStatus.Voided"/>, which goes through
     /// <see cref="Void"/> so the lines come off the bill with it.
     /// </exception>
-    public void MoveTo(TabOrderStatus next)
+    public void MoveTo(TabOrderStatus next, DateTime movedAtUtc, Guid? byStaffId)
     {
         Guard.Defined(next, nameof(next));
 
@@ -229,9 +300,30 @@ public sealed class TabOrder : Entity
                 "Voiding an order takes its lines off the bill, so it goes through TabOrder.Void, not MoveTo.");
         }
 
-        RequireRailAllows(next);
+        var from = Status;
+        Advance(next);
 
-        Status = next;
+        Raise(new TabOrderMoved(this, from, next, byStaffId, Guard.NotLocalTime(movedAtUtc, nameof(movedAtUtc))));
+    }
+
+    /// <summary>
+    /// Takes one line off the bill on its own - stamped with when, why and by whom - and raises
+    /// <see cref="TabOrderLineVoided"/>. The order stays where it is on the rail.
+    /// </summary>
+    /// <exception cref="ArgumentException">The line is not on this order.</exception>
+    /// <exception cref="DomainStateException">The line is already voided.</exception>
+    public void VoidLine(TabOrderLine line, DateTime voidedAtUtc, string reason, Guid voidedByStaffId)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        if (!_lines.Contains(line))
+        {
+            throw new ArgumentException("That line is not on this order.", nameof(line));
+        }
+
+        line.Void(voidedAtUtc, reason, voidedByStaffId);
+
+        Raise(new TabOrderLineVoided(this, line, reason, voidedByStaffId, voidedAtUtc));
     }
 
     /// <summary>The reason a line carries when it came off the bill with its whole order.</summary>
@@ -258,6 +350,17 @@ public sealed class TabOrder : Entity
     /// <exception cref="DomainStateException">The rail does not allow voiding from where the order is.</exception>
     public IReadOnlyList<TabOrderLine> Void(DateTime voidedAtUtc, Guid? voidedByStaffId, string reason = WholeOrderVoidReason)
     {
+        var from = Status;
+        var takenOff = TakeOff(voidedAtUtc, voidedByStaffId, reason);
+
+        Raise(new TabOrderVoided(this, from, takenOff, voidedByStaffId, voidedAtUtc));
+
+        return takenOff;
+    }
+
+    /// <summary>The void itself, told by <see cref="Void"/> and replayed silently by <see cref="ArriveFromHeldTicket"/>.</summary>
+    private List<TabOrderLine> TakeOff(DateTime voidedAtUtc, Guid? voidedByStaffId, string reason)
+    {
         RequireRailAllows(TabOrderStatus.Voided);
 
         var takenOff = _lines.Where(l => !l.IsVoided).ToList();
@@ -270,6 +373,14 @@ public sealed class TabOrder : Entity
         Status = TabOrderStatus.Voided;
 
         return takenOff;
+    }
+
+    /// <summary>One move along the rail by its rules, and nothing else - the raising is the caller's.</summary>
+    private void Advance(TabOrderStatus next)
+    {
+        RequireRailAllows(next);
+
+        Status = next;
     }
 
     private void RequireRailAllows(TabOrderStatus next)
