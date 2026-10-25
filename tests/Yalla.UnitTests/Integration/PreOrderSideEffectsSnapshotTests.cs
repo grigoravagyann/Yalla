@@ -741,6 +741,17 @@ public sealed class PreOrderSideEffectsSnapshotTests(SqlServerFixture fixture)
                     : $"T{offset.Ticks / TimeSpan.TicksPerSecond:+0;-0;+0}s+{offset.Ticks % TimeSpan.TicksPerSecond}t";
             });
 
+        // The compact stamps in idempotency keys (a booking's start to the minute), as offsets like the instants above:
+        // written as dates, the record held only on the day it was approved.
+        text = Regex.Replace(
+            text,
+            @"(?<!\d)\d{12}(?!\d)",
+            m =>
+            {
+                var at = DateTime.SpecifyKind(DateTime.ParseExact(m.Value, "yyyyMMddHHmm", System.Globalization.CultureInfo.InvariantCulture), DateTimeKind.Utc);
+                return $"T{(at - startedAt).TotalSeconds:+0;-0;+0}s";
+            });
+
         // Local dates, as days from the branch's today.
         return Regex.Replace(
             text,
