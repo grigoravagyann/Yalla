@@ -117,7 +117,7 @@ tracker hook no longer looks at orders. A new staff push kind goes on events: `A
 
 Handlers live in `Infrastructure/DomainEvents/TabOrders/`. What stayed in `TabOrderService`: who may do it, the
 replay and the refusals (a paid tab refuses a void), building the order, the server claim, and saving through the
-ledger. Discounts and comps still record their own activity there until the payments vertical moves.
+ledger. Discounts and comps raise their own events, on `TabAdjustment` (Payments, below).
 
 **Proof it is the same.** `TabOrderSideEffectsSnapshotTests` was written and committed on the code before the move: a
 diner order and its replay, a waiter's round for a guest, the rail with the guest told and the floor pushed, a line
@@ -126,6 +126,39 @@ summaries, attribution, device labels), outbox row (keys, payloads), feed row, t
 change-stream row, and the end state of the tab, its sitting, orders and lines
 (`Integration/Snapshots/TabOrderSideEffects.approved.txt`). The refactor keeps it byte for byte. Regenerate only on
 purpose: `YALLA_UPDATE_SNAPSHOTS=1 dotnet test tests/Yalla.UnitTests --filter "FullyQualifiedName~TabOrderSideEffectsSnapshotTests"`.
+
+### Payments - migrated 2026-10-25
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `Tab.TakePayment(payment, at, sitting)` (from `TabPaymentService.RecordCashAsync`, after the payment is added and the totals applied with it) - the split locks | `TabPaymentRecorded(Tab, Payment, SettledTheBill)` | `PaymentActivity`: `payment.cash` (money: amount, tip, what remains, the total, whether it closed the tab, the table's server - the tip is theirs). `PaymentStream`: `PaymentRecorded`. |
+| the same call, when nothing is owed after it: the tab closes, and its sitting when still open - not the table | `TabSettled(Tab, SittingClosed)` | `PaymentStream`: `TabClosed` (`tableSessionClosed`), after the `PaymentRecorded`. |
+| `TabAdjustment.ByPercent` / `ByAmount` (from `TabOrderService.AddAdjustmentAsync`) | `TabAdjustmentAdded(Adjustment)` | `PaymentActivity`: `payment.discount` / `payment.comp` (money: what it took off the subtotal, the line's name, the total before and after - "before" is the bill with it not standing, `TabLedger.ComputeTogglingAdjustment`). `PaymentStream`: `AdjustmentAdded`. |
+| `TabAdjustment.Void(at, byStaffId)` (from `VoidAdjustmentAsync`) | `TabAdjustmentReversed(Adjustment)` | `PaymentActivity`: `payment.adjustment-reversed` (money: the total before and after, `ComputeTogglingAdjustment` again). `PaymentStream`: `AdjustmentVoided`. |
+| `Tab.WriteOff(at, byStaffId, reason)` (from `TabPaymentService.AbandonAsync`, and `TableStateService.AbandonTabAsync`, which now saves through the ledger) - replaces `MarkAbandoned` | `TabWrittenOff(Tab, WrittenOffAmd, Reason, ByStaffId)` | `PaymentActivity`: `payment.unpaid` (money: what was still owed, the total, what had been paid). `PaymentStream`: `TabAbandoned`. |
+
+Handlers live in `Infrastructure/DomainEvents/Payments/`. Payments write no outbox message, feed entry, staff push or
+change-stream row - there is no receipt or "settled" notice to the diner - so the vertical has no tracker hook to fold
+in. What stayed in the services: who may do it, the branch guard, the replay by `clientCommandId` and the refusals (more
+than is owed, a closed tab, a second reversal), the reserve and its no-retry race, and saving through the ledger.
+`Tab.Close` still exists without an event for the table freeing a zero-balance tab (`TableStateService.FreeTableAsync`,
+the Tables vertical's), and `Payment.Reserve` raises nothing, so tests can seed a paid tab. `TabStaffActions` (the bill
+presented, the host moved), listed with payments before, writes no money: it stays with the Tabs vertical.
+
+**Proof it is the same.** `PaymentSideEffectsSnapshotTests`, committed on the code before the move: a percent discount,
+a comp on a line, the discount reversed and a second reversal refused, a flat discount, cash with a tip and its replay,
+an over-payment refused, the rest settling the bill, and a second table part paid and written off - snapshotting the
+activity entries, outbox and feed rows, both tabs' streams in sequence, the change stream, the end state of the tabs
+(totals, paid, remaining), sittings, orders, lines, payments and adjustments, and the day's revenue report, Staff →
+Results and the waiter's cash list (`Integration/Snapshots/PaymentSideEffects.approved.txt`). The refactor keeps it
+byte for byte. The one deliberate change, in its own commit before the move: `TableStateService.AbandonTabAsync` (no
+route of its own) now tells the tab's stream `TabAbandoned` as the payment route does.
+
+**Known, recorded, not changed.** A discount's or comp's History amount is what the subtotal dropped by with the bill as
+it stood when it was given; the revenue report and Staff → Results count each adjustment's own reduction in the bill's
+order (`AdjustmentReductions`). They differ when another adjustment stands: in the snapshot, a comp of a 3,200 dish under
+a standing 10 % discount reads 2,880 in the History and 3,200 in the reports. The move keeps both as they were;
+reconciling them is its own decision.
 
 ## 7. Testing
 
@@ -158,7 +191,6 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
-| **Payments** - cash, discount/comp and their reversal, write-off | `TabPaymentService`, `TabOrderService` adjustments, `TabStaffActions`: activity, tab stream | Money: the History's amounts must match the reports to the dram; `PaymentRecorded`, `AdjustmentAdded/Reversed`, `TabWrittenOff` on `Tab`/`TabAdjustment` | 1 day |
 | **Calls** (service requests) | `ServiceRequestService`: activity, tab stream; `tableCalls` staff push in the tracker hook | The "claimed call still pushed" QA find lives here; `CallRaised/Claimed/Acknowledged` on `ServiceRequest` | 0.5 day |
 | **Tabs** - join, admit, turn away, host moved, bill presented, transfer | `TabRoster`, `TabJoining`, `TabAdmissions(Commands)`, `TabSignals`, `TabOpener`, `TableTransferService`: tab stream, change-stream signals 1-3 and 7, activity, outbox | Many small paths and the admission app lock; `TabSignals` becomes handlers | 1.5-2 days |
 | **Tables** - seat, free, hold, out of service | `TableStateService` (19 sites): change-stream rows, activity, feed | Signals carry the table's status as the save leaves it; events on `DiningTable`/`TableSession` | 1.5 days |
