@@ -19,8 +19,6 @@ internal sealed class ReservationCreation(
     YallaDbContext db,
     IClock clock,
     ReservationWriter reservations,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationSlotRules slots,
@@ -193,20 +191,15 @@ internal sealed class ReservationCreation(
 
                 booking.AttachManageToken(manageTokenHash);
 
-                await BookingActivity.RecordAsync(
-                    activity,
-                    db,
-                    booking,
-                    ActivityActions.BookingCreated,
-                    ct,
-                    extra: new { channel = (int)command.Channel, trigger = (int?)withTable.Status.Trigger },
-                    byGuest: true);
+                // Made: the History's line, the table's change stream and - for one that waits - the floor's push are
+                // the event's handlers', in the insert's save.
+                booking.Book(nowUtc);
 
                 if (withTable.Ask is { } ask)
                 {
-                    await TableShares.AskAsync(
-                        db, outbox, branch, table.Label, booking, ask.EarlierReservationId, ask.FreeByUtc,
-                        ask.ExpiresAtUtc, ask.AsksEarlierGuest, ask.FallbackTrigger, nowUtc, ct);
+                    TableShares.Ask(
+                        db, booking, ask.EarlierReservationId, ask.FreeByUtc, ask.ExpiresAtUtc, ask.AsksEarlierGuest,
+                        ask.FallbackTrigger, nowUtc);
                 }
 
                 return booking;

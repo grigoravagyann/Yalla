@@ -168,8 +168,7 @@ internal sealed class ReservationRelease(
             // As for a cancellation: the table is free of this booking, so a question it asked goes, and a
             // booking waiting on this one's guest no longer has to.
             await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
-            await TableShares.EarlierChangedAsync(
-                db, outbox, reservation, releasedFrom, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(db, reservation, releasedFrom, nowUtc, cancellationToken);
 
             // Whatever is left unsent for this booking goes with it. A nudge asking "still coming?"
             // after a waiter has already given the table away is the worst of both.

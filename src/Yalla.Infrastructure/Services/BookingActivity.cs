@@ -80,6 +80,15 @@ internal static class BookingActivity
         tableId = reservation.DiningTableId,
     };
 
+    /// <summary>Where and when a booking stood before a change, in the same shape.</summary>
+    public static object Slot(ReservationStanding standing) => new
+    {
+        localDate = standing.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        localTime = standing.LocalStartTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+        partySize = standing.PartySize,
+        tableId = standing.DiningTableId,
+    };
+
     /// <summary>
     /// Seconds from a booking being made to being decided, for "approved in 4 min". Null for a change of a booking
     /// that was already confirmed once - its wait started when it was changed, which is not recorded.

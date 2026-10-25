@@ -439,15 +439,14 @@ internal sealed class ReservationChanges(
 
         if (ask is { } question)
         {
-            await TableShares.AskAsync(
-                db, outbox, branch, table.Label, reservation, question.EarlierReservationId, question.FreeByUtc,
-                question.ExpiresAtUtc, question.AsksEarlierGuest, question.FallbackTrigger, nowUtc, cancellationToken);
+            TableShares.Ask(
+                db, reservation, question.EarlierReservationId, question.FreeByUtc, question.ExpiresAtUtc,
+                question.AsksEarlierGuest, question.FallbackTrigger, nowUtc);
         }
 
         // And a guest who was asked to free their table for this one - or whose table this one was
         // asked for - is settled by where it now stands.
-        await TableShares.EarlierChangedAsync(
-            db, outbox, reservation, branch, nowUtc, cancellationToken);
+        await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, cancellationToken);
 
         // The pre-order moves with the booking - judged against the new start wherever it is read - unless the kitchen
         // already has it: food cooked for seven cannot be moved to tomorrow (409 pre-order-already-sent). A waiter's

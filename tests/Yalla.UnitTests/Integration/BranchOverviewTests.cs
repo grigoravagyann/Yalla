@@ -320,18 +320,23 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
             branch.TableIds[1], Local(Today, 21, 0), Today, new TimeOnly(21, 0), 4, policy,
             ReservationStatus.PendingApproval, Now, ApprovalTrigger.ShortNotice, Now.AddMinutes(15));
 
+        // History, written straight to the rows: what these moves and this decline told was told then.
+        moving.DequeueEvents();
+
         // Confirmed for 20:00; its move to 21:30 was declined, so it is confirmed at 20:00 again.
         var kept = await AddBookingAsync(db, branch, Today, new TimeOnly(20, 0), ReservationStatus.Confirmed, 2, 2);
         kept.Reschedule(
             branch.TableIds[2], Local(Today, 21, 30), Today, new TimeOnly(21, 30), 2, policy,
             ReservationStatus.PendingApproval, Now, ApprovalTrigger.ShortNotice, Now.AddMinutes(15));
         kept.KeepConfirmedSlot(Now, DeclineReason.StaffDeclined);
+        kept.DequeueEvents();
 
         // Confirmed for the day after tomorrow, asking to come tonight at 20:30 instead: tonight it is a request.
         var tonight = await AddBookingAsync(db, branch, Today.AddDays(2), new TimeOnly(19, 0), ReservationStatus.Confirmed, 2, 3);
         tonight.Reschedule(
             branch.TableIds[3], Local(Today, 20, 30), Today, new TimeOnly(20, 30), 2, policy,
             ReservationStatus.PendingApproval, Now, ApprovalTrigger.ShortNotice, Now.AddMinutes(15));
+        tonight.DequeueEvents();
 
         await db.SaveChangesAsync();
         Assert.Equal(ReservationStatus.Confirmed, kept.Status);

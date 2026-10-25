@@ -118,8 +118,7 @@ internal sealed class ReservationCancellation(
         // A question this booking was waiting on goes with it, and a guest who was asked to free their
         // table for it - or a booking waiting on this one's guest - is settled now the table is free.
         await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
-        await TableShares.EarlierChangedAsync(
-            db, outbox, reservation, branch, nowUtc, cancellationToken);
+        await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, cancellationToken);
 
         // Cancelling the cause cancels the message, in the same transaction. A reminder arriving for
         // a booking somebody cancelled an hour ago is worse than no reminder at all - it is the push

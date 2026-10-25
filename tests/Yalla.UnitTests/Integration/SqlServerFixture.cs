@@ -644,9 +644,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         new(
             db,
             clock,
-            CreateOutbox(db, clock),
             CreateReservationWriter(db, clock),
-            CreateActivityLog(db, clock, new TestActor(ActorType.System, null, null)),
             logger ?? NullLogger<ApprovalExpirySweep>.Instance);
 
     /// <summary>

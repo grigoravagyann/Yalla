@@ -101,7 +101,7 @@ internal sealed class NoShowBlocks(
             var branch = await LoadBranchAsync(booking.BranchId, cancellationToken);
 
             await TableShares.CloseForLaterAsync(db, booking.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
-            await TableShares.EarlierChangedAsync(db, outbox, booking, branch, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(db, booking, branch, nowUtc, cancellationToken);
             await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", booking.Id), cancellationToken);
             await DinerNotices.CancelUnshownAsync(db, booking.Id, nowUtc, cancellationToken);
 

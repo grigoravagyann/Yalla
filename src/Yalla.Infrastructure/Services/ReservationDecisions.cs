@@ -18,8 +18,6 @@ internal sealed class ReservationDecisions(
     IClock clock,
     ICurrentActor actor,
     ReservationWriter reservations,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationViews views)
@@ -79,26 +77,13 @@ internal sealed class ReservationDecisions(
         {
             if (approve)
             {
+                // The History's line, and the diner told - they are on a screen that says "waiting" - by the
+                // approval's handlers.
                 reservation.Confirm(nowUtc);
-
-                await BookingActivity.RecordAsync(
-                    activity, db, reservation, ActivityActions.BookingApproved, cancellationToken,
-                    extra: new
-                    {
-                        trigger = (int?)reservation.ApprovalTrigger,
-                        decisionSeconds = BookingActivity.DecisionSeconds(reservation, nowUtc),
-                    });
 
                 // The floor's yes for the guest before, when this booking was waiting on them: they are
                 // held to the time asked - its end cut to it - and told.
-                await TableShares.ApplyYesAsync(db, outbox, reservation.Id, branch, nowUtc, cancellationToken);
-
-                // A booking the diner moved back into the queue is approved a second time, and the
-                // first approval's message keeps its key once sent - see DecisionKeyAsync.
-                var decidedKey = await ReservationNotices.DecisionKeyAsync(db, reservation.Id, "approved", nowUtc, cancellationToken);
-
-                // The decision is worth telling the diner about: they are on a screen that says "waiting".
-                ReservationNotices.TellDinerDecided(db, outbox, reservation, branch, approved: true, expired: false, decidedKey, nowUtc);
+                await TableShares.ApplyYesAsync(db, reservation.Id, nowUtc, cancellationToken);
 
                 await reservations.SaveAsync(cancellationToken);
             }
@@ -108,24 +93,13 @@ internal sealed class ReservationDecisions(
                 // keeps the slot they had when it is still free. Saved inside.
                 await PendingDecline.DeclineAsync(
                     db,
-                    outbox,
                     reservations,
                     reservation,
                     branch,
                     DeclineReason.StaffDeclined,
                     command.Reason,
-                    quietIfAlreadyStarted: false,
                     nowUtc,
-                    cancellationToken,
-                    ct => BookingActivity.RecordAsync(
-                        activity, db, reservation, ActivityActions.BookingDeclined, ct,
-                        extra: new
-                        {
-                            trigger = (int?)reservation.ApprovalTrigger,
-                            decisionSeconds = BookingActivity.DecisionSeconds(reservation, nowUtc),
-                            keptEarlierSlot = reservation.Status == ReservationStatus.Confirmed,
-                        },
-                        reason: command.Reason));
+                    cancellationToken);
             }
         }
         catch (DbUpdateConcurrencyException)

@@ -140,6 +140,16 @@ public sealed class TableShareRequest : Entity
     }
 
     /// <summary>
+    /// Puts the question: raises <see cref="TableShareAsked"/>, whose handler pushes it to the earlier guest when they are
+    /// asked in the app (<see cref="AsksEarlierGuest"/>); one the floor puts by phone tells nobody here.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the constructor, as sending a call is from building it: a request built and never asked - a test
+    /// seeding an evening - tells nobody. A request retimed for a move is not asked again (<see cref="Retime"/>).
+    /// </remarks>
+    public void Ask() => Raise(new TableShareAsked(this, CreatedAtUtc));
+
+    /// <summary>
     /// The later booking moved and still asks the same guest, the same way: the same question at its new
     /// time, without asking again - in the app under the same deadline or a sooner one, never a later
     /// one; by the floor under the deadline the moved booking now has (which the caller never makes later

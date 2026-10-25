@@ -48,9 +48,7 @@ namespace Yalla.Infrastructure.Services;
 internal sealed class ApprovalExpirySweep(
     YallaDbContext db,
     IClock clock,
-    IOutbox outbox,
     ReservationWriter writer,
-    IActivityLog activity,
     ILogger<ApprovalExpirySweep> logger)
 {
     /// <summary>
@@ -134,8 +132,8 @@ internal sealed class ApprovalExpirySweep(
 
         var deadline = reservation.ApprovalExpiresAtUtc;
 
+        // Tracked, as the request paths load it, so the decline's handlers read its names from the tracker.
         var branch = await db.Branches
-            .AsNoTracking()
             .Include(b => b.Venue)
             .FirstAsync(b => b.Id == reservation.BranchId, cancellationToken);
 
@@ -152,32 +150,17 @@ internal sealed class ApprovalExpirySweep(
 
         try
         {
-            // Saved inside, with the apology - unless the booking would already have started.
+            // Saved inside, with the apology - unless the booking would already have started - and the History's
+            // line, the system's (the decline's handlers).
             outcome = await PendingDecline.DeclineAsync(
                 db,
-                outbox,
                 writer,
                 reservation,
                 branch,
                 waitedOnEarlierGuest ? DeclineReason.EarlierGuestNoAnswer : DeclineReason.NoAnswer,
                 reason: null,
-                quietIfAlreadyStarted: true,
                 nowUtc,
-                cancellationToken,
-                ct => BookingActivity.RecordAsync(
-                    activity,
-                    db,
-                    reservation,
-                    ActivityActions.BookingAutoDeclined,
-                    ct,
-                    extra: new
-                    {
-                        declineReason = (int)(waitedOnEarlierGuest ? DeclineReason.EarlierGuestNoAnswer : DeclineReason.NoAnswer),
-                        trigger = (int?)reservation.ApprovalTrigger,
-                        deadlineUtc = deadline,
-                        keptEarlierSlot = reservation.Status == ReservationStatus.Confirmed,
-                    },
-                    bySystem: true));
+                cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
         {
