@@ -32,10 +32,12 @@
 # job reports as passing to branch protection, so a gate that could be skipped
 # when a shard failed would be a green tick on a red run.
 #
-# Splitting is by test CLASS (scripts/ci/test_shards.py), never by method: the
-# SQL-backed classes share one xUnit collection whose fixture migrates one
-# database, and a class split across shards would be two fixtures for what its
-# author wrote as one. Classes are balanced by the durations in
+# Splitting is by test CLASS (scripts/ci/test_shards.py), never by method: each
+# SQL-backed class has a fixture - and a database - of its own, and a class split
+# across shards would be two fixtures for what its author wrote as one. Inside a
+# shard the classes run in parallel (tests/Yalla.UnitTests/xunit.runner.json),
+# each on its own copy of a database migrated once per shard; YALLA_TEST_SERIAL
+# is not set here. Classes are balanced by the durations in
 # scripts/ci/test-timings.json; the gate uploads a fresh copy of that file as
 # the `test-timings` artifact on every run, to commit when the shards drift apart.
 name: backend
@@ -296,6 +298,11 @@ jobs:
       # `SkippableFact` means a fixture that cannot reach a database reports
       # success. That is the correct behaviour on a laptop and a lie here, so
       # any skip at all fails the run and names the count.
+      #
+      # Skips are counted from the results' own outcome="NotExecuted", not from
+      # the summary's notExecuted counter: the trx logger leaves that counter at
+      # 0 for skipped xUnit tests, so a guard reading it passed a run in which
+      # every integration test had skipped.
       - name: Fail if any test skipped
         if: always()
         shell: bash
@@ -309,7 +316,7 @@ jobs:
 
           total_skipped=0
           for file in "${files[@]}"; do
-            skipped=$(grep -o 'notExecuted="[0-9]*"' "$file" | head -1 | grep -o '[0-9]*' || echo 0)
+            skipped=$({ grep -o '<UnitTestResult [^>]*outcome="NotExecuted"' "$file" || true; } | wc -l)
             executed=$(grep -o 'executed="[0-9]*"' "$file" | head -1 | grep -o '[0-9]*' || echo 0)
             echo "$file: executed=$executed skipped=$skipped"
             total_skipped=$((total_skipped + skipped))

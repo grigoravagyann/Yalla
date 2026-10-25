@@ -3,6 +3,23 @@
   <PropertyGroup>
     <UserSecretsId>3f6d1c2e-8a54-4d1b-9c07-5e2a4b83f911</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+
+    <!--
+      Minimal API request delegates generated at compile time instead of compiled from expression
+      trees when the host starts. Startup otherwise builds ~250 endpoint delegates with
+      Expression.Compile on every start - half a second per host alone, and the test suite starts
+      hundreds of hosts: under parallel tests that compilation contends so badly that a host took
+      15 seconds to start and dominated the run. The generated delegates behave as the runtime ones
+      do (the served OpenAPI document is byte-identical either way); a handler shape the generator
+      cannot handle falls back to the runtime factory.
+
+      RDG002 is that fallback's notice. Twelve endpoints take it on purpose: TabEndpoints.HostAction
+      and TableStateEndpoints.Transition receive their handler as a Delegate so one helper can attach
+      the shared response set, which the generator cannot see through. They are built at runtime, as
+      every endpoint was before; the warning would otherwise fail the strict CI build.
+    -->
+    <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+    <NoWarn>$(NoWarn);RDG002</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

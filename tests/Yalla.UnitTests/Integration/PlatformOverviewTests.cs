@@ -17,9 +17,10 @@ namespace Yalla.UnitTests.Integration;
 /// the newest venues and the outbox - and no guest's name or number anywhere in it.
 /// </summary>
 /// <remarks>
-/// The database is shared by every integration test, so Home's totals include everybody's data.
+/// The database carries what earlier classes left in it, so Home's totals include their data too.
 /// Each test reads Home before and after building its own and asserts the difference, which is
-/// exact because the collection runs one test at a time. The two tests about which venues are newest
+/// exact because nothing else writes to this class's database while it runs and its tests run one
+/// at a time (<see cref="TestDatabasePool"/>). The two tests about which venues are newest
 /// run their clocks decades ahead of every other test's, so their venues are the newest whatever ran
 /// before - and the activity feed's test, further ahead still, makes its venue on today's clock.
 /// </remarks>

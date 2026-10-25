@@ -1385,8 +1385,9 @@ public sealed class ShortNoticeApprovalTests(SqlServerFixture fixture)
     /// already declined.
     /// </summary>
     /// <remarks>
-    /// The sweep reads the whole table - that is its job - and the database is shared by every test in
-    /// the collection, which runs one test at a time. So a test that counts what a pass declined stands
+    /// The sweep reads the whole table - that is its job - and the database carries whatever the classes
+    /// that used it before this one left; while this class runs it is this class's alone, one test at a
+    /// time (<see cref="TestDatabasePool"/>). So a test that counts what a pass declined stands
     /// on a date nothing else books on - the 10th of its own month in 2030 - and first sweeps away what
     /// earlier tests left behind.
     /// </remarks>
