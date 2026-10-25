@@ -844,7 +844,7 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
             : TableSession.SeatWalkIn(branch.BranchId, table.Id, partySize, seatedAtUtc, branch.WaiterId);
 
         db.TableSessions.Add(session);
-        table.Occupy(session.Id);
+        table.Occupy(session);
         await db.SaveChangesAsync();
 
         var tab = new Tab(branch.BranchId, table.Id, session.Id, seatedAtUtc, 0m, TabAdmissionReason.OpenedByStaff);

@@ -3,7 +3,6 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Tables;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
@@ -46,8 +45,8 @@ internal sealed class TableStateService(
     IClock clock,
     ICurrentActor actor,
     TableLock tableLock,
-    IActivityLog activity,
     TabLedger ledger,
+    DomainEventDispatcher domainEvents,
     ILogger<TableStateService> logger) : ITableStateService
 {
     public async Task<TableStateChangeResult> SeatWalkInAsync(
@@ -75,14 +74,10 @@ internal sealed class TableStateService(
         var session = TableSession.SeatWalkIn(
             table.BranchId, table.Id, command.PartySize, nowUtc, staffId);
 
-        table.Occupy(session.Id);
+        // TableSeated's handlers write the change stream's row and the History's line (docs/domain-events.md).
+        table.Occupy(session, TableSeating.WalkIn, booking: null, command.Reason, command.ClientCommandId, nowUtc);
 
         db.TableSessions.Add(session);
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Occupied, command.Reason ?? "seated walk-in",
-            nowUtc, command.ClientCommandId, staffId, tableSessionId: session.Id));
-
-        await LogSeatingAsync(table, session, "walk-in", reservation: null, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -105,8 +100,6 @@ internal sealed class TableStateService(
         // The audit row names whoever the token says is acting, or the system when nobody is yet
         // known; the tab that follows, and the host participant on it, are what make the scan
         // traceable to a phone.
-        var (actorType, actorId) = ResolveActor();
-
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
             return replayed;
@@ -128,22 +121,9 @@ internal sealed class TableStateService(
         // the occupied case into "join the existing tab" before it ever gets here.
         var session = TableSession.SeatWalkIn(table.BranchId, table.Id, command.PartySize, nowUtc);
 
-        table.Occupy(session.Id);
+        table.Occupy(session, TableSeating.QrScan, booking: null, command.Reason, command.ClientCommandId, nowUtc);
 
         db.TableSessions.Add(session);
-        db.TableStateChanges.Add(new TableStateChange(
-            table.BranchId,
-            table.Id,
-            fromStatus,
-            TableStatus.Occupied,
-            command.Reason ?? "opened by QR scan",
-            actorType,
-            nowUtc,
-            command.ClientCommandId,
-            actorId,
-            tableSessionId: session.Id));
-
-        await LogSeatingAsync(table, session, "scan", reservation: null, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -165,7 +145,7 @@ internal sealed class TableStateService(
         // tab service has already decided the booking is the caller's and its table theirs now, so
         // what is left is the seating - through the state machine, under the lock, with an audit
         // row, like every other seating.
-        var (actorType, actorId) = ResolveActor();
+        var (actorType, actorId) = TableStateActors.Resolve(actor);
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -203,7 +183,7 @@ internal sealed class TableStateService(
             command.PartySize ?? reservation.PartySize,
             nowUtc);
 
-        table.Occupy(session.Id);
+        table.Occupy(session, TableSeating.BookingByDiner, reservation, command.Reason, command.ClientCommandId, nowUtc);
 
         db.TableSessions.Add(session);
 
@@ -211,21 +191,6 @@ internal sealed class TableStateService(
         await PreOrderSittings.PutHeldOnNewSittingAsync(
             db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, actorType, actorId, nowUtc,
             cancellationToken);
-
-        db.TableStateChanges.Add(new TableStateChange(
-            table.BranchId,
-            table.Id,
-            fromStatus,
-            TableStatus.Occupied,
-            command.Reason ?? $"seated by the diner from booking {reservation.Code}",
-            actorType,
-            nowUtc,
-            command.ClientCommandId,
-            actorId,
-            reservationId: reservation.Id,
-            tableSessionId: session.Id));
-
-        await LogSeatingAsync(table, session, "booking", reservation, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -281,7 +246,7 @@ internal sealed class TableStateService(
             nowUtc,
             staffId);
 
-        table.Occupy(session.Id);
+        table.Occupy(session, TableSeating.Booking, reservation, command.Reason, command.ClientCommandId, nowUtc);
 
         db.TableSessions.Add(session);
 
@@ -289,13 +254,6 @@ internal sealed class TableStateService(
         await PreOrderSittings.PutHeldOnNewSittingAsync(
             db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, ActorType.Staff, staffId, nowUtc,
             cancellationToken);
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Occupied,
-            command.Reason ?? $"seated reservation {reservation.Code}",
-            nowUtc, command.ClientCommandId, staffId,
-            reservationId: reservation.Id, tableSessionId: session.Id));
-
-        await LogSeatingAsync(table, session, "booking", reservation, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -314,7 +272,7 @@ internal sealed class TableStateService(
         TableStateCommand command,
         CancellationToken cancellationToken = default)
     {
-        var staffId = RequireStaff("Hold table");
+        RequireStaff("Hold table");
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -327,14 +285,8 @@ internal sealed class TableStateService(
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
-        table.PlaceHold();
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Held, command.Reason ?? "held for late party",
-            nowUtc, command.ClientCommandId, staffId, reservationId: next.ReservationId));
-
-        await LogTableAsync(
-            table, ActivityActions.TableHeld, command.Reason, new { reservationId = next.ReservationId }, cancellationToken);
+        // The row and the History's line name the table's next booking: who the hold is presumably for.
+        table.PlaceHold(next.ReservationId, command.Reason, command.ClientCommandId, nowUtc);
 
         return await CommitAsync(
             table,
@@ -350,7 +302,7 @@ internal sealed class TableStateService(
         TableStateCommand command,
         CancellationToken cancellationToken = default)
     {
-        var staffId = RequireStaff("Release hold");
+        RequireStaff("Release hold");
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -363,13 +315,7 @@ internal sealed class TableStateService(
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
-        table.ReleaseHold();
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Free, command.Reason ?? "hold released",
-            nowUtc, command.ClientCommandId, staffId));
-
-        await LogTableAsync(table, ActivityActions.TableHoldReleased, command.Reason, null, cancellationToken);
+        table.ReleaseHold(command.Reason, command.ClientCommandId, nowUtc);
 
         return await CommitAsync(
             table,
@@ -419,7 +365,7 @@ internal sealed class TableStateService(
             : TableSession.SeatReservation(
                 table.BranchId, table.Id, reservation.Id, command.PartySize, nowUtc, staffId);
 
-        table.Occupy(session.Id);
+        table.Occupy(session, TableSeating.HeldParty, reservation, command.Reason, command.ClientCommandId, nowUtc);
 
         db.TableSessions.Add(session);
 
@@ -430,13 +376,6 @@ internal sealed class TableStateService(
                 db, reservation, session, table.Branch.ReservationPolicy.ServiceChargePercent, ActorType.Staff, staffId,
                 nowUtc, cancellationToken);
         }
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Occupied, command.Reason ?? "seated held party",
-            nowUtc, command.ClientCommandId, staffId,
-            reservationId: reservation?.Id, tableSessionId: session.Id));
-
-        await LogSeatingAsync(table, session, reservation is null ? "held" : "booking", reservation, cancellationToken);
 
         return await CommitAsync(
             table,
@@ -455,7 +394,7 @@ internal sealed class TableStateService(
         TableStateCommand command,
         CancellationToken cancellationToken = default)
     {
-        var staffId = RequireStaff("Free table");
+        RequireStaff("Free table");
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -494,13 +433,27 @@ internal sealed class TableStateService(
             throw new TableSittingChangedException(table.Id, table.Label, expected, table.Status, session?.Id);
         }
 
+        // The sitting's open tab, read before the table moves so the change can say what became of it: closed when
+        // nothing is owed, left open with what is - the diners have physically left, and refusing to free the table
+        // would make the floor plan lie, which costs more than an unresolved tab.
+        var tab = session is null
+            ? null
+            : await db.Tabs.FirstOrDefaultAsync(
+                t => t.TableSessionId == session.Id
+                     && (t.Status == TabStatus.Open || t.Status == TabStatus.Closing),
+                cancellationToken);
+
+        var tabId = tab?.Id;
+        long? outstandingAmd = tab is { RemainingAmd: not 0L } ? tab.RemainingAmd : null;
+        var sittingId = session?.Id ?? settled?.Id;
+
         // Throws InvalidTableTransitionException unless the table is Occupied, so an accidental
-        // double-free is refused rather than silently writing a second audit row.
-        table.Vacate();
+        // double-free is refused rather than silently writing a second audit row. TableFreed's handlers write the
+        // change stream's row and the History's table.freed.
+        table.Vacate(
+            sittingId, sittingReservationId, tabId, outstandingAmd, command.Reason, command.ClientCommandId, nowUtc);
 
         var warnings = new List<TableStateWarning>();
-        long? outstandingAmd = null;
-        Guid? tabId = null;
 
         if (session is null)
         {
@@ -526,55 +479,23 @@ internal sealed class TableStateService(
                 await CompleteSeatedAsync(reservationId, nowUtc, cancellationToken);
             }
 
-            var tab = await db.Tabs.FirstOrDefaultAsync(
-                t => t.TableSessionId == session.Id
-                     && (t.Status == TabStatus.Open || t.Status == TabStatus.Closing),
-                cancellationToken);
-
             if (tab is not null)
             {
-                tabId = tab.Id;
-
-                if (tab.RemainingAmd == 0L)
+                if (outstandingAmd is null)
                 {
+                    // Nothing owed: the tab closes with the table, and raises nothing of its own - TableFreed names it
+                    // (docs/domain-events.md, tables).
                     tab.Close(nowUtc);
                 }
                 else
                 {
-                    // The diners have physically left. Refusing to free the table would make the
-                    // floor plan lie, which costs more than an unresolved tab - so the table goes
-                    // free, the tab stays open, and staff are told the number.
-                    outstandingAmd = tab.RemainingAmd;
+                    // The table goes free, the tab stays open, and staff are told the number.
                     warnings.Add(new TableStateWarning(
                         TableStateWarning.OutstandingBalance,
                         $"table {table.Label} freed with {tab.RemainingAmd} AMD outstanding"));
                 }
             }
         }
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Free, command.Reason ?? "table freed",
-            nowUtc, command.ClientCommandId, staffId,
-            reservationId: sittingReservationId, tabId: tabId, tableSessionId: session?.Id ?? settled?.Id));
-
-        var sittingId = session?.Id ?? settled?.Id;
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Table,
-                ActivityActions.TableFreed,
-                sittingId is null ? ActivitySubjects.Table : ActivitySubjects.TableSession,
-                sittingId ?? table.Id)
-            {
-                BranchId = table.BranchId,
-                VenueId = table.Branch.VenueId,
-                TableSessionId = sittingId,
-                TableLabel = table.Label,
-                AmountAmd = outstandingAmd,
-                Reason = command.Reason,
-                Summary = new { tableId = table.Id, tabId, reservationId = sittingReservationId, outstandingAmd },
-            },
-            cancellationToken);
 
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
@@ -621,8 +542,6 @@ internal sealed class TableStateService(
         // No RequireStaff: the diner taps this from the late nudge, on their own phone, and the
         // actor is whoever the token says. The reservation service has already checked that they own
         // the booking - that is the permission, and it is not one this method can re-derive.
-        var (actorType, actorId) = ResolveActor();
-
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
             return replayed;
@@ -633,19 +552,9 @@ internal sealed class TableStateService(
         var status = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, reservationId, cancellationToken);
 
-        // From-status equals to-status on purpose. Nothing about the table changed; something
-        // happened at it, and the branch sequence is how every other tablet finds out.
-        db.TableStateChanges.Add(new TableStateChange(
-            table.BranchId,
-            table.Id,
-            status,
-            status,
-            command.Reason ?? $"hold extended to {newHoldExpiresAtUtc:HH:mm} UTC",
-            actorType,
-            nowUtc,
-            command.ClientCommandId,
-            actorId,
-            reservationId: reservationId));
+        // From-status equals to-status on purpose (TableHoldExtended's handler writes the row). Nothing about the table
+        // changed; something happened at it, and the branch sequence is how every other tablet finds out.
+        table.NoteHoldExtended(reservationId, newHoldExpiresAtUtc, command.Reason, command.ClientCommandId, nowUtc);
 
         return await CommitAsync(
             table,
@@ -663,7 +572,7 @@ internal sealed class TableStateService(
     {
         // Deliberately not manager-only. A broken chair is a Friday-night fact, and routing it
         // through a manager makes the floor state go stale exactly when accuracy matters most.
-        var staffId = RequireStaff("Mark out of service");
+        RequireStaff("Mark out of service");
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -689,14 +598,7 @@ internal sealed class TableStateService(
         var stranded = await FutureBookingsAsync(table.Id, nowUtc, cancellationToken);
 
         // Refuses an occupied table: a table with diners at it cannot be marked broken.
-        table.MarkOutOfService();
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.OutOfService, command.Reason ?? "out of service",
-            nowUtc, command.ClientCommandId, staffId));
-
-        await LogTableAsync(
-            table, ActivityActions.TableOutOfService, command.Reason, new { strandedBookings = stranded.Count }, cancellationToken);
+        table.MarkOutOfService(stranded.Count, command.Reason, command.ClientCommandId, nowUtc);
 
         if (stranded.Count > 0)
         {
@@ -724,7 +626,7 @@ internal sealed class TableStateService(
         TableStateCommand command,
         CancellationToken cancellationToken = default)
     {
-        var staffId = RequireStaff("Return to service");
+        RequireStaff("Return to service");
 
         if (await TryReplayAsync(command.ClientCommandId, cancellationToken) is { } replayed)
         {
@@ -737,13 +639,7 @@ internal sealed class TableStateService(
         var fromStatus = table.Status;
         var next = await FindNextReservationAsync(table.Id, nowUtc, null, cancellationToken);
 
-        table.ReturnToService();
-
-        db.TableStateChanges.Add(NewChange(
-            table, fromStatus, TableStatus.Free, command.Reason ?? "returned to service",
-            nowUtc, command.ClientCommandId, staffId));
-
-        await LogTableAsync(table, ActivityActions.TableBackInService, command.Reason, null, cancellationToken);
+        table.ReturnToService(command.Reason, command.ClientCommandId, nowUtc);
 
         return await CommitAsync(
             table,
@@ -827,6 +723,10 @@ internal sealed class TableStateService(
             var result = buildResult();
             RecordProcessedCommand(clientCommandId, CommandTypeFor(caller), result);
 
+            // The change's events first - their handlers write the change stream's row and the History's line into this
+            // save. This service's dispatcher, not the context's: in a request they are the same, and a test composing the
+            // service over a bare context gets production's handlers for its caller (docs/domain-events.md).
+            await domainEvents.DispatchAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
 
             // Seatings hold the table's write lock; everything else runs in EF's implicit
@@ -977,26 +877,6 @@ internal sealed class TableStateService(
         return staffId;
     }
 
-    /// <summary>
-    /// Who the audit row should name for a transition anyone may perform. A staff member, a tab
-    /// participant, or a diner with an account is named; a request with no token has nobody and is
-    /// recorded as the system - which is what the audit row's invariant allows a null actor for.
-    /// </summary>
-    /// <remarks>
-    /// The participant is preferred over the account for the same reason as on the tab's event
-    /// stream: a participant has no account by design, so naming only account holders left the
-    /// audit row anonymous for very nearly every diner-driven transition. A scan that seats a table
-    /// arrives with no token at all and is still the system, correctly - the participant row does
-    /// not exist until that request creates it.
-    /// </remarks>
-    private (ActorType Type, Guid? Id) ResolveActor() => actor.Type switch
-    {
-        ActorType.Staff when actor.StaffMemberId is { } staffId => (ActorType.Staff, staffId),
-        ActorType.Diner when actor.ParticipantId is { } participantId => (ActorType.Diner, participantId),
-        ActorType.Diner when actor.DinerUserId is { } dinerId => (ActorType.Diner, dinerId),
-        _ => (ActorType.System, null),
-    };
-
     /// <summary>Branch managers, general managers and owners. Waiters and kitchen staff do not move money.</summary>
     private Guid RequireManager(string operation)
     {
@@ -1116,7 +996,7 @@ internal sealed class TableStateService(
     /// <summary>Adds the answer to the unit of work, alongside the change it describes.</summary>
     private void RecordProcessedCommand(Guid clientCommandId, string commandType, TableStateChangeResult result)
     {
-        var (actorType, actorId) = ResolveActor();
+        var (actorType, actorId) = TableStateActors.Resolve(actor);
 
         db.ProcessedCommands.Add(new ProcessedCommand(
             clientCommandId,
@@ -1249,75 +1129,6 @@ internal sealed class TableStateService(
     }
 
     // ---------------------------------------------------------------- results
-
-    /// <summary>A party sat down: <c>booking.seated</c> for a booking, <c>table.seated</c> otherwise.</summary>
-    private Task LogSeatingAsync(
-        DiningTable table,
-        TableSession session,
-        string source,
-        Reservation? reservation,
-        CancellationToken cancellationToken) =>
-        activity.RecordAsync(
-            new ActivityRecord(
-                reservation is null ? ActivityCategory.Table : ActivityCategory.Booking,
-                reservation is null ? ActivityActions.TableSeated : ActivityActions.BookingSeated,
-                reservation is null ? ActivitySubjects.TableSession : ActivitySubjects.Reservation,
-                reservation?.Id ?? session.Id)
-            {
-                BranchId = table.BranchId,
-                VenueId = table.Branch.VenueId,
-                TableSessionId = session.Id,
-                TableLabel = table.Label,
-                GuestName = reservation?.GuestName,
-                SubjectCode = reservation?.Code,
-                Summary = new
-                {
-                    tableId = table.Id,
-                    partySize = session.PartySize,
-                    source,
-                    reservationId = reservation?.Id,
-                },
-            },
-            cancellationToken);
-
-    /// <summary>Something done to a table that is not a seating: held, released, out of service.</summary>
-    private Task LogTableAsync(
-        DiningTable table, string action, string? reason, object? summary, CancellationToken cancellationToken) =>
-        activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Table, action, ActivitySubjects.Table, table.Id)
-            {
-                BranchId = table.BranchId,
-                VenueId = table.Branch.VenueId,
-                TableLabel = table.Label,
-                Reason = reason,
-                Summary = summary,
-            },
-            cancellationToken);
-
-    private TableStateChange NewChange(
-        DiningTable table,
-        TableStatus fromStatus,
-        TableStatus toStatus,
-        string reason,
-        DateTime nowUtc,
-        Guid clientCommandId,
-        Guid staffId,
-        Guid? reservationId = null,
-        Guid? tabId = null,
-        Guid? tableSessionId = null) =>
-        new(
-            table.BranchId,
-            table.Id,
-            fromStatus,
-            toStatus,
-            reason,
-            actor.Type,
-            nowUtc,
-            clientCommandId,
-            staffId,
-            reservationId,
-            tabId,
-            tableSessionId);
 
     private static TableStateChangeResult Success(
         DiningTable table,

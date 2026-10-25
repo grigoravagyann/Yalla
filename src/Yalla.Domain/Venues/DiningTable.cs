@@ -109,63 +109,165 @@ public sealed class DiningTable : Entity
 
     /// <summary>
     /// Seats a party: <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/> to
-    /// <see cref="TableStatus.Occupied"/>. Covers SeatWalkIn, SeatReservation and SeatHeldParty,
-    /// which differ only in what the caller records around them.
+    /// <see cref="TableStatus.Occupied"/>, and raises <see cref="TableSeated"/>. Covers every seating - a walk-in, a
+    /// booking, a scan, a held party - which differ only in what the event says about it.
     /// </summary>
-    public void Occupy(Guid sessionId)
+    /// <param name="sitting">The sitting this opens, at this table.</param>
+    /// <param name="how">Who seated whom.</param>
+    /// <param name="booking">The booking honoured, already Seated; null when there is none.</param>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    /// <exception cref="InvalidTableTransitionException">The table is Occupied or out of service.</exception>
+    public void Occupy(
+        Occupancy.TableSession sitting,
+        TableSeating how,
+        Occupancy.Reservation? booking,
+        string? reason,
+        Guid clientCommandId,
+        DateTime atUtc)
     {
+        ArgumentNullException.ThrowIfNull(sitting);
+
+        var from = Status;
+
         Transition(TableStatus.Occupied);
-        CurrentSessionId = Guard.NotEmpty(sessionId, nameof(sessionId));
+        CurrentSessionId = Guard.NotEmpty(sitting.Id, nameof(sitting));
+
+        Raise(new TableSeated(this, sitting, from, Guard.Defined(how, nameof(how)), booking, reason, clientCommandId, atUtc));
     }
 
-    /// <summary>HoldForLateParty: <see cref="TableStatus.Free"/> to <see cref="TableStatus.Held"/>.</summary>
-    public void PlaceHold() => Transition(TableStatus.Held);
+    /// <summary>
+    /// HoldForLateParty: <see cref="TableStatus.Free"/> to <see cref="TableStatus.Held"/>, and raises
+    /// <see cref="TableHeld"/>.
+    /// </summary>
+    /// <param name="forReservationId">The table's next booking, if it has one.</param>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void PlaceHold(Guid? forReservationId, string? reason, Guid clientCommandId, DateTime atUtc)
+    {
+        var from = Status;
 
-    /// <summary>ReleaseHold: <see cref="TableStatus.Held"/> back to <see cref="TableStatus.Free"/>.</summary>
-    public void ReleaseHold()
+        Transition(TableStatus.Held);
+
+        Raise(new TableHeld(this, from, forReservationId, reason, clientCommandId, atUtc));
+    }
+
+    /// <summary>
+    /// ReleaseHold: <see cref="TableStatus.Held"/> back to <see cref="TableStatus.Free"/>, and raises
+    /// <see cref="TableHoldReleased"/>.
+    /// </summary>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void ReleaseHold(string? reason, Guid clientCommandId, DateTime atUtc)
     {
         if (Status != TableStatus.Held)
         {
             throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
         }
 
+        var from = Status;
+
         Transition(TableStatus.Free);
         CurrentSessionId = null;
+
+        Raise(new TableHoldReleased(this, from, reason, clientCommandId, atUtc));
     }
 
-    /// <summary>FreeTable: <see cref="TableStatus.Occupied"/> to <see cref="TableStatus.Free"/>.</summary>
-    public void Vacate()
+    /// <summary>
+    /// FreeTable: <see cref="TableStatus.Occupied"/> to <see cref="TableStatus.Free"/>, and raises
+    /// <see cref="TableFreed"/> with what became of the sitting's tab. The caller closes the sitting, completes its
+    /// booking and closes the tab when nothing is owed.
+    /// </summary>
+    /// <param name="sittingId">The sitting it ends, if any.</param>
+    /// <param name="reservationId">The sitting's booking, if any.</param>
+    /// <param name="tabId">The sitting's open tab, if any.</param>
+    /// <param name="outstandingAmd">What is still owed on that tab, which stays open; null when nothing is, and the tab closes.</param>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void Vacate(
+        Guid? sittingId,
+        Guid? reservationId,
+        Guid? tabId,
+        long? outstandingAmd,
+        string? reason,
+        Guid clientCommandId,
+        DateTime atUtc)
     {
         if (Status != TableStatus.Occupied)
         {
             throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
         }
 
+        var from = Status;
+
         Transition(TableStatus.Free);
         CurrentSessionId = null;
+
+        Raise(new TableFreed(
+            this, from, sittingId, reservationId, tabId, tabId is not null && outstandingAmd is null, outstandingAmd, reason,
+            clientCommandId, atUtc));
     }
 
     /// <summary>
-    /// MarkOutOfService: from <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/>.
+    /// MarkOutOfService: from <see cref="TableStatus.Free"/> or <see cref="TableStatus.Held"/>, and raises
+    /// <see cref="TableTakenOutOfService"/>.
     /// </summary>
     /// <remarks>
     /// Refuses an occupied table. A table with diners at it cannot be marked broken - free it
     /// first - because the alternative is a floor plan that shows nobody sitting where somebody
     /// is sitting.
     /// </remarks>
-    public void MarkOutOfService() => Transition(TableStatus.OutOfService);
+    /// <param name="strandedBookings">How many bookings the table still has to come.</param>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void MarkOutOfService(int strandedBookings, string? reason, Guid clientCommandId, DateTime atUtc)
+    {
+        var from = Status;
 
-    /// <summary>ReturnToService: <see cref="TableStatus.OutOfService"/> to <see cref="TableStatus.Free"/>.</summary>
-    public void ReturnToService()
+        Transition(TableStatus.OutOfService);
+
+        Raise(new TableTakenOutOfService(this, from, strandedBookings, reason, clientCommandId, atUtc));
+    }
+
+    /// <summary>
+    /// ReturnToService: <see cref="TableStatus.OutOfService"/> to <see cref="TableStatus.Free"/>, and raises
+    /// <see cref="TableReturnedToService"/>.
+    /// </summary>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void ReturnToService(string? reason, Guid clientCommandId, DateTime atUtc)
     {
         if (Status != TableStatus.OutOfService)
         {
             throw new InvalidTableTransitionException(Id, Label, Status, TableStatus.Free);
         }
 
+        var from = Status;
+
         Transition(TableStatus.Free);
         CurrentSessionId = null;
+
+        Raise(new TableReturnedToService(this, from, reason, clientCommandId, atUtc));
     }
+
+    /// <summary>
+    /// Records that the diner kept the hold on this table for longer, raising <see cref="TableHoldExtended"/>. Changes
+    /// nothing about the table: it is the event every tablet following the branch's change stream hears.
+    /// </summary>
+    /// <param name="reservationId">The booking whose hold was extended.</param>
+    /// <param name="holdExpiresAtUtc">When the hold now ends.</param>
+    /// <param name="reason">The reason as the caller gave it, or null.</param>
+    /// <param name="clientCommandId">The command's id.</param>
+    /// <param name="atUtc">Now.</param>
+    public void NoteHoldExtended(
+        Guid reservationId, DateTime holdExpiresAtUtc, string? reason, Guid clientCommandId, DateTime atUtc) =>
+        Raise(new TableHoldExtended(this, reservationId, holdExpiresAtUtc, reason, clientCommandId, atUtc));
 
     /// <summary>
     /// The single mutation point for <see cref="Status"/>, validated against

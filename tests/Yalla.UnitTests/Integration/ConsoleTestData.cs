@@ -99,7 +99,7 @@ internal static class ConsoleTestData
         var table = await db.DiningTables.FirstAsync(t => t.Id == branch.TableIds[tableIndex]);
         var session = TableSession.SeatWalkIn(branch.BranchId, table.Id, 2, atUtc, branch.WaiterId);
         db.TableSessions.Add(session);
-        table.Occupy(session.Id);
+        table.Occupy(session);
 
         var tab = new Tab(branch.BranchId, table.Id, session.Id, atUtc, 10m, TabAdmissionReason.OpenedByStaff);
         db.Tabs.Add(tab);

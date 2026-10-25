@@ -134,9 +134,15 @@ public sealed class SqlServerFixture : IAsyncLifetime
         YallaDbContext db,
         IClock clock,
         ICurrentActor actor,
-        BookingLockOptions? lockOptions = null) =>
-        new(db, clock, actor, CreateTableLock(db, lockOptions), CreateActivityLog(db, clock, actor),
-            CreateLedger(db, clock, actor), NullLogger<TableStateService>.Instance);
+        BookingLockOptions? lockOptions = null)
+    {
+        // Its changes' events are handled by production's handlers, for this caller (CreateUnitOfWork).
+        var unitOfWork = CreateUnitOfWork(db, clock, actor);
+
+        return new(
+            db, clock, actor, CreateTableLock(db, lockOptions), unitOfWork.GetRequiredService<TabLedger>(),
+            unitOfWork.GetRequiredService<DomainEventDispatcher>(), NullLogger<TableStateService>.Instance);
+    }
 
     /// <summary>The activity log over one context, acting as the given caller - what every writing service records through.</summary>
     internal static ActivityLog CreateActivityLog(YallaDbContext db, IClock clock, ICurrentActor actor) =>

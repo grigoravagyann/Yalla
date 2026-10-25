@@ -382,7 +382,7 @@ public sealed class ConsoleBookingActionsTests(SqlServerFixture fixture)
 
             row.MarkSeated();
             db.TableSessions.Add(session);
-            table.Occupy(session.Id);
+            table.Occupy(session);
             await db.SaveChangesAsync();
         }
 
