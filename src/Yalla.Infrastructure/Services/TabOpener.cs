@@ -25,7 +25,6 @@ internal sealed class TabOpener(
     TabLedger ledger,
     ILogger<TabService> logger,
     TabLookups lookups,
-    TabSignals signals,
     TabJoining joining)
 {
     /// <summary>
@@ -401,23 +400,17 @@ internal sealed class TabOpener(
             var host = TabParticipant.Host(
                 tab.Id, TabLookups.NameOrDefault(opening.DisplayName, 1), opening.Device, nowUtc, actor.DinerUserId);
 
-            tab.SetHostParticipant(host.Id);
+            // Raises TabOpenedByScan: a tab that waits for a waiter goes onto the branch's change stream in
+            // the same commit, so every tablet learns a table is waiting for somebody to look at it.
+            tab.OpenWithHost(host);
             session.AttachTab(tab.Id);
 
             db.Tabs.Add(tab);
             db.TabParticipants.Add(host);
 
-            // Onto the branch's change stream in the same commit, so every tablet learns a table is
-            // waiting for somebody to look at it - a scan onto a table a waiter seated changes no table
-            // state, and a scan that seated the table committed its own row before the tab existed.
-            if (!tab.IsAdmitted)
-            {
-                signals.SignalTable(tab, TableChangeSignal.TabAwaitingAdmission, "a scan is waiting to be let in", staffId: null, nowUtc);
-            }
-
             try
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await ledger.SaveAppendedAsync(cancellationToken);
             }
             catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabPerSession))
             {

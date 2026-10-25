@@ -6,53 +6,16 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// Admitting a tab, written once for every way it happens after it was opened: a waiter's tap, the booker
-/// arriving. The tab, its stream's <c>TabAdmitted</c> and the branch stream's signal, staged together.
+/// A signal about a table's tab on the branch's change stream, written once for every path that puts one there: the
+/// tab-lifecycle handlers (<c>DomainEvents/Tabs/TabFloorSignal</c> - a scan waiting, the table let in, a scan turned
+/// away while the party stays) and a tab moved to another table (<see cref="TableTransferService"/>).
 /// </summary>
 /// <remarks>
-/// See <see cref="TabAdmission"/> and <c>docs/tabs.md</c>. Nothing here saves: the caller saves through
-/// <see cref="TabLedger.SaveAppendedAsync"/>, which numbers the event.
+/// See <see cref="TabAdmission"/> and <c>docs/tabs.md</c>. Nothing here saves: the row commits with the change it is
+/// about.
 /// </remarks>
 internal static class TabAdmissions
 {
-    /// <summary>
-    /// Admits a tab that was waiting, in the caller's unit of work. False, staging nothing, when it
-    /// already was.
-    /// </summary>
-    /// <param name="db">The caller's unit of work.</param>
-    /// <param name="ledger">The caller's ledger, for the event.</param>
-    /// <param name="tab">The tab, tracked.</param>
-    /// <param name="because">Why.</param>
-    /// <param name="staffId">The waiter, when it was one.</param>
-    /// <param name="signalActor">Who the branch stream's row names - the waiter, or the booker's account, or the system.</param>
-    /// <param name="nowUtc">Now.</param>
-    /// <exception cref="TabAdmissionDecidedException">A waiter already turned it away.</exception>
-    public static bool Admit(
-        YallaDbContext db,
-        TabLedger ledger,
-        Tab tab,
-        TabAdmissionReason because,
-        Guid? staffId,
-        (ActorType Type, Guid? Id) signalActor,
-        DateTime nowUtc)
-    {
-        if (!tab.Admit(nowUtc, because, staffId))
-        {
-            return false;
-        }
-
-        ledger.Append(tab.Id, TabEventType.TabAdmitted, new
-        {
-            admittedBecause = (int)because,
-            byStaffId = staffId,
-            atUtc = nowUtc,
-        });
-
-        Signal(db, tab, TableChangeSignal.TabAdmitted, "table let in to order", signalActor, nowUtc);
-
-        return true;
-    }
-
     /// <summary>
     /// Puts a signal about the table's tab on the branch change stream - a same-status row, as the
     /// hold-extended row is - in the caller's unit of work, so every tablet following the stream moves.

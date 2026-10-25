@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Auth;
 using Yalla.Application.Reservations;
 using Yalla.Application.Tabs;
@@ -23,10 +22,8 @@ internal sealed class TabStaffActions(
     ICurrentActor actor,
     ITokenAuthorityCheck authority,
     TabLedger ledger,
-    IActivityLog activity,
     ILogger<TabService> logger,
-    TabLookups lookups,
-    TabSignals signals)
+    TabLookups lookups)
 {
     // ---------------------------------------------------------------- staff
 
@@ -92,15 +89,15 @@ internal sealed class TabStaffActions(
                 return await lookups.StaffViewAsync(existing.Id, cancellationToken);
             }
 
-            var tab = new Tab(
+            // Raises TabOpenedByStaff, which writes the History's line.
+            var tab = Tab.OpenByStaff(
                 table.BranchId,
                 table.Id,
                 session.Id,
                 clock.UtcNow,
                 table.Branch.ReservationPolicy.ServiceChargePercent,
-                TabAdmissionReason.OpenedByStaff,
-                clientCommandId: command.ClientCommandId,
-                admittedByStaffId: actor.StaffMemberId);
+                command.ClientCommandId,
+                actor.StaffMemberId);
 
             session.AttachTab(tab.Id);
             db.Tabs.Add(tab);
@@ -111,20 +108,9 @@ internal sealed class TabStaffActions(
                 session.ClaimServerIfNone(openerId, tab.OpenedAtUtc);
             }
 
-            await activity.RecordAsync(
-                new ActivityRecord(ActivityCategory.Table, ActivityActions.TableTabOpened, ActivitySubjects.Tab, tab.Id)
-                {
-                    BranchId = table.BranchId,
-                    VenueId = table.Branch.VenueId,
-                    TableSessionId = session.Id,
-                    TableLabel = table.Label,
-                    Summary = new { tableId = table.Id, partySize = session.PartySize },
-                },
-                cancellationToken);
-
             try
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await ledger.SaveAppendedAsync(cancellationToken);
             }
             catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.TabPerSession))
             {
@@ -230,23 +216,9 @@ internal sealed class TabStaffActions(
 
         var oldHost = tab.Participants.FirstOrDefault(p => p.Id == tab.HostParticipantId);
 
-        // Order matters: the tab refuses a no-op and a closed tab before either row is touched,
-        // and the new host must be approved before they can take the role.
-        tab.ReassignHost(newHost.Id);
-        newHost.BecomeHost();
-        oldHost?.BecomeGuest();
-
-        ledger.Append(tab.Id, TabEventType.HostReassigned, new
-        {
-            fromParticipantId = oldHost?.Id,
-            toParticipantId = newHost.Id,
-        });
-
-        await signals.LogTabAsync(
-            tab,
-            ActivityActions.TableHostReassigned,
-            new { fromName = oldHost?.DisplayName, toName = newHost.DisplayName },
-            cancellationToken);
+        // Refuses a closed tab, a no-op and a new host who was never let on before either row is
+        // touched. Raises TabHostMoved: the stream and the History's line.
+        tab.MoveHostTo(newHost, clock.UtcNow, hostLeft: false);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -264,7 +236,8 @@ internal sealed class TabStaffActions(
         var tab = await lookups.LoadTabAsync(tabId, cancellationToken, includeJoinTokens: true);
         var nowUtc = clock.UtcNow;
 
-        tab.BeginClosing();
+        // Raises TabBillPresented: the stream's TabClosing and the History's line.
+        tab.BeginClosing(nowUtc);
 
         // Every participant on this tab may now read it but not change it, so the cached answers
         // about all of them are wrong. Dropped together rather than one at a time.
@@ -275,11 +248,6 @@ internal sealed class TabStaffActions(
         {
             live.Revoke(nowUtc);
         }
-
-        ledger.Append(tab.Id, TabEventType.TabClosing, new { atUtc = nowUtc });
-
-        await signals.LogTabAsync(
-            tab, ActivityActions.TableBillPresented, new { totalAmd = tab.TotalAmd, remainingAmd = tab.RemainingAmd }, cancellationToken);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 

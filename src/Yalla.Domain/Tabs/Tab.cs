@@ -218,7 +218,8 @@ public sealed class Tab : Entity
     }
 
     /// <summary>
-    /// Lets a tab that was waiting order. Answers false, changing nothing, when it is already admitted.
+    /// Lets a tab that was waiting order, and raises <see cref="TabAdmitted"/>. Answers false, changing and raising
+    /// nothing, when it is already admitted.
     /// </summary>
     /// <param name="atUtc">Now.</param>
     /// <param name="because">A waiter's tap or the booker arriving.</param>
@@ -241,21 +242,28 @@ public sealed class Tab : Entity
         AdmissionDecidedAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         AdmissionDecidedByStaffId = byStaffId;
 
+        Raise(new TabAdmitted(this, because, byStaffId, AdmissionDecidedAtUtc.Value));
+
         return true;
     }
 
     /// <summary>
-    /// A waiter turns away a tab that was waiting: nobody they can see is sitting there. The tab closes.
-    /// Answers false, changing nothing, when it was already turned away.
+    /// A waiter turns away a tab that was waiting: nobody they can see is sitting there. The tab closes, and
+    /// <see cref="TabTurnedAway"/> is raised. Answers false, changing and raising nothing, when it was already turned
+    /// away.
     /// </summary>
     /// <remarks>
     /// Nothing can be on it - no phone order is accepted before admission, and the caller refuses a tab a
     /// waiter has keyed orders on - so closing it settles nothing. What happens to the table is the caller's:
     /// freed (or held again) when the scan seated it, left as it is when a waiter or a booking did.
     /// </remarks>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="byStaffId">The waiter.</param>
+    /// <param name="reason">Why, as the waiter gave it; null when they gave none.</param>
+    /// <param name="tableFreed">The scan seated the table, and the caller gives it back with the tab.</param>
     /// <exception cref="TabAdmissionDecidedException">It was already admitted.</exception>
     /// <exception cref="DomainStateException">There is money on it, which cannot happen through this API.</exception>
-    public bool RejectAdmission(DateTime atUtc, Guid byStaffId)
+    public bool RejectAdmission(DateTime atUtc, Guid byStaffId, string? reason, bool tableFreed)
     {
         if (Admission == TabAdmission.Rejected)
         {
@@ -283,6 +291,8 @@ public sealed class Tab : Entity
             ClosedAtUtc = AdmissionDecidedAtUtc;
         }
 
+        Raise(new TabTurnedAway(this, reason, tableFreed, byStaffId, AdmissionDecidedAtUtc.Value));
+
         return true;
     }
 
@@ -300,37 +310,214 @@ public sealed class Tab : Entity
         RemainingAmd = Math.Max(0L, TotalAmd - PaidAmd);
     }
 
+    /// <summary>
+    /// Records which participant hosts the tab, raising nothing: the first phone onto a tab a waiter opened with nobody
+    /// on it takes the role unannounced, and a test seeds a tab with it. A scan that opens the tab is
+    /// <see cref="OpenWithHost"/>.
+    /// </summary>
     public void SetHostParticipant(Guid participantId) =>
         HostParticipantId = Guard.NotEmpty(participantId, nameof(participantId));
 
     /// <summary>
-    /// Moves the host role to another person on the tab. A staff action: the host has left early
-    /// or their phone has died, and without this the tab is stuck with nobody able to approve
-    /// joiners or change the split.
+    /// A phone's scan - or a booker with their code - opened this tab and hosts it: records the host and raises
+    /// <see cref="TabOpenedByScan"/>, which tells the floor when the tab waits for a waiter.
+    /// </summary>
+    /// <param name="host">The host, on this tab.</param>
+    public void OpenWithHost(TabParticipant host)
+    {
+        Own(host);
+
+        if (!host.IsHost)
+        {
+            throw new ArgumentException("The phone that opens a tab hosts it.", nameof(host));
+        }
+
+        HostParticipantId = host.Id;
+
+        Raise(new TabOpenedByScan(this, host, OpenedAtUtc));
+    }
+
+    /// <summary>
+    /// A tab a waiter opens on a seated table, with nobody on it: it may order at once, and the waiter is recorded as
+    /// having decided so. Raises <see cref="TabOpenedByStaff"/>.
+    /// </summary>
+    /// <param name="branchId">The branch.</param>
+    /// <param name="diningTableId">The table.</param>
+    /// <param name="tableSessionId">The sitting it is the bill for.</param>
+    /// <param name="openedAtUtc">Now.</param>
+    /// <param name="serviceChargePercentSnapshot">The branch's service charge as it stands.</param>
+    /// <param name="clientCommandId">The tablet's id for the tap.</param>
+    /// <param name="byStaffId">The waiter.</param>
+    public static Tab OpenByStaff(
+        Guid branchId,
+        Guid diningTableId,
+        Guid tableSessionId,
+        DateTime openedAtUtc,
+        decimal serviceChargePercentSnapshot,
+        Guid clientCommandId,
+        Guid? byStaffId)
+    {
+        var tab = new Tab(
+            branchId,
+            diningTableId,
+            tableSessionId,
+            openedAtUtc,
+            serviceChargePercentSnapshot,
+            TabAdmissionReason.OpenedByStaff,
+            clientCommandId: clientCommandId,
+            admittedByStaffId: byStaffId);
+
+        tab.Raise(new TabOpenedByStaff(tab, byStaffId, tab.OpenedAtUtc));
+
+        return tab;
+    }
+
+    /// <summary>
+    /// Moves the host role to another person on the tab, and raises <see cref="TabHostMoved"/>: a waiter's move - the
+    /// host has left early or their phone has died, and without this the tab is stuck with nobody able to approve
+    /// joiners or change the split - or the host leaving and handing it on (<see cref="Leave"/>).
     /// </summary>
     /// <remarks>
-    /// The role change on the two participant rows is done by the caller, which has them loaded;
-    /// this records which row the tab now answers to. It refuses a tab that is no longer live -
-    /// there is nothing to host on a closed bill.
+    /// Order matters: the tab refuses a closed tab and a no-op before either participant is touched, and the new host
+    /// must be approved before they can take the role. The old host steps down to guest, keeping what they may do.
     /// </remarks>
-    public void ReassignHost(Guid newHostParticipantId)
+    /// <param name="newHost">The approved participant who takes over, on this tab.</param>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="hostLeft">The host is leaving the tab and hands it on.</param>
+    /// <exception cref="DomainStateException">The tab is closed, they already host it, or they are not approved.</exception>
+    public void MoveHostTo(TabParticipant newHost, DateTime atUtc, bool hostLeft)
     {
+        Own(newHost);
+        Guard.NotLocalTime(atUtc, nameof(atUtc));
+
         if (!IsActive)
         {
             throw new DomainStateException($"This tab is {Status}; a closed tab has no host to reassign.");
         }
 
-        Guard.NotEmpty(newHostParticipantId, nameof(newHostParticipantId));
-
-        if (HostParticipantId == newHostParticipantId)
+        if (HostParticipantId == newHost.Id)
         {
             throw new DomainStateException("That participant is already the host.");
         }
 
-        HostParticipantId = newHostParticipantId;
+        // Checked before anything changes, so a refusal leaves the tab answering to its old host.
+        if (newHost.Status != ParticipantStatus.Approved)
+        {
+            throw new DomainStateException(
+                $"Only an approved participant can become the host; this one is {newHost.Status}.");
+        }
+
+        var oldHost = _participants.FirstOrDefault(p => p.Id == HostParticipantId);
+
+        HostParticipantId = newHost.Id;
+        newHost.BecomeHost();
+        oldHost?.BecomeGuest();
+
+        Raise(new TabHostMoved(this, oldHost, newHost, hostLeft, atUtc));
     }
 
-    public void SetSettlementMode(SettlementMode settlementMode)
+    /// <summary>Somebody new landed on the tab pending, and waits for the host: raises <see cref="TabJoinRequested"/>.</summary>
+    /// <param name="joiner">The newcomer, pending, on this tab.</param>
+    /// <param name="givenName">The name they gave, or null.</param>
+    /// <param name="atUtc">Now.</param>
+    public void AskToJoin(TabParticipant joiner, string? givenName, DateTime atUtc)
+    {
+        Own(joiner);
+
+        if (joiner.Status != ParticipantStatus.PendingApproval)
+        {
+            throw new ArgumentException("Only somebody waiting to be let on asks to join.", nameof(joiner));
+        }
+
+        Raise(new TabJoinRequested(this, joiner, givenName, Guard.NotLocalTime(atUtc, nameof(atUtc))));
+    }
+
+    /// <summary>Lets somebody on and raises <see cref="TabParticipantApproved"/>.</summary>
+    /// <param name="participant">The participant, on this tab.</param>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="asBooker">The booking lets them on, not the host's tap.</param>
+    /// <exception cref="DomainStateException">They were removed.</exception>
+    public void ApproveParticipant(TabParticipant participant, DateTime atUtc, bool asBooker)
+    {
+        Own(participant).Approve(atUtc);
+
+        Raise(new TabParticipantApproved(this, participant, asBooker, atUtc));
+    }
+
+    /// <summary>The host turns away somebody waiting to be let on; raises <see cref="TabParticipantRejected"/>.</summary>
+    /// <exception cref="DomainStateException">They were not waiting.</exception>
+    public void RejectParticipant(TabParticipant participant, DateTime atUtc)
+    {
+        Own(participant).Reject(atUtc);
+
+        Raise(new TabParticipantRejected(this, participant, atUtc));
+    }
+
+    /// <summary>The host takes somebody off the tab; raises <see cref="TabParticipantRemoved"/>.</summary>
+    /// <exception cref="DomainStateException">They are the host.</exception>
+    public void RemoveParticipant(TabParticipant participant, DateTime atUtc)
+    {
+        Own(participant).Remove(atUtc);
+
+        Raise(new TabParticipantRemoved(this, participant, Left: false, atUtc));
+    }
+
+    /// <summary>
+    /// Somebody takes themself off the tab - a host first handing it to <paramref name="successor"/>
+    /// (<see cref="MoveHostTo"/>) - and <see cref="TabParticipantRemoved"/> is raised as their own doing.
+    /// </summary>
+    /// <param name="leaving">The participant leaving, on this tab.</param>
+    /// <param name="successor">Who takes the tab over, when the host is the one leaving.</param>
+    /// <param name="atUtc">Now.</param>
+    public void Leave(TabParticipant leaving, TabParticipant? successor, DateTime atUtc)
+    {
+        Own(leaving);
+
+        if (successor is not null)
+        {
+            MoveHostTo(successor, atUtc, hostLeft: true);
+        }
+
+        leaving.Remove(atUtc);
+
+        Raise(new TabParticipantRemoved(this, leaving, Left: true, atUtc));
+    }
+
+    /// <summary>The host sets what somebody may do; raises <see cref="TabParticipantPermissionsChanged"/>.</summary>
+    /// <exception cref="FieldValidationException">The host's own sight of the total switched off.</exception>
+    /// <exception cref="ArgumentException">Paying without seeing the total.</exception>
+    public void SetParticipantPermissions(
+        TabParticipant participant, bool canOrder, bool canSeeTableTotal, bool canPay, DateTime atUtc)
+    {
+        Own(participant).SetPermissions(canOrder, canSeeTableTotal, canPay);
+
+        Raise(new TabParticipantPermissionsChanged(this, participant, atUtc));
+    }
+
+    /// <summary>Somebody puts their name on the tab; raises <see cref="TabParticipantRenamed"/>.</summary>
+    public void RenameParticipant(TabParticipant participant, string displayName, DateTime atUtc)
+    {
+        Own(participant).SetDisplayName(displayName);
+
+        Raise(new TabParticipantRenamed(this, participant, atUtc));
+    }
+
+    /// <summary>The participant, once it is known to be on this tab.</summary>
+    private TabParticipant Own(TabParticipant participant)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+
+        if (participant.TabId != Id)
+        {
+            throw new ArgumentException("That participant is on another tab.", nameof(participant));
+        }
+
+        return participant;
+    }
+
+    /// <summary>The host chooses how the bill is split; raises <see cref="TabSettlementModeChanged"/>.</summary>
+    /// <exception cref="DomainStateException">The split is locked: money has landed against it.</exception>
+    public void SetSettlementMode(SettlementMode settlementMode, DateTime atUtc)
     {
         if (SettlementModeLockedAtUtc is not null)
         {
@@ -338,6 +525,8 @@ public sealed class Tab : Entity
         }
 
         SettlementMode = Guard.Defined(settlementMode, nameof(settlementMode));
+
+        Raise(new TabSettlementModeChanged(this, Guard.NotLocalTime(atUtc, nameof(atUtc))));
     }
 
     /// <summary>Freezes the split so it cannot be renegotiated once settlement has begun.</summary>
@@ -454,8 +643,10 @@ public sealed class Tab : Entity
         Raise(new TabWrittenOff(this, RemainingAmd, reason, byStaffId, ClosedAtUtc.Value));
     }
 
-    /// <summary>The bill has been asked for; no new orders and no new participants.</summary>
-    public void BeginClosing()
+    /// <summary>
+    /// A waiter presents the bill: no new orders and no new participants. Raises <see cref="TabBillPresented"/>.
+    /// </summary>
+    public void BeginClosing(DateTime atUtc)
     {
         if (Status != TabStatus.Open)
         {
@@ -463,5 +654,7 @@ public sealed class Tab : Entity
         }
 
         Status = TabStatus.Closing;
+
+        Raise(new TabBillPresented(this, Guard.NotLocalTime(atUtc, nameof(atUtc))));
     }
 }
