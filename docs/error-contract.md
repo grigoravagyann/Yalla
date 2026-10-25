@@ -352,3 +352,145 @@ The shape refusals are ordinary 422 `validation-failed` naming their fields: `li
 fields at once is a `validation-failed` 422 carrying `context.fields`; the 400 `invalid-request`
 answers are the single-field guard refusals that cannot collect. A body missing both `qrToken` and
 `deviceId` names both, in one answer, in the same document shape as every other refusal in this API.
+
+## The catalogue: every problem code
+
+Generated - do not edit by hand. Every code is declared once, on its constant in
+`src/Yalla.Api/Errors/ErrorCodes.cs`: `[Problem(status, meaning, Title = ...)]` and a
+`[ProblemContext(name, type)]` per `context` member. `ProblemCatalogue` reads those; the exception mapper
+takes each code's status from it, the OpenAPI document publishes it as the root `x-problem-codes`
+extension (the frontend generates `packages/api/src/generated/problemCodes.ts` from that), and this table
+is written from it. `ProblemCatalogueTests` fails when the table is stale - regenerate with
+`YALLA_UPDATE_DOCS=1 dotnet test tests/Yalla.UnitTests --filter "FullyQualifiedName~ProblemCatalogueTests"` -
+and when a code is thrown anywhere without being declared.
+
+A member marked *optional* is left out of some contexts that are there; every other member is present
+whenever `context` is. Some codes answer without a context on some routes (`not-found` for a missing row,
+`reservation-overlaps-own` on a manage link): branch on the code, then read the context when it is there.
+Enums are their integer values. `unauthenticated` is declared for clients and not sent today: a route
+refusing a missing token answers a bare 401 with no body.
+
+<!-- problem-codes:begin -->
+| Code | Status | Title | Meaning | `context` |
+|---|---|---|---|---|
+| `account-inactive` | 401 | Account inactive | The account or staff member behind the credential is no longer active. | - |
+| `account-locked` | 403 | Account locked | The account is locked, not the credential wrong. | `lockedUntilUtc` date-time (nullable) |
+| `activity-export-too-large` | 422 | Export too large | A History export would carry more rows than a file may. | `rows` int32, `maxRows` int32 |
+| `ask-on-my-way-asked-recently` | 409 | Asked a moment ago | "Ask: are you coming?" within fifteen minutes of the last ask. | `reservationId` uuid, `askedAtUtc` date-time, `nextAllowedAtUtc` date-time |
+| `ask-on-my-way-not-open` | 409 | Booking not expecting anybody | "Ask: are you coming?" for a booking that is not confirmed, or has started. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time |
+| `ask-on-my-way-too-early` | 409 | Too early to ask | "Ask: are you coming?" more than two hours before the start. | `reservationId` uuid, `opensAtUtc` date-time |
+| `booking-blocked-no-shows` | 403 | Booking paused after missed bookings | The guest missed three bookings in three days and cannot book until the block ends. | `blockedUntilUtc` date-time |
+| `booking-ended` | 409 | Booking has ended | The booking is over: past its end, or its sitting has finished. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
+| `booking-not-active` | 409 | Booking not active | The booking is not expecting its party: awaiting approval, cancelled, or a no-show. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
+| `booking-not-found` | 404 | Booking not found | None of the caller's bookings carries that code. | - |
+| `booking-table-occupied` | 409 | Booked table still occupied | The booked table still has another party's sitting open; staff must free it. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
+| `booking-too-early` | 409 | Too early for this booking | The booking's table is not being held for the party yet; context says from when. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
+| `bookings-not-accepted` | 409 | Bookings not accepted | A booking from the diner app at a branch that is not taking app bookings. | `branchId` uuid |
+| `branch-not-ready` | 409 | Branch is not ready for diners | The branch's menu has unfinished dishes, so it cannot be switched to Paid. | `branchId` uuid, `incompleteMenuItemCount` int32 |
+| `branch-unavailable` | 409 | Branch not open for business | The branch is not open for business: venue suspended or deleted, or branch switched off. | `branchId` uuid, `reason` string |
+| `client-command-id-in-use` | 409 | Command id already used | The clientCommandId already belongs to another caller's command; start again with a fresh one. | - |
+| `concurrent-update` | 409 | Concurrent update | Someone else changed the row first: re-read and retry. | `currentVersion` string |
+| `conflicting-state` | 409 | Conflicting state | The operation is not legal in the current state; a staff order's unorderable guest is named in context. | `field` string, `participantId` uuid, `participantStatus` ParticipantStatus |
+| `conversation-closed` | 409 | Conversation closed | Writing to a guest-message thread that has closed. | `subjectKind` string, `subjectId` uuid, `closedAtUtc` date-time |
+| `credentials-invalid` | 401 | Credentials invalid | An admin-panel email and password did not match an account. | - |
+| `device-revoked` | 401 | Device revoked | The tablet or device is no longer enrolled; ask a manager to enrol it again. | - |
+| `email-taken` | 409 | Email address taken | The email address on a diner sign-up or profile edit is somebody else's. | `field` string |
+| `enrolment-code-expired` | 401 | Enrolment code expired | The tablet enrolment code has expired; ask a manager for a new one. | - |
+| `enrolment-code-invalid` | 401 | Enrolment code invalid | The tablet enrolment code is not valid. | - |
+| `extensions-not-offered` | 409 | Hold extensions not offered | The branch offers no hold extensions. | `reservationId` uuid, `startUtc` date-time |
+| `feature-not-enabled` | 409 | Feature not enabled for this branch | The branch's tier does not include this feature. | `feature` string, `branchId` uuid, `currentTier` SubscriptionTier |
+| `floor-plan-changed` | 409 | Floor plan changed | The floor plan was saved by somebody else since the editor loaded it. | `currentVersion` string |
+| `floor-plan-invalid` | 422 | Floor plan invalid | The floor plan cannot be applied; every reason is listed. | `errors` string[], `duplicateLabels` string[] |
+| `forbidden` | 403 | Forbidden | The caller is not allowed to do this. | `operation` string (optional), `requiredRole` StaffRole (optional), `requirement` string (optional), `subject` string (optional) |
+| `guest-already-answered` | 409 | The guest has answered | "Ask: are you coming?" when the guest already said on my way or running late. | `reservationId` uuid, `answeredAtUtc` date-time, `runningLateMinutes` int32 (optional) |
+| `guests-cannot-write` | 403 | This venue takes no written messages | A guest's typed message where the venue switched guest messages off. | `branchId` uuid |
+| `hold-already-extended` | 409 | Hold already extended | The booking's one hold extension is already used. | `reservationId` uuid, `startUtc` date-time |
+| `hold-not-active` | 409 | No table being held yet | "Keep my table" with no table being held yet. | `reservationId` uuid, `startUtc` date-time |
+| `internal-error` | 500 | Internal error | Anything unhandled; quote the traceId when reporting it. | - |
+| `invalid-credentials` | 401 | Invalid credentials | A diner's identifier and password, or current password, did not match a usable account. | - |
+| `invalid-request` | 400 | Invalid request | The request violated a domain rule or arrived malformed; context names the field when one is to blame. | `field` string, `value` any (optional) |
+| `invalid-table-transition` | 422 | Invalid table transition | The table cannot make that transition from its current status. | `tableId` uuid, `tableLabel` string, `fromStatus` TableStatus, `attemptedToStatus` TableStatus, `allowedFromHere` TableStatus[] |
+| `join-token-invalid` | 401 | Join token invalid | The tab invitation is no longer valid; ask the host for a new one. | - |
+| `kitchen-phone-not-allowed` | 409 | No phone for kitchen staff | A phone cannot be paired to kitchen staff: the kitchen works on its tablet. | `staffMemberId` uuid |
+| `line-already-paid` | 409 | Line already paid for | Removing this line would reverse money already taken; that is a refund. | `tabId` uuid, `lineId` uuid |
+| `menu-item-unavailable` | 409 | Item unavailable | A dish on the order has sold out; context names it. | `menuItemId` uuid, `itemName` string |
+| `messages-too-fast` | 429 | Messages too fast | A guest writing more than five messages a minute, or sixty in one thread. | `conversationId` uuid, `perMinute` int32, `perConversation` int32, `retryAfterUtc` date-time (optional) |
+| `no-show-undo-window-closed` | 409 | Too late to withdraw this no-show | A no-show can no longer be withdrawn: its service day ended. | `undoableUntilUtc` date-time |
+| `not-found` | 404 | Not found | The thing addressed does not exist; a staff order's missing guest is named in context. | `field` string, `participantId` uuid |
+| `on-my-way-not-open` | 409 | Booking not expecting you | "On my way" for a booking that is not expecting anybody now. | `reservationId` uuid, `status` ReservationStatus, `opensAtUtc` date-time |
+| `pairing-code-expired` | 401 | Pairing code expired | The phone pairing code is past its ten minutes, or a newer one replaced it. | - |
+| `pairing-code-invalid` | 401 | Pairing code not valid | The phone pairing code is unknown: mistyped, or a tablet's enrolment code. | - |
+| `payment-exceeds-remaining` | 409 | Payment exceeds the balance | More was offered than the tab still owes; context carries the balance. | `tabId` uuid, `requestedAmd` int64, `remainingAmd` int64 |
+| `phone-has-active-booking` | 409 | This number holds as many bookings as it can | The booker's proved number already holds as many active bookings as one number may. | `maxActiveBookings` int32, `reservationId` uuid (optional), `code` string (optional), `startUtc` date-time (optional), `localDate` date (optional), `localStartTime` time (optional), `venueName` string (optional), `branchName` string (optional) |
+| `phone-in-use` | 409 | Phone number already has an account | The phone number on a diner sign-up already has an account; log in with a code instead. | `field` string |
+| `phone-not-verified` | 403 | Phone number not verified | The diner's phone number has never been proved, and the request would land on it. | - |
+| `pin-invalid` | 401 | Pin invalid | The staff PIN was not recognised. | - |
+| `pin-taken` | 409 | PIN already in use on this tablet | The PIN is already used by somebody else who signs in on the same tablet. | `field` string |
+| `pre-order-already-sent` | 409 | Pre-order already sent to the kitchen | The kitchen already has the pre-order, so it no longer changes. | `reservationId` uuid, `sentAtUtc` date-time |
+| `pre-order-items-unavailable` | 422 | Dishes cannot be pre-ordered | Dishes that cannot be pre-ordered, every one named with why. | `items` PreOrderItemRefusalShape[] |
+| `pre-order-locked` | 409 | Pre-order closed | The pre-order can no longer be changed by the guest: two hours before the start or later. | `reservationId` uuid, `lockedAtUtc` date-time |
+| `pre-order-not-sendable` | 409 | Pre-order cannot be sent now | Not the time or the state to send a pre-order to the kitchen, or mark the party not coming. | `reservationId` uuid, `status` ReservationStatus, `sendableFromUtc` date-time, `endUtc` date-time |
+| `pre-orders-not-accepted` | 409 | Pre-orders not accepted | The branch does not take pre-orders. | `branchId` uuid |
+| `precondition-failed` | 409 | Precondition failed | A queued command describes a table that has since moved; resolve it from the conflict list. | `tableId` uuid, `tableLabel` string, `expectedFromStatus` TableStatus, `currentStatus` TableStatus, `failure` PreconditionFailure, `clientCommandId` uuid |
+| `rate-limited` | 429 | Rate limited | Too many requests in the window; wait for Retry-After. | - |
+| `refresh-token-invalid` | 401 | Refresh token invalid | The refresh token is unknown, expired or revoked; sign in again. | - |
+| `refresh-token-reused` | 401 | Refresh token reused | A refresh token already rotated was presented again; its whole chain is revoked. | - |
+| `relocation-not-allowed` | 403 | Relocation not allowed | Moving a branch (address or map pin) is for an owner or platform admin; nothing was saved. | `branchId` uuid |
+| `report-range-too-long` | 400 | Report range too long | The report range is longer than any report will run. | `field` string, `requestedDays` int32, `maxDays` int32 |
+| `reservation-approval-expired` | 409 | Too late to answer this booking | Approving or declining a booking whose chance to be answered has gone. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `approvalExpiresAtUtc` date-time (nullable) |
+| `reservation-awaiting-earlier-guest` | 409 | Waiting for the guest before to answer | Staff deciding a booking that waits on the guest before it on the table to answer. | `reservationId` uuid, `requestId` uuid, `expiresAtUtc` date-time |
+| `reservation-cancelled-by-block` | 409 | Cancelled: the guest is blocked for no-shows | Approving or rejecting a booking its guest's no-show block cancelled. | `reservationId` uuid, `cancelledAtUtc` date-time (nullable) |
+| `reservation-free-by-required` | 422 | Free the table by the time required | The next booking cuts the sitting short and the booking did not accept the time to free the table by. | `field` string, `requiredFreeByUtc` date-time, `requiredFreeByLocal` string, `nextBookingStartUtc` date-time, `tableId` uuid, `tableLabel` string |
+| `reservation-lead-time-too-short` | 422 | Reservation lead time too short | The slot starts sooner than the branch's minimum lead time. | `reason` ReservationRejectionReason, `requestedStartUtc` date-time, `earliestStartUtc` date-time, `minLeadMinutes` int32 |
+| `reservation-local-time-does-not-exist` | 422 | Reservation local time does not exist | The wall-clock time picked does not exist in the branch's zone (a clock change skips it). | `reason` ReservationRejectionReason, `localDate` date, `localTime` string, `timeZoneId` string |
+| `reservation-lock-timeout` | 503 | Reservation lock timeout | The booking could not get the table's lock in time; retry with the same clientCommandId. | `tableId` uuid, `tableLabel` string, `timeoutMilliseconds` int32, `retryable` boolean |
+| `reservation-not-changeable` | 409 | Booking can no longer be changed | A change to a booking that is no longer pending or confirmed, or has started. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time |
+| `reservation-not-started` | 409 | Booking has not started yet | A no-show recorded against a booking whose start has not come yet. | `reservationId` uuid, `startUtc` date-time |
+| `reservation-outside-booking-window` | 422 | Reservation outside booking window | The date is further ahead than the branch takes bookings. | `reason` ReservationRejectionReason, `requestedDate` date, `lastBookableDate` date, `bookingWindowDays` int32 |
+| `reservation-outside-opening-hours` | 422 | Reservation outside opening hours | The sitting does not fit inside one opening block of the branch's day. | `reason` ReservationRejectionReason, `localDate` date, `localStartTime` string, `localEndTime` string |
+| `reservation-overlaps-own` | 409 | You already have a booking then | The sitting overlaps another of the diner's own live bookings; context names it (not on a manage link). | `reservationId` uuid, `code` string, `localDate` date, `localStartTime` time, `tableLabel` string, `venueName` string (nullable), `branchName` string (nullable) |
+| `reservation-party-exceeds-capacity` | 422 | Reservation party exceeds capacity | More guests than the table has seats. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string, `partySize` int32, `seats` int32 |
+| `reservation-seat-overhang-exceeded` | 422 | Reservation seat overhang exceeded | The party would leave more seats empty than the branch allows. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string, `partySize` int32, `seats` int32, `seatsLeftEmpty` int32, `maxSeatOverhang` int32 |
+| `reservation-table-not-bookable` | 422 | Reservation table not bookable | The table never takes bookings: a bar stool, a counter seat. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string |
+| `reservation-table-out-of-service` | 422 | Reservation table out of service | The table is withdrawn from service. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string |
+| `reset-token-invalid` | 401 | Reset token invalid | The password reset link is unknown, spent or expired; ask for a new one. | - |
+| `review-needs-visit` | 403 | Review needs a visit | A first review of a branch from a diner with no visit there in the window. | `branchId` uuid, `windowDays` int32 |
+| `scan-turned-away` | 409 | Ask a waiter | A scan refused for a while after a waiter turned this phone or table away. | `retryAfterUtc` date-time |
+| `service-request-rate-limited` | 429 | Too many requests from this table | This table has asked for staff too many times too quickly. | `tabId` uuid, `limit` int32, `windowMinutes` int32 |
+| `session-expired` | 401 | Session expired | The staff PIN session timed out; tap the PIN again. | - |
+| `session-invalid` | 401 | Session invalid | The staff PIN session is no longer valid; tap the PIN again. | - |
+| `session-revoked` | 401 | Session revoked | The token's session has ended; refresh once, then sign out. | - |
+| `sign-in-unknown` | 409 | Sign-in not identified | The token names no sign-in, so "sign out everywhere else" cannot tell which to keep. | - |
+| `sms-unavailable` | 503 | Codes by SMS unavailable | No SMS provider is configured, so no code can be sent; prove the number with Telegram. | - |
+| `tab-admission-decided` | 409 | Already decided | Admitting a tab already turned away, or turning away one already admitted. | `tabId` uuid, `admission` TabAdmission |
+| `tab-awaiting-admission` | 409 | Waiting for a waiter | The tab waits for a waiter to let it order. | `tabId` uuid |
+| `tab-not-accepting-orders` | 409 | Tab not accepting orders | The tab takes no more orders: the bill has been asked for, or it is closed. | `tabId` uuid, `status` TabStatus |
+| `tab-not-transferable` | 409 | Nothing to hand over | A table whose bill is closed or written off, or whose party has gone, has nobody to hand over. | `tabId` uuid, `status` TabStatus |
+| `table-already-booked` | 409 | Table already booked | The table was booked by somebody else between seeing it free and confirming. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string, `requestedStartUtc` date-time, `requestedEndUtc` date-time, `conflictingStartUtc` date-time, `conflictingEndUtc` date-time, `conflictingReservationId` uuid, `availability` BranchAvailability (optional) |
+| `table-currently-occupied` | 409 | Table currently occupied | A party seated at the table now runs into the requested slot; it may free up early. | `reason` ReservationRejectionReason, `tableId` uuid, `tableLabel` string, `requestedStartUtc` date-time, `requestedEndUtc` date-time, `seatedAtUtc` date-time, `projectedFreeAtUtc` date-time, `tableSessionId` uuid, `availability` BranchAvailability (nullable) |
+| `table-has-future-bookings` | 409 | Table has upcoming bookings | A table with a booking still to come cannot be deleted, nor left out of a floor-plan save. | `tables` string[], `bookings` string[] |
+| `table-lock-timeout` | 503 | Table busy | A table write waited too long for another writer; retry, nothing was decided. | `tableId` uuid, `tableLabel` string, `timeoutMilliseconds` int32, `retryable` boolean |
+| `table-not-seated` | 409 | Nobody seated at this table | Staff tried to open a tab on a table with nobody seated at it. | `tableId` uuid, `tableLabel` string, `status` TableStatus |
+| `table-request-not-pending` | 409 | This request no longer needs an answer | An answer to a request for the table that no longer waits. | `reservationId` uuid, `requestId` uuid, `status` TableShareRequestStatus, `expiresAtUtc` date-time |
+| `table-sitting-changed` | 409 | Table sitting changed | A free that named a booking found another sitting, or none, open at the table. | `tableId` uuid, `tableLabel` string, `reservationId` uuid, `tableStatus` TableStatus, `currentSessionId` uuid (nullable) |
+| `table-state-conflict` | 409 | Table state conflict | Somebody else changed this table first; redraw it from the current state. | `tableId` uuid, `tableLabel` string, `attemptedFromStatus` TableStatus, `currentStatus` TableStatus, `currentSessionId` uuid (nullable) |
+| `takeaway-busy` | 409 | Kitchen busy | ASAP while the kitchen has as many takeaway orders in progress as the venue allows. | `branchId` uuid, `maxInProgress` int32 |
+| `takeaway-closed` | 409 | Takeaway closed now | Closed for takeaway now: shut, or past the last order. | `branchId` uuid, `opensAtUtc` date-time (optional), `opensAt` string (optional) (nullable) |
+| `takeaway-items-unavailable` | 422 | Dishes not for takeaway | Dishes that cannot be ordered to take away, every one named with why. | `items` TakeawayItemRefusalShape[] |
+| `takeaway-no-show-too-early` | 409 | Too early for a no-show | "No-show" for a takeaway order before thirty minutes past ready. | `orderId` uuid, `noShowFromUtc` date-time |
+| `takeaway-not-accepted` | 409 | Takeaway not offered | The branch does not take takeaway orders. | `branchId` uuid |
+| `takeaway-slot-unavailable` | 409 | Pickup time unavailable | The pickup time asked for is not one on offer; context lists the slots on offer now. | `branchId` uuid, `at` string, `slots` string[] |
+| `takeaway-status-conflict` | 409 | Order has moved on | The takeaway order is not in the state for that move; context says where it is now. | `orderId` uuid, `status` TakeawayStatus |
+| `telegram-verification-expired` | 410 | Telegram verification no longer available | A Telegram verification challenge that can no longer be claimed; start again. | - |
+| `too-many-attempts` | 429 | Too many attempts | A one-time credential is out of attempts, or a per-identity limit is spent; ask for a new code. | `retryAfterSeconds` int32 |
+| `transfer-target-ineligible` | 422 | Cannot take this table | The waiter named cannot take the table. | `staffMemberId` uuid, `reason` string |
+| `unauthenticated` | 401 | Not authenticated | No usable credential was presented (declared for clients; a bare 401 carries no body). | - |
+| `unsupported-image` | 409 | Unsupported image | An upload is not a JPEG, PNG or WebP, or is too large to store. | `detectedFormat` string |
+| `username-taken` | 409 | Username taken | The username on a diner sign-up or profile edit is somebody else's. | `field` string |
+| `validation-failed` | 422 | Validation failed | Field-level validation failed; every offending field is named. | `field` string, `fields` FieldViolationShape[] |
+| `venue-deletion-blocked` | 409 | Venue cannot be deleted | The venue has open tabs or future bookings and cannot be deleted. | `openTabs` string[], `futureReservations` string[] |
+| `verification-code-expired` | 401 | Verification code expired | The one-time code has expired; ask for a new one. | - |
+| `verification-code-invalid` | 401 | Verification code invalid | A one-time code that was not accepted; context says how many tries are left. | `attemptsRemaining` int32 |
+| `waiters-cannot-write` | 403 | Only managers write to guests here | A waiter writing to a guest where the venue keeps messages to managers. | `branchId` uuid |
+| `web-bookings-not-accepted` | 409 | Web bookings not accepted | The branch does not take bookings from its public page. | `branchId` uuid |
+<!-- problem-codes:end -->

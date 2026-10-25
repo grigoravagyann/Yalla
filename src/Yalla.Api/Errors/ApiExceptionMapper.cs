@@ -41,8 +41,10 @@ public readonly record struct MappedError(
 /// </summary>
 /// <remarks>
 /// The domain enforces its invariants by throwing from constructors and mutators, so the mapping
-/// from exception type to status code is the seam where those refusals become HTTP answers. Later
-/// tasks add their own exception types here; nothing else in the pipeline needs to change.
+/// from exception type to code is the seam where those refusals become HTTP answers. Later tasks
+/// add their own exception types here; nothing else in the pipeline needs to change. Each arm names
+/// a code and builds its context; the status comes from the code's declaration in
+/// <see cref="ErrorCodes"/> (see <see cref="ProblemCatalogue"/>).
 /// </remarks>
 internal static class ApiExceptionMapper
 {
@@ -53,17 +55,61 @@ internal static class ApiExceptionMapper
     /// <summary>Whole seconds, rounded up and never below one: a client told 0 retries at once.</summary>
     private static int RetryAfterSeconds(TimeSpan wait) => Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds));
 
+    /// <summary>
+    /// A refusal: a catalogued code, answered with the status its <see cref="ProblemAttribute"/> declares.
+    /// </summary>
+    /// <remarks>
+    /// The status is never written here. A code has one status, declared once in <see cref="ErrorCodes"/>,
+    /// and <c>ProblemCatalogueTests</c> holds every arm below to it and to the context it declares.
+    /// </remarks>
+    private static MappedError Refuse(
+        string code,
+        string message,
+        IReadOnlyDictionary<string, object?>? context = null,
+        IReadOnlyDictionary<string, string[]>? errors = null,
+        int? retryAfterSeconds = null) =>
+        new(
+            ProblemCatalogue.Get(code).Status,
+            code,
+            message,
+            LogAsError: false,
+            context,
+            errors,
+            retryAfterSeconds);
+
+    /// <summary>
+    /// A refusal whose code the exception mints - a booking rule, a sign-in reason - answered with that
+    /// code's catalogued status.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="familyStatus"/> is what the whole family answers with, and is used only for a
+    /// code the catalogue does not know: a slug minted at run time and missed by
+    /// <c>ProblemCatalogueTests</c> still gets its family's answer rather than turning a refusal into a 500.
+    /// </remarks>
+    private static MappedError RefuseFamily(
+        string code,
+        int familyStatus,
+        string message,
+        IReadOnlyDictionary<string, object?>? context = null) =>
+        new(ProblemCatalogue.Find(code)?.Status ?? familyStatus, code, message, LogAsError: false, context);
+
+    /// <summary>Anything unhandled: <c>internal-error</c>, logged as an error, saying nothing about internals.</summary>
+    private static MappedError Fault() =>
+        new(
+            ProblemCatalogue.Get(ErrorCodes.InternalError).Status,
+            ErrorCodes.InternalError,
+            InternalErrorMessage,
+            LogAsError: true);
+
     public static MappedError Map(Exception exception) => exception switch
     {
         // Somebody else changed the table first. 409 with the table's CURRENT state, so the
         // client can redraw it and tell the user what actually happened rather than just failing.
         // Expected under load - two people really do tap table 7 at the same moment.
-        TableStateConflictException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableStateConflictException e => Refuse(
             ErrorCodes.TableStateConflict,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -77,12 +123,10 @@ internal static class ApiExceptionMapper
 
         // An impossible transition, not a race: freeing a table nobody is sitting at, or marking
         // an occupied one broken. 422 - the request was understood and is semantically wrong.
-        InvalidTableTransitionException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        InvalidTableTransitionException e => Refuse(
             ErrorCodes.InvalidTableTransition,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -99,12 +143,10 @@ internal static class ApiExceptionMapper
         // show what changed instead of firing a second request into the same contention.
         // Someone is sitting there now. A different sentence from "already booked", because the
         // table may free up early and the diner can act on that.
-        TableCurrentlyOccupiedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableCurrentlyOccupiedException e => Refuse(
             ErrorCodes.TableCurrentlyOccupied,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reason"] = (int)e.Reason,
                 ["tableId"] = e.TableId,
@@ -117,31 +159,23 @@ internal static class ApiExceptionMapper
                 ["availability"] = e.Availability,
             }),
 
-        TableAlreadyBookedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableAlreadyBookedException e => Refuse(
             ErrorCodes.TableAlreadyBooked,
             e.Message,
-            LogAsError: false,
-            Context: BookedContext(e)),
+            context: BookedContext(e)),
 
         // Two callers minted the same idempotency key. Not a replay - a replay is the SAME caller
         // sending the same command again - so the honest answer is that the id is taken, and
         // nothing at all about the booking that holds it.
-        ClientCommandIdAlreadyUsedException e => new MappedError(
-            StatusCodes.Status409Conflict,
-            ErrorCodes.ClientCommandIdInUse,
-            e.Message,
-            LogAsError: false),
+        ClientCommandIdAlreadyUsedException e => Refuse(ErrorCodes.ClientCommandIdInUse, e.Message),
 
         // A dish sold out. 409 with the item NAMED, because the client has to be able to say which
         // one - "your order could not be placed" sends the diner back to a waiter to find out what
         // went wrong, which is the question the whole feature exists to remove.
-        MenuItemUnavailableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        MenuItemUnavailableException e => Refuse(
             ErrorCodes.MenuItemUnavailable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["menuItemId"] = e.MenuItemId,
                 ["itemName"] = e.ItemName,
@@ -149,12 +183,10 @@ internal static class ApiExceptionMapper
 
         // The bill has been asked for. Its own code rather than a generic refusal, because the
         // client's response differs: show the bill, not the menu.
-        TabNotAcceptingOrdersException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TabNotAcceptingOrdersException e => Refuse(
             ErrorCodes.TabNotAcceptingOrders,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["status"] = (int)e.Status,
@@ -165,23 +197,19 @@ internal static class ApiExceptionMapper
         // context is what lets a tablet tell "that guest" from a deleted dish or another branch's
         // dish, which answer the same. Both must stay ABOVE KeyNotFoundException and
         // DomainStateException, which they derive from.
-        NamedGuestNotOnTabException e => new MappedError(
-            StatusCodes.Status404NotFound,
+        NamedGuestNotOnTabException e => Refuse(
             ErrorCodes.NotFound,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["field"] = e.Field,
                 ["participantId"] = e.ParticipantId,
             }),
 
-        NamedGuestNotOrderableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        NamedGuestNotOrderableException e => Refuse(
             ErrorCodes.ConflictingState,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["field"] = e.Field,
                 ["participantId"] = e.ParticipantId,
@@ -190,12 +218,10 @@ internal static class ApiExceptionMapper
 
         // A tab hangs off a sitting. Its own code so the tablet can say "seat them first" rather
         // than show a generic conflict.
-        TableNotSeatedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableNotSeatedException e => Refuse(
             ErrorCodes.TableNotSeated,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -203,12 +229,10 @@ internal static class ApiExceptionMapper
             }),
 
         // Taking this off would reverse money that has already changed hands, which is a refund.
-        LineAlreadyPaidException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        LineAlreadyPaidException e => Refuse(
             ErrorCodes.LineAlreadyPaid,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["lineId"] = e.LineId,
@@ -216,12 +240,10 @@ internal static class ApiExceptionMapper
 
         // The waiter is standing at the table holding notes, so the balance goes in the body. The
         // usual cause is somebody settling in the app while the waiter was typing.
-        PaymentExceedsRemainingException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PaymentExceedsRemainingException e => Refuse(
             ErrorCodes.PaymentExceedsRemaining,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["requestedAmd"] = e.RequestedAmd,
@@ -230,12 +252,10 @@ internal static class ApiExceptionMapper
 
         // 429 rather than 409: this is a rate limit, and a client should back off rather than
         // change what it is asking for.
-        ServiceRequestRateLimitedException e => new MappedError(
-            StatusCodes.Status429TooManyRequests,
+        ServiceRequestRateLimitedException e => Refuse(
             ErrorCodes.ServiceRequestRateLimited,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["limit"] = e.Limit,
@@ -246,12 +266,10 @@ internal static class ApiExceptionMapper
         // is to try again - with the same clientCommandId - whereas a 409 will never succeed no
         // matter how often it is repeated. Collapsing the two would teach clients to retry
         // conflicts, which is how a party ends up with two tables.
-        ReservationLockTimeoutException e => new MappedError(
-            StatusCodes.Status503ServiceUnavailable,
+        ReservationLockTimeoutException e => Refuse(
             ErrorCodes.ReservationLockTimeout,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -262,12 +280,10 @@ internal static class ApiExceptionMapper
         // The same contention reached from the floor screen instead of a diner's phone: a waiter
         // seating a walk-in while a booking holds the table. Below the arm above, because the
         // booking-specific type derives from this one and would otherwise never be reached.
-        TableLockTimeoutException e => new MappedError(
-            StatusCodes.Status503ServiceUnavailable,
+        TableLockTimeoutException e => Refuse(
             ErrorCodes.TableLockTimeout,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -278,56 +294,46 @@ internal static class ApiExceptionMapper
         // One entry for the whole family of booking refusals, each answering with its own code
         // and its own numbers. 422: understood, and semantically wrong. Adding a rule is a new
         // exception type and a new constant - this mapper does not change.
-        ReservationRejectedException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        ReservationRejectedException e => RefuseFamily(
             e.Code,
+            StatusCodes.Status422UnprocessableEntity,
             e.Message,
-            LogAsError: false,
-            Context: e.Context),
+            context: e.Context),
 
         // The account is locked, not the credential wrong. Must stay ABOVE the general
         // authentication arm it derives from: reporting a lockout as a plain 401 leaves someone
         // standing at a tablet retyping a PIN that was correct all along.
-        AccountLockedException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        AccountLockedException e => Refuse(
             ErrorCodes.AccountLocked,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["lockedUntilUtc"] = e.LockedUntilUtc,
             }),
 
         // No SMS provider: no code can be sent. 503 and not an error in the log - the deployment
         // chose Telegram-only, and every client that reads /api/auth/diner/phone-proof avoids it.
-        PhoneCodesUnavailableException e => new MappedError(
-            StatusCodes.Status503ServiceUnavailable,
-            ErrorCodes.SmsUnavailable,
-            e.Message,
-            LogAsError: false),
+        PhoneCodesUnavailableException e => Refuse(ErrorCodes.SmsUnavailable, e.Message),
 
         // A one-time credential is out of attempts. 429 rather than 401, because the useful
         // signal to a client is "stop retrying and ask for a new code", not "try again".
-        TooManyAttemptsException e => new MappedError(
-            StatusCodes.Status429TooManyRequests,
+        TooManyAttemptsException e => Refuse(
             ErrorCodes.TooManyAttempts,
             e.Message,
-            LogAsError: false,
-            Context: e.RetryAfter is { } wait
+            context: e.RetryAfter is { } wait
                 ? new Dictionary<string, object?> { ["retryAfterSeconds"] = RetryAfterSeconds(wait) }
                 : null,
-            RetryAfterSeconds: e.RetryAfter is { } after ? RetryAfterSeconds(after) : null),
+            retryAfterSeconds: e.RetryAfter is { } after ? RetryAfterSeconds(after) : null),
 
         // A one-time code not accepted, with what is left on it. Must stay ABOVE the general
         // authentication arm it derives from, which carries no context: the app read a count the
         // server never sent, defaulted it to zero, and told a diner their code was spent after the
         // first slip.
-        VerificationCodeInvalidException e => new MappedError(
-            StatusCodes.Status401Unauthorized,
+        VerificationCodeInvalidException e => RefuseFamily(
             e.ReasonCode,
+            StatusCodes.Status401Unauthorized,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["attemptsRemaining"] = e.AttemptsRemaining,
             }),
@@ -335,23 +341,16 @@ internal static class ApiExceptionMapper
         // A Telegram challenge the app can no longer claim. 410, not 401: nothing was presented
         // wrongly, the thing polled for is gone, and the app starts a new one. Must stay ABOVE the
         // general authentication arm it derives from.
-        TelegramVerificationExpiredException e => new MappedError(
-            StatusCodes.Status410Gone, ErrorCodes.TelegramVerificationExpired, e.Message, LogAsError: false),
+        TelegramVerificationExpiredException e => Refuse(ErrorCodes.TelegramVerificationExpired, e.Message),
 
         // Every other sign-in failure. The slug comes from the exception, which is deliberately
         // never specific enough to say whether an account exists - see AuthenticationFailedException.
-        AuthenticationFailedException e => new MappedError(
-            StatusCodes.Status401Unauthorized,
-            e.ReasonCode,
-            e.Message,
-            LogAsError: false),
+        AuthenticationFailedException e => RefuseFamily(e.ReasonCode, StatusCodes.Status401Unauthorized, e.Message),
 
-        StaffPermissionException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        StaffPermissionException e => Refuse(
             ErrorCodes.Forbidden,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["operation"] = e.Operation,
                 ["requiredRole"] = (int)e.RequiredRole,
@@ -361,12 +360,10 @@ internal static class ApiExceptionMapper
         // thing, which is what every endpoint on this path already declares. Raised only where the
         // route-level BranchScoped policy cannot reach - routes addressed by a bare entity id -
         // so the two layers now answer a cross-branch attempt with the same status.
-        StaffBranchScopeException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        StaffBranchScopeException e => Refuse(
             ErrorCodes.Forbidden,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["subject"] = e.Subject,
             }),
@@ -374,39 +371,31 @@ internal static class ApiExceptionMapper
         // The listing form moves the branch and the caller is not the owner (K5). Its own code rather
         // than the generic 403, because the console has something specific to say: the rest of the
         // form was fine, and only the owner can move the pin.
-        Yalla.Application.BranchSettings.RelocationNotAllowedException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        Yalla.Application.BranchSettings.RelocationNotAllowedException e => Refuse(
             ErrorCodes.RelocationNotAllowed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
         // Somebody saved the floor plan since this editor loaded it (K6). The current version rides
         // along so the editor can reload against it.
-        Yalla.Application.BranchSettings.FloorPlanChangedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        Yalla.Application.BranchSettings.FloorPlanChangedException e => Refuse(
             ErrorCodes.FloorPlanChanged,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
+            context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
 
         // Somebody saved the special days since this editor loaded them. The list is replaced whole, so the
         // later save is refused rather than allowed to undo the other; the current version rides along.
-        Yalla.Application.BranchSettings.SpecialOpeningDaysChangedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        Yalla.Application.BranchSettings.SpecialOpeningDaysChangedException e => Refuse(
             ErrorCodes.ConcurrentUpdate,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
+            context: new Dictionary<string, object?> { ["currentVersion"] = e.CurrentVersion }),
 
         // A table that is booked and not yet sat at cannot go: deactivating it would strand the
         // booking. The tables and the booking codes ride along so the console can say what to move.
-        Yalla.Application.BranchSettings.TableHasFutureBookingsException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        Yalla.Application.BranchSettings.TableHasFutureBookingsException e => Refuse(
             ErrorCodes.TableHasFutureBookings,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tables"] = e.Tables,
                 ["bookings"] = e.Bookings,
@@ -415,12 +404,10 @@ internal static class ApiExceptionMapper
         // A first review from a diner with no visit in the window (K8). Its own code rather than the
         // generic 403, because the app has something to say - "you can review a place after you have
         // been" - and the window rides along so it can say how long for.
-        ReviewNeedsVisitException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        ReviewNeedsVisitException e => Refuse(
             ErrorCodes.ReviewNeedsVisit,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["branchId"] = e.BranchId,
                 ["windowDays"] = e.WindowDays,
@@ -430,31 +417,23 @@ internal static class ApiExceptionMapper
         // built internally and never arrive over HTTP, so this is a bug in our code, not bad
         // input, and no caller can act on it. Must stay ABOVE ArgumentException, which it derives
         // from, or it would be answered as a 400 quoting an internal parameter name.
-        ArgumentNullException => new MappedError(
-            StatusCodes.Status500InternalServerError,
-            ErrorCodes.InternalError,
-            InternalErrorMessage,
-            LogAsError: true),
+        ArgumentNullException => Fault(),
 
         // Dishes a pre-order cannot take, every one named with why, so the app can mark them all. Must stay ABOVE
         // ArgumentException, which it derives from.
-        PreOrderItemsUnavailableException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        PreOrderItemsUnavailableException e => Refuse(
             ErrorCodes.PreOrderItemsUnavailable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["items"] = e.Items.Select(i => new { menuItemId = i.MenuItemId, reason = (int)i.Reason }).ToList(),
             }),
 
         // Dishes a takeaway order cannot take, every one named with why. Must stay ABOVE ArgumentException.
-        TakeawayItemsUnavailableException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        TakeawayItemsUnavailableException e => Refuse(
             ErrorCodes.TakeawayItemsUnavailable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["items"] = e.Items.Select(i => new { menuItemId = i.MenuItemId, reason = (int)i.Reason }).ToList(),
             }),
@@ -465,12 +444,10 @@ internal static class ApiExceptionMapper
         //
         // Must stay ABOVE ArgumentException, which it derives from, or a bounds refusal would go
         // back as a 400 with prose and nothing else - which is the whole gap being closed.
-        FieldValidationException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        FieldValidationException e => Refuse(
             ErrorCodes.ValidationFailed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 // The first field, for a form that can only highlight one thing.
                 ["field"] = e.Field,
@@ -489,18 +466,16 @@ internal static class ApiExceptionMapper
                     })
                     .ToArray(),
             },
-            Errors: e.AsErrorMap()),
+            errors: e.AsErrorMap()),
 
         // The domain's own refusals. Guard and the entity constructors throw these with messages
         // written to be read, so they are safe and useful to pass back.
         // A floor plan that cannot be applied, with the offending tables named so the editor can
         // highlight them. Must stay ABOVE ArgumentException, which it derives from.
-        FloorPlanInvalidException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        FloorPlanInvalidException e => Refuse(
             ErrorCodes.FloorPlanInvalid,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["errors"] = e.Errors,
                 ["duplicateLabels"] = e.DuplicateLabels,
@@ -513,21 +488,15 @@ internal static class ApiExceptionMapper
         // and buries a real error in the log behind it.
         //
         // The message is the binder's own and names the parameter, which is what the caller needs.
-        BadHttpRequestException e => new MappedError(
-            StatusCodes.Status400BadRequest,
-            ErrorCodes.InvalidRequest,
-            e.Message,
-            LogAsError: false),
+        BadHttpRequestException e => Refuse(ErrorCodes.InvalidRequest, e.Message),
 
         // A report range nobody meant to ask for. Must stay ABOVE ArgumentOutOfRangeException,
         // which it derives from, or it would come back as a generic bad request and the client
         // would have no way to say what the limit is.
-        Yalla.Application.Reports.ReportRangeTooLongException e => new MappedError(
-            StatusCodes.Status400BadRequest,
+        Yalla.Application.Reports.ReportRangeTooLongException e => Refuse(
             ErrorCodes.ReportRangeTooLong,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["field"] = "range",
                 ["requestedDays"] = e.RequestedDays,
@@ -537,36 +506,28 @@ internal static class ApiExceptionMapper
         // Everything else the domain guards refuse. These carry a ParamName that is already the
         // field's name - Guard and every entity constructor pass nameof(theParameter) - so the
         // sweep is to stop throwing it away, not to invent it. See ArgumentContext.
-        ArgumentOutOfRangeException e => new MappedError(
-            StatusCodes.Status400BadRequest,
+        ArgumentOutOfRangeException e => Refuse(
             ErrorCodes.InvalidRequest,
             e.Message,
-            LogAsError: false,
-            Context: ArgumentContext(e.ParamName, e.ActualValue)),
+            context: ArgumentContext(e.ParamName, e.ActualValue)),
 
-        ArgumentException e => new MappedError(
-            StatusCodes.Status400BadRequest,
+        ArgumentException e => Refuse(
             ErrorCodes.InvalidRequest,
             e.Message,
-            LogAsError: false,
-            Context: ArgumentContext(e.ParamName, actualValue: null)),
+            context: ArgumentContext(e.ParamName, actualValue: null)),
 
         // Someone else won the race for a table, a tab or a booking. Expected under load.
-        DbUpdateConcurrencyException => new MappedError(
-            StatusCodes.Status409Conflict,
+        DbUpdateConcurrencyException => Refuse(
             ErrorCodes.ConcurrentUpdate,
-            "This record changed while you were working on it. Reload and try again.",
-            LogAsError: false),
+            "This record changed while you were working on it. Reload and try again."),
 
         // "This session is already closed", "the settlement mode is locked". Note this must stay
         // A free that named a booking whose sitting is no longer the one at the table - the console's
         // stale row. Must stay ABOVE DomainStateException, which it derives from.
-        TableSittingChangedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableSittingChangedException e => Refuse(
             ErrorCodes.TableSittingChanged,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -578,12 +539,10 @@ internal static class ApiExceptionMapper
         // A queued command that has gone stale. Must stay ABOVE DomainStateException, which it
         // derives from, and distinct from TableStateConflictException: the client shows one
         // immediately and files the other for later.
-        CommandPreconditionFailedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        CommandPreconditionFailedException e => Refuse(
             ErrorCodes.PreconditionFailed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
@@ -607,12 +566,10 @@ internal static class ApiExceptionMapper
         // The venue stopped paying, or was deleted, and this is a new booking or a new tab. Not a
         // 403 and not a 404: the branch is real and the caller is welcome, it is simply shut.
         // Must stay ABOVE the general DomainStateException arm it derives from.
-        BranchUnavailableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        BranchUnavailableException e => Refuse(
             ErrorCodes.BranchUnavailable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["branchId"] = e.BranchId,
                 ["reason"] = e.Reason,
@@ -622,12 +579,10 @@ internal static class ApiExceptionMapper
         // general DomainStateException arm it derives from. The count is the point: "eleven dishes
         // still need a photo" is something a manager can act on this afternoon, and "cannot
         // upgrade" sends them to support.
-        BranchNotReadyForDinersException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        BranchNotReadyForDinersException e => Refuse(
             ErrorCodes.BranchNotReady,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["branchId"] = e.BranchId,
                 ["incompleteMenuItemCount"] = e.IncompleteMenuItemCount,
@@ -637,24 +592,20 @@ internal static class ApiExceptionMapper
         //
         // Not a 403. The caller is allowed to be here; the branch has not paid for what they
         // asked. The code is what the apps branch on to show "ask the venue to enable ordering".
-        FeatureNotEnabledException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        FeatureNotEnabledException e => Refuse(
             ErrorCodes.FeatureNotEnabled,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["feature"] = e.Feature,
                 ["branchId"] = e.BranchId,
                 ["currentTier"] = e.CurrentTier,
             }),
 
-        VenueDeletionBlockedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        VenueDeletionBlockedException e => Refuse(
             ErrorCodes.VenueDeletionBlocked,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["openTabs"] = e.OpenTabs,
                 ["futureReservations"] = e.FutureReservations,
@@ -663,33 +614,28 @@ internal static class ApiExceptionMapper
         // The venue has not switched its public page on for bookings. Its own code so the page
         // can say "call the venue" rather than showing a generic conflict. Must stay ABOVE
         // DomainStateException, which it derives from.
-        WebBookingsNotAcceptedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        WebBookingsNotAcceptedException e => Refuse(
             ErrorCodes.WebBookingsNotAccepted,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
         // The app channel's own gate (K9): bookings switched off, or the policy never saved. Its own
         // code so the app can say "book with the venue directly" rather than show a generic conflict.
         // Must stay ABOVE DomainStateException, which it derives from.
-        AppBookingsNotAcceptedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        AppBookingsNotAcceptedException e => Refuse(
             ErrorCodes.BookingsNotAccepted,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
         // "Keep my table" refused, and which refusal: not started yet or not a confirmed booking,
         // the one extension spent, or none offered. Each its own code, because the app inferred
         // "you already let them know" from a bare 409 - and told a diner at a branch with no
         // extensions exactly that. Must stay ABOVE DomainStateException, which it derives from.
-        HoldExtensionRefusedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        HoldExtensionRefusedException e => RefuseFamily(
             e.Code,
+            StatusCodes.Status409Conflict,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["startUtc"] = e.StartUtc,
@@ -698,12 +644,10 @@ internal static class ApiExceptionMapper
         // A table whose next booking cuts the sitting short, booked without accepting the time to leave
         // by. 422 naming the field, with the time to accept, so the app asks "will you free the table by
         // 21:25?" and sends it again.
-        FreeByNotAcceptedException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        FreeByNotAcceptedException e => Refuse(
             ErrorCodes.ReservationFreeByRequired,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["field"] = FreeByNotAcceptedException.Field,
                 ["requiredFreeByUtc"] = e.RequiredFreeByUtc,
@@ -712,16 +656,14 @@ internal static class ApiExceptionMapper
                 ["tableId"] = e.TableId,
                 ["tableLabel"] = e.TableLabel,
             },
-            Errors: new Dictionary<string, string[]> { [FreeByNotAcceptedException.Field] = [e.Message] }),
+            errors: new Dictionary<string, string[]> { [FreeByNotAcceptedException.Field] = [e.Message] }),
 
         // Staff deciding a booking that waits on the guest before it to answer in the app. Theirs to
         // answer. Must stay ABOVE DomainStateException, which it derives from.
-        ReservationAwaitingEarlierGuestException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationAwaitingEarlierGuestException e => Refuse(
             ErrorCodes.ReservationAwaitingEarlierGuest,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["requestId"] = e.RequestId,
@@ -731,20 +673,14 @@ internal static class ApiExceptionMapper
         // The same refusal on a manage link, which names nothing about the other booking: the link shows
         // one booking, and whoever opened it from a group chat learns no second. No context on purpose.
         // Must stay ABOVE DomainStateException.
-        ManageLinkOverlapsOwnException e => new MappedError(
-            StatusCodes.Status409Conflict,
-            ErrorCodes.ReservationOverlapsOwn,
-            e.Message,
-            LogAsError: false),
+        ManageLinkOverlapsOwnException e => Refuse(ErrorCodes.ReservationOverlapsOwn, e.Message),
 
         // A diner's second table at the same branch while their first booking runs. Its own code so the
         // app can name the booking they already have. Must stay ABOVE DomainStateException.
-        ReservationOverlapsOwnException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationOverlapsOwnException e => Refuse(
             ErrorCodes.ReservationOverlapsOwn,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["code"] = e.Code,
@@ -757,12 +693,10 @@ internal static class ApiExceptionMapper
 
         // An answer to a request for a table that no longer waits. Its own code so the app drops the
         // card. Must stay ABOVE DomainStateException, which it derives from.
-        TableRequestNotPendingException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TableRequestNotPendingException e => Refuse(
             ErrorCodes.TableRequestNotPending,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["requestId"] = e.RequestId,
@@ -773,12 +707,10 @@ internal static class ApiExceptionMapper
         // A change to a booking that is finished with or under way. Its own code so the app can say
         // "this booking can no longer be changed" rather than offer another slot that will be refused
         // the same way. Must stay ABOVE DomainStateException, which it derives from.
-        ReservationNotChangeableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationNotChangeableException e => Refuse(
             ErrorCodes.ReservationNotChangeable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
@@ -788,12 +720,10 @@ internal static class ApiExceptionMapper
         // A no-show before the booking's start: nobody can have failed to come yet. Its own code so the
         // tablet can say "not due until 19:00" rather than a conflict the waiter answers by tapping again.
         // Must stay ABOVE DomainStateException, which it derives from.
-        ReservationNotStartedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationNotStartedException e => Refuse(
             ErrorCodes.ReservationNotStarted,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["startUtc"] = e.StartUtc,
@@ -803,12 +733,10 @@ internal static class ApiExceptionMapper
         // declined for no answer, or it has started. Its own code so the tablet drops the request and
         // says why, rather than showing a conflict the waiter answers by tapping again. Must stay ABOVE
         // DomainStateException, which it derives from.
-        ReservationApprovalExpiredException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationApprovalExpiredException e => Refuse(
             ErrorCodes.ReservationApprovalExpired,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
@@ -820,12 +748,11 @@ internal static class ApiExceptionMapper
         // its party. Each its own code with the booking's facts, so the app can say "from 19:10" or
         // "this booking was cancelled" rather than that something went wrong. Must stay ABOVE
         // DomainStateException, which it derives from.
-        BookingTabRefusedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        BookingTabRefusedException e => RefuseFamily(
             e.Code,
+            StatusCodes.Status409Conflict,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
@@ -838,72 +765,58 @@ internal static class ApiExceptionMapper
         // A diner's username, email or number is somebody else's. Three codes, one shape: the
         // field to highlight rides in the context so the sign-up form does not map a code back to
         // an input by hand. Must stay ABOVE DomainStateException, which it derives from.
-        DinerIdentifierTakenException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        DinerIdentifierTakenException e => RefuseFamily(
             e.Code,
+            StatusCodes.Status409Conflict,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["field"] = e.Field }),
+            context: new Dictionary<string, object?> { ["field"] = e.Field }),
 
         // Not a photo, or too big a one. Its own code rather than the generic conflict, because
         // "that is not a picture" and "that picture is too large" are the two things an upload
         // screen has to say and neither is "try again". Must stay ABOVE DomainStateException.
-        UnsupportedImageException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        UnsupportedImageException e => Refuse(
             ErrorCodes.UnsupportedImage,
             e.Message,
-            LogAsError: false,
-            Context: e.DetectedFormat is { } format
+            context: e.DetectedFormat is { } format
                 ? new Dictionary<string, object?> { ["detectedFormat"] = format }
                 : null),
 
         // Somebody on the same tablet already taps that PIN. Its own code so the staff form can put
         // the sentence under the PIN input. Must stay ABOVE DomainStateException, which it derives from.
-        PinTakenException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PinTakenException e => Refuse(
             ErrorCodes.PinTaken,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["field"] = e.Field }),
+            context: new Dictionary<string, object?> { ["field"] = e.Field }),
 
         // A token that names no sign-in, on a route that keeps this sign-in and ends the others. Its own
         // code so the console says "sign in again" rather than a generic conflict. Must stay ABOVE
         // DomainStateException, which it derives from.
-        SignInUnknownException e => new MappedError(
-            StatusCodes.Status409Conflict, ErrorCodes.SignInUnknown, e.Message, LogAsError: false),
+        SignInUnknownException e => Refuse(ErrorCodes.SignInUnknown, e.Message),
 
         // A phone for somebody in the kitchen. Its own code so the console says why. Must stay ABOVE
         // DomainStateException, which it derives from.
-        Yalla.Domain.Identity.KitchenPhoneNotAllowedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        Yalla.Domain.Identity.KitchenPhoneNotAllowedException e => Refuse(
             ErrorCodes.KitchenPhoneNotAllowed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["staffMemberId"] = e.StaffMemberId }),
+            context: new Dictionary<string, object?> { ["staffMemberId"] = e.StaffMemberId }),
 
-        ScanTurnedAwayException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ScanTurnedAwayException e => Refuse(
             ErrorCodes.ScanTurnedAway,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["retryAfterUtc"] = e.RetryAfterUtc }),
+            context: new Dictionary<string, object?> { ["retryAfterUtc"] = e.RetryAfterUtc }),
 
         // At most three active bookings per proved number. The caller's own earliest is named - only to its
         // own account; the limit always. Must stay ABOVE DomainStateException.
-        PhoneHasActiveBookingException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PhoneHasActiveBookingException e => Refuse(
             ErrorCodes.PhoneHasActiveBooking,
             e.Message,
-            LogAsError: false,
-            Context: PhoneHasActiveBookingContextOf(e)),
+            context: PhoneHasActiveBookingContextOf(e)),
 
         // The platform cancelled it - a guest's no-show block. Must stay ABOVE DomainStateException.
-        ReservationCancelledByBlockException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ReservationCancelledByBlockException e => Refuse(
             ErrorCodes.ReservationCancelledByBlock,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["cancelledAtUtc"] = e.CancelledAtUtc,
@@ -911,41 +824,33 @@ internal static class ApiExceptionMapper
 
         // Pre-orders. Each its own code so the app and the tablet say what is true rather than "conflict". Must stay
         // ABOVE DomainStateException, which they derive from.
-        PreOrderLockedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PreOrderLockedException e => Refuse(
             ErrorCodes.PreOrderLocked,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["lockedAtUtc"] = e.LockedAtUtc,
             }),
 
-        PreOrderAlreadySentException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PreOrderAlreadySentException e => Refuse(
             ErrorCodes.PreOrderAlreadySent,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["sentAtUtc"] = e.SentAtUtc,
             }),
 
-        PreOrdersNotAcceptedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PreOrdersNotAcceptedException e => Refuse(
             ErrorCodes.PreOrdersNotAccepted,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
-        PreOrderNotSendableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        PreOrderNotSendableException e => Refuse(
             ErrorCodes.PreOrderNotSendable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
@@ -953,12 +858,10 @@ internal static class ApiExceptionMapper
                 ["endUtc"] = e.EndUtc,
             }),
 
-        OnMyWayNotOpenException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        OnMyWayNotOpenException e => Refuse(
             ErrorCodes.OnMyWayNotOpen,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
@@ -966,47 +869,39 @@ internal static class ApiExceptionMapper
             }),
 
         // "Ask: are you coming?" refused - each its own code, so the tablet says why. Must stay ABOVE DomainStateException.
-        AskOnMyWayNotOpenException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        AskOnMyWayNotOpenException e => Refuse(
             ErrorCodes.AskOnMyWayNotOpen,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["status"] = (int)e.Status,
                 ["startUtc"] = e.StartUtc,
             }),
 
-        AskOnMyWayTooEarlyException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        AskOnMyWayTooEarlyException e => Refuse(
             ErrorCodes.AskOnMyWayTooEarly,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["opensAtUtc"] = e.OpensAtUtc,
             }),
 
-        AskOnMyWayAskedRecentlyException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        AskOnMyWayAskedRecentlyException e => Refuse(
             ErrorCodes.AskOnMyWayAskedRecently,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["reservationId"] = e.ReservationId,
                 ["askedAtUtc"] = e.AskedAtUtc,
                 ["nextAllowedAtUtc"] = e.NextAllowedAtUtc,
             }),
 
-        GuestAlreadyAnsweredException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        GuestAlreadyAnsweredException e => Refuse(
             ErrorCodes.GuestAlreadyAnswered,
             e.Message,
-            LogAsError: false,
-            Context: e.RunningLateMinutes is { } late
+            context: e.RunningLateMinutes is { } late
                 ? new Dictionary<string, object?>
                 {
                     ["reservationId"] = e.ReservationId,
@@ -1020,19 +915,15 @@ internal static class ApiExceptionMapper
                 }),
 
         // Takeaway. Each its own code, so the app and the tablet say what is true. Must stay ABOVE DomainStateException.
-        TakeawayNotAcceptedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawayNotAcceptedException e => Refuse(
             ErrorCodes.TakeawayNotAccepted,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
-        TakeawayClosedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawayClosedException e => Refuse(
             ErrorCodes.TakeawayClosed,
             e.Message,
-            LogAsError: false,
-            Context: e.OpensAtUtc is { } opensAtUtc
+            context: e.OpensAtUtc is { } opensAtUtc
                 ? new Dictionary<string, object?>
                 {
                     ["branchId"] = e.BranchId,
@@ -1041,46 +932,38 @@ internal static class ApiExceptionMapper
                 }
                 : new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
-        TakeawayBusyException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawayBusyException e => Refuse(
             ErrorCodes.TakeawayBusy,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["branchId"] = e.BranchId,
                 ["maxInProgress"] = e.MaxInProgress,
             }),
 
-        TakeawaySlotUnavailableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawaySlotUnavailableException e => Refuse(
             ErrorCodes.TakeawaySlotUnavailable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["branchId"] = e.BranchId,
                 ["at"] = e.At,
                 ["slots"] = e.Slots,
             }),
 
-        TakeawayStatusConflictException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawayStatusConflictException e => Refuse(
             ErrorCodes.TakeawayStatusConflict,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["orderId"] = e.OrderId,
                 ["status"] = (int)e.Status,
             }),
 
-        TakeawayNoShowTooEarlyException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TakeawayNoShowTooEarlyException e => Refuse(
             ErrorCodes.TakeawayNoShowTooEarly,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["orderId"] = e.OrderId,
                 ["noShowFromUtc"] = e.NoShowFromUtc,
@@ -1088,39 +971,31 @@ internal static class ApiExceptionMapper
 
         // Guest messages. Each its own code, so the app and the tablet say what is true. The closed thread must stay
         // ABOVE DomainStateException; the other three derive from nothing more general than Exception.
-        ConversationClosedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        ConversationClosedException e => Refuse(
             ErrorCodes.ConversationClosed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["subjectKind"] = e.SubjectKind,
                 ["subjectId"] = e.SubjectId,
                 ["closedAtUtc"] = e.ClosedAtUtc,
             }),
 
-        GuestsCannotWriteException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        GuestsCannotWriteException e => Refuse(
             ErrorCodes.GuestsCannotWrite,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
-        WaitersCannotWriteException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        WaitersCannotWriteException e => Refuse(
             ErrorCodes.WaitersCannotWrite,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
+            context: new Dictionary<string, object?> { ["branchId"] = e.BranchId }),
 
         // 429 rather than 409, as the table's waiter calls are: the guest should wait, not change what they send.
-        MessagesTooFastException e => new MappedError(
-            StatusCodes.Status429TooManyRequests,
+        MessagesTooFastException e => Refuse(
             ErrorCodes.MessagesTooFast,
             e.Message,
-            LogAsError: false,
-            Context: e.RetryAfterUtc is { } retryAfterUtc
+            context: e.RetryAfterUtc is { } retryAfterUtc
                 ? new Dictionary<string, object?>
                 {
                     ["conversationId"] = e.ConversationId,
@@ -1134,88 +1009,71 @@ internal static class ApiExceptionMapper
                     ["perMinute"] = Domain.Messages.ConversationRules.GuestMessagesPerMinute,
                     ["perConversation"] = Domain.Messages.ConversationRules.GuestMessagesPerConversation,
                 },
-            RetryAfterSeconds: e.RetryAfter is { } wait ? RetryAfterSeconds(wait) : null),
+            retryAfterSeconds: e.RetryAfter is { } wait ? RetryAfterSeconds(wait) : null),
 
         // The no-show's service day is over: it stands. Must stay ABOVE DomainStateException.
-        NoShowUndoWindowClosedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        NoShowUndoWindowClosedException e => Refuse(
             ErrorCodes.NoShowUndoWindowClosed,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["undoableUntilUtc"] = e.UndoableUntilUtc }),
+            context: new Dictionary<string, object?> { ["undoableUntilUtc"] = e.UndoableUntilUtc }),
 
         // Blocked for three no-shows in three days, until the block ends.
-        BookingBlockedForNoShowsException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        BookingBlockedForNoShowsException e => Refuse(
             ErrorCodes.BookingBlockedNoShows,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["blockedUntilUtc"] = e.BlockedUntilUtc }),
+            context: new Dictionary<string, object?> { ["blockedUntilUtc"] = e.BlockedUntilUtc }),
 
         // The phone waits for the waiter; its own code so it shows that, not an error.
-        TabAwaitingAdmissionException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TabAwaitingAdmissionException e => Refuse(
             ErrorCodes.TabAwaitingAdmission,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?> { ["tabId"] = e.TabId }),
+            context: new Dictionary<string, object?> { ["tabId"] = e.TabId }),
 
-        TabAdmissionDecidedException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        TabAdmissionDecidedException e => Refuse(
             ErrorCodes.TabAdmissionDecided,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["admission"] = (int)e.Admission,
             }),
 
         // Handing a table over (docs/activity.md). Their own codes, so the tablet says what is true.
-        Yalla.Application.Activity.TransferTargetIneligibleException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        Yalla.Application.Activity.TransferTargetIneligibleException e => Refuse(
             ErrorCodes.TransferTargetIneligible,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["staffMemberId"] = e.StaffMemberId,
                 ["reason"] = e.Why,
             }),
 
-        Yalla.Application.Activity.TabNotTransferableException e => new MappedError(
-            StatusCodes.Status409Conflict,
+        Yalla.Application.Activity.TabNotTransferableException e => Refuse(
             ErrorCodes.TabNotTransferable,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["tabId"] = e.TabId,
                 ["status"] = (int)e.Status,
             }),
 
-        Yalla.Application.Activity.ActivityExportTooLargeException e => new MappedError(
-            StatusCodes.Status422UnprocessableEntity,
+        Yalla.Application.Activity.ActivityExportTooLargeException e => Refuse(
             ErrorCodes.ActivityExportTooLarge,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["rows"] = e.Rows,
                 ["maxRows"] = e.MaxRows,
             }),
 
-        DomainStateException e => new MappedError(
-            StatusCodes.Status409Conflict, ErrorCodes.ConflictingState, e.Message, LogAsError: false),
+        DomainStateException e => Refuse(ErrorCodes.ConflictingState, e.Message),
 
         // On the tab, but not allowed this: a guest approving a joiner, a diner reassigning the
         // host. The message names the missing role. Must stay ABOVE the general arm it derives from.
-        TabPermissionException e => new MappedError(
-            StatusCodes.Status403Forbidden,
+        TabPermissionException e => Refuse(
             ErrorCodes.Forbidden,
             e.Message,
-            LogAsError: false,
-            Context: new Dictionary<string, object?>
+            context: new Dictionary<string, object?>
             {
                 ["operation"] = e.Operation,
                 ["requirement"] = e.Requirement,
@@ -1223,37 +1081,25 @@ internal static class ApiExceptionMapper
 
         // A move from a manage link whose booking's account cannot take it - the app's 403 and code, in
         // words the link holder can act on, and never the account lock's 401: there is no session.
-        ManageLinkAccountUnavailableException e => new MappedError(
-            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
+        ManageLinkAccountUnavailableException e => Refuse(ErrorCodes.PhoneNotVerified, e.Message),
 
         // A diner whose number was typed at sign-up and never proved, trying to book or open a tab
         // on it. Its own code, not the generic 403, because the app has something to offer - the
         // verify link - and no context, because the id is the caller's own and the operation is
         // in the message.
-        PhoneNotVerifiedException e => new MappedError(
-            StatusCodes.Status403Forbidden, ErrorCodes.PhoneNotVerified, e.Message, LogAsError: false),
+        PhoneNotVerifiedException e => Refuse(ErrorCodes.PhoneNotVerified, e.Message),
 
-        UnauthorizedAccessException => new MappedError(
-            StatusCodes.Status403Forbidden,
-            ErrorCodes.Forbidden,
-            "You are not allowed to perform this action.",
-            LogAsError: false),
+        UnauthorizedAccessException => Refuse(ErrorCodes.Forbidden, "You are not allowed to perform this action."),
 
         // No booking of the caller's has that code. Its own slug so the app can say "check the
         // code", and deliberately no context: somebody else's booking answers word for word the
         // same, and anything more would say which codes are live. Must stay ABOVE
         // KeyNotFoundException, which it derives from.
-        BookingNotFoundException e => new MappedError(
-            StatusCodes.Status404NotFound, ErrorCodes.BookingNotFound, e.Message, LogAsError: false),
+        BookingNotFoundException e => Refuse(ErrorCodes.BookingNotFound, e.Message),
 
-        KeyNotFoundException e => new MappedError(
-            StatusCodes.Status404NotFound, ErrorCodes.NotFound, e.Message, LogAsError: false),
+        KeyNotFoundException e => Refuse(ErrorCodes.NotFound, e.Message),
 
-        _ => new MappedError(
-            StatusCodes.Status500InternalServerError,
-            ErrorCodes.InternalError,
-            InternalErrorMessage,
-            LogAsError: true),
+        _ => Fault(),
     };
 
     /// <summary>
