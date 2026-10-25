@@ -130,8 +130,14 @@ internal sealed class TabLedger(
                 [.. line.Shares.Select(s => s.TabParticipantId)])))
             .ToList();
 
+        // In the order they were given. Two tab-wide ones - 10 % and 200 off - come to a different bill in the other
+        // order, and the tracker's own order is not one: a just-added adjustment is enumerated before the loaded ones,
+        // so the bill would change on its next recompute. The reads that add the reductions up use the same order
+        // (AdjustmentReductions).
         var adjustments = db.TabAdjustments.Local
             .Where(a => a.TabId == tab.Id && a.IsActive)
+            .OrderBy(a => a.CreatedAtUtc)
+            .ThenBy(a => a.Id)
             .Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))
             .ToList();
 

@@ -540,25 +540,26 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         // Grouped by who authorised it and why. An owner asking "what did we give away last month"
         // is asking both halves, and the manager-only rule on adjustments exists so this report can
         // answer the first.
-        var rows = await db.TabAdjustments
+        var standing = db.TabAdjustments
             .AsNoTracking()
             .Where(a => scope.BranchIds.Contains(a.Tab.BranchId)
                         && a.CreatedAtUtc >= fromUtc
                         && a.CreatedAtUtc < toUtc
-                        && a.VoidedAtUtc == null)
+                        && a.VoidedAtUtc == null);
+
+        var rows = await standing
             .Select(a => new
             {
+                a.Id,
                 a.Reason,
                 a.Kind,
                 a.CreatedByStaffId,
                 StaffName = a.CreatedByStaff.FullName,
-                a.Percent,
-                a.AmountAmd,
-                LineTotal = a.TabOrderLineId == null
-                    ? a.Tab.SubtotalAmd
-                    : a.TabOrderLine!.UnitPriceAmdSnapshot * a.TabOrderLine.Quantity,
             })
             .ToListAsync(cancellationToken);
+
+        // What each took off its bill, as the bill took it - not a percentage of the subtotal left after it.
+        var reductions = await AdjustmentReductions.ForAsync(db, standing, cancellationToken);
 
         return
         [
@@ -571,9 +572,9 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
                     g.Key.StaffName,
                     g.Count(),
 
-                    // The same clamp and rounding the bill itself used, so what the report says was
-                    // given away matches what the diner was actually charged.
-                    g.Sum(a => Domain.Tabs.TabAdjustment.ReductionFor(a.Percent, a.AmountAmd, a.LineTotal))))
+                    // The bill's own arithmetic, so what the report says was given away matches what the
+                    // diner was actually charged.
+                    g.Sum(a => reductions.GetValueOrDefault(a.Id))))
                 .OrderByDescending(a => a.TotalAmd),
         ];
     }

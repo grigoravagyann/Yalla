@@ -190,6 +190,145 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// A bill's waiters in turn, from when each took it - not from the guest's own scan. A guest scans and sits; five
+    /// minutes later Lilit's first order makes the table hers; at ten she hands it to Aram. On a second table nobody
+    /// serves, a manager hands it straight to Aram: one turn, from the hand-over, not a nobody-then-Aram pair.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_bills_waiters_run_from_when_each_took_the_table()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt);
+        var (branch, menu, aram, _) = await ArrangeAsync(clock);
+        var lilit = branch.WaiterId;
+
+        async Task<Guid> ScanAsync(Guid tableId, string device)
+        {
+            await using var db = fixture.CreateContext(clock);
+            var qr = await db.DiningTables.AsNoTracking().Where(t => t.Id == tableId).Select(t => t.QrToken).FirstAsync();
+
+            return (await fixture.CreateTabService(db, clock, new TestActor(ActorType.Diner, null, null))
+                .OpenAsync(new OpenTabCommand(qr, device, Guid.CreateVersion7(), "Guest"))).Tab.TabId;
+        }
+
+        // A venue that lets a scan straight in: nobody admits it, so nobody serves the table yet.
+        await using (var db = fixture.CreateContext(clock))
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE Branches SET ReservationPolicy_UnverifiedScansNeedAdmission = 0 WHERE Id = {branch.BranchId}");
+        }
+
+        var first = await ScanAsync(branch.TableIds[0], "phone-first");
+        var second = await ScanAsync(branch.TableIds[1], "phone-second");
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            Assert.False(await db.TableSessions.AnyAsync(
+                s => s.ServerStaffMemberId != null && db.Tabs.Any(t => (t.Id == first || t.Id == second) && t.TableSessionId == s.Id)));
+        }
+
+        clock.UtcNow = SeatedAt.AddMinutes(5);
+        await OrderAsync(clock, lilit, first, menu.Coffee, quantity: 1);
+
+        clock.UtcNow = SeatedAt.AddMinutes(7);
+        await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            Transfer(db, clock, actor).TransferAsync(new TransferTableCommand(second, aram)));
+
+        var mine = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            History(db, clock, actor).TimelineAsync(branch.BranchId, ActivitySubjects.Tab, first));
+        Assert.Equal([(lilit, SeatedAt.AddMinutes(5))], mine.Tab!.Servers.Select(s => (s.StaffMemberId, s.FromUtc)).ToArray());
+
+        clock.UtcNow = SeatedAt.AddMinutes(10);
+        await AsAsync(clock, TestActor.Waiter(lilit), (db, actor) =>
+            Transfer(db, clock, actor).TransferAsync(new TransferTableCommand(first, aram)));
+
+        var handed = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            History(db, clock, actor).TimelineAsync(branch.BranchId, ActivitySubjects.Tab, first));
+        Assert.Equal(
+            [(lilit, SeatedAt.AddMinutes(5)), (aram, SeatedAt.AddMinutes(10))],
+            handed.Tab!.Servers.Select(s => (s.StaffMemberId, s.FromUtc)).ToArray());
+
+        var given = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            History(db, clock, actor).TimelineAsync(branch.BranchId, ActivitySubjects.Tab, second));
+        Assert.Equal([(aram, SeatedAt.AddMinutes(7))], given.Tab!.Servers.Select(s => (s.StaffMemberId, s.FromUtc)).ToArray());
+    }
+
+    /// <summary>
+    /// Two tab-wide discounts on one bill - 10 % and then 200 off - come off in the order they were given, when added and
+    /// on every recompute after, and the revenue report and Staff → Results add up what the bill took: 1,310 and 200.
+    /// </summary>
+    [SkippableFact]
+    public async Task Two_discounts_come_off_in_the_order_given_and_the_results_add_up_what_the_bill_took()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(SeatedAt);
+        var (branch, menu, _, _) = await ArrangeAsync(clock);
+        var lilit = branch.WaiterId;
+
+        var tabId = await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+        {
+            await fixture.CreateService(db, clock, actor)
+                .SeatWalkInAsync(new SeatWalkInCommand(branch.BranchId, branch.FirstTableId, 2, Guid.CreateVersion7()));
+
+            return (await fixture.CreateTabService(db, clock, actor)
+                .OpenForStaffAsync(new OpenTabForStaffCommand(branch.BranchId, branch.FirstTableId, Guid.CreateVersion7()))).TabId;
+        });
+
+        await OrderAsync(clock, lilit, tabId, menu.Coffee, quantity: 3);
+        await OrderAsync(clock, lilit, tabId, menu.Wine, quantity: 1);
+        var gross = 3 * TestMenu.CoffeeAmd + TestMenu.WineAmd;
+        var tenPercent = Domain.Common.Money.PercentOf(gross, 10m);
+
+        clock.UtcNow = SeatedAt.AddMinutes(10);
+        var percent = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
+                tabId, null, AdjustmentKind.Discount, 10m, null, "Regular", Guid.CreateVersion7())));
+
+        clock.UtcNow = SeatedAt.AddMinutes(11);
+        var flat = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
+                tabId, null, AdjustmentKind.Discount, null, 200L, "Waited", Guid.CreateVersion7())));
+
+        Assert.Equal(tenPercent, percent.ReductionAmd);
+        Assert.Equal(200L, flat.ReductionAmd);
+
+        long subtotal;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            subtotal = (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId)).SubtotalAmd;
+            Assert.Equal(gross - tenPercent - 200L, subtotal);
+
+            // A recompute later reads the same bill.
+            var again = await fixture.CreateLedger(db, clock, TestActor.Manager(branch.ManagerId)).RecomputeTotalsAsync(tabId, default);
+            Assert.Equal(subtotal, again.SubtotalAmd);
+        }
+
+        long total;
+
+        await using (var db = fixture.CreateContext(clock))
+        {
+            total = (await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId)).TotalAmd;
+        }
+
+        await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
+            await fixture.CreatePaymentService(db, clock, actor)
+                .RecordCashAsync(new RecordCashPaymentCommand(tabId, total, null, 0L, Guid.CreateVersion7())));
+
+        var report = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            Performance(db, clock, actor).GetBranchAsync(branch.BranchId, new StaffPerformanceQuery()));
+        var revenue = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+            SqlServerFixture.CreateReportQuery(db, actor).GetRevenueAsync(new ReportRequest(branch.BranchId, Today, Today)));
+
+        var manager = report.Staff.Single(r => r.StaffMemberId == branch.ManagerId);
+        Assert.Equal((2, tenPercent + 200L), (manager.Discounts, manager.AdjustmentsAmd));
+        Assert.Equal(tenPercent + 200L, revenue.AdjustmentsTotalAmd.Value);
+        Assert.Equal(gross - subtotal, revenue.AdjustmentsTotalAmd.Value);
+    }
+
+    /// <summary>
     /// A void and a discount after the transfer: still the bill's total that is split, the void counted for who voided
     /// it and the discount for the manager who gave it - and the totals still the report's.
     /// </summary>
@@ -243,6 +382,12 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
 
         var manager = report.Staff.Single(r => r.StaffMemberId == branch.ManagerId);
         Assert.Equal((1, 1, 0), (manager.Voids, manager.Discounts, manager.Comps));
+
+        // What the 10 % took off the bill - of the three coffees, not of the subtotal stored after the discount.
+        var discounted = Domain.Common.Money.PercentOf(3 * TestMenu.CoffeeAmd, 10m);
+        Assert.Equal(discounted, manager.AdjustmentsAmd);
+        Assert.Equal(discounted, report.Totals.AdjustmentsAmd);
+        Assert.Equal(discounted, Assert.Single(revenue.Adjustments).TotalAmd);
         Assert.Equal(total, report.Staff.Single(r => r.StaffMemberId == lilit).SalesAmd);
         Assert.Equal(revenue.HallAmd.Value, report.Totals.SalesAmd);
         Assert.Equal(revenue.AdjustmentsTotalAmd.Value, report.Totals.AdjustmentsAmd);

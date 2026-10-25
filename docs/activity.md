@@ -221,13 +221,15 @@ branch: **403**. Every query value is a string and every bad one is named in one
 
 **The feed** is keyset-paged like the message history: newest first then by id, `nextCursor` until the last page.
 `date` or `from`/`to` (default today), at most 366 days, not before 1,095 days ago nor after 366 days ahead (the same
-bounds on the staff results). Filters: `staffMemberId`,
+bounds on the staff results; a day sent as `date` is refused as `date`). Filters: `staffMemberId`,
 `actorKind` (`staff`, `guest`, `system`, `platform`), `category`, `q` (table exact, guest contains, a code, a dish
 contains). The **CSV** is the same window, every row, at
 most 20,000 (more: 422 `activity-export-too-large`), with the reports' CSV rules and a formula guard on text.
 
 **The timeline** (`tab`, `reservation`, `takeawayOrder` - or `takeaway` - or any other subject's entries): a bill's every entry of its
-sitting, oldest first, its header with `servers` (the waiters in turn), and its lines with who added and voided each.
+sitting, oldest first, its header with `servers` (the waiters in turn, each `fromUtc` when the table became theirs: the
+seat for whoever seated it; their opening, letting in or first order on a table a guest's scan or booking seated; the
+hand-over for each after - and none before a hand-over from nobody), and its lines with who added and voided each.
 
 ## 8. Staff results
 
@@ -244,7 +246,8 @@ Read live off the operational tables, as the reports are - a fixed number of sta
 - **Tips** - a payment's tip goes to the waiter whose table it was when paid (else the closing waiter).
 - **Cash** - whoever took it: tab cash on the window's bills, and the takeaway counter's cash collected in the window.
 - **Discounts, comps** - who gave them, still standing, created in the window, and what they took off by the bill's
-  own arithmetic. **Voids** - lines voided in the window, by who voided them.
+  own arithmetic (`TabBilling.Reductions`: a line's own off that line, then the tab-wide ones off what is left, each in
+  turn - never a percentage of the subtotal stored after them). The revenue report adds them up the same way. **Voids** - lines voided in the window, by who voided them.
 - **Calls** - claims in the window; seconds from the call to the claim. **Messages** - venue messages in the window
   that answered a waiting guest text; seconds from the guest's first unanswered text to the reply.
 - **Approvals, declines** - from the History (the booking does not record who decided it), so they reach back a year.

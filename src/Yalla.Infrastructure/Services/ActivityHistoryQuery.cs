@@ -302,7 +302,8 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
             })
             .ToListAsync(cancellationToken);
 
-        // The table's waiters in turn: whoever held it first (the seat, the opener, the first order), then each transfer.
+        // The table's waiters in turn: whoever held it first (the seat, the opener, the first order) from when it became
+        // theirs, then each transfer.
         var transfers = await db.ActivityEntries
             .AsNoTracking()
             .Where(e => e.TableSessionId == tab.TableSessionId && e.Action == ActivityActions.TableTransferred)
@@ -311,14 +312,52 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
             .ToListAsync(cancellationToken);
 
         var turns = new List<(Guid Id, DateTime FromUtc)>();
-        var firstServer = FirstServer(transfers.Select(t => t.SummaryJson).FirstOrDefault())
-                          ?? tab.SeatedByStaffId
-                          ?? lines.Select(l => l.ServerStaffMemberId).FirstOrDefault(s => s is not null)
-                          ?? (transfers.Count == 0 ? tab.ServerStaffMemberId : null);
+
+        // Before the first hand-over the table was whoever that hand-over was from - nobody, when a manager gave out a
+        // table a guest's scan seated that nobody had served yet. With no hand-over, whoever holds it now.
+        var firstServer = transfers.Count > 0
+            ? FirstServer(transfers[0].SummaryJson)
+            : tab.ServerStaffMemberId
+              ?? tab.SeatedByStaffId
+              ?? lines.Select(l => l.ServerStaffMemberId).FirstOrDefault(s => s is not null);
 
         if (firstServer is { } first)
         {
-            turns.Add((first, tab.SeatedAtUtc));
+            // From when it became theirs: the seat when they seated it; otherwise when they opened, let in or first
+            // ordered on a table a guest's scan or booking had seated - not the guest's own arrival.
+            DateTime firstFrom;
+
+            if (first == tab.SeatedByStaffId)
+            {
+                firstFrom = tab.SeatedAtUtc;
+            }
+            else if (transfers.Count == 0 && tab.ServerAssignedAtUtc is { } assigned)
+            {
+                firstFrom = assigned;
+            }
+            else
+            {
+                var claimed = await db.ActivityEntries
+                    .AsNoTracking()
+                    .Where(e => e.TableSessionId == tab.TableSessionId
+                                && e.StaffMemberId == first
+                                && (e.Action == ActivityActions.TableTabOpened
+                                    || e.Action == ActivityActions.TableTabAdmitted
+                                    || e.Action == ActivityActions.OrderSent
+                                    || e.Action == ActivityActions.OrderPreOrderSent))
+                    .MinAsync(e => (DateTime?)e.OccurredAtUtc, cancellationToken);
+
+                firstFrom = claimed
+                            ?? lines.Where(l => l.ServerStaffMemberId == first).Select(l => (DateTime?)l.PlacedAtUtc).Min()
+                            ?? tab.SeatedAtUtc;
+
+                if (transfers.Count > 0 && firstFrom > transfers[0].OccurredAtUtc)
+                {
+                    firstFrom = transfers[0].OccurredAtUtc;
+                }
+            }
+
+            turns.Add((first, firstFrom));
         }
 
         foreach (var transfer in transfers)

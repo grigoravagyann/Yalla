@@ -59,7 +59,7 @@ total         = subtotal + serviceCharge
 remaining     = total − paid
 ```
 
-Four things worth stating outright, because each is a decision:
+Five things worth stating outright, because each is a decision:
 
 - **The service charge is computed on the post-discount subtotal.** A manager who comps a dish comps
   its service charge with it. Charging service on a dish you have just apologised for is the opposite
@@ -70,6 +70,11 @@ Four things worth stating outright, because each is a decision:
 - **An adjustment can never take off more than it applies to.** A 2,000 AMD comp on a 1,500 AMD dish
   takes off 1,500. Without the clamp a generous manager drives the subtotal negative and every number
   downstream becomes arithmetic nobody can explain.
+- **Adjustments come off in the order they were given** (`CreatedAtUtc`, then id): each of a line's off what
+  is left of the line, each tab-wide one off what is left of the sum. 10 % then 200 off a 13,100 bill is 1,310 + 200;
+  the other way round it is 200 + 1,290. Until 2026-10-25 the order was whatever the change tracker enumerated - a
+  just-added adjustment first - so a bill could change on its next recompute. `TabBilling.Reductions` answers
+  what each took off, for the revenue report and Staff → Results.
 - **Tips are outside the balance entirely.** `Payment.TipAmd` is excluded from `paid` and
   `remaining`. A 10,000 AMD bill settled with 12,000 AMD is not overpaid by 2,000, and folding the
   tip in makes every subsequent number — the balance, each share, whether the tab may close —

@@ -348,7 +348,16 @@ public static class ActivityFeedRules
         var to = date ?? toSent ?? today;
         var from = date ?? fromSent ?? to;
 
-        DateRules.CheckWindow(from, to, today, MaxDaysBack, MaxRangeDays, violations, Fields.From, Fields.To);
+        // A window built from date is named as date: that is the field the caller sent.
+        DateRules.CheckWindow(
+            from,
+            to,
+            today,
+            MaxDaysBack,
+            MaxRangeDays,
+            violations,
+            date is null ? Fields.From : Fields.Date,
+            date is null ? Fields.To : Fields.Date);
 
         Guid? staffMemberId = null;
 

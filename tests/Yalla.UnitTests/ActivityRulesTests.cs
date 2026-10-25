@@ -136,6 +136,10 @@ public class ActivityRulesTests
             new ActivityFeedQuery(From: DateRules.Iso(oldest.AddDays(-1)), To: DateRules.Iso(oldest)), Today));
         Assert.Equal("from", Assert.Single(tooOld.Violations).Field);
 
+        var dayTooOld = Assert.Throws<FieldValidationException>(() => ActivityFeedRules.Check(
+            new ActivityFeedQuery(Date: DateRules.Iso(oldest.AddDays(-1))), Today));
+        Assert.Equal("date", Assert.Single(dayTooOld.Violations).Field);
+
         var tooLong = Assert.Throws<FieldValidationException>(() => ActivityFeedRules.Check(
             new ActivityFeedQuery(From: DateRules.Iso(Today.AddDays(-366)), To: DateRules.Iso(Today)), Today));
         Assert.Equal("to", Assert.Single(tooLong.Violations).Field);
@@ -148,9 +152,14 @@ public class ActivityRulesTests
     [Fact]
     public void A_window_far_in_the_future_is_refused_by_name_not_by_overflow()
     {
+        // Named as the field sent: a date alone is refused as date, from and to as to.
         var feed = Assert.Throws<FieldValidationException>(() => ActivityFeedRules.Check(
             new ActivityFeedQuery(Date: "9999-12-31"), Today));
-        Assert.Equal("to", Assert.Single(feed.Violations).Field);
+        Assert.Equal("date", Assert.Single(feed.Violations).Field);
+
+        var feedTo = Assert.Throws<FieldValidationException>(() => ActivityFeedRules.Check(
+            new ActivityFeedQuery(To: "9999-12-31"), Today));
+        Assert.Equal("to", Assert.Single(feedTo.Violations).Field);
 
         var results = Assert.Throws<FieldValidationException>(() => StaffPerformanceRules.Check(
             new StaffPerformanceQuery(From: "9999-12-31"), Today));

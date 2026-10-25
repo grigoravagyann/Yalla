@@ -328,30 +328,26 @@ internal sealed class StaffPerformanceReader(
             }
         }
 
-        // Discounts and comps standing, by who gave them - the revenue report's rows, by its arithmetic.
-        var adjustments = await db.TabAdjustments
+        // Discounts and comps standing, by who gave them - the revenue report's rows, by the bill's arithmetic.
+        var standing = db.TabAdjustments
             .AsNoTracking()
             .Where(a => a.Tab.BranchId == branchId
                         && a.CreatedAtUtc >= fromUtc
                         && a.CreatedAtUtc < toUtc
-                        && a.VoidedAtUtc == null)
-            .Select(a => new
-            {
-                a.CreatedByStaffId,
-                a.Kind,
-                a.Percent,
-                a.AmountAmd,
-                LineTotal = a.TabOrderLineId == null
-                    ? a.Tab.SubtotalAmd
-                    : a.TabOrderLine!.UnitPriceAmdSnapshot * a.TabOrderLine.Quantity,
-            })
+                        && a.VoidedAtUtc == null);
+
+        var adjustments = await standing
+            .Select(a => new { a.Id, a.CreatedByStaffId, a.Kind })
             .ToListAsync(cancellationToken);
+
+        // What each took off its bill, by the bill's arithmetic - the stored subtotal is what is left after them.
+        var reductions = await AdjustmentReductions.ForAsync(db, standing, cancellationToken);
 
         long adjustmentsAmd = 0;
 
         foreach (var adjustment in adjustments)
         {
-            var reduction = Domain.Tabs.TabAdjustment.ReductionFor(adjustment.Percent, adjustment.AmountAmd, adjustment.LineTotal);
+            var reduction = reductions.GetValueOrDefault(adjustment.Id);
             var tally = Of(adjustment.CreatedByStaffId);
 
             adjustmentsAmd += reduction;

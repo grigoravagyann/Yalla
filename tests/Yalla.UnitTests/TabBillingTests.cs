@@ -284,6 +284,62 @@ public sealed class TabBillingTests
         }
     }
 
+    /// <summary>
+    /// What each adjustment took off, as the bill took it - the numbers the revenue report and Staff → Results add up. A
+    /// 10 % discount on a 9,800 bill took 980 off, not 10 % of the 8,820 left after it; a line's half comp comes off its
+    /// line first, and a later flat 200 off what the percentage left.
+    /// </summary>
+    [Fact]
+    public void Each_adjustment_reduces_by_what_the_bill_took_off()
+    {
+        var khachapuri = Guid.CreateVersion7();
+        var voided = Guid.CreateVersion7();
+
+        List<BillingLine> lines =
+        [
+            Line(owner: Host, price: 900, quantity: 1),
+            Line(owner: Host, price: 2_800, quantity: 1, lineId: khachapuri),
+            new(voided, Host, 1_500, 1, IsVoided: true, false, []),
+        ];
+
+        List<BillingAdjustment> adjustments =
+        [
+            new(khachapuri, 50m, null),     // 1,400 off the khachapuri
+            new(null, 10m, null),           // 10 % of 900 + 1,400 = 230
+            new(null, null, 200L),          // then 200 off the 2,070 left
+            new(voided, null, 500L),        // nothing: the line weighs nothing
+        ];
+
+        var reductions = TabBilling.Reductions(lines, adjustments);
+        var bill = TabBilling.Compute(lines, adjustments, Everyone(), serviceChargePercent: 10m, paidAmd: 0L);
+
+        Assert.Equal([1_400L, 230L, 200L, 0L], reductions);
+        Assert.Equal(1_870L, bill.SubtotalAmd);
+        Assert.Equal(900L + 2_800L - reductions.Sum(), bill.SubtotalAmd);
+
+        // The single discount of the QA run: 10 % of 9,800 is 980, whatever the subtotal stored after it says.
+        Assert.Equal([980L], TabBilling.Reductions([Line(owner: Host, price: 9_800, quantity: 1)], [new(null, 10m, null)]));
+    }
+
+    /// <summary>Over the random tabs: the reductions always account for the subtotal exactly.</summary>
+    [Fact]
+    public void The_reductions_always_add_up_to_what_came_off_the_bill()
+    {
+        for (var seed = 0; seed < 3_000; seed++)
+        {
+            var random = new Random(seed);
+            var (lines, adjustments, participants, percent) = RandomTab(random);
+
+            var bill = TabBilling.Compute(lines, adjustments, participants, percent, paidAmd: 0L);
+            var reductions = TabBilling.Reductions(lines, adjustments);
+
+            Assert.True(
+                lines.Sum(l => l.GrossAmd) - reductions.Sum() == bill.SubtotalAmd,
+                $"Seed {seed}: the reductions ({reductions.Sum()}) do not account for the subtotal {bill.SubtotalAmd}.");
+            Assert.True(reductions.All(r => r >= 0L), $"Seed {seed}: a negative reduction.");
+        }
+    }
+
     /// <summary>The same invariant with the service charge at its extremes.</summary>
     [Theory]
     [InlineData(0)]

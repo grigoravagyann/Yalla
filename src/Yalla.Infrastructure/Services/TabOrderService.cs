@@ -693,7 +693,7 @@ internal sealed class TabOrderService(
 
         await activity.RecordAsync(
             new ActivityRecord(
-                next == TabOrderStatus.Voided ? ActivityCategory.Payment : ActivityCategory.Order,
+                ActivityCategory.Order,
                 next switch
                 {
                     TabOrderStatus.InKitchen => ActivityActions.OrderInKitchen,
