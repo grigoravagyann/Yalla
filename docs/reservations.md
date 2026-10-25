@@ -1270,7 +1270,8 @@ entry `booking-on-your-way` appearing when it is due, written **when the booking
 `reservation:{id}:on-your-way:{startUtc:yyyyMMddHHmm}` (with one), the reminder's pattern, so it is written once
 however often the guest saves, a move asks again at the new time (`ReplaceRemindersAsync`), and a cancel withdraws
 it with the booking's other messages. Saving a pre-order moves it to 45 minutes and clearing it moves it back to 30
-(`PreOrderQuestions.AskAgainAsync` - never once the question for that start went out). It is withdrawn by every way
+(`PreOrderQuestions.AskAgainAsync`, from the `OnYourWayQuestion` handler - never once the question for that start
+went out; clearing a booking that never had a pre-order leaves its question as it is). It is withdrawn by every way
 the question becomes moot before it is asked: **the guest answering**, **the waiter sending** the pre-order, or **marking the party not
 coming** - each withdraws the unsent push and the feed entry that has not appeared (`PreOrderQuestions.WithdrawAsync`,
 the reminder's pattern). It is **a confirmed booking's question only**: the handler asks a confirmed booking whose
@@ -1350,8 +1351,8 @@ cards, two for the pre-orders, one for the records, whatever their number.
 
 **Becoming due is not an event.** Nothing happens at "thirty minutes before" that anything writes, so the list
 answers `nextDueAtUtc` - when the next card appears - and the tablet reads again then. Every pre-order change rides
-the change stream as **signal 6 `PreOrderChanged`** (`YallaDbContext.SignalPreOrderChangesAsync`, beside signal
-5): saved, edited, cleared, sent, marked not coming, put on the tab, its held ticket moved by the kitchen, a move
+the change stream as **signal 6 `PreOrderChanged`** (`PreOrderRailSignal`, a handler of every pre-order event,
+written by the save beside signal 5 - `docs/domain-events.md`): saved, edited, cleared, sent, marked not coming, put on the tab, its held ticket moved by the kitchen, a move
 clearing "not coming", the guest's "on my way" (or a move forgetting it), a held ticket voided because its booking
 ended - and **a save of the branch's pre-order settings**, which changes cards without touching a pre-order row: one
 row for every booking whose card is or could be on a rail now (a pre-order on a confirmed booking starting within

@@ -81,8 +81,11 @@ public sealed class Branch : Entity
     /// <summary>How long before a booking the waiter's pre-order card appears. Default 30; 5 to 120.</summary>
     public int PreOrderMinutesBefore { get; private set; } = Occupancy.PreOrderRules.DefaultMinutesBefore;
 
-    /// <summary>Switches pre-orders on or off and sets when the waiter sees them. Bounds are the caller's to check.</summary>
-    public void SetPreOrders(bool accepts, int minutesBefore)
+    /// <summary>
+    /// Switches pre-orders on or off and sets when the waiter sees them, raising <see cref="Occupancy.PreOrderSettingsSaved"/>.
+    /// Bounds are the caller's to check.
+    /// </summary>
+    public void SetPreOrders(bool accepts, int minutesBefore, DateTime nowUtc)
     {
         if (minutesBefore is < Occupancy.PreOrderRules.MinMinutesBefore or > Occupancy.PreOrderRules.MaxMinutesBefore)
         {
@@ -91,6 +94,9 @@ public sealed class Branch : Entity
 
         AcceptsPreOrders = accepts;
         PreOrderMinutesBefore = minutesBefore;
+
+        // Saved, whether or not anything changed: the dishes excluded are the menu's rows, not this one.
+        Raise(new Occupancy.PreOrderSettingsSaved(this, Guard.NotLocalTime(nowUtc, nameof(nowUtc))));
     }
 
     /// <summary>

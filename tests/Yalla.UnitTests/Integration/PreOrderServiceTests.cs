@@ -208,8 +208,10 @@ public partial class PreOrderTests
 
     private static async Task AcceptPreOrdersAsync(YallaDbContext db, Guid branchId)
     {
+        // Seeded, not the console's save: nobody's rail is told (PreOrderSettingsSaved is dropped).
         var branch = await db.Branches.FirstAsync(b => b.Id == branchId);
-        branch.SetPreOrders(true, 30);
+        branch.SetPreOrders(true, 30, DateTime.UnixEpoch);
+        branch.DequeueEvents();
         await db.SaveChangesAsync();
     }
 

@@ -485,6 +485,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
     {
         EnsureVerifiedDinerRow(clock, actor);
 
+        // Its changes' events are handled by production's handlers, for this caller (CreateUnitOfWork).
+        var unitOfWork = CreateUnitOfWork(db, clock, actor);
+
         return new(
             db,
             clock,
@@ -492,9 +495,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new AuthorizationQueries(db),
             CreateBranchGuard(db, actor),
             CreateTableLock(db),
-            CreateOutbox(db, clock),
-            CreateLedger(db, clock, actor),
+            unitOfWork.GetRequiredService<TabLedger>(),
             CreateActivityLog(db, clock, actor),
+            unitOfWork.GetRequiredService<DomainEventDispatcher>(),
             NullLogger<PreOrderService>.Instance);
     }
 
