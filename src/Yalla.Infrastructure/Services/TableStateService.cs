@@ -759,7 +759,7 @@ internal sealed class TableStateService(
     {
         // The one manager-only operation in this service: writing off money, as opposed to
         // recording what happened on the floor.
-        RequireManager("Abandon tab");
+        var staffId = RequireManager("Abandon tab");
 
         var tab = await db.Tabs.FirstOrDefaultAsync(
                       t => t.Id == command.TabId && t.BranchId == command.BranchId, cancellationToken)
@@ -781,34 +781,9 @@ internal sealed class TableStateService(
         var nowUtc = clock.UtcNow;
         var writtenOff = tab.RemainingAmd;
 
-        tab.MarkAbandoned(nowUtc);
-
-        var tableLabel = await db.DiningTables
-            .Where(t => t.Id == tab.DiningTableId)
-            .Select(t => t.Label)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentUnpaid, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = tableLabel,
-                AmountAmd = writtenOff,
-                IsMoney = true,
-                Reason = command.Reason,
-                Summary = new { writtenOffAmd = writtenOff, totalAmd = tab.TotalAmd, paidAmd = tab.PaidAmd },
-            },
-            cancellationToken);
-
-        // Every phone following the tab learns it was written off, as from the payment route (TabPaymentService) -
-        // which is why this saves through the ledger: it numbers the stream.
-        ledger.Append(tab.Id, TabEventType.TabAbandoned, new
-        {
-            reason = command.Reason,
-            writtenOffAmd = writtenOff,
-            byStaffId = actor.StaffMemberId,
-        });
+        // TabWrittenOff's handlers write the History's payment.unpaid and the stream's TabAbandoned, as from the payment
+        // route (TabPaymentService) - which is why this saves through the ledger: it numbers the stream.
+        tab.WriteOff(nowUtc, staffId, command.Reason);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -1023,14 +998,16 @@ internal sealed class TableStateService(
     };
 
     /// <summary>Branch managers, general managers and owners. Waiters and kitchen staff do not move money.</summary>
-    private void RequireManager(string operation)
+    private Guid RequireManager(string operation)
     {
-        RequireStaff(operation);
+        var staffId = RequireStaff(operation);
 
         if (actor.Role is not (StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner))
         {
             throw new StaffPermissionException(operation, actor.Role, StaffRole.Manager);
         }
+
+        return staffId;
     }
 
     // ---------------------------------------------------------------- loading

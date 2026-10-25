@@ -373,23 +373,85 @@ public sealed class Tab : Entity
     }
 
     /// <summary>
-    /// Writes off an outstanding balance: the diners left without paying and the venue is
-    /// accepting the loss.
+    /// Takes a payment that went through onto the bill, and raises <see cref="TabPaymentRecorded"/>: the split locks,
+    /// and a bill now paid in full closes - with its sitting, when that is still open (<see cref="TabSettled"/>). The
+    /// table is not freed: a party that has paid usually sits on.
+    /// </summary>
+    /// <remarks>
+    /// The caller has added the payment and applied the totals with it counted (the ledger's arithmetic), so
+    /// <see cref="RemainingAmd"/> is already what is owed after it.
+    /// </remarks>
+    /// <param name="payment">The payment, succeeded, on this tab.</param>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="sitting">The tab's sitting, when the caller has it; closed with the bill when still open.</param>
+    /// <returns>Whether the tab closed, and whether its sitting closed with it.</returns>
+    /// <exception cref="DomainStateException">The tab is already closed.</exception>
+    public (bool Closed, bool SittingClosed) TakePayment(Payment payment, DateTime atUtc, TableSession? sitting)
+    {
+        ArgumentNullException.ThrowIfNull(payment);
+
+        if (payment.TabId != Id || payment.Status != PaymentStatus.Succeeded)
+        {
+            throw new ArgumentException("Only a payment on this tab that went through is taken onto it.", nameof(payment));
+        }
+
+        if (!IsActive)
+        {
+            throw new DomainStateException("This tab is already closed.");
+        }
+
+        Guard.NotLocalTime(atUtc, nameof(atUtc));
+
+        // The split cannot be renegotiated once money has landed against it.
+        LockSettlementMode(atUtc);
+
+        var settles = RemainingAmd == 0L;
+
+        Raise(new TabPaymentRecorded(this, payment, settles, atUtc));
+
+        if (!settles)
+        {
+            return (false, false);
+        }
+
+        Close(atUtc);
+
+        var sittingClosed = false;
+
+        if (sitting is { IsOpen: true } && sitting.Id == TableSessionId)
+        {
+            sitting.Close(atUtc);
+            sittingClosed = true;
+        }
+
+        Raise(new TabSettled(this, sittingClosed, atUtc));
+
+        return (true, sittingClosed);
+    }
+
+    /// <summary>
+    /// Writes off an outstanding balance - the diners left without paying and the venue is accepting the loss - and
+    /// raises <see cref="TabWrittenOff"/> with what was still owed.
     /// </summary>
     /// <remarks>
     /// The role check lives in the service layer, which is where the acting staff member is
     /// known - this is manager-only, because it is a decision about money rather than about the
     /// floor.
     /// </remarks>
-    public void MarkAbandoned(DateTime abandonedAtUtc)
+    /// <exception cref="DomainStateException">The tab is already closed.</exception>
+    public void WriteOff(DateTime abandonedAtUtc, Guid byStaffId, string? reason)
     {
         if (Status is TabStatus.Closed or TabStatus.Abandoned)
         {
             throw new DomainStateException("This tab is already closed.");
         }
 
+        Guard.NotEmpty(byStaffId, nameof(byStaffId));
+
         Status = TabStatus.Abandoned;
         ClosedAtUtc = Guard.NotLocalTime(abandonedAtUtc, nameof(abandonedAtUtc));
+
+        Raise(new TabWrittenOff(this, RemainingAmd, reason, byStaffId, ClosedAtUtc.Value));
     }
 
     /// <summary>The bill has been asked for; no new orders and no new participants.</summary>

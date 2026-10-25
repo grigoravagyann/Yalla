@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
@@ -35,7 +34,6 @@ internal sealed class TabPaymentService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
-    IActivityLog activity,
     ILogger<TabPaymentService> logger) : ITabPaymentService
 {
     public async Task<CashPaymentView> RecordCashAsync(
@@ -112,60 +110,10 @@ internal sealed class TabPaymentService(
 
         tab.ApplyComputedTotals(after.SubtotalAmd, after.ServiceChargeAmd, after.PaidAmd);
 
-        // The split cannot be renegotiated once money has landed against it.
-        tab.LockSettlementMode(nowUtc);
-
-        var closed = false;
-        var sessionClosed = false;
-
-        if (tab.RemainingAmd == 0L)
-        {
-            tab.Close(nowUtc);
-            closed = true;
-            sessionClosed = await CloseSessionAsync(tab, nowUtc, cancellationToken);
-        }
-
-        ledger.Append(tab.Id, TabEventType.PaymentRecorded, new
-        {
-            paymentId = payment.Id,
-            amountAmd = payment.AmountAmd,
-            tipAmd = payment.TipAmd,
-            method = (int)payment.Method,
-            tabParticipantId = payment.TabParticipantId,
-            byStaffId = staffId,
-            remainingAmd = tab.RemainingAmd,
-        });
-
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentCash, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                AmountAmd = payment.AmountAmd,
-                IsMoney = true,
-                Summary = new
-                {
-                    paymentId = payment.Id,
-                    amountAmd = payment.AmountAmd,
-                    tipAmd = payment.TipAmd,
-                    remainingAmd = tab.RemainingAmd,
-                    totalAmd = tab.TotalAmd,
-                    closed,
-                    serverStaffMemberId = payment.ServerStaffMemberId,
-                },
-            },
-            cancellationToken);
-
-        if (closed)
-        {
-            ledger.Append(tab.Id, TabEventType.TabClosed, new
-            {
-                closedAtUtc = nowUtc,
-                totalAmd = tab.TotalAmd,
-                tableSessionClosed = sessionClosed,
-            });
-        }
+        // The tab takes it: the split locks, and a bill now paid in full closes with its sitting - not the table. Its
+        // TabPaymentRecorded (and TabSettled) handlers write the History's entry and the stream's PaymentRecorded (and
+        // TabClosed) in the save below.
+        var (closed, sessionClosed) = tab.TakePayment(payment, nowUtc, sitting);
 
         try
         {
@@ -211,30 +159,6 @@ internal sealed class TabPaymentService(
         return await BuildViewAsync(payment.Id, false, closed, sessionClosed, cancellationToken);
     }
 
-    /// <summary>
-    /// Closes the sitting the tab belonged to, if it is still open.
-    /// </summary>
-    /// <remarks>
-    /// <b>The table is not freed.</b> That stays an explicit waiter action, because physical state
-    /// and financial state are independent: a party that has paid usually sits on for another
-    /// twenty minutes, and a floor plan that shows their table as free the moment the bill settles
-    /// is lying to the person trying to seat the next walk-in.
-    /// </remarks>
-    private async Task<bool> CloseSessionAsync(Tab tab, DateTime nowUtc, CancellationToken cancellationToken)
-    {
-        var session = await db.TableSessions
-            .FirstOrDefaultAsync(s => s.Id == tab.TableSessionId && s.ClosedAtUtc == null, cancellationToken);
-
-        if (session is null)
-        {
-            return false;
-        }
-
-        session.Close(nowUtc);
-
-        return true;
-    }
-
     public async Task<TabTotalsSnapshot> AbandonAsync(
         Guid tabId,
         string reason,
@@ -249,27 +173,9 @@ internal sealed class TabPaymentService(
         var bill = ledger.Compute(tab);
 
         tab.ApplyComputedTotals(bill.SubtotalAmd, bill.ServiceChargeAmd, bill.PaidAmd);
-        tab.MarkAbandoned(clock.UtcNow);
 
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Payment, ActivityActions.PaymentUnpaid, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                TableSessionId = tab.TableSessionId,
-                TableLabel = await TableLabelAsync(tab, cancellationToken),
-                AmountAmd = tab.RemainingAmd,
-                IsMoney = true,
-                Reason = reason,
-                Summary = new { writtenOffAmd = tab.RemainingAmd, totalAmd = tab.TotalAmd, paidAmd = tab.PaidAmd },
-            },
-            cancellationToken);
-
-        ledger.Append(tab.Id, TabEventType.TabAbandoned, new
-        {
-            reason,
-            writtenOffAmd = tab.RemainingAmd,
-            byStaffId = staffId,
-        });
+        // TabWrittenOff's handlers write the History's payment.unpaid and the stream's TabAbandoned in the save below.
+        tab.WriteOff(clock.UtcNow, staffId, reason);
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -281,15 +187,6 @@ internal sealed class TabPaymentService(
     }
 
     // ---------------------------------------------------------------- helpers
-
-    /// <summary>The tab's table label, from the tracker when it is there.</summary>
-    private async Task<string?> TableLabelAsync(Tab tab, CancellationToken cancellationToken) =>
-        db.DiningTables.Local.FirstOrDefault(t => t.Id == tab.DiningTableId)?.Label
-        ?? await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.Id == tab.DiningTableId)
-            .Select(t => t.Label)
-            .FirstOrDefaultAsync(cancellationToken);
 
     /// <summary>The payment this command already made, if it made one.</summary>
     /// <remarks>
