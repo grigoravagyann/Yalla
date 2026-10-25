@@ -1,9 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Auth;
-using Yalla.Application.Messaging;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
@@ -39,9 +37,15 @@ namespace Yalla.Infrastructure.Services;
 /// <b>Where each command lives.</b> This is the one <see cref="ITabService"/> the endpoints see. Each
 /// group of commands is a class of its own over the same unit of work - <see cref="TabOpener"/>,
 /// <see cref="TabJoining"/>, <see cref="TabRoster"/>, <see cref="TabStaffActions"/> and
-/// <see cref="TabAdmissionCommands"/> - beside the parts they share, <see cref="TabLookups"/> and
-/// <see cref="TabSignals"/>. They are composed here rather than registered one by one, so this
-/// constructor stays the service's whole list of dependencies.
+/// <see cref="TabAdmissionCommands"/> - beside the part they share, <see cref="TabLookups"/>. They are
+/// composed here rather than registered one by one, so this constructor stays the service's whole list
+/// of dependencies.
+/// </para>
+/// <para>
+/// <b>What a command tells the rest of the system is not here.</b> The tab raises what happened - opened,
+/// let in, turned away, somebody asking to join, let on, taken off, the host moved, the bill presented -
+/// and the handlers in <c>DomainEvents/Tabs</c> write the activity entry, the tab's stream, the branch's
+/// change stream and the pushes in the same save (<c>docs/domain-events.md</c>).
 /// </para>
 /// </remarks>
 internal sealed class TabService : ITabService
@@ -62,20 +66,16 @@ internal sealed class TabService : ITabService
         TabParticipantTokens tokens,
         IOptions<TabOptions> options,
         TabLedger ledger,
-        IOutbox outbox,
         StaffBranchGuard branchGuard,
-        IActivityLog activity,
         ILogger<TabService> logger)
     {
         var lookups = new TabLookups(db, actor, query, tokens);
-        var signals = new TabSignals(db, actor, ledger, activity);
 
-        joining = new TabJoining(db, clock, actor, authority, ledger, outbox, logger, lookups, signals);
-        opener = new TabOpener(db, clock, actor, tableState, ledger, logger, lookups, signals, joining);
-        roster = new TabRoster(db, clock, query, authority, options, ledger, outbox, logger, lookups);
-        staff = new TabStaffActions(db, clock, actor, authority, ledger, activity, logger, lookups, signals);
-        admission = new TabAdmissionCommands(
-            db, clock, tableState, authority, ledger, branchGuard, activity, logger, lookups, signals);
+        joining = new TabJoining(db, clock, actor, authority, ledger, logger, lookups);
+        opener = new TabOpener(db, clock, actor, tableState, ledger, logger, lookups, joining);
+        roster = new TabRoster(db, clock, query, authority, options, ledger, logger, lookups);
+        staff = new TabStaffActions(db, clock, actor, authority, ledger, logger, lookups);
+        admission = new TabAdmissionCommands(db, clock, tableState, authority, ledger, branchGuard, logger, lookups);
     }
 
     // ---------------------------------------------------------------- opening and joining

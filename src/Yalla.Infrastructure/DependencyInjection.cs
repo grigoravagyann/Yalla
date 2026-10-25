@@ -343,6 +343,33 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
         services.AddScoped<IDomainEventHandler<TakeawayCollected>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
         services.AddScoped<IDomainEventHandler<TakeawayMarkedNoShow>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        // Tabs: opened, let in or turned away, people asking to join and let on, turned away, taken off or leaving, the
+        // host moved, the split changed, the bill presented. The History's line, the tab's stream, the branch's change
+        // stream, then the push.
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Tabs.TabFloorSignal>();
+        services.AddScoped<IDomainEventHandler<TabOpenedByScan>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabFloorSignal>());
+        services.AddScoped<IDomainEventHandler<TabOpenedByStaff>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
+        services.AddScoped<IDomainEventHandler<TabAdmitted>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
+        services.AddScoped<IDomainEventHandler<TabAdmitted>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabAdmitted>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabFloorSignal>());
+        services.AddScoped<IDomainEventHandler<TabTurnedAway>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
+        services.AddScoped<IDomainEventHandler<TabTurnedAway>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabTurnedAway>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabFloorSignal>());
+        services.AddScoped<IDomainEventHandler<TabJoinRequested>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabJoinRequested>, Yalla.Infrastructure.DomainEvents.Tabs.JoinRequestNotice>();
+        services.AddScoped<IDomainEventHandler<TabParticipantApproved>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabParticipantApproved>, Yalla.Infrastructure.DomainEvents.Tabs.ParticipantApprovedNotice>();
+        services.AddScoped<IDomainEventHandler<TabParticipantRejected>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabParticipantRemoved>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabParticipantPermissionsChanged>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabParticipantRenamed>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabHostMoved>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
+        services.AddScoped<IDomainEventHandler<TabHostMoved>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabSettlementModeChanged>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        services.AddScoped<IDomainEventHandler<TabBillPresented>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
+        services.AddScoped<IDomainEventHandler<TabBillPresented>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
         // Guest messages: the guest wrote or answered "are you coming?", the venue wrote or asked. The History's line, then
         // the guest's push and feed entry, then the floor's push; one read of the thread's subject and account for all.
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.ConversationReads>();
