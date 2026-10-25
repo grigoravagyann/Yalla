@@ -307,6 +307,12 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderActivity>());
         services.AddScoped<IDomainEventHandler<TabOrderLineVoided>>(sp => sp.GetRequiredService<TabOrderStream>());
 
+        // Calls (service requests): raised, claimed, acknowledged.
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Calls.CallStream>();
+        services.AddScoped<IDomainEventHandler<ServiceRequestRaised>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Calls.CallStream>());
+        services.AddScoped<IDomainEventHandler<ServiceRequestRaised>, Yalla.Infrastructure.DomainEvents.Calls.TableCallStaffPush>();
+        services.AddScoped<IDomainEventHandler<ServiceRequestClaimed>, Yalla.Infrastructure.DomainEvents.Calls.CallClaimActivity>();
+        services.AddScoped<IDomainEventHandler<ServiceRequestAcknowledged>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Calls.CallStream>());
         // Payments: cash taken, the bill settled, a discount or comp given or reversed, a balance written off.
         services.AddScoped<PaymentActivity>();
         services.AddScoped<PaymentStream>();

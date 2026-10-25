@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Yalla.Application.Messaging;
+using Yalla.Application.Ordering;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
@@ -156,12 +157,7 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         Assert.Equal("Սեղան 1 · կանչում է", waiterBrowser.Open(toWaiter.Body).GetProperty("title").GetString());
 
         // Answered meanwhile: nobody is buzzed.
-        await using (var db = fixture.CreateContext(rig.Factory.Clock))
-        {
-            var call = await db.ServiceRequests.SingleAsync(r => r.Id == water);
-            call.Acknowledge(rig.Factory.Clock.UtcNow, rig.Branch.WaiterId);
-            await db.SaveChangesAsync();
-        }
+        await rig.AcknowledgeCallAsync(water);
 
         rig.Push.Sent.Clear();
         await rig.DispatchAsync($"staff-push:call:{water}");
@@ -186,12 +182,7 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         var claimed = await rig.RaiseCallAsync(tab, ServiceRequestPreset.Napkins);
         var unclaimed = await rig.RaiseCallAsync(tab, ServiceRequestPreset.Water);
 
-        await using (var db = fixture.CreateContext(rig.Factory.Clock))
-        {
-            var call = await db.ServiceRequests.SingleAsync(r => r.Id == claimed);
-            Assert.True(call.Claim(rig.Factory.Clock.UtcNow, rig.Branch.WaiterId));
-            await db.SaveChangesAsync();
-        }
+        Assert.Equal(rig.Branch.WaiterId, (await rig.ClaimCallAsync(claimed)).ClaimedByStaffMemberId);
 
         await rig.DispatchAsync($"staff-push:call:{claimed}");
         Assert.Empty(rig.Push.Sent);
@@ -553,15 +544,33 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
             return await AuthTestData.CreateOpenTabAsync(db, Branch, Branch.FirstTableId, Factory.Clock.UtcNow);
         }
 
+        /// <summary>The host calls, through the service, so the call's domain events stage its push as production's do.</summary>
         public async Task<Guid> RaiseCallAsync(AuthTab tab, ServiceRequestPreset preset)
         {
             await using var db = _fixture.CreateContext(Factory.Clock);
 
-            var call = new ServiceRequest(tab.TabId, Branch.BranchId, tab.TableId, tab.HostParticipantId, preset, Factory.Clock.UtcNow);
-            db.ServiceRequests.Add(call);
-            await db.SaveChangesAsync();
+            var call = await _fixture.CreateServiceRequests(db, Factory.Clock, TestActor.Participant(tab.HostParticipantId))
+                .RaiseAsync(tab.TabId, tab.HostParticipantId, preset, note: null);
 
-            return call.Id;
+            return call.ServiceRequestId;
+        }
+
+        /// <summary>The branch's waiter says "I'm on it".</summary>
+        public async Task<ServiceRequestView> ClaimCallAsync(Guid callId)
+        {
+            await using var db = _fixture.CreateContext(Factory.Clock);
+
+            return await _fixture.CreateServiceRequests(db, Factory.Clock, TestActor.Waiter(Branch.WaiterId))
+                .ClaimAsync(Branch.BranchId, callId);
+        }
+
+        /// <summary>The branch's waiter answers the call.</summary>
+        public async Task<ServiceRequestView> AcknowledgeCallAsync(Guid callId)
+        {
+            await using var db = _fixture.CreateContext(Factory.Clock);
+
+            return await _fixture.CreateServiceRequests(db, Factory.Clock, TestActor.Waiter(Branch.WaiterId))
+                .AcknowledgeAsync(callId);
         }
 
         public async Task PutWaiterOnShiftAsync()
