@@ -535,9 +535,12 @@ public sealed class ReservationServiceTests(SqlServerFixture fixture)
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(Now);
-        await using var db = fixture.CreateContext(clock);
+        var diner = TestActor.Diner();
+
+        // An hour before the start, "not coming" goes into the booking's thread - an event its handlers write for.
+        await using var db = fixture.CreateContextWithHandlers(clock, diner);
         var branch = await TestBranchBuilder.CreateAsync(db);
-        var service = fixture.CreateReservationService(db, clock, TestActor.Diner());
+        var service = fixture.CreateReservationService(db, clock, diner);
 
         var booking = await service.CreateAsync(Booking(branch, branch.FirstTableId));
 

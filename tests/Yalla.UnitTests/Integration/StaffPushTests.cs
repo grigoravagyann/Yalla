@@ -364,11 +364,20 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         db.Reservations.AddRange(pending, confirmed);
         await db.SaveChangesAsync();
 
-        var thread = Conversation.ForReservation(rig.Branch.BranchId, pending.Id, null, now);
-        db.Conversations.Add(thread);
-        var fromGuest = thread.WriteAsGuest("Can we sit by the window?", null, now);
-        var fromVenue = thread.WriteAsVenue("Of course", rig.Branch.ManagerId, "Manager", null, now);
-        await db.SaveChangesAsync();
+        // A guest's words and the venue's reply in one save, on the context the host composes: the guest's push hangs on
+        // the message's GuestMessageWritten event, whose handlers a bare context does not have (docs/domain-events.md).
+        ConversationMessage fromGuest;
+        ConversationMessage fromVenue;
+
+        await using (var scope = rig.Factory.Services.CreateAsyncScope())
+        {
+            var host = scope.ServiceProvider.GetRequiredService<YallaDbContext>();
+            var thread = Conversation.ForReservation(rig.Branch.BranchId, pending.Id, null, now);
+            host.Conversations.Add(thread);
+            fromGuest = thread.WriteAsGuest("Can we sit by the window?", null, now);
+            fromVenue = thread.WriteAsVenue("Of course", rig.Branch.ManagerId, "Manager", null, now);
+            await host.SaveChangesAsync();
+        }
 
         var keys = await db.OutboxMessages.AsNoTracking()
             .Where(m => m.Type == OutboxMessageTypes.StaffPush)

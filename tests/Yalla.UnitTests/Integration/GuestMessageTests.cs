@@ -877,9 +877,12 @@ public class GuestMessageTests(SqlServerFixture fixture)
                     eraseDb, null!, new RefreshTokenStore(eraseDb, factory.Clock), account, factory.Clock.UtcNow, CancellationToken.None);
             });
 
-        await using (var writeDb = fixture.CreateContext(factory.Clock, race))
+        // The message raises an event (docs/domain-events.md): the write's context dispatches to the handlers production
+        // registers, as the waiter.
+        var actor = TestActor.Waiter(branch.WaiterId);
+
+        await using (var writeDb = fixture.CreateContextWithHandlers(factory.Clock, actor, race))
         {
-            var actor = TestActor.Waiter(branch.WaiterId);
             var messages = new GuestMessageService(
                 writeDb,
                 factory.Clock,

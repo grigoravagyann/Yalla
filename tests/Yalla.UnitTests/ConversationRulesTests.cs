@@ -169,6 +169,44 @@ public class ConversationRulesTests
         Assert.Throws<DomainStateException>(() => order.AskComing(staffId, "Aram", Now));
     }
 
+    /// <summary>
+    /// Every message raises one event carrying the thread and the message (docs/domain-events.md); a refused ask, a refused
+    /// answer and a read mark raise nothing.
+    /// </summary>
+    [Fact]
+    public void Each_message_raises_its_event_and_nothing_else_does()
+    {
+        var thread = Conversation.ForReservation(Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), Now);
+        Assert.Empty(thread.DequeueEvents());
+
+        var guest = thread.WriteAsGuest("Hello", Guid.CreateVersion7(), Now);
+        var written = Assert.IsType<GuestMessageWritten>(Assert.Single(thread.DequeueEvents()).Event);
+        Assert.Same(thread, written.Thread);
+        Assert.Same(guest, written.Message);
+        Assert.Equal(Now, written.OccurredAtUtc);
+
+        var staffId = Guid.CreateVersion7();
+        var venue = thread.WriteAsVenue("Welcome", staffId, "Aram", Guid.CreateVersion7(), Now.AddMinutes(1));
+        Assert.Same(venue, Assert.IsType<VenueMessageWritten>(Assert.Single(thread.DequeueEvents()).Event).Message);
+
+        var ask = thread.AskComing(staffId, "Aram", Now.AddMinutes(2));
+        Assert.Same(ask, Assert.IsType<VenueAskedComing>(Assert.Single(thread.DequeueEvents()).Event).Ask);
+
+        var (answer, status) = thread.Answer(GuestAnswer.NotComing, null, null, Now.AddMinutes(3));
+        var answered = Assert.IsType<GuestAnswered>(Assert.Single(thread.DequeueEvents()).Event);
+        Assert.Same(answer, answered.Answer);
+        Assert.Same(status, answered.Status);
+
+        Assert.Throws<ArgumentException>(() => thread.Answer(GuestAnswer.Late, null, null, Now));
+        thread.MarkReadByGuest(Now.AddMinutes(4));
+        thread.MarkReadByVenue(Now.AddMinutes(4));
+        Assert.Empty(thread.DequeueEvents());
+
+        var order = Conversation.ForTakeaway(Guid.CreateVersion7(), Guid.CreateVersion7(), null, Now);
+        Assert.Throws<DomainStateException>(() => order.AskComing(staffId, "Aram", Now));
+        Assert.Empty(order.DequeueEvents());
+    }
+
     [Fact]
     public void A_read_marks_up_to_what_was_shown_never_past_now_and_never_back()
     {

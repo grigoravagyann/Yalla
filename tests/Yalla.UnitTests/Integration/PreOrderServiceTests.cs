@@ -63,7 +63,8 @@ public partial class PreOrderTests
 
         clock.UtcNow = SundayDinnerUtc.AddMinutes(-60);
 
-        await using (var db = fixture.CreateContext(clock))
+        // The answer goes into the booking's thread, and the floor's push hangs on its event: a context with handlers.
+        await using (var db = fixture.CreateContextWithHandlers(clock, diners[1]))
         {
             await fixture.CreatePreOrderService(db, clock, diners[1]).ConfirmOnMyWayAsync(answered);
         }

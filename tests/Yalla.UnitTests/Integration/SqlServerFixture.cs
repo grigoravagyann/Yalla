@@ -216,6 +216,35 @@ public sealed class SqlServerFixture : IAsyncLifetime
     }
 
     /// <summary>
+    /// A fresh context whose own saves dispatch to the handlers production registers, as <paramref name="actor"/> - for a
+    /// service that saves on the context rather than through the ledger, on a path that raises (a guest's answer to "are
+    /// you coming?", a venue message). <see cref="CreateContext"/> refuses events; this is a request's context instead.
+    /// </summary>
+    internal YallaDbContext CreateContextWithHandlers(IClock clock, ICurrentActor actor, params IInterceptor[] interceptors)
+    {
+        var options = new DbContextOptionsBuilder<YallaDbContext>()
+            .UseSqlServer(ConnectionString)
+            .EnableSensitiveDataLogging()
+            .AddInterceptors(interceptors)
+            .Options;
+
+        var services = new ServiceCollection();
+        services.AddSingleton(clock);
+        services.AddSingleton(actor);
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton<DomainEventDispatcher>();
+        services.AddSingleton(sp => new YallaDbContext(options, clock, sp.GetRequiredService<DomainEventDispatcher>()));
+        services.AddSingleton<Yalla.Application.Messaging.IOutbox>(sp =>
+            new Outbox(sp.GetRequiredService<YallaDbContext>(), clock, NullLogger<Outbox>.Instance));
+        services.AddSingleton<Yalla.Application.Activity.IActivityLog>(sp =>
+            CreateActivityLog(sp.GetRequiredService<YallaDbContext>(), clock, actor));
+        services.AddSingleton<TabLedger>();
+        services.AddDomainEventHandlers();
+
+        return services.BuildServiceProvider().GetRequiredService<YallaDbContext>();
+    }
+
+    /// <summary>
     /// The branch boundary, over one context. Composed in rather than stubbed: it is the check
     /// that keeps one branch off another's tabs, so a double here could pass while the real one
     /// was missing - which is exactly how it came to be missing from two services.
