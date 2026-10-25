@@ -607,6 +607,46 @@ public sealed class TableStateServiceTests(SqlServerFixture fixture)
         Assert.Equal(TabStatus.Abandoned, stored.Status);
     }
 
+    /// <summary>
+    /// A write-off from here tells the tab's stream, as the payment route's does: every phone following the tab learns
+    /// it was written off, in sequence, naming the manager - it used to change the tab and say nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_write_off_tells_the_tabs_stream_like_the_payment_route()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        var (db, clock, branch) = await ArrangeAsync();
+        var tableId = branch.FirstTableId;
+
+        var waiterService = fixture.CreateService(db, clock, TestActor.Waiter(branch.WaiterId));
+        var seated = await waiterService.SeatWalkInAsync(
+            new SeatWalkInCommand(branch.BranchId, tableId, 2, Guid.NewGuid()));
+
+        Tab tab;
+        await using (var tabDb = fixture.CreateContext(clock))
+        {
+            tab = await TestBranchBuilder.AddOpenTabAsync(
+                tabDb, branch, tableId, seated.TableSessionId!.Value, 2_000L, Now);
+        }
+
+        await using var managerDb = fixture.CreateContext(clock);
+        await fixture.CreateService(managerDb, clock, TestActor.Manager(branch.ManagerId))
+            .AbandonTabAsync(new AbandonTabCommand(branch.BranchId, tab.Id, Guid.NewGuid(), "walked out"));
+
+        await using var verify = fixture.CreateContext(clock);
+        var told = Assert.Single(await verify.TabEvents.AsNoTracking().Where(e => e.TabId == tab.Id).ToListAsync());
+
+        Assert.Equal(TabEventType.TabAbandoned, told.Type);
+        Assert.Equal(1L, told.Sequence);
+        Assert.Equal(branch.ManagerId, told.ActorId);
+
+        using var payload = System.Text.Json.JsonDocument.Parse(told.PayloadJson);
+        Assert.Equal("walked out", payload.RootElement.GetProperty("reason").GetString());
+        Assert.Equal(2_000L, payload.RootElement.GetProperty("writtenOffAmd").GetInt64());
+        Assert.Equal(branch.ManagerId, payload.RootElement.GetProperty("byStaffId").GetGuid());
+    }
+
     [SkippableFact]
     public async Task A_diner_may_not_change_table_state()
     {

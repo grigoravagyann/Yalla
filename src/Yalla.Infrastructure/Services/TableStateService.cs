@@ -47,6 +47,7 @@ internal sealed class TableStateService(
     ICurrentActor actor,
     TableLock tableLock,
     IActivityLog activity,
+    TabLedger ledger,
     ILogger<TableStateService> logger) : ITableStateService
 {
     public async Task<TableStateChangeResult> SeatWalkInAsync(
@@ -800,7 +801,16 @@ internal sealed class TableStateService(
             },
             cancellationToken);
 
-        await db.SaveChangesAsync(cancellationToken);
+        // Every phone following the tab learns it was written off, as from the payment route (TabPaymentService) -
+        // which is why this saves through the ledger: it numbers the stream.
+        ledger.Append(tab.Id, TabEventType.TabAbandoned, new
+        {
+            reason = command.Reason,
+            writtenOffAmd = writtenOff,
+            byStaffId = actor.StaffMemberId,
+        });
+
+        await ledger.SaveAppendedAsync(cancellationToken);
 
         logger.LogWarning(
             "Tab {TabId} abandoned by manager {StaffId} with {WrittenOffAmd} AMD written off. Reason: {Reason}",
