@@ -206,6 +206,57 @@ public class TabOrderTests
         Assert.Empty(phone.Lines);
         Assert.Empty(spoken.Lines);
     }
+
+    /// <summary>
+    /// Voiding a whole order takes every line still on the bill off it, stamped with the void's time, who and why; a
+    /// line voided earlier keeps its own stamp. The bill is the lines, so this is what stops a voided order charging.
+    /// </summary>
+    [Fact]
+    public void Voiding_an_order_voids_its_live_lines_and_leaves_an_earlier_void_as_it_was()
+    {
+        var order = TabOrder.PlacedByStaffMember(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        var coffee = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 2);
+        var cake = order.AddLine(Guid.CreateVersion7(), "Gata", 1_800L, 1);
+        cake.Void(PlacedAt.AddMinutes(1), "Sold out");
+        order.MoveTo(TabOrderStatus.InKitchen);
+
+        var waiter = Guid.CreateVersion7();
+        var takenOff = order.Void(PlacedAt.AddMinutes(4), waiter);
+
+        Assert.Equal(TabOrderStatus.Voided, order.Status);
+        Assert.Equal(new[] { coffee }, takenOff);
+        Assert.Equal((PlacedAt.AddMinutes(4), waiter, TabOrder.WholeOrderVoidReason), (coffee.VoidedAtUtc, coffee.VoidedByStaffId, coffee.VoidReason));
+        Assert.Equal((PlacedAt.AddMinutes(1), "Sold out"), (cake.VoidedAtUtc, cake.VoidReason));
+        Assert.All(order.Lines, l => Assert.Equal(0L, l.LineTotalAmd));
+    }
+
+    /// <summary>
+    /// The rail's own rules hold for a void - nothing served or ready comes off, and nothing is voided twice - and a void
+    /// cannot go round <see cref="TabOrder.Void"/> through <see cref="TabOrder.MoveTo"/>, which would leave the lines charged.
+    /// </summary>
+    [Fact]
+    public void A_void_goes_only_through_Void_and_only_where_the_rail_allows_it()
+    {
+        var order = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        var line = order.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 1);
+
+        Assert.Throws<DomainStateException>(() => order.MoveTo(TabOrderStatus.Voided));
+        Assert.Equal(TabOrderStatus.New, order.Status);
+        Assert.False(line.IsVoided);
+
+        order.MoveTo(TabOrderStatus.InKitchen);
+        order.MoveTo(TabOrderStatus.Ready);
+
+        Assert.Throws<DomainStateException>(() => order.Void(PlacedAt.AddMinutes(5), null));
+        Assert.Equal(TabOrderStatus.Ready, order.Status);
+        Assert.False(line.IsVoided);
+
+        var fresh = TabOrder.PlacedByDiner(Guid.CreateVersion7(), Guid.CreateVersion7(), PlacedAt);
+        fresh.AddLine(Guid.CreateVersion7(), "Cappuccino", 1_400L, 1);
+        fresh.Void(PlacedAt.AddMinutes(1), null);
+
+        Assert.Throws<DomainStateException>(() => fresh.Void(PlacedAt.AddMinutes(2), null));
+    }
 }
 
 public class TabJoinTokenTests

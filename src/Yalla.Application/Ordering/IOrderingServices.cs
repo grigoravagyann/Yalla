@@ -58,8 +58,15 @@ public interface ITabOrderService
     /// Moves an order along the kitchen rail. <b>Waiter or above</b>, with Kitchen confined to
     /// <c>InKitchen -> Ready</c>: cooking is what that role does, and serving is not.
     /// </summary>
+    /// <remarks>
+    /// <c>Voided</c> takes the order off the bill: its lines are voided with it (<c>TabOrder.Void</c>) and the tab's
+    /// totals are saved in the same unit of work, like a line void.
+    /// </remarks>
     /// <exception cref="Yalla.Domain.DomainStateException">The transition is not one the rail allows.</exception>
     /// <exception cref="Domain.Staff.StaffPermissionException">This role may not make that move.</exception>
+    /// <exception cref="Domain.Tabs.LineAlreadyPaidException">
+    /// A void on a tab that has been paid against, with something of the order still on the bill: a refund, not a void.
+    /// </exception>
     Task<KitchenOrderView> MoveOrderStatusAsync(
         Guid orderId,
         TabOrderStatus next,

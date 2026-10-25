@@ -31,11 +31,20 @@ public sealed class StaffBranchScopeException : Exception
     /// What was addressed, as a bare noun for the message - "tab", "request", "order".
     /// </param>
     public StaffBranchScopeException(string subject)
-        : base($"That {subject} belongs to another branch. Staff act on the branch they are "
-               + "enrolled at, a branch manager on their own branch, and an owner or general "
-               + "manager on every branch of their venue.") =>
+        : base(MessageFor(subject)) =>
         Subject = subject;
 
     /// <summary>What was addressed. Carried so the error envelope can name it.</summary>
     public string Subject { get; }
+
+    /// <summary>
+    /// The refusal in words. A branch addressed directly is not "of another branch": it is simply not one of the
+    /// caller's - "That branch belongs to another branch" read as a typo to everybody who met it.
+    /// </summary>
+    private static string MessageFor(string subject) =>
+        (string.Equals(subject, "branch", StringComparison.OrdinalIgnoreCase)
+            ? "That branch is not one of yours."
+            : $"That {subject} belongs to another branch.")
+        + " Staff act on the branch they are enrolled at, a branch manager on their own branch, and an owner or "
+        + "general manager on every branch of their venue.";
 }

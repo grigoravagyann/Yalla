@@ -16,6 +16,11 @@ namespace Yalla.Infrastructure.Persistence.Migrations
     /// under that waiter (nobody transferred a table before transfers existed); a cash payment was taken by the staff
     /// member its <c>PaymentRecorded</c> event names; a call already acknowledged was claimed by whoever acknowledged it. The History itself starts empty - nothing was logged to fill it.
     /// </para>
+    /// <para>
+    /// <b>And a voided order's lines are voided</b> on every tab nobody has paid against, with its cache recomputed, so
+    /// a voided order stops being charged; a tab already paid against keeps the bill it was paid on. Not undone by
+    /// <see cref="Down"/>: un-voiding food would put it back on somebody's bill.
+    /// </para>
     /// </remarks>
     public partial class ActivityHistory : Migration
     {
@@ -257,7 +262,80 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                 UPDATE dbo.ServiceRequests SET ClaimedAtUtc = AcknowledgedAtUtc, ClaimedByStaffId = AcknowledgedByStaffId
                 WHERE ClaimedAtUtc IS NULL AND AcknowledgedAtUtc IS NOT NULL AND AcknowledgedByStaffId IS NOT NULL;
                 """);
+
+            // A voided order's lines come off the bill with it (TabOrder.Void). Before that they did not, so a voided
+            // order (status 5) was still charged. Its live lines are voided now as the void would have voided them: when
+            // its OrderStatusChanged event (11) to 5 happened and by the staff member that event names (when still a
+            // row), else when it was placed and by nobody - and only on a tab nobody has paid against (no Reserved 1 or
+            // Succeeded 2 payment). On a tab money has changed hands on, the bill stays as it was paid: taking food off
+            // it now would be a refund, which is never done silently (docs/billing.md, "Voiding a whole order").
+            //
+            // Then the totals cache of each tab touched, by the bill's arithmetic, where that is the plain sum: nothing
+            // paid (by the condition above) and no standing adjustment. A touched tab with a standing discount keeps a
+            // stale cache until its next write or read of /shares repairs it (TabLedger.EnsureTotalsFreshAsync); every
+            // payment reserves against the lines, never the cache, so nobody can be charged by the stale figure.
+            migrationBuilder.Sql(VoidedOrderLinesBackfillSql);
         }
+
+        /// <summary>
+        /// Voids the live lines of every voided order on a tab nobody has paid against, and recomputes those tabs'
+        /// totals cache where it is the plain sum. Idempotent. Its own constant so <c>WholeOrderVoidTests</c> can run it
+        /// over rows written in the old state.
+        /// </summary>
+        internal const string VoidedOrderLinesBackfillSql =
+                """
+                DECLARE @touched TABLE (TabId uniqueidentifier PRIMARY KEY);
+
+                INSERT INTO @touched (TabId)
+                SELECT DISTINCT o.TabId
+                FROM dbo.TabOrders o
+                JOIN dbo.TabOrderLines l ON l.TabOrderId = o.Id
+                WHERE o.Status = 5 AND l.VoidedAtUtc IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM dbo.Payments p WHERE p.TabId = o.TabId AND p.Status IN (1, 2));
+
+                UPDATE l SET
+                    VoidedAtUtc = COALESCE(ev.AtUtc, o.PlacedAtUtc),
+                    VoidedByStaffId = ev.StaffId,
+                    VoidReason = N'The whole order was voided.'
+                FROM dbo.TabOrderLines l
+                JOIN dbo.TabOrders o ON o.Id = l.TabOrderId
+                JOIN @touched w ON w.TabId = o.TabId
+                OUTER APPLY (
+                    SELECT TOP (1)
+                        e.AtUtc,
+                        m.Id AS StaffId
+                    FROM dbo.TabEvents e
+                    LEFT JOIN dbo.StaffMembers m
+                      ON m.Id = TRY_CONVERT(uniqueidentifier, JSON_VALUE(e.PayloadJson, '$.byStaffId'))
+                    WHERE e.TabId = o.TabId
+                      AND e.Type = 11
+                      AND TRY_CONVERT(uniqueidentifier, JSON_VALUE(e.PayloadJson, '$.orderId')) = o.Id
+                      AND TRY_CONVERT(int, JSON_VALUE(e.PayloadJson, '$.toStatus')) = 5
+                    ORDER BY e.Sequence
+                ) ev
+                WHERE o.Status = 5 AND l.VoidedAtUtc IS NULL;
+
+                UPDATE t SET
+                    SubtotalAmd = s.SubtotalAmd,
+                    ServiceChargeAmd = c.ServiceChargeAmd,
+                    TotalAmd = s.SubtotalAmd + c.ServiceChargeAmd,
+                    PaidAmd = 0,
+                    RemainingAmd = s.SubtotalAmd + c.ServiceChargeAmd
+                FROM dbo.Tabs t
+                JOIN @touched w ON w.TabId = t.Id
+                CROSS APPLY (
+                    SELECT COALESCE(SUM(CASE WHEN l.VoidedAtUtc IS NULL THEN l.UnitPriceAmdSnapshot * l.Quantity ELSE 0 END), 0)
+                           AS SubtotalAmd
+                    FROM dbo.TabOrderLines l
+                    JOIN dbo.TabOrders o ON o.Id = l.TabOrderId
+                    WHERE o.TabId = t.Id
+                ) s
+                CROSS APPLY (
+                    SELECT CAST(ROUND(CAST(s.SubtotalAmd AS decimal(38, 4)) * t.ServiceChargePercentSnapshot / 100, 0) AS bigint)
+                           AS ServiceChargeAmd
+                ) c
+                WHERE NOT EXISTS (SELECT 1 FROM dbo.TabAdjustments a WHERE a.TabId = t.Id AND a.VoidedAtUtc IS NULL);
+                """;
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)

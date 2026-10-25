@@ -293,7 +293,6 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
                 l.VoidedByStaffId,
                 VoidedBy = l.VoidedByStaff != null ? l.VoidedByStaff.FullName : null,
                 l.VoidReason,
-                OrderVoided = l.TabOrder.Status == TabOrderStatus.Voided,
                 l.TabOrder.PlacedAtUtc,
                 l.TabOrder.PlacedByStaffId,
                 PlacedBy = l.TabOrder.PlacedByStaff != null ? l.TabOrder.PlacedByStaff.FullName : null,
@@ -394,7 +393,9 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
                 l.NameSnapshot,
                 l.Quantity,
                 l.UnitPriceAmdSnapshot,
-                l.VoidedAtUtc is null && !l.OrderVoided ? l.UnitPriceAmdSnapshot * l.Quantity : 0L,
+                // The bill's one rule: a line counts until it is voided. Voiding a whole order voids its lines
+                // (TabOrder.Void), so its lines read 0 here as they do on the bill - never a second rule of this page's.
+                l.VoidedAtUtc is null ? l.UnitPriceAmdSnapshot * l.Quantity : 0L,
                 l.PlacedAtUtc,
                 l.PlacedByStaffId,
                 l.PlacedBy ?? l.Guest,

@@ -689,7 +689,35 @@ internal sealed class TabOrderService(
         RequireKitchenMayMake(order.Status, next);
 
         var from = order.Status;
-        order.MoveTo(next);
+
+        // What the order came to while it was still on the bill - the History's amount for a void, read before the
+        // void takes the lines off.
+        var onTheBillAmd = order.Lines.Sum(l => l.LineTotalAmd);
+
+        // Voiding is the one move on the rail that touches money: the order's lines come off the bill with it
+        // (TabOrder.Void), so the tab is loaded the way every money path loads it and saved with its totals.
+        var voidingTab = next == TabOrderStatus.Voided
+            ? await ledger.LoadForWriteAsync(order.TabId, cancellationToken)
+            : null;
+
+        if (voidingTab is not null)
+        {
+            // As for a line: once money has changed hands against the tab, taking food off it is a refund. Only where
+            // the rail would allow the void at all - a served order is refused for what it is - and only when something
+            // is still on the bill to come off.
+            if (from is TabOrderStatus.New or TabOrderStatus.InKitchen
+                && order.Lines.FirstOrDefault(l => !l.IsVoided) is { } live
+                && voidingTab.Payments.Any(p => p.Status is PaymentStatus.Succeeded or PaymentStatus.Reserved))
+            {
+                throw new LineAlreadyPaidException(voidingTab.Id, live.Id, wholeOrder: true);
+            }
+
+            order.Void(clock.UtcNow, staffId);
+        }
+        else
+        {
+            order.MoveTo(next);
+        }
 
         await activity.RecordAsync(
             new ActivityRecord(
@@ -709,7 +737,7 @@ internal sealed class TabOrderService(
                 TableSessionId = order.Tab.TableSessionId,
                 TableLabel = order.Tab.DiningTable.Label,
                 ItemNames = [.. order.Lines.Select(l => l.NameSnapshot)],
-                AmountAmd = next == TabOrderStatus.Voided ? order.Lines.Sum(l => l.LineTotalAmd) : null,
+                AmountAmd = next == TabOrderStatus.Voided ? onTheBillAmd : null,
                 Summary = new
                 {
                     orderId = order.Id,
@@ -780,10 +808,17 @@ internal sealed class TabOrderService(
             byStaffId = staffId,
         });
 
-        // The rail does not touch money, so no totals recomputation - there is nothing on this path
-        // that can change what the tab owes. It still goes through the ledger, because it appends an
-        // event and the numbering is what the stream rests on.
-        await ledger.SaveAppendedAsync(cancellationToken);
+        // The rail's other moves do not touch money, so no totals recomputation - nothing on them can change what the
+        // tab owes. A void does: its lines came off the bill, so the tab is saved with its totals, inline, like a line
+        // void. Both go through the ledger, because they append an event and the numbering is what the stream rests on.
+        if (voidingTab is not null)
+        {
+            await ledger.SaveWithTotalsAsync(voidingTab, cancellationToken);
+        }
+        else
+        {
+            await ledger.SaveAppendedAsync(cancellationToken);
+        }
 
         if (feedTransaction is not null)
         {

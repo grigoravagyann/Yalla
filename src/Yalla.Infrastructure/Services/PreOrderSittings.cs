@@ -167,6 +167,13 @@ internal static class PreOrderSittings
             order.MoveTo(step);
         }
 
+        // A voided ticket never reaches a tab (MarkAttached refuses it), but if one did its lines would come off the bill with
+        // it, as any voided order's do - never a voided order still charging for its food.
+        if (preOrder.KitchenStatus == TabOrderStatus.Voided)
+        {
+            order.Void(preOrder.UpdatedAtUtc, null);
+        }
+
         return order;
     }
 
@@ -176,7 +183,6 @@ internal static class PreOrderSittings
         TabOrderStatus.InKitchen => [TabOrderStatus.InKitchen],
         TabOrderStatus.Ready => [TabOrderStatus.InKitchen, TabOrderStatus.Ready],
         TabOrderStatus.Served => [TabOrderStatus.InKitchen, TabOrderStatus.Ready, TabOrderStatus.Served],
-        TabOrderStatus.Voided => [TabOrderStatus.Voided],
         _ => [],
     };
 

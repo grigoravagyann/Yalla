@@ -215,10 +215,65 @@ public sealed class TabOrder : Entity
     /// that it was ever cooked, and the kitchen screen and the floor then disagree about whether
     /// food exists.
     /// </remarks>
+    /// <exception cref="DomainStateException">
+    /// The rail does not allow the move - or it is <see cref="TabOrderStatus.Voided"/>, which goes through
+    /// <see cref="Void"/> so the lines come off the bill with it.
+    /// </exception>
     public void MoveTo(TabOrderStatus next)
     {
         Guard.Defined(next, nameof(next));
 
+        if (next == TabOrderStatus.Voided)
+        {
+            throw new DomainStateException(
+                "Voiding an order takes its lines off the bill, so it goes through TabOrder.Void, not MoveTo.");
+        }
+
+        RequireRailAllows(next);
+
+        Status = next;
+    }
+
+    /// <summary>The reason a line carries when it came off the bill with its whole order.</summary>
+    public const string WholeOrderVoidReason = "The whole order was voided.";
+
+    /// <summary>
+    /// Voids the whole order: off the rail, and <b>every line still on the bill comes off it</b>, stamped with when,
+    /// by whom and <see cref="WholeOrderVoidReason"/> - exactly as if each had been voided on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The bill is the lines (<c>docs/billing.md</c>): every total - the tab, the diner's view, the balance a payment
+    /// is reserved against, the revenue and staff reports - adds up the lines whose <see cref="TabOrderLine.VoidedAtUtc"/>
+    /// is empty, and none of them looks at the order's status. A voided order whose lines were left alone was
+    /// therefore still charged in full. Stamping the lines keeps that one rule true rather than teaching every reader a
+    /// second one. A line voided earlier on its own keeps its own stamp and reason.
+    /// </para>
+    /// <para>
+    /// Whether the tab may still lose money is the caller's question: a void is refused once the tab has been paid
+    /// against, since that is a refund (<see cref="LineAlreadyPaidException"/>).
+    /// </para>
+    /// </remarks>
+    /// <returns>The lines this took off the bill - none when every one was already voided.</returns>
+    /// <exception cref="DomainStateException">The rail does not allow voiding from where the order is.</exception>
+    public IReadOnlyList<TabOrderLine> Void(DateTime voidedAtUtc, Guid? voidedByStaffId, string reason = WholeOrderVoidReason)
+    {
+        RequireRailAllows(TabOrderStatus.Voided);
+
+        var takenOff = _lines.Where(l => !l.IsVoided).ToList();
+
+        foreach (var line in takenOff)
+        {
+            line.Void(voidedAtUtc, reason, voidedByStaffId);
+        }
+
+        Status = TabOrderStatus.Voided;
+
+        return takenOff;
+    }
+
+    private void RequireRailAllows(TabOrderStatus next)
+    {
         var allowed = Status switch
         {
             TabOrderStatus.New => next is TabOrderStatus.InKitchen or TabOrderStatus.Voided,
@@ -231,7 +286,5 @@ public sealed class TabOrder : Entity
         {
             throw new DomainStateException($"An order cannot go from {Status} to {next}.");
         }
-
-        Status = next;
     }
 }

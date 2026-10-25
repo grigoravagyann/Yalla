@@ -96,11 +96,17 @@ public sealed class NamedGuestNotOrderableException(Guid participantId, Particip
 /// <remarks>
 /// Refunds are a separate thing with their own rail, their own audit and their own conversation
 /// with a manager. Letting a void quietly reverse money that has already changed hands would put
-/// the tab's arithmetic and the cash drawer out of step with nothing recording why.
+/// the tab's arithmetic and the cash drawer out of step with nothing recording why. The same holds for
+/// voiding a whole order, which takes its lines off the bill.
 /// </remarks>
-public sealed class LineAlreadyPaidException(Guid tabId, Guid lineId)
+/// <param name="tabId">The tab paid against.</param>
+/// <param name="lineId">The line that would have come off - for a whole order, the first of its lines still on the bill.</param>
+/// <param name="wholeOrder">True when a whole order was being voided, which the message then says.</param>
+public sealed class LineAlreadyPaidException(Guid tabId, Guid lineId, bool wholeOrder = false)
     : DomainStateException(
-        "This tab has already been paid for, so removing a line from it is a refund rather than a void.")
+        wholeOrder
+            ? "This tab has already been paid for, so voiding an order on it is a refund rather than a void."
+            : "This tab has already been paid for, so removing a line from it is a refund rather than a void.")
 {
     public Guid TabId { get; } = tabId;
 

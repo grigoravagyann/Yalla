@@ -514,9 +514,11 @@ internal sealed class StaffPerformanceReader(
             })
             .ToListAsync(cancellationToken);
 
-        // Each bill's live lines by the waiter they were placed under, with when that waiter's first order went in.
+        // Each bill's live lines by the waiter they were placed under, with when that waiter's first order went in. Live
+        // by the bill's one rule - not voided; a voided order's lines are voided with it (TabOrder.Void) - so the weights
+        // are the lines the total was made of.
         var weights = await ClosedTabs(branchId, fromUtc, toUtc)
-            .SelectMany(t => t.Orders.Where(o => o.Status != TabOrderStatus.Voided))
+            .SelectMany(t => t.Orders)
             .SelectMany(o => o.Lines.Where(l => l.VoidedAtUtc == null), (o, l) => new
             {
                 o.TabId,

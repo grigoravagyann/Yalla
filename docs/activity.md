@@ -229,7 +229,8 @@ most 20,000 (more: 422 `activity-export-too-large`), with the reports' CSV rules
 **The timeline** (`tab`, `reservation`, `takeawayOrder` - or `takeaway` - or any other subject's entries): a bill's every entry of its
 sitting, oldest first, its header with `servers` (the waiters in turn, each `fromUtc` when the table became theirs: the
 seat for whoever seated it; their opening, letting in or first order on a table a guest's scan or booking seated; the
-hand-over for each after - and none before a hand-over from nobody), and its lines with who added and voided each.
+hand-over for each after - and none before a hand-over from nobody), and its lines with who added and voided each. A
+line's amount is the bill's: zero once voided, on its own or with its whole order, and nothing else.
 
 ## 8. Staff results
 
@@ -237,8 +238,8 @@ Read live off the operational tables, as the reports are - a fixed number of sta
 
 - **Bills** are the revenue report's: closed in the window on the branch's own dates (`BranchTime.RangeToUtc`),
   `Status` Closed, admitted; their `TotalAmd`.
-- **Sales.** Each bill's total is split over the waiters who held its lines, in proportion to the lines' worth (live
-  lines of live orders), **largest remainder** so the shares add up to the bill exactly. Lines placed while nobody
+- **Sales.** Each bill's total is split over the waiters who held its lines, in proportion to the lines' worth (lines
+  not voided - a voided order's lines are voided with it, `docs/billing.md` "Voiding a whole order"), **largest remainder** so the shares add up to the bill exactly. Lines placed while nobody
   served the table are the closing waiter's; with nobody then either, the sale is `unattributedSalesAmd`.
 - **Tables and guests** count for each waiter with a share of the bill, and the waiter at the close. The totals row
   counts each bill once.
@@ -247,7 +248,8 @@ Read live off the operational tables, as the reports are - a fixed number of sta
 - **Cash** - whoever took it: tab cash on the window's bills, and the takeaway counter's cash collected in the window.
 - **Discounts, comps** - who gave them, still standing, created in the window, and what they took off by the bill's
   own arithmetic (`TabBilling.Reductions`: a line's own off that line, then the tab-wide ones off what is left, each in
-  turn - never a percentage of the subtotal stored after them). The revenue report adds them up the same way. **Voids** - lines voided in the window, by who voided them.
+  turn - never a percentage of the subtotal stored after them). The revenue report adds them up the same way. **Voids** - lines voided in the window, by who voided them;
+  voiding a whole order counts each line it took off the bill.
 - **Calls** - claims in the window; seconds from the call to the claim. **Messages** - venue messages in the window
   that answered a waiting guest text; seconds from the guest's first unanswered text to the reply.
 - **Approvals, declines** - from the History (the booking does not record who decided it), so they reach back a year.
