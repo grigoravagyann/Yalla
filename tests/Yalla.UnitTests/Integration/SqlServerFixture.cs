@@ -136,7 +136,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         ICurrentActor actor,
         BookingLockOptions? lockOptions = null) =>
         new(db, clock, actor, CreateTableLock(db, lockOptions), CreateActivityLog(db, clock, actor),
-            NullLogger<TableStateService>.Instance);
+            CreateLedger(db, clock, actor), NullLogger<TableStateService>.Instance);
 
     /// <summary>The activity log over one context, acting as the given caller - what every writing service records through.</summary>
     internal static ActivityLog CreateActivityLog(YallaDbContext db, IClock clock, ICurrentActor actor) =>
@@ -226,18 +226,18 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <summary>Ordering, voiding and adjusting, over one context.</summary>
     internal TabOrderService CreateOrderService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateActivityLog(db, clock, actor), NullLogger<TabOrderService>.Instance);
+            NullLogger<TabOrderService>.Instance);
 
     /// <summary>Cash, over one context. Two of these over separate contexts is how payments race.</summary>
     internal TabPaymentService CreatePaymentService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateActivityLog(db, clock, actor), NullLogger<TabPaymentService>.Instance);
+            NullLogger<TabPaymentService>.Instance);
 
     /// <summary>Calling a waiter, over one context.</summary>
     internal ServiceRequestService CreateServiceRequests(
         YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateActivityLog(db, clock, actor), NullLogger<ServiceRequestService>.Instance);
+            NullLogger<ServiceRequestService>.Instance);
 
     /// <summary>Shares and the event stream, over one context.</summary>
     internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>

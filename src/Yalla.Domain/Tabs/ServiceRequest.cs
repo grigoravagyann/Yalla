@@ -36,6 +36,9 @@ namespace Yalla.Domain.Tabs;
 /// </remarks>
 public sealed class ServiceRequest : Entity
 {
+    /// <summary>Set by <see cref="Send"/>, so a call goes out once. Not persisted: only a new call is sent.</summary>
+    private bool _sent;
+
     public Guid TabId { get; private set; }
 
     public Tab Tab { get; private set; } = null!;
@@ -106,6 +109,7 @@ public sealed class ServiceRequest : Entity
     /// A waiter says "I'm on it". The first claim stands; a second, or one on a call already answered or replaced, is a
     /// no-op answering false. The guest is not told and the call does not leave the list.
     /// </summary>
+    /// <remarks>Raises <see cref="ServiceRequestClaimed"/> when it claimed: the History's <c>table.call-claimed</c>.</remarks>
     public bool Claim(DateTime claimedAtUtc, Guid staffId)
     {
         if (!IsOpen || ClaimedAtUtc is not null)
@@ -115,6 +119,8 @@ public sealed class ServiceRequest : Entity
 
         ClaimedAtUtc = Guard.NotLocalTime(claimedAtUtc, nameof(claimedAtUtc));
         ClaimedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        Raise(new ServiceRequestClaimed(this, staffId, ClaimedAtUtc.Value));
 
         return true;
     }
@@ -173,6 +179,27 @@ public sealed class ServiceRequest : Entity
                 nameof(bill), bill.AmountAmd, "A bill to bring is for a positive amount.");
         TipPercent = bill.TipPercent is { } percent ? Guard.NotNegative(percent, nameof(bill)) : null;
         TipAmd = bill.TipAmd is { } tip ? Guard.NotNegativeAmd(tip, nameof(bill)) : null;
+    }
+
+    /// <summary>
+    /// Puts the built call on the floor's list and raises <see cref="ServiceRequestRaised"/>, which is what tells the
+    /// table's stream (<c>ServiceRequested</c>) and buzzes the floor's phones (the <c>tableCalls</c> staff push).
+    /// </summary>
+    /// <remarks>
+    /// Apart from the constructor, as <c>TabOrder.Place</c> is, so a test can seed a call as history - at an instant of
+    /// its choosing - without telling anybody.
+    /// </remarks>
+    /// <exception cref="DomainStateException">The call was already sent, or is no longer open.</exception>
+    public void Send()
+    {
+        if (_sent || !IsOpen)
+        {
+            throw new DomainStateException("This call is already on the floor's list.");
+        }
+
+        _sent = true;
+
+        Raise(new ServiceRequestRaised(this, CreatedAtUtc));
     }
 
     /// <summary>
@@ -252,8 +279,45 @@ public sealed class ServiceRequest : Entity
     /// Two waiters tapping the same request at the same moment is the normal case, not a race worth
     /// reporting: both saw it, which is the outcome the diner wanted. The first acknowledgement
     /// stands so the record says who actually went.
+    /// <para>
+    /// Raises <see cref="ServiceRequestAcknowledged"/> - the table's stream hears it - and, for a call nobody had
+    /// claimed, <see cref="ServiceRequestClaimed"/> just before it: whoever answered had it, and that is the response
+    /// time.
+    /// </para>
     /// </remarks>
     public bool Acknowledge(DateTime acknowledgedAtUtc, Guid staffId)
+    {
+        var unclaimed = ClaimedAtUtc is null;
+
+        if (!Answer(acknowledgedAtUtc, staffId))
+        {
+            return false;
+        }
+
+        if (unclaimed)
+        {
+            Raise(new ServiceRequestClaimed(this, staffId, AcknowledgedAtUtc!.Value));
+        }
+
+        Raise(new ServiceRequestAcknowledged(this, staffId, AcknowledgedAtUtc!.Value));
+
+        return true;
+    }
+
+    /// <summary>
+    /// The waiter who came over to a scan nobody admitted found nobody and turned the tab away: its open calls are
+    /// answered by that person at that moment, so the rail drops them.
+    /// </summary>
+    /// <remarks>
+    /// Raises nothing. What happened is the tab being turned away, and that is told once, by the tab: its
+    /// <c>TabAdmissionRejected</c> on the stream and <c>table.tab-turned-away</c> in the History. A call to an empty
+    /// table is not a waiter's response time, and nobody is left on the closed tab to hear it answered.
+    /// </remarks>
+    /// <returns>True when this call was open and is now answered.</returns>
+    public bool AnswerForTurnedAwayTab(DateTime answeredAtUtc, Guid staffId) => Answer(answeredAtUtc, staffId);
+
+    /// <summary>Records the answer - and the claim, when nobody had it - on an open call. False on one that is not.</summary>
+    private bool Answer(DateTime acknowledgedAtUtc, Guid staffId)
     {
         if (!IsOpen)
         {

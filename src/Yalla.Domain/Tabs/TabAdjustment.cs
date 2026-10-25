@@ -101,9 +101,12 @@ public sealed class TabAdjustment : Entity
         Reason = Guard.NotBlank(reason, nameof(reason), FieldLengths.Reason);
         CreatedByStaffId = Guard.NotEmpty(createdByStaffId, nameof(createdByStaffId));
         StampCreatedAt(createdAtUtc);
+
+        // Given is what happened: the History's line and the tab's stream hang on it, written when it is saved.
+        Raise(new TabAdjustmentAdded(this, CreatedAtUtc));
     }
 
-    /// <summary>A percentage off one line, or off the whole tab when the line is null.</summary>
+    /// <summary>A percentage off one line, or off the whole tab when the line is null. Raises <see cref="TabAdjustmentAdded"/>.</summary>
     public static TabAdjustment ByPercent(
         Guid tabId,
         Guid? tabOrderLineId,
@@ -114,7 +117,7 @@ public sealed class TabAdjustment : Entity
         DateTime createdAtUtc) =>
         new(tabId, tabOrderLineId, kind, percent, null, reason, createdByStaffId, createdAtUtc);
 
-    /// <summary>A flat amount off one line, or off the whole tab when the line is null.</summary>
+    /// <summary>A flat amount off one line, or off the whole tab when the line is null. Raises <see cref="TabAdjustmentAdded"/>.</summary>
     public static TabAdjustment ByAmount(
         Guid tabId,
         Guid? tabOrderLineId,
@@ -160,6 +163,8 @@ public sealed class TabAdjustment : Entity
         return Math.Min(raw, baseAmd);
     }
 
+    /// <summary>Reverses it - it stops counting and stays on the record - and raises <see cref="TabAdjustmentReversed"/>.</summary>
+    /// <exception cref="DomainStateException">It was already reversed.</exception>
     public void Void(DateTime voidedAtUtc, Guid voidedByStaffId)
     {
         if (!IsActive)
@@ -169,5 +174,7 @@ public sealed class TabAdjustment : Entity
 
         VoidedAtUtc = Guard.NotLocalTime(voidedAtUtc, nameof(voidedAtUtc));
         VoidedByStaffId = Guard.NotEmpty(voidedByStaffId, nameof(voidedByStaffId));
+
+        Raise(new TabAdjustmentReversed(this, VoidedAtUtc.Value));
     }
 }

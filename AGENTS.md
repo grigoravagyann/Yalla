@@ -54,7 +54,7 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
 - **Side effects hang on domain events** (`docs/domain-events.md`): the aggregate raises (`Entity.Raise`) from the
   method that makes the change, and handlers in `Infrastructure/DomainEvents/` write the activity entry, outbox
   message, feed row, tab-stream event and staff push in the same save - dispatched by `SaveChanges` before it writes
-  (and by `TabLedger` before it numbers the stream). Migrated: **tab orders**. On a migrated vertical never write a
+  (and by `TabLedger` before it numbers the stream). Migrated verticals are listed in `docs/domain-events.md`. On a migrated vertical never write a
   side effect in a service; on the others, prefer moving the vertical over adding another hand-written call.
 - **Idempotency**: device writes carry `clientCommandId` (`IClientCommandRequest` in
   `Endpoints/TableStateRequests.cs`, enforced by `ClientCommandIdFilter`); the service records it in
@@ -176,9 +176,9 @@ catalogue table in `docs/error-contract.md`.
 1. A new power-of-two `StaffPushKinds` member (`Domain/Enums/IdentityEnums.cs`); decide `Defaults`, update `All`; pin it.
 2. Stage it from a **domain-event handler** of the event the floor is told about: `StaffPushSignals.StageOne(db, kind,
    id, $"{StaffPushSignals.KeyPrefix}<what>:{id}", clock.UtcNow)` (append `:{StaffPushSignals.Again()}` when it can
-   happen again) - models: `DomainEvents/TabOrders/KitchenReadyStaffPush`, `DomainEvents/TakeawayOrders/TakeawayStaffPush`.
-   Not in services. approvals, guestMessages and tableCalls are still detected in `StaffPushSignals.StageDetected` from
-   the change tracker until their verticals move.
+   happen again) - models: `DomainEvents/TabOrders/KitchenReadyStaffPush`, `DomainEvents/Calls/TableCallStaffPush`,
+   `DomainEvents/TakeawayOrders/TakeawayStaffPush`. Not in services. The older kinds left are still detected in
+   `StaffPushSignals.StageDetected` from the change tracker until their verticals move.
 3. `StaffPushHandler`: `KindName`, the subject switch (return null when no longer true), text in `StaffPushText`.
 4. The switch: `StaffNotificationPreferences` + `StaffNotificationSettings` (`StaffPushContracts.cs`), both mappings in
    `StaffPushService`, the request in `StaffDeviceRequests.cs` and `StaffDeviceEndpoints.cs`.
