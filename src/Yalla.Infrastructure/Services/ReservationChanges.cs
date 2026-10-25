@@ -21,8 +21,6 @@ internal sealed class ReservationChanges(
     YallaDbContext db,
     IClock clock,
     ReservationWriter reservations,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationSlotRules slots,
@@ -264,7 +262,6 @@ internal sealed class ReservationChanges(
 
         var shortNoticeMove = ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc));
         ReservationSlotRules.StatusDecision decided = status;
-        var movedFrom = BookingActivity.Slot(reservation);
 
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
@@ -302,16 +299,6 @@ internal sealed class ReservationChanges(
 
                 decided = await StageMoveAsync(
                     reservation, command, table, branch, startUtc, decision, ask, verdict, dinerUserId, viaManageLink, nowUtc, ct);
-
-                await BookingActivity.RecordAsync(
-                    activity,
-                    db,
-                    reservation,
-                    ActivityActions.BookingMoved,
-                    ct,
-                    extra: new { viaManageLink },
-                    before: movedFrom,
-                    byGuest: true);
             },
             cancellationToken);
 
@@ -435,7 +422,8 @@ internal sealed class ReservationChanges(
             nowUtc,
             status.Trigger,
             status.ApprovalExpiresAtUtc,
-            promise);
+            promise,
+            viaManageLink);
 
         if (ask is { } question)
         {
@@ -458,17 +446,9 @@ internal sealed class ReservationChanges(
             db.Entry(preOrder).State = EntityState.Modified;
         }
 
-        // The account is live: the writer took its lock, inside this transaction, before calling here.
-        await ReservationReminders.ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
-
-        // Moved by whoever holds the link: the account holder is told where it stands now. After the
-        // reminders, whose replacing cancels this booking's unsent messages - an earlier change's push among
-        // them, so only the latest goes.
-        if (viaManageLink)
-        {
-            ReservationNotices.TellDinerDoneFromLink(db, outbox, reservation, branch, changed: true, nowUtc);
-        }
-
+        // The History's line, the reminders replaced for the new slot (the account is live: the writer took its lock,
+        // inside this transaction, before calling here), the account told of a move from the link, the change stream
+        // and - for a move back to waiting - the floor's push are the move's handlers'.
         db.ProcessedCommands.Add(new ProcessedCommand(
             command.ClientCommandId,
             RescheduleCommandType,

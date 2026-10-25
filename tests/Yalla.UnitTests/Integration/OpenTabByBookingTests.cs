@@ -1116,6 +1116,9 @@ public class OpenTabByBookingTests(SqlServerFixture fixture)
                 throw new ArgumentOutOfRangeException(nameof(status), status, "Not a state this test reaches.");
         }
 
+        // History, written straight to the rows: what happened to it then was told then.
+        booking.DequeueEvents();
+
         await db.SaveChangesAsync();
     }
 

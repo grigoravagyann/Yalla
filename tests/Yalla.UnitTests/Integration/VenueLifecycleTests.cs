@@ -51,6 +51,9 @@ public sealed class VenueLifecycleTests(SqlServerFixture fixture)
             // exactly the invariant a post-delete booking would break.
             var made = await db.Reservations.FirstAsync(r => r.Id == before.Id);
             made.CancelByDiner(clock.UtcNow, "test", afterDeadline: false);
+
+            // Cleared straight to the row: what the cancellation tells is not this test's subject.
+            made.DequeueEvents();
             await db.SaveChangesAsync();
 
             await platform.DeleteVenueAsync(branch.VenueId);

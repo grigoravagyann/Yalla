@@ -828,6 +828,9 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
                 break;
         }
 
+        // History, written straight to the rows: what happened to it then was told then.
+        booking.DequeueEvents();
+
         return booking;
     }
 

@@ -82,6 +82,9 @@ internal static class ConsoleTestData
                 break;
         }
 
+        // History, written straight to the rows: what happened to it then was told then.
+        booking.DequeueEvents();
+
         db.Reservations.Add(booking);
         await db.SaveChangesAsync();
 

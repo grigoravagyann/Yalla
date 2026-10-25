@@ -1271,6 +1271,7 @@ public sealed class Reservation : Entity
     /// The time the diner accepted to free the table by at the new slot, when its next booking cuts a full
     /// sitting short - see <see cref="Create"/>. Replaces any promise the old slot had.
     /// </param>
+    /// <param name="viaManageLink">Whoever holds the booking's link moved it, not the app: its account is told.</param>
     /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
     public void Reschedule(
         Guid diningTableId,
@@ -1283,12 +1284,15 @@ public sealed class Reservation : Entity
         DateTime nowUtc,
         ApprovalTrigger? approvalTrigger = null,
         DateTime? approvalExpiresAtUtc = null,
-        DateTime? promisedFreeByUtc = null)
+        DateTime? promisedFreeByUtc = null,
+        bool viaManageLink = false)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
         RequireChangeableAt(nowUtc);
         RequireAnswerWindowOpenAt(nowUtc);
+
+        var before = Standing();
 
         if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
         {
@@ -1350,6 +1354,8 @@ public sealed class Reservation : Entity
         // A new request: whatever an earlier one was declined for is history.
         DeclineReason = null;
         AwaitDecision(status, approvalTrigger, approvalExpiresAtUtc);
+
+        Raise(new ReservationRescheduled(this, before, viaManageLink, nowUtc));
     }
 
     /// <summary>
@@ -1409,13 +1415,26 @@ public sealed class Reservation : Entity
     /// cancellation converts it into a no-show, which costs the venue the same slot and also the
     /// chance to resell it.
     /// </remarks>
-    public void CancelByDiner(DateTime atUtc, string? reason, bool afterDeadline, bool countsAgainstGuest = false)
+    /// <param name="atUtc">Now.</param>
+    /// <param name="reason">Why, as the guest typed it.</param>
+    /// <param name="afterDeadline">Past the branch's cancellation deadline: recorded, never refused.</param>
+    /// <param name="countsAgainstGuest">The booking was made before that deadline - see <see cref="LateCancellationCounts"/>.</param>
+    /// <param name="viaManageLink">Whoever holds the booking's link cancelled it, not the app: its account is told.</param>
+    public void CancelByDiner(
+        DateTime atUtc,
+        string? reason,
+        bool afterDeadline,
+        bool countsAgainstGuest = false,
+        bool viaManageLink = false)
     {
         // Read before the status moves: only a confirmed booking's late cancellation counts against the guest.
         var counts = countsAgainstGuest && afterDeadline && Status == ReservationStatus.Confirmed;
+        var before = Standing();
 
         Cancel(ReservationStatus.CancelledByDiner, atUtc, reason, afterDeadline);
         LateCancellationCounts = counts;
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.Guest, reason, viaManageLink, atUtc));
     }
 
     /// <summary>The venue cancelled a booking it had already accepted.</summary>

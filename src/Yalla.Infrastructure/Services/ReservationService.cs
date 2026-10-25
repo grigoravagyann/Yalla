@@ -117,9 +117,9 @@ internal sealed class ReservationService : IReservationService
         var reminders = new ReservationReminders(db, clock, outbox, publicWeb);
 
         creation = new ReservationCreation(db, clock, reservations, logger, lookups, slots, views, reminders);
-        changes = new ReservationChanges(db, clock, reservations, outbox, activity, logger, lookups, slots, views);
+        changes = new ReservationChanges(db, clock, reservations, logger, lookups, slots, views);
         answers = new ReservationAnswers(db, clock, reservations, logger, lookups, views);
-        cancellation = new ReservationCancellation(db, clock, reservations, outbox, activity, logger, lookups, views);
+        cancellation = new ReservationCancellation(db, clock, reservations, logger, lookups, views);
         decisions = new ReservationDecisions(db, clock, actor, reservations, logger, lookups, views);
         reads = new ReservationReads(db, clock, actor, branchGuard, lookups);
         release = new ReservationRelease(
