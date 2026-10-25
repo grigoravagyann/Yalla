@@ -16,6 +16,7 @@ namespace Yalla.Infrastructure.Services;
 internal sealed class ReservationCancellation(
     YallaDbContext db,
     IClock clock,
+    ReservationWriter reservations,
     IOutbox outbox,
     IActivityLog activity,
     ILogger<ReservationService> logger,
@@ -144,7 +145,7 @@ internal sealed class ReservationCancellation(
             await GuestThreads.AnswerAsync(
                 db, reservation, Domain.Messages.GuestAnswer.NotComing, null, nowUtc, cancellationToken, onlyWhenAsked: true);
 
-            await db.SaveChangesAsync(cancellationToken);
+            await reservations.SaveAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
 

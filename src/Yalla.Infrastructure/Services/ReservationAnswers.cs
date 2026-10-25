@@ -114,7 +114,7 @@ internal sealed class ReservationAnswers(
 
                 ReservationNotices.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
 
-                await db.SaveChangesAsync(cancellationToken);
+                await reservations.SaveAsync(cancellationToken);
             }
             else
             {

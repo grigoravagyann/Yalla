@@ -37,6 +37,7 @@ internal sealed class ReservationWriter(
     YallaDbContext db,
     TableLock tableLock,
     Yalla.Application.Abstractions.IClock clock,
+    DomainEventDispatcher domainEvents,
     ILogger<ReservationWriter> logger)
 {
     /// <summary>
@@ -48,6 +49,21 @@ internal sealed class ReservationWriter(
     /// relies on an index must have an answer for the index firing.
     /// </remarks>
     private const int CodeAttempts = 3;
+
+    /// <summary>
+    /// Saves the booking services' unit of work: the domain events of what they changed are handled first, by this
+    /// writer's dispatcher, then the context saves - whose own dispatch then finds nothing (<c>docs/domain-events.md</c>).
+    /// </summary>
+    /// <remarks>
+    /// In a request the dispatcher is the context's own, so this is the save it would have been. A test composing the
+    /// booking services over a bare context (<c>SqlServerFixture.CreateReservationService</c>) runs production's handlers
+    /// for its caller this way, as the table state machine and the ledger do.
+    /// </remarks>
+    internal async Task SaveAsync(CancellationToken cancellationToken)
+    {
+        await domainEvents.DispatchAsync(db, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
 
     /// <summary>
     /// Takes the table's lock, re-checks the slot inside it, and inserts the booking.
@@ -322,7 +338,7 @@ internal sealed class ReservationWriter(
 
             try
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await SaveAsync(cancellationToken);
             }
             catch (DbUpdateException ex) when (UniqueViolation.IsOn(ex, DatabaseIndexNames.ProcessedCommandId))
             {
@@ -414,7 +430,7 @@ internal sealed class ReservationWriter(
                        && !await HoldsAnotherTableThenAsync(reservation, slot, cancellationToken);
 
             await applyAsync(free, cancellationToken);
-            await db.SaveChangesAsync(cancellationToken);
+            await SaveAsync(cancellationToken);
             await locked.CommitAsync(cancellationToken);
 
             return free;
@@ -699,7 +715,7 @@ internal sealed class ReservationWriter(
         {
             try
             {
-                await db.SaveChangesAsync(cancellationToken);
+                await SaveAsync(cancellationToken);
                 return null;
             }
             catch (DbUpdateException ex)

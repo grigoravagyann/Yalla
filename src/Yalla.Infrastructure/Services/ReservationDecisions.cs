@@ -100,7 +100,7 @@ internal sealed class ReservationDecisions(
                 // The decision is worth telling the diner about: they are on a screen that says "waiting".
                 ReservationNotices.TellDinerDecided(db, outbox, reservation, branch, approved: true, expired: false, decidedKey, nowUtc);
 
-                await db.SaveChangesAsync(cancellationToken);
+                await reservations.SaveAsync(cancellationToken);
             }
             else
             {

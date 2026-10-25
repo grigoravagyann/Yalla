@@ -468,7 +468,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             new AuthorizationQueries(db),
             CreateBranchGuard(db, actor),
             noShowPolicy ?? new NoShowPolicy(),
-            CreateReservationWriter(db, clock, lockOptions),
+            CreateReservationWriter(db, clock, lockOptions, actor),
             tableState,
             new NoShowBlocks(db, outbox, tableState, CreateActivityLog(db, clock, actor), NullLogger<NoShowBlocks>.Instance),
             outbox,
@@ -649,12 +649,22 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateActivityLog(db, clock, new TestActor(ActorType.System, null, null)),
             logger ?? NullLogger<ApprovalExpirySweep>.Instance);
 
-    /// <summary>The one writer allowed to insert a booking, over this context's connection.</summary>
+    /// <summary>
+    /// The one writer allowed to insert a booking, over this context's connection - and the save every booking service
+    /// makes, which handles the domain events of what it changed with production's handlers, as <paramref name="actor"/>
+    /// (the system's when none is given, as the sweep runs) - see <see cref="CreateUnitOfWork"/>.
+    /// </summary>
     internal ReservationWriter CreateReservationWriter(
         YallaDbContext db,
         IClock clock,
-        BookingLockOptions? lockOptions = null) =>
-        new(db, CreateTableLock(db, lockOptions), clock, NullLogger<ReservationWriter>.Instance);
+        BookingLockOptions? lockOptions = null,
+        ICurrentActor? actor = null) =>
+        new(
+            db,
+            CreateTableLock(db, lockOptions),
+            clock,
+            CreateUnitOfWork(db, clock, actor ?? new TestActor(ActorType.System, null, null)).GetRequiredService<DomainEventDispatcher>(),
+            NullLogger<ReservationWriter>.Instance);
 
     /// <summary>
     /// The per-table write lock. Tests that want to <i>hold</i> it - to prove another writer waits

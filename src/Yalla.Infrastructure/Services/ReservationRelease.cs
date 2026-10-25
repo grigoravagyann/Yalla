@@ -71,7 +71,7 @@ internal sealed class ReservationRelease(
             activity, db, reservation, ActivityActions.BookingHoldExtended, cancellationToken,
             extra: new { minutes, holdExpiresAtUtc = reservation.HoldExpiresAtUtc }, byGuest: true);
 
-        await db.SaveChangesAsync(cancellationToken);
+        await reservations.SaveAsync(cancellationToken);
 
         // Onto the branch change sequence, so the waiter watching that table sees it. Held to Held -
         // nothing about the table changed, but something happened at it.
@@ -203,13 +203,13 @@ internal sealed class ReservationRelease(
                 }
             }
 
-            await db.SaveChangesAsync(cancellationToken);
+            await reservations.SaveAsync(cancellationToken);
 
             // Saved first, so the count reads this one as it reads the others.
             if (guest is { } account)
             {
                 (cancelledByBlock, blockedUntilUtc) = await noShowBlocks.BlockIfDueAsync(account, releasedFrom, nowUtc, cancellationToken);
-                await db.SaveChangesAsync(cancellationToken);
+                await reservations.SaveAsync(cancellationToken);
             }
 
             await locked.CommitAsync(cancellationToken);
@@ -300,13 +300,13 @@ internal sealed class ReservationRelease(
             await BookingActivity.RecordAsync(
                 activity, db, reservation, ActivityActions.BookingNoShowUndone, cancellationToken, reason: command.Reason);
 
-            await db.SaveChangesAsync(cancellationToken);
+            await reservations.SaveAsync(cancellationToken);
 
             // The block this no-show helped make, judged again without it: fewer than three left, and it is lifted.
             if (guest is { } account)
             {
                 await LiftBlockIfNoLongerHeldAsync(account, staffId, command.Reason, nowUtc, cancellationToken);
-                await db.SaveChangesAsync(cancellationToken);
+                await reservations.SaveAsync(cancellationToken);
             }
 
             await locked.CommitAsync(cancellationToken);

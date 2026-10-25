@@ -104,7 +104,7 @@ internal static class PendingDecline
                 await recordAsync(cancellationToken);
             }
 
-            await db.SaveChangesAsync(cancellationToken);
+            await writer.SaveAsync(cancellationToken);
 
             return new PendingDeclineOutcome(WasChange: false, OriginalKept: false, DinerTold: tell);
         }
