@@ -98,7 +98,7 @@ internal sealed class BookingBlockService(
 
         if (block.Lift(nowUtc, BookingBlockLiftCause.PlatformAdmin, staffId, reason))
         {
-            ReservationService.TellDinerUnblocked(db, outbox, block, nowUtc);
+            ReservationNotices.TellDinerUnblocked(db, outbox, block, nowUtc);
 
             await PlatformAudit.RecordAsync(
                 db,
