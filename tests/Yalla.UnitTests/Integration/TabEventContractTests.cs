@@ -64,6 +64,11 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(Now);
+
+        // A pass sends a batch, oldest first. Messages earlier classes left in this database, due by this
+        // 2026-09 clock, could fill it before this test's six were reached - the pass then "sent at least six"
+        // and none of them ours. The database is this class's alone while it runs, so emptying it is safe.
+        await fixture.ClearOutboxAsync(clock);
         await using var db = fixture.CreateContext(clock);
         var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 3);
         var menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
@@ -133,9 +138,8 @@ public sealed class TabEventContractTests(SqlServerFixture fixture)
         {
             var pass = await AllHandlers(passDb, clock, channel).RunOnceAsync();
 
-            // The database is shared across the collection, so the pass may also carry another
-            // test's messages that are due by this clock - a rescheduled booking's reminder, say.
-            // Those are not this test's to count; its own six are.
+            // The pass may also carry messages this test's own setup enqueued that are due by this
+            // clock. Those are not this test's to count; its own six are.
             Assert.True(pass.Sent >= 6, $"Expected at least this run's 6 sent, got {pass.Sent}.");
         }
 

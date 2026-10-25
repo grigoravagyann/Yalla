@@ -516,7 +516,9 @@ public class TakeawayTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        await using var factory = NewFactory();
+        // The test drives the dispatcher itself; the host's background one would race it to the apology - and
+        // win whenever a poll fell between the sweep and the pass below, sending it to the logging channel.
+        await using var factory = NewFactory().With("Outbox:Enabled", "false");
         await fixture.ClearOutboxAsync(factory.Clock);
         var x = await ArrangeAsync(factory);
         using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);

@@ -8,11 +8,13 @@ Used by .github/workflows/backend.yml. Standard library only, so the runner need
   verify-all    the shards' .trx files together ran every listed test, and none twice
   timings       .trx files -> the per-class durations the next plan balances by
 
-The unit of splitting is the test CLASS, never the method. Every SQL-backed class sits in the one
-xUnit collection `SqlServerCollection`, whose fixture migrates one database and shares it across
-the classes it holds; a class split across two shards would get two databases and two fixtures
-for what its author wrote as one. Keeping a class whole keeps that unit intact. Each shard still
-creates its own fixture and database, exactly as a local run of one class does.
+The unit of splitting is the test CLASS, never the method. Every SQL-backed class (marked
+`[Collection(SqlServerCollection.Name)]`) gets a fixture of its own and, through it, a database of
+its own for as long as it runs (SqlServerClassCollectionFactory, TestDatabasePool); a class split
+across two shards would get two fixtures and two databases for what its author wrote as one, with
+its tests no longer one after another. Keeping a class whole keeps that unit intact. Inside a shard
+the classes run in parallel, each on its own database, exactly as a local run does - the shard
+plan neither knows nor needs to know about that.
 
 The list comes from `dotnet test <dll> --ListFullyQualifiedTests`, one `Namespace.Class.Method`
 per line - the same string the vstest filter and the .trx `TestMethod` element use, so the plan
@@ -90,6 +92,12 @@ def read_trx(path: Path) -> tuple[set[str], dict[str, float], dict[str, int]]:
     counters_element = root.find(".//t:ResultSummary/t:Counters", TRX_NS)
     counters = {k: int(v) for k, v in (counters_element.attrib.items() if counters_element is not None else [])
                 if v.isdigit()}
+    # Skips counted from the results themselves. The trx logger writes a skipped xUnit test as a result
+    # with outcome="NotExecuted" but leaves the summary's notExecuted counter at 0 (seen with VSTest
+    # 17.14), so a guard reading only the counter passes a run in which every integration test skipped.
+    counters["skippedResults"] = sum(
+        1 for result in root.iterfind(".//t:Results/t:UnitTestResult", TRX_NS)
+        if result.get("outcome") == "NotExecuted")
     return ran, dict(seconds), counters
 
 
@@ -259,7 +267,7 @@ def cmd_verify_all(args: argparse.Namespace) -> None:
         for path in files:
             ran, _, counters = read_trx(path)
             executed += counters.get("executed", 0)
-            skipped += counters.get("notExecuted", 0)
+            skipped += max(counters.get("notExecuted", 0), counters["skippedResults"])
             for test in ran:
                 seen_in[test].append(shard)
 

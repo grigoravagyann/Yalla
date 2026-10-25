@@ -75,8 +75,41 @@ writes, and what it leaves alone, is in [`docs/diner-browse.md`](docs/diner-brow
 dotnet test
 ```
 
-The integration tests run against a throwaway SQL Server database and **skip** when no server is
-reachable; set `YALLA_TEST_SQL_SERVER` to point them at one.
+The integration tests run against throwaway SQL Server databases and **skip** when no server is
+reachable; set `YALLA_TEST_SQL_SERVER` to point them at one (and `YALLA_TEST_SQL_USER` /
+`YALLA_TEST_SQL_PASSWORD` for a SQL login - Windows authentication otherwise). The probe tries
+`localhost`, `localhost\SQLEXPRESS` and `(localdb)\MSSQLLocalDB` in that order.
+
+**The SQL-backed classes run in parallel, each on a database of its own.** A class marked
+`[Collection(SqlServerCollection.Name)]` gets its own `SqlServerFixture`
+(`SqlServerClassCollectionFactory`), which leases a database from `TestDatabasePool` for as long as
+the class runs: no two classes ever share a database at the same time, and inside a class the tests
+still run one after another. The first database of a run is built with `Migrate` (so the migrations
+are exercised every run) and backed up; every other one is a `RESTORE` of that backup under a new
+name, well under a second each. A finished class hands its database back for the next one, so - as
+before - a test may never assume an empty database. Up to `maxParallelThreads` classes run at once
+(`tests/Yalla.UnitTests/xunit.runner.json`; `default` is one per logical core).
+
+The run's databases (`Yalla_Tests_<run>_<n>`) and the backup are dropped when the last class
+finishes. A run that crashed cannot, so every run also drops leftovers: databases named
+`Yalla_<Word>_<32 hex digits>[_<n>]` - the fixture's and the ones the migration tests make for
+themselves - that are more than 12 hours old and have nobody connected. Nothing else on the server
+is touched; `Yalla`, `YallaPhone` and the like never match.
+
+Two other things keep it fast. `Yalla.Api` generates its minimal API request delegates at compile
+time (`EnableRequestDelegateGenerator` in its csproj): built from expression trees at startup they
+cost every test host half a second alone and over ten seconds once a dozen hosts started together.
+And the test host uses the server garbage collector. On a 22-thread laptop with SQL Server Express
+the whole suite (2153 tests) went from 46 minutes to about three; `YALLA_TEST_SERIAL=1` takes about
+ten.
+
+| Knob | What it does |
+| --- | --- |
+| `YALLA_TEST_SERIAL=1` | Every SQL-backed class back in one collection - one database, one class at a time - as the suite ran before. For a test that only fails alongside others. |
+| `dotnet test -- xUnit.MaxParallelThreads=4` | Fewer (or more) classes at once, without editing `xunit.runner.json`. |
+| `dotnet test -- xUnit.DiagnosticMessages=true` | Prints what the pool did: the server, the migration and backup times, how many databases, and the clean-up. |
+| `YALLA_TEST_SQL_CLONE=migrate` | Builds every database with migrations instead of restoring the backup. Slower; for ruling the copy out. |
+| `YALLA_TEST_NOW=05:30` | Moves the suite's "now" to that Yerevan time today (or an ISO 8601 instant), to prove no test depends on the hour it runs at (`TestNow.cs`). |
 
 ## Photos
 
@@ -221,7 +254,8 @@ Rate limiting is on in Production and Staging (`appsettings.Staging.json`) and o
 Server service container**.
 
 The suite is split across parallel shards, each with its own container, by test class
-(`scripts/ci/test_shards.py`, balanced by `scripts/ci/test-timings.json`). One `build` job builds
+(`scripts/ci/test_shards.py`, balanced by `scripts/ci/test-timings.json`); inside a shard the
+classes run in parallel on databases of their own, exactly as they do locally. One `build` job builds
 once and plans the shards; the `test (shard n)` jobs run them; the `build-and-test` job is the gate,
 and fails unless the build and every shard passed and the shards between them ran every listed test
 exactly once. Raise `TEST_SHARDS` in the workflow when a shard's tests pass about eight minutes, and
@@ -240,8 +274,9 @@ Three details in that workflow are load-bearing:
   reports itself started long before it accepts logins.
 - **A skipped test fails the build.** `SqlServerFixture` skips rather than fails when it finds no
   server, which is right on a laptop and a silent disaster in CI — it would report green while
-  proving nothing. Every shard greps its `.trx` for `NotExecuted` and fails if there are any, and
-  the gate counts them again across all shards.
+  proving nothing. Every shard counts the results in its `.trx` whose outcome is `NotExecuted`
+  and fails if there are any, and the gate counts them again across all shards. (Not the summary's
+  `notExecuted` counter: the trx logger leaves it at 0 for skipped xUnit tests.)
 - **`dotnet ef migrations has-pending-model-changes` fails the build.** An entity edited without a
   migration is the most common way this breaks, and it is invisible locally because your database
   already has the column.

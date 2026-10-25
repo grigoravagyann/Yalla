@@ -125,7 +125,8 @@ public class OnMyWayAskTests(SqlServerFixture fixture)
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
-        await using var factory = new YallaApiFactory().WithDatabase(fixture.ConnectionString);
+        // The test drives the dispatcher itself; the host's background one would race it to the messages.
+        await using var factory = new YallaApiFactory().WithDatabase(fixture.ConnectionString).With("Outbox:Enabled", "false");
         await fixture.ClearOutboxAsync(factory.Clock);
         var (branch, _) = await ArrangeAsync(factory);
         using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
