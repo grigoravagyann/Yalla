@@ -20,6 +20,12 @@ namespace Yalla.Domain.Messages;
 /// side wrote after it is unread. Any member of staff reading counts for the venue. Writing marks the writer's side
 /// read - nobody has unread messages in a thread they just answered.
 /// </para>
+/// <para>
+/// <b>Every message raises an event</b> (<c>ConversationEvents.cs</c>, <c>docs/domain-events.md</c>): the floor's push
+/// for the guest's words and answers, and the guest told and the History's line for the venue's words and its ask, are
+/// written by their handlers in the same save - whichever service wrote the message. A message is made only through these
+/// methods: its own factories are internal.
+/// </para>
 /// </remarks>
 public sealed class Conversation : Entity
 {
@@ -73,7 +79,7 @@ public sealed class Conversation : Entity
     public static Conversation ForTakeaway(Guid branchId, Guid takeawayOrderId, Guid? dinerUserId, DateTime nowUtc) =>
         new(branchId, null, Guard.NotEmpty(takeawayOrderId, nameof(takeawayOrderId)), dinerUserId, nowUtc);
 
-    /// <summary>The guest writes. Their side is read up to now.</summary>
+    /// <summary>The guest writes. Their side is read up to now. Raises <see cref="GuestMessageWritten"/>.</summary>
     /// <param name="text">Already checked: trimmed, 1 to 500 characters.</param>
     /// <param name="clientCommandId">The app's idempotency key.</param>
     /// <param name="nowUtc">Now.</param>
@@ -83,20 +89,24 @@ public sealed class Conversation : Entity
         Add(message, nowUtc);
         GuestLastReadUtc = Later(GuestLastReadUtc, nowUtc);
 
+        Raise(new GuestMessageWritten(this, message, nowUtc));
+
         return message;
     }
 
-    /// <summary>Somebody at the venue writes. The venue's side is read up to now.</summary>
+    /// <summary>Somebody at the venue writes. The venue's side is read up to now. Raises <see cref="VenueMessageWritten"/>.</summary>
     public ConversationMessage WriteAsVenue(string text, Guid staffMemberId, string staffName, Guid? clientCommandId, DateTime nowUtc)
     {
         var message = ConversationMessage.Text(Id, MessageAuthor.Venue, text, staffMemberId, staffName, clientCommandId, nowUtc);
         Add(message, nowUtc);
         VenueLastReadUtc = Later(VenueLastReadUtc, nowUtc);
 
+        Raise(new VenueMessageWritten(this, message, nowUtc));
+
         return message;
     }
 
-    /// <summary>The venue's "are you coming?", with who asked.</summary>
+    /// <summary>The venue's "are you coming?", with who asked. Raises <see cref="VenueAskedComing"/>.</summary>
     public ConversationMessage AskComing(Guid staffMemberId, string staffName, DateTime nowUtc)
     {
         if (ReservationId is null)
@@ -108,12 +118,14 @@ public sealed class Conversation : Entity
         Add(message, nowUtc);
         VenueLastReadUtc = Later(VenueLastReadUtc, nowUtc);
 
+        Raise(new VenueAskedComing(this, message, nowUtc));
+
         return message;
     }
 
     /// <summary>
     /// The guest answered "are you coming?" - by the app, the link or the notification - and the booking changed: the
-    /// answer, then the system line saying what the booking is now.
+    /// answer, then the system line saying what the booking is now. Raises <see cref="GuestAnswered"/>.
     /// </summary>
     /// <param name="answer">What they said.</param>
     /// <param name="lateMinutes">For <see cref="GuestAnswer.Late"/>: 10, 15 or 30.</param>
@@ -139,10 +151,15 @@ public sealed class Conversation : Entity
         Add(status, nowUtc);
         GuestLastReadUtc = Later(GuestLastReadUtc, nowUtc);
 
+        Raise(new GuestAnswered(this, said, status, nowUtc));
+
         return (said, status);
     }
 
-    /// <summary>The guest read the thread - up to <paramref name="upToUtc"/> when given (see <see cref="ConversationRules.ReadMarkAt"/>).</summary>
+    /// <summary>
+    /// The guest read the thread - up to <paramref name="upToUtc"/> when given (see <see cref="ConversationRules.ReadMarkAt"/>).
+    /// Raises nothing: a read mark tells nobody.
+    /// </summary>
     public void MarkReadByGuest(DateTime nowUtc, DateTime? upToUtc = null) =>
         GuestLastReadUtc = Later(GuestLastReadUtc, ReadMark(nowUtc, upToUtc));
 

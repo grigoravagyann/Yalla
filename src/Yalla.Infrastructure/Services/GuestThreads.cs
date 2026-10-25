@@ -1,26 +1,26 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Messages;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Takeaway;
-using Yalla.Infrastructure.Notifications;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
 /// Guest-message threads as the rest of the API touches them: the subject's facts, the subject's lock, a thread found or
-/// made, the venue's ask and the guest's answers appended, the guest told, and the one-line summaries on bookings and
-/// orders. See <c>docs/messages.md</c>.
+/// made, the venue's ask and the guest's answers appended, and the one-line summaries on bookings and orders. See
+/// <c>docs/messages.md</c>.
 /// </summary>
 /// <remarks>
 /// <para>
 /// A static helper over the context, like <see cref="DinerNotices"/> and <see cref="PreOrderReads"/>: the booking and
 /// pre-order services append to a thread inside their own unit of work, and need no new constructor argument for it.
+/// What a message tells the rest - the guest's push and feed entry, the History's line, the floor's push - is written by
+/// the handlers of the event the thread raises (<c>Infrastructure/DomainEvents/Messages/</c>), in the same save.
 /// </para>
 /// <para>
 /// <b>Every write takes the subject's row lock first</b> (<see cref="LockAsync"/>) - after the account's, when it takes
@@ -375,15 +375,22 @@ internal static class GuestThreads
 
     /// <summary>
     /// The venue's "are you coming?" as a message in the booking's thread, with who asked - in the caller's unit of work,
-    /// under the booking's lock (after the account's, which the caller already holds when it tells the guest) - and the
-    /// guest told: push <c>message.to-guest</c> (<c>categoryId</c> <c>venue-ask</c>) and feed <c>venue-message</c>.
+    /// under the booking's lock (after the account's, which the caller already holds). The guest is told - push
+    /// <c>message.to-guest</c> (<c>categoryId</c> <c>venue-ask</c>) and feed <c>venue-message</c> - and the History says
+    /// who asked, by the ask's <see cref="VenueAskedComing"/> handlers in the caller's save.
     /// </summary>
-    /// <returns>Whether the guest was told - false when the booking has no live account behind it.</returns>
+    /// <param name="db">The caller's context, with a transaction open.</param>
+    /// <param name="reservation">The booking, its ask already recorded.</param>
+    /// <param name="staffMemberId">Who asked.</param>
+    /// <param name="accountLive">The caller took the booking's account lock and found the account live.</param>
+    /// <param name="nowUtc">Now.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>Whether the guest is told - false when the booking has no live account behind it.</returns>
     public static async Task<bool> AskAsync(
         YallaDbContext db,
-        IOutbox outbox,
         Reservation reservation,
         Guid staffMemberId,
+        bool accountLive,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
@@ -395,13 +402,16 @@ internal static class GuestThreads
         var ask = thread.AskComing(staffMemberId, staffName, nowUtc);
         db.ConversationMessages.Add(ask);
 
-        return await TellGuestAsync(db, outbox, thread, ask, cancellationToken);
+        // The thread's account is the booking's, read under the locks - so the live account the caller found is the one
+        // the ask's notice tells (VenueMessageGuestNotice), or there is none.
+        return accountLive && thread.DinerUserId is not null;
     }
 
     /// <summary>
     /// The guest's answer to "are you coming?" - "on my way", "running late", or "not coming" (the booking's own cancel) -
     /// and the system line after it, in the caller's unit of work, under the booking's lock. The thread is made if there
-    /// is none. Nobody is pushed: the tablet polls.
+    /// is none. The guest is told nothing; the floor's <c>guestMessages</c> push hangs on the thread's
+    /// <see cref="GuestAnswered"/> event.
     /// </summary>
     /// <param name="db">The caller's context, with a transaction open.</param>
     /// <param name="reservation">The booking, already changed by the answer.</param>
@@ -460,86 +470,6 @@ internal static class GuestThreads
             .Select(s => s.FullName)
             .FirstOrDefaultAsync(cancellationToken)
         ?? string.Empty;
-
-    // ---------------------------------------------------------------- telling the guest
-
-    /// <summary>
-    /// Tells the thread's guest about a venue message: push <c>message.to-guest</c> through the outbox and feed entry
-    /// <c>venue-message</c> beside it, in the caller's unit of work - under the account's lock (a transaction is open),
-    /// so a deletion that comes after waits and removes the entry. An account already gone, or a booking with none, is
-    /// told nothing.
-    /// </summary>
-    /// <returns>Whether the guest was told.</returns>
-    public static async Task<bool> TellGuestAsync(
-        YallaDbContext db,
-        IOutbox outbox,
-        Conversation thread,
-        ConversationMessage message,
-        CancellationToken cancellationToken)
-    {
-        if (thread.DinerUserId is not { } dinerUserId || !await DinerAccountLock.IsLiveAsync(db, dinerUserId, cancellationToken))
-        {
-            return false;
-        }
-
-        var subject = thread.ReservationId is { } reservationId
-            ? ConversationSubject.Reservation(reservationId)
-            : ConversationSubject.Takeaway(thread.TakeawayOrderId!.Value);
-
-        var facts = await SubjectAsync(db, subject, cancellationToken)
-                    ?? throw new InvalidOperationException($"The thread {thread.Id} has no subject.");
-
-        var ask = message.Kind == MessageKind.AskComing;
-        var preview = message.Body is { } body ? ConversationRules.Preview(body) : null;
-        var nowUtc = message.CreatedAtUtc;
-
-        outbox.Enqueue(
-            OutboxMessageTypes.MessageToGuest,
-            new VenueMessageNotice(
-                thread.Id,
-                message.Id,
-                dinerUserId,
-                facts.VenueName,
-                thread.ReservationId,
-                thread.TakeawayOrderId,
-                ask,
-                preview,
-                facts.LocalStartTime),
-            nowUtc,
-            OutboxMessageTypes.KeyFor("conversation", thread.Id, $"message:{message.Id}"));
-
-        var values = new Dictionary<string, string>
-        {
-            ["conversationId"] = thread.Id.ToString(),
-            ["subjectKind"] = SubjectKindName(subject.Kind),
-            ["ask"] = ask ? "true" : "false",
-        };
-
-        if (preview is not null)
-        {
-            values["text"] = preview;
-        }
-
-        if (facts.LocalDate is { } date)
-        {
-            values["date"] = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        }
-
-        if (facts.LocalStartTime is { } time)
-        {
-            values["time"] = Hhmm(time);
-        }
-
-        if (facts.TakeawayCode is { } code)
-        {
-            values["code"] = code;
-        }
-
-        DinerNotices.VenueMessage(
-            db, dinerUserId, thread.BranchId, thread.ReservationId, thread.TakeawayOrderId, facts.VenueName, facts.BranchName, values, nowUtc);
-
-        return true;
-    }
 
     // ---------------------------------------------------------------- the venue's threads
 

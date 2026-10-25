@@ -493,6 +493,9 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
             // A venue message nobody was waiting for answers nothing.
             two.WriteAsVenue("See you at eight.", aram, "Aram", null, at.AddSeconds(200));
 
+            // History, written straight to the rows: what happened then was told then.
+            one.DequeueEvents();
+            two.DequeueEvents();
             db.Conversations.AddRange(one, two);
             await db.SaveChangesAsync();
         }

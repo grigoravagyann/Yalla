@@ -9,7 +9,6 @@ using Yalla.Application.Notifications;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Messages;
 using Yalla.Infrastructure.Identity;
-using Yalla.Infrastructure.Messaging;
 using Yalla.Infrastructure.Notifications;
 using Yalla.Infrastructure.Services;
 using static Yalla.UnitTests.Integration.BookingPerNumberTests;
@@ -877,16 +876,18 @@ public class GuestMessageTests(SqlServerFixture fixture)
                     eraseDb, null!, new RefreshTokenStore(eraseDb, factory.Clock), account, factory.Clock.UtcNow, CancellationToken.None);
             });
 
-        await using (var writeDb = fixture.CreateContext(factory.Clock, race))
+        // The guest is told by the message's event handlers (docs/domain-events.md): the write's context dispatches to
+        // the handlers production registers, as the waiter.
+        var actor = TestActor.Waiter(branch.WaiterId);
+
+        await using (var writeDb = fixture.CreateContextWithHandlers(factory.Clock, actor, race))
         {
-            var actor = TestActor.Waiter(branch.WaiterId);
             var messages = new GuestMessageService(
                 writeDb,
                 factory.Clock,
                 actor,
                 new AuthorizationQueries(writeDb),
                 fixture.CreateBranchGuard(writeDb, actor),
-                new Outbox(writeDb, factory.Clock, NullLogger<Outbox>.Instance),
                 SqlServerFixture.CreateActivityLog(writeDb, factory.Clock, actor),
                 NullLogger<GuestMessageService>.Instance);
 

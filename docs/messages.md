@@ -202,7 +202,9 @@ switch living there would be reset by an edit that never showed it (the takeaway
 Every **venue** message - text or ask - writes, in the same transaction and under the account's lock, the push
 `message.to-guest` (due at once, keyed `conversation:{id}:message:{messageId}`) and the feed entry `venue-message`. See
 [notifications.md](notifications.md#guest-messages-messageto-guest) for the payload and when it is not sent. **Guest
-messages push nothing**: the tablet polls.
+messages push no diner**: the tablet polls, and the floor's phones get the `guestMessages` staff push. All of it hangs on
+the thread's domain events (`VenueMessageWritten`, `VenueAskedComing`, `GuestMessageWritten`, `GuestAnswered`; handlers in
+`Infrastructure/DomainEvents/Messages/`, see [domain-events.md](domain-events.md)), whichever service wrote the message.
 
 The push's `categoryId` - the actions the app hangs under it - follows the branch's `guestsCanWrite` when it is sent,
 so no push offers a Reply the venue would refuse:

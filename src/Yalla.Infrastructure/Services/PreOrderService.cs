@@ -414,28 +414,11 @@ internal sealed class PreOrderService(
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-        if (reservation.DinerUserId is { } account)
-        {
-            await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
-        }
+        var accountLive = reservation.DinerUserId is { } account
+                          && await DinerAccountLock.IsLiveAsync(db, account, cancellationToken);
 
-        var notified = await GuestThreads.AskAsync(db, outbox, reservation, staffId, nowUtc, cancellationToken);
-
-        await activity.RecordAsync(
-            new ActivityRecord(
-                ActivityCategory.Message, ActivityActions.MessageAskedOnMyWay, ActivitySubjects.Reservation, reservation.Id)
-            {
-                BranchId = reservation.BranchId,
-                GuestName = reservation.GuestName,
-                SubjectCode = reservation.Code,
-                TableLabel = await db.DiningTables
-                    .AsNoTracking()
-                    .Where(t => t.Id == reservation.DiningTableId)
-                    .Select(t => t.Label)
-                    .FirstOrDefaultAsync(cancellationToken),
-                Summary = new { notified, startUtc = reservation.StartUtc },
-            },
-            cancellationToken);
+        // The guest told and the History's line hang on the ask's event (VenueAskedComing), in the save below.
+        var notified = await GuestThreads.AskAsync(db, reservation, staffId, accountLive, nowUtc, cancellationToken);
 
         try
         {

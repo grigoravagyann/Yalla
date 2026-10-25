@@ -98,7 +98,7 @@ instead of silently dropping the side effects. Production contexts always come f
 
 `YallaDbContext.SaveChanges` still runs four hooks that detect events from the change tracker rather than being told:
 the booking signal (signal 5), the pre-order signal (signal 6), voiding a held pre-order of an ended booking, and
-`StaffPushSignals` for **approvals and guestMessages**. They predate this mechanism and do the
+`StaffPushSignals` for **approvals**. They predate this mechanism and do the
 same job for their verticals - one place, every path - by inspection. They stay until their verticals move (section
 7), each then becoming a handler of that vertical's event; they run after dispatch, so they also see what handlers
 wrote.
@@ -106,7 +106,9 @@ wrote.
 `kitchenReady` was the fifth staff push kind; it is now `KitchenReadyStaffPush`, a `TabOrderMoved` handler, and the
 tracker hook no longer looks at orders. `tableCalls` is now `TableCallStaffPush`, a `ServiceRequestRaised` handler,
 and `takeaway` is `TakeawayStaffPush`, a `TakeawayPlaced` handler (section 6, takeaway orders); the hook no longer looks
-at service requests or takeaway orders. A new staff push kind goes on events: `AGENTS.md`, "Add a staff push kind".
+at service requests or takeaway orders. `guestMessages` is `GuestMessageStaffPush`, a `GuestMessageWritten` and
+`GuestAnswered` handler (section 6, guest messages); the hook no longer looks at messages. A new staff push kind goes on
+events: `AGENTS.md`, "Add a staff push kind".
 
 ## 6. Tab orders - the migrated vertical
 
@@ -312,6 +314,45 @@ outbox and feed rows, the tabs' streams, the stored answers, and the end state o
 (`Integration/Snapshots/TableSideEffects.approved.txt`) are unchanged byte for byte. The one race it cannot script
 deterministically - two writers on one table, `table-state-conflict` - saves nothing either way (`TableStateServiceTests`).
 
+### Guest messages - migrated
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `Conversation.WriteAsGuest(text, clientCommandId, at)` (`GuestMessageService.WriteAsGuestAsync`) | `GuestMessageWritten(Thread, Message)` | `GuestMessageStaffPush`: `staff.push` kind `guestMessages`, key `staff-push:message:{messageId}`. |
+| `Conversation.Answer(answer, lateMinutes, heldUntil, at)` (`GuestThreads.AnswerAsync`, from "on my way" and "running late" in `PreOrderService` - the app and the manage link - and "not coming", the booking's cancel in `ReservationCancellation`) | `GuestAnswered(Thread, Answer, Status)` | `GuestMessageStaffPush`: the same push, for the answer (the status line after it is the server's, and is not pushed). |
+| `Conversation.WriteAsVenue(text, staffId, staffName, clientCommandId, at)` (`GuestMessageService.WriteAsStaffAsync`) | `VenueMessageWritten(Thread, Message)` | `MessageActivity`: `message.sent` (the words, `replySeconds` - from the guest's oldest text the venue had not answered, read from what is saved; none when the thread is new in this save). `VenueMessageGuestNotice`: `message.to-guest` push (`VenueMessageNotice`, key `conversation:{id}:message:{messageId}`) and `venue-message` feed entry, under the account lock, for a live account. |
+| `Conversation.AskComing(staffId, staffName, at)` (`GuestThreads.AskAsync`, from `PreOrderService.AskOnMyWayAsync`) | `VenueAskedComing(Thread, Ask)` | `MessageActivity`: `message.asked-on-my-way` (`notified`, `startUtc`). `VenueMessageGuestNotice`: the push (`ask: true`) and feed entry. |
+
+Handlers live in `Infrastructure/DomainEvents/Messages/`, registered after the tabs': the History's line, the guest's
+notice, the floor's push. `ConversationReads` (scoped, keyed by the message) reads the thread's subject
+(`GuestThreads.SubjectAsync`) and takes the account's lock (`db.EnsureTransactionAsync`, then
+`DinerAccountLock.IsLiveAsync`) once for every handler of a message, so the ask's `notified` and its notice agree and the
+round trips stay what the hand-written code made (one more only when the venue writes to a subject with no live account:
+the History's line now reads the subject itself). `GuestThreads.TellGuestAsync` is gone; `GuestMessageService` loses its
+outbox; `StaffPushSignals` no longer looks at messages. Read marks (one conditional `UPDATE` each), the inbox, the
+history page and `ConversationRetention` (a bulk delete) write no side effect and raise nothing.
+
+What stayed in the services: who may write, the order of the refusals (text, subject, staff, settings, replay, open,
+pace), the replay by `clientCommandId` and its 409, the account's and the subject's locks and finding or starting the
+thread. In the booking services only the call changed: `PreOrderService.AskOnMyWayAsync` hands `AskAsync` the account
+lock's answer (it took it before, and dropped it) and no longer records the ask's History line itself; "on my way",
+"running late" and the cancel still call `AnswerAsync` and keep their own `booking.guest-answered` / `booking.cancelled`
+lines. Test contexts that save a message: `SqlServerFixture.CreateContextWithHandlers` (a context whose own saves
+dispatch, for a service that saves on the context), the host's scope, or `DequeueEvents()` on seeded history
+(`ActivityHistoryTests`).
+
+**Proof it is the same.** `MessageSideEffectsSnapshotTests`, committed on the code before the move: a guest's text from
+the app with its replay, a reused id, a blank and an over-long text refused; the waiter reading and replying, its replay
+and the manager reusing its id; the guest reading; five texts in a minute and the sixth slowed down; a takeaway order's
+thread (the kitchen refused, the counter replying); a branch where guests may not type and waiters may not write (both
+refused, a manager writing); "not coming" from the app into a thread that exists, a booking cancelled a day ahead that
+gets none, and "not coming" from the manage link opening a thread; the venue writing first to a booking with no
+account; "are you coming?" with and without an account; "running late" from the app and "on my way" from the manage
+link (and its replay); a reply that answers nothing; a closed thread refusing both sides; read marks; the console's
+history; and the retention deleting a thread. Activity, outbox (the guest's pushes, the staff pushes, the bookings' and
+the order's own messages), feed, change stream and the end state of the threads, messages, bookings and order are
+unchanged byte for byte (`Integration/Snapshots/MessageSideEffects.approved.txt`).
+
 ## 7. Testing
 
 - The mechanism: `DomainEventDispatchTests` (handled once before the save; sync save; a failing save and a rollback
@@ -323,7 +364,9 @@ deterministically - two writers on one table, `table-state-conflict` - saves not
   dispatcher and `AddDomainEventHandlers()` - so a service-level test runs production's handlers, as that caller. Per
   caller, because these tests often act as several people over one context and a request never does.
 - A bare `fixture.CreateContext(clock)` has no handlers: seed with it, but drive a change that raises an event through a
-  service the fixture composes (`StaffPushTests.An_order_up_goes_to_the_tables_own_waiter_and_not_to_every_phone`).
+  service the fixture composes (`StaffPushTests.An_order_up_goes_to_the_tables_own_waiter_and_not_to_every_phone`). A
+  service that saves on the context itself, not through the ledger, gets `fixture.CreateContextWithHandlers(clock,
+  actor)`: a context whose own saves dispatch to production's handlers, as that caller.
 
 ## 8. Moving the next vertical
 
@@ -345,5 +388,4 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 |---|---|---|---|
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
 | **Pre-orders** | `PreOrderService`, `PreOrderSittings` (it appends the order's stream events on arrival itself), `PreOrderQuestions`; signal 6 hook | Arrival on the tab should raise its own event rather than append by hand | 1 day |
-| **Messages** | `GuestMessageService`, `GuestThreads`; `guestMessages` push in the hook | Small | 0.5-1 day |
 | **Settings, menu, staff, platform, reviews** | One activity call (or a few) per path | One path per change already: an event buys little. Move only when a second path appears | as needed |

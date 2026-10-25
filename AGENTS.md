@@ -177,8 +177,9 @@ catalogue table in `docs/error-contract.md`.
 2. Stage it from a **domain-event handler** of the event the floor is told about: `StaffPushSignals.StageOne(db, kind,
    id, $"{StaffPushSignals.KeyPrefix}<what>:{id}", clock.UtcNow)` (append `:{StaffPushSignals.Again()}` when it can
    happen again) - models: `DomainEvents/TabOrders/KitchenReadyStaffPush`, `DomainEvents/Calls/TableCallStaffPush`,
-   `DomainEvents/TakeawayOrders/TakeawayStaffPush`. Not in services. The older kinds left are still detected in
-   `StaffPushSignals.StageDetected` from the change tracker until their verticals move.
+   `DomainEvents/TakeawayOrders/TakeawayStaffPush`, `DomainEvents/Messages/GuestMessageStaffPush`. Not in services.
+   `approvals`, the one older kind left, is still detected in `StaffPushSignals.StageDetected` from the change tracker
+   until the bookings vertical moves.
 3. `StaffPushHandler`: `KindName`, the subject switch (return null when no longer true), text in `StaffPushText`.
 4. The switch: `StaffNotificationPreferences` + `StaffNotificationSettings` (`StaffPushContracts.cs`), both mappings in
    `StaffPushService`, the request in `StaffDeviceRequests.cs` and `StaffDeviceEndpoints.cs`.

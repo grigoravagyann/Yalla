@@ -389,6 +389,18 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableReturnedToService>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Occupancy.TableTransferred>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
         services.AddScoped<IDomainEventHandler<Yalla.Domain.Occupancy.TableTransferred>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        // Guest messages: the guest wrote or answered "are you coming?", the venue wrote or asked. The History's line, then
+        // the guest's push and feed entry, then the floor's push; one read of the thread's subject and account for all.
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.ConversationReads>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.MessageActivity>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.VenueMessageGuestNotice>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.GuestMessageStaffPush>();
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.GuestMessageWritten>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.GuestMessageStaffPush>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.GuestAnswered>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.GuestMessageStaffPush>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueMessageWritten>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.MessageActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueMessageWritten>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.VenueMessageGuestNotice>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueAskedComing>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.MessageActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Messages.VenueAskedComing>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Messages.VenueMessageGuestNotice>());
 
         return services;
     }
