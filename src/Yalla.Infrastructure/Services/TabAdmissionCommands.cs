@@ -284,14 +284,15 @@ internal sealed class TabAdmissionCommands(
         }
 
         // Its open calls are answered by the waiter who came over and found nobody - acknowledged, so the
-        // rail drops them, by the same person, at the same moment.
+        // rail drops them, by the same person, at the same moment. Raising nothing of their own: the tab being
+        // turned away is what is told (ServiceRequest.AnswerForTurnedAwayTab).
         var calls = await db.ServiceRequests
             .Where(r => r.TabId == tab.Id && r.AcknowledgedAtUtc == null && r.SupersededAtUtc == null)
             .ToListAsync(cancellationToken);
 
         foreach (var call in calls)
         {
-            call.Acknowledge(nowUtc, staffId);
+            call.AnswerForTurnedAwayTab(nowUtc, staffId);
         }
 
         ledger.Append(tab.Id, TabEventType.TabAdmissionRejected, new

@@ -237,7 +237,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     internal ServiceRequestService CreateServiceRequests(
         YallaDbContext db, IClock clock, ICurrentActor actor) =>
         new(db, clock, actor, CreateBranchGuard(db, actor), CreateLedger(db, clock, actor),
-            CreateActivityLog(db, clock, actor), NullLogger<ServiceRequestService>.Instance);
+            NullLogger<ServiceRequestService>.Instance);
 
     /// <summary>Shares and the event stream, over one context.</summary>
     internal TabBillingQuery CreateBillingQuery(YallaDbContext db, IClock clock, ICurrentActor actor) =>

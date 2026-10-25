@@ -1,7 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
 using Yalla.Domain.Billing;
@@ -19,6 +18,11 @@ namespace Yalla.Infrastructure.Services;
 /// The smallest thing in the product and one of the most useful. Catching a waiter's eye is the
 /// single most common friction in a busy room, and it is worst for the diner who is shy, sitting
 /// where the round does not pass, or not speaking the language.
+/// <para>
+/// What a call tells the rest of the system - the tab's stream, the floor's push, the History's claim - is written by
+/// the handlers of its domain events (<c>DomainEvents/Calls/</c>, <c>docs/domain-events.md</c>); this service decides
+/// whether the change may happen, makes it on the request, and saves through the ledger.
+/// </para>
 /// </remarks>
 internal sealed class ServiceRequestService(
     YallaDbContext db,
@@ -26,7 +30,6 @@ internal sealed class ServiceRequestService(
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
     TabLedger ledger,
-    IActivityLog activity,
     ILogger<ServiceRequestService> logger) : IServiceRequestService
 {
     /// <summary>
@@ -102,25 +105,13 @@ internal sealed class ServiceRequestService(
 
         db.ServiceRequests.Add(request);
 
+        // On the floor's list: the tab's stream hears it and the floor's phones buzz (ServiceRequestRaised).
+        request.Send();
+
         if (bill is not null)
         {
             await SupersedeEarlierBillRequestsAsync(tab.Id, participant.Id, nowUtc, cancellationToken);
         }
-
-        // What was asked for rides on the event - the scope and the tip percentage - but not the
-        // priced amounts. Every phone at the table reads this stream, and a guest the host hid the
-        // total from would otherwise read a tablemate's share, or the whole balance, off somebody
-        // else's request. The figures are for the waiter: the asker's response and the staff list
-        // carry them.
-        ledger.Append(tab.Id, TabEventType.ServiceRequested, new
-        {
-            serviceRequestId = request.Id,
-            preset = (int)request.Preset,
-            note = request.Note,
-            requestedByParticipantId = participant.Id,
-            billScope = (int?)request.BillScope,
-            tipPercent = request.TipPercent,
-        });
 
         await ledger.SaveAppendedAsync(cancellationToken);
 
@@ -186,11 +177,11 @@ internal sealed class ServiceRequestService(
         var nowUtc = clock.UtcNow;
 
         // The first claim stands - two waiters tapping at once both see who has it. Nothing goes to the guest's phone:
-        // a claim is the floor's, the acknowledgement is what the table hears about.
+        // a claim is the floor's, the acknowledgement is what the table hears about. The History's entry is the
+        // claim's (ServiceRequestClaimed); saved through the ledger, which dispatches it.
         if (request.Claim(nowUtc, staffId))
         {
-            await RecordClaimAsync(request, nowUtc, cancellationToken);
-            await db.SaveChangesAsync(cancellationToken);
+            await ledger.SaveAppendedAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -217,24 +208,13 @@ internal sealed class ServiceRequestService(
             staffId, request.BranchId, "Acknowledging this request", "request", cancellationToken);
 
         var nowUtc = clock.UtcNow;
-        var unclaimed = request.ClaimedAtUtc is null;
 
         // Two waiters tapping the same request at once is the normal case, not a race worth
         // reporting: both saw it, which is what the table wanted. The first one stands - and when nobody
-        // claimed it first, it is the claim too (docs/activity.md).
+        // claimed it first, it is the claim too (docs/activity.md). The table's stream hears it
+        // (ServiceRequestAcknowledged), and the claim it made is the History's (ServiceRequestClaimed).
         if (request.Acknowledge(nowUtc, staffId))
         {
-            ledger.Append(request.TabId, TabEventType.ServiceRequestAcknowledged, new
-            {
-                serviceRequestId = request.Id,
-                byStaffId = staffId,
-            });
-
-            if (unclaimed)
-            {
-                await RecordClaimAsync(request, nowUtc, cancellationToken);
-            }
-
             await ledger.SaveAppendedAsync(cancellationToken);
         }
 
@@ -267,31 +247,6 @@ internal sealed class ServiceRequestService(
             await transaction.DisposeAsync();
             throw;
         }
-    }
-
-    /// <summary>The claim in the History, with the seconds from the call - the response time Staff → Results reports.</summary>
-    private async Task RecordClaimAsync(ServiceRequest request, DateTime nowUtc, CancellationToken cancellationToken)
-    {
-        var sittingId = await db.Tabs
-            .Where(t => t.Id == request.TabId)
-            .Select(t => (Guid?)t.TableSessionId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Table, ActivityActions.TableCallClaimed, ActivitySubjects.ServiceRequest, request.Id)
-            {
-                BranchId = request.BranchId,
-                TableSessionId = sittingId,
-                TableLabel = request.DiningTable.Label,
-                Summary = new
-                {
-                    tabId = request.TabId,
-                    preset = (int)request.Preset,
-                    calledAtUtc = request.CreatedAtUtc,
-                    responseSeconds = (int)Math.Max(0d, (nowUtc - request.CreatedAtUtc).TotalSeconds),
-                },
-            },
-            cancellationToken);
     }
 
     /// <summary>The request as it now stands, with who claimed and who acknowledged it. One statement.</summary>
