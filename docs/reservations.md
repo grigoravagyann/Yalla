@@ -864,8 +864,8 @@ table it touches, in the same transaction (GR-FE-REVIEW B1): a booking made, or 
 party changed - approved, declined (by staff, the guest before it, or the sweep), moved (its old table and its new
 one), cancelled (app, manage link, venue), marked a no-show, a no-show withdrawn. The row is a same-status row on the
 table, `actorType` 3 (system), naming the booking (`reservationId`), with **`signal` 5 `BookingChanged`**. It is
-written by `YallaDbContext.SaveChanges` for every tracked booking that changed, so no path can forget it; a booking a
-block cancelled has its `signal` 4 row instead. A tablet that follows the stream refreshes the table's booking line
+written by `BookingChangeStream`, a handler of the booking's domain events (`docs/domain-events.md`, bookings), so no
+path can forget it; a booking a block cancelled has its `signal` 4 row instead. A tablet that follows the stream refreshes the table's booking line
 (re-reads the floor) on signal 4 or 5 - it does not fold the row's status, which is only the status the save saw.
 
 **Sequences.** `TableStateChanges.Sequence` is one identity across every branch, with holes (rolled-back inserts, an

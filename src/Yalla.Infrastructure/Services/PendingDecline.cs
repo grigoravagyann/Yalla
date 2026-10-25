@@ -1,6 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Yalla.Application.Abstractions;
-using Yalla.Application.Messaging;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;

@@ -4,7 +4,6 @@ using Yalla.Application.Abstractions;
 using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Occupancy;
-using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 

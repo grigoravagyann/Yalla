@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
-using Yalla.Application.Messaging;
 using Yalla.Application.Public;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;

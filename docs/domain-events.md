@@ -21,7 +21,7 @@ and a few lines in `SaveChanges`.
 | `Entity.Raise(e)` / `Entity.DequeueEvents()` | `Domain/Common/Entity.cs` | Every entity can raise. Events wait on the entity (a field EF never maps; null until the first raise) and are stamped with a process-wide order, so a save handles them in the order they were raised across aggregates. |
 | `IDomainEventHandler<TEvent>` | `Application/Abstractions/IDomainEventHandler.cs` | One side effect of one event type. Exact type match: dispatch does not look at base types. |
 | `DomainEventDispatcher` | `Infrastructure/Persistence/DomainEventDispatcher.cs` | Takes the pending events off the tracked entities and runs their handlers, round after round until nothing is pending; more than `MaxRounds` (8) is a loop and fails the save. Handlers come from the scope it was built in. `DomainEventDispatcher.None` is for a context composed without handlers. |
-| `YallaDbContext.SaveChanges[Async]` | `Infrastructure/Persistence/YallaDbContext.cs` | Dispatches **first**, then runs the change-tracker hooks (booking and pre-order signals, staff push detection), stamps creation times and saves. |
+| `YallaDbContext.SaveChanges[Async]` | `Infrastructure/Persistence/YallaDbContext.cs` | Dispatches **first**, then writes the pre-order rail's signal 6 rows the handlers asked for, stamps creation times and saves. No change-tracker hook detects anything any more (section 5). |
 | `TabLedger.SaveAppendedAsync` | `Infrastructure/Services/TabLedger.cs` | Dispatches before it numbers the tab's stream, so the `TabEvent`s a handler appends are numbered with the rest. The save's own dispatch then finds nothing. |
 | `AddDomainEventHandlers()` | `Infrastructure/DependencyInjection.cs` | Every handler, in the order an event's handlers run. The test fixture composes the same list. |
 
@@ -96,11 +96,13 @@ instead of silently dropping the side effects. Production contexts always come f
 
 ## 5. The change-tracker hooks that remain
 
-`YallaDbContext.SaveChanges` still runs three hooks that detect events from the change tracker rather than being told:
-the booking signal (signal 5), voiding a held pre-order of an ended booking, and `StaffPushSignals` for **approvals**. They predate this mechanism and do the
-same job for their verticals - one place, every path - by inspection. They stay until their verticals move (section
-7), each then becoming a handler of that vertical's event; they run after dispatch, so they also see what handlers
-wrote.
+None, since the bookings moved (2026-10-25). `YallaDbContext.SaveChanges` used to detect events from the change tracker
+rather than be told - the booking signal (signal 5), voiding a held pre-order of an ended booking, and `StaffPushSignals`
+for **approvals** were the last three - and each is now a handler of the bookings' events (section 6, bookings):
+`BookingChangeStream`, `EndedBookingPreOrder` and `ApprovalStaffPush`. `StaffPushSignals.Stage` is gone; what is left of
+the class is `StageOne`, `Again` and `Read`. What the save still does after dispatch is write the signal 6 rows the
+pre-order events asked for (`SignalPreOrderChangesAsync`, a writer only, which detects nothing): see section 6,
+bookings, for why it stays there.
 
 `kitchenReady` was the fifth staff push kind; it is now `KitchenReadyStaffPush`, a `TabOrderMoved` handler, and the
 tracker hook no longer looks at orders. `tableCalls` is now `TableCallStaffPush`, a `ServiceRequestRaised` handler,
@@ -213,7 +215,7 @@ retry, the branch's lock - and **the no-show block**. `TakeawayService.MarkNoSho
 `NoShowBlocks` after the no-show is saved, under the guest's account lock in its own transaction, and frees the
 cancelled bookings' holds after the commit: the count must read the no-show as saved (handlers run before the save),
 the rule is shared with a booking's no-show (the bookings vertical's), and the release is after the commit, where no
-handler runs. It moves with the bookings vertical.
+handler runs. It stayed when the bookings moved; what the block writes is now the bookings' events' (section 6, bookings).
 
 Test seeders that build an order's history straight to the rows (`ReportTests`, `ActivityHistoryTests`,
 `GuestRecordTakeawayTests`) call `order.DequeueEvents()` before saving on a bare context: those moves were told when
@@ -369,7 +371,7 @@ their events are raised by `Reservation`. Events in `Domain/Occupancy/PreOrderEv
 | `PreOrder.MarkAttached(order, onNewTab, at)` (`PreOrderSittings`: the party seated with the ticket held - by the waiter, as a held party or opening with the booking code - or a send to a seated party) | `PreOrderArrivedOnTab(PreOrder, Order, OnNewTab)` | `PreOrderArrivalStream`: `OrderPlaced` then `OrderStatusChanged` New to where the kitchen had it, as the sending waiter's - numbered 1 and 2 on a tab opened for it, through the ledger on a tab the sitting had. `PreOrderRailSignal`. |
 | `PreOrder.MoveKitchenStatus(next, at)` (the kitchen, `TabOrderService`, which now saves it through the ledger for its dispatch) | `HeldTicketMoved(PreOrder, From, To)` | `PreOrderRailSignal`. |
 | `PreOrder.FollowMove(at)` (the bookings' `ReservationChanges`: the pre-order goes with a move) | `PreOrderFollowedMove(PreOrder)` | `PreOrderRailSignal`. |
-| `PreOrder.VoidHeldBecauseBookingEnded(at)` (the bookings' tracker hook, which dispatches what it raised: it runs after the save's dispatch) | `HeldTicketVoided(PreOrder)` | `PreOrderRailSignal`. |
+| `PreOrder.VoidHeldBecauseBookingEnded(at)` (the bookings' `EndedBookingPreOrder`, a handler of a booking ending; the dispatcher's next round handles what it raised) | `HeldTicketVoided(PreOrder)` | `PreOrderRailSignal`. |
 | `Branch.SetPreOrders(accepts, minutes, at)` (the console's settings) | `PreOrderSettingsSaved(Branch)` | `PreOrderRailSignal`: every booking whose card is or could be on a rail now, and the next one after them. |
 | `Reservation.ConfirmOnMyWay(at)` (app and link; a replay raises nothing) | `GuestOnTheirWay(Reservation)` | `PreOrderActivity`: `booking.guest-answered` (`coming`, the guest's). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
 | `Reservation.ReportRunningLate(minutes, at)` | `GuestRunningLate(Reservation, Minutes)` | `PreOrderActivity`: `booking.guest-answered` (`late`, `minutes`). `OnYourWayQuestion`: withdrawn. `PreOrderRailSignal`. |
@@ -387,8 +389,8 @@ bookings' `ReservationReminders`.
 gone: `PreOrderRailSignal` names the bookings (`YallaDbContext.SignalPreOrderRail`), and the save writes their rows
 where the hook did, after signal 5's (`SignalPreOrderChangesAsync`, now a writer only). Written in the handler, a
 signal 6 row would come before signal 5's in the stream and signal 5's "already signalled in this save" would take it
-for its own and drop the booking's signal 5. When signal 5 moves onto the bookings' events, the handler can write the
-row itself.
+for its own and drop the booking's signal 5. Signal 5 is on the bookings' events now, and its handler no longer counts a
+signal 6 row as its own - but the row still waits for the end of the save: see section 6, bookings.
 
 What stayed in `PreOrderService`: who may act, the account's lock, the replays and the refusals in their order - the
 booking still to come, already sent, **the two-hour lock** (`pre-order-locked`, checked before any domain call, so a
@@ -396,9 +398,9 @@ refused edit or clear raises and writes nothing), the branch taking pre-orders, 
 the tab race, the totals recomputed after the commit, and the settings' own History line (`settings.pre-orders`, one
 path). Each of its saves dispatches first with the scope's dispatcher, as the ledger does
 (`SqlServerFixture.CreatePreOrderService` composes it per caller). `PreOrderSittings` builds the tab and the order and
-appends nothing. Bookings-owned, left as they were: the booking's own question when it is made, moved or cancelled
-(`ReservationReminders`, the cancel by prefix), signal 5 on the answers and the ask, and the hook that voids a held
-ticket when its booking ends - only its void now raises.
+appends nothing. Bookings-owned: the booking's own question when it is made, moved or cancelled
+(`ReservationReminders`, the cancel by prefix), signal 5 on the answers and the ask, and voiding a held ticket when its
+booking ends - all on the bookings' events since (section 6, bookings).
 
 **Proof it is the same.** `PreOrderSideEffectsSnapshotTests`, committed on the code before the move: pre-orders placed
 with their bookings (and a replay), edited from the link, a send refused two days ahead, a booking moved with its
@@ -415,6 +417,104 @@ byte (`Integration/Snapshots/PreOrderSideEffects.approved.txt`). The events are 
 rewrites its question - it withdrew and re-wrote the 30-minute question whatever it found, so a guest who had already
 said they were on their way saw the feed entry again 30 minutes before the start
 (`PreOrderTests.Clearing_a_booking_with_no_pre_order_does_not_ask_an_answered_guest_again`).
+
+### Bookings - migrated 2026-10-25
+
+The largest vertical: a booking is made, decided, moved, cancelled, let go and missed in a dozen places - the app, the
+public page and its manage link, the floor, the console, the approval sweep, the guest before it answering for their
+table, a no-show block. Events in `Domain/Occupancy/ReservationEvents.cs`. Each booking event carries the booking and
+`Before` (`ReservationStanding`: its status, table, start, end, party, local date and time, reason to wait and answer
+window as they were), which is what the change tracker used to compare against.
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `Reservation.Book(at)` - new; `ReservationCreation`, after `Create` and the manage token, inside the table's lock | `ReservationMade(Reservation)` | `ReservationActivity`: `booking.created` (`channel`, `trigger`, the guest's). `BookingChangeStream`: signal 5 on its table. `ApprovalStaffPush`: `approvals` when it waits. |
+| `TableShareRequest.Ask()` - new; `TableShares.Ask`, from the creation and a move, beside the later booking | `TableShareAsked(Request)` | `EarlierGuestNotice`: asked in the app, `reservation.table-request` to the guest before and their `table-request` feed entry; the floor's own question tells nobody. |
+| `Reservation.Confirm(at, by, answeredRequest)` - staff (`ReservationDecisions`), the guest before saying yes (`ReservationAnswers`), or nobody when the question it waited on went away (`TableShares.DecideWithoutTheQuestion`) | `ReservationApproved(Reservation, Before, By, AnsweredRequest)` | `ReservationActivity`: `booking.approved` (`trigger`, `decisionSeconds`), or `booking.guest-answered` (`accepted: true`, the earlier booking), or nothing for nobody. `ReservationGuestNotice`: `reservation.decided` and `booking-confirmed` (key `reservation:{id}:approved`, timestamped when that is taken). `BookingChangeStream`. |
+| `Reservation.Reject(at, reason, because, answeredRequest)`, `DeclineForNoAnswer(at, because)`, `DeclineChange(at, because, reason, answeredRequest)` - new, a waiting change whose old slot is gone - and `KeepConfirmedSlot(at, because, reason, answeredRequest)`; from `PendingDecline` (staff, the guest before, the sweep) and `TableShares.EarlierChangedAsync` (crowded out) | `ReservationDeclined(Reservation, Before, Because, Reason, WasChange, SlotKept, RequestedDate, RequestedTime, AnsweredRequest)` | `ReservationActivity`: `booking.declined` (staff, with the reason), `booking.auto-declined` (the sweep's, `deadlineUtc` from `Before`), `booking.guest-answered` (`accepted: false`), nothing when crowded out. `BookingReminders`: kept at the old slot, its reminders rewritten for it; otherwise withdrawn by prefix with the feed entries not yet shown. `ReservationGuestNotice`: `reservation.decided` and `booking-declined` (`expired`, `wasChange`, `originalKept`, the slot asked for) - not when it is the clock's decline of a booking that would already have started. `EarlierGuestNotice`: the guest before's own `table-request-decided` entry for their no. `BookingChangeStream`. `EndedBookingPreOrder`. |
+| `Reservation.WaitInsteadFor(trigger, expires, at)` (`TableShares`: the question went away and something else still needs a human) | `ReservationWaitingInstead(Reservation, Before)` | `ApprovalStaffPush` when the reason changed. |
+| `Reservation.Reschedule(..., viaManageLink)` (`ReservationChanges`: the app and the link, inside the target table's lock) | `ReservationRescheduled(Reservation, Before, ViaManageLink)` | `ReservationActivity`: `booking.moved` (before and after). `BookingReminders`: replaced for the new slot. `ReservationGuestNotice`: from the link, `reservation.changed-by-link` and its feed entry. `BookingChangeStream`: signal 5 on the new table and the old. `ApprovalStaffPush` when it moved into waiting, or to another time while waiting. |
+| `Reservation.PromiseToFreeBy(request, at)` (`TableShares.ApplyYesAsync`: the guest before's yes, or the floor's for them) | `ReservationPromisedToFreeBy(Reservation, Before, Request)` | `EarlierGuestNotice`: `reservation.table-request-decided` and the `table-request-decided` entry. `BookingChangeStream` when its end was cut. |
+| `Reservation.CancelByDiner(..., viaManageLink)` (`ReservationCancellation`), `CancelByVenue(at, reason)` (`ReservationRelease`; the default reason is now the domain's `ReleasedByVenueReason`), `CancelForNoShowBlock(at)` (`NoShowBlocks`) | `ReservationCancelled(Reservation, Before, By, Reason, ViaManageLink)` | `ReservationActivity`: `booking.cancelled` (`late`, `viaManageLink`, the guest's), `booking.released` (`countsTowardBlock`), `booking.cancelled` (`because: no-show-block`, the system's). `BookingReminders`: withdrawn. `ReservationGuestNotice`: from the link, `reservation.cancelled-by-link` and its entry; let go by the venue, the `booking-cancelled-by-venue` entry. `BookingChangeStream`: signal 5, or for a block's cancellation signal 4 with the block's words. `EndedBookingPreOrder`. |
+| `Reservation.MarkNoShow(at, staffId, counts, reason)` (`ReservationRelease`) | `ReservationMarkedNoShow(Reservation, Before, Reason)` | `ReservationActivity`: `booking.no-show`. `BookingReminders`: withdrawn. `ReservationGuestNotice`: `reservation.no-show` (key with the instant) and `booking-no-show`. `BookingChangeStream`. |
+| `Reservation.UndoNoShow(at, staffId, reason)` | `ReservationNoShowWithdrawn(Reservation, Before, Reason)` | `ReservationActivity`: `booking.no-show-undone`. `BookingChangeStream`. |
+| `Reservation.ExtendHold(now, minutes)` | `ReservationHoldExtended(Reservation, Before, Minutes)` | `ReservationActivity`: `booking.hold-extended`. (The table's own row is the Tables vertical's `TableHoldExtended`.) |
+| the pre-orders' `GuestOnTheirWay`, `GuestRunningLate`, `OnMyWayAskRecorded` (section 6, pre-orders) | - | `BookingChangeStream`: signal 5 on the booking's table, as the tracker wrote it for the answers and the ask. |
+| `BookingBlock.Impose(cancelled, untilLocalDate)` - new; `NoShowBlocks`, after cancelling the guest's bookings | `BookingBlockImposed(Block, CancelledBookings, BlockedUntilLocalDate)` | `BookingBlockNotice`: `diner.bookings-blocked` and the `bookings-blocked-no-shows` entry, once for the whole block. |
+| `BookingBlock.Lift(...)` (a no-show withdrawn, `ReservationRelease`; the platform, `BookingBlockService`) - only when it lifted | `BookingBlockLifted(Block)` | `BookingBlockNotice`: `diner.bookings-unblocked` and the `bookings-unblocked` entry. |
+
+Handlers live in `Infrastructure/DomainEvents/Bookings/`, registered by `AddBookingHandlers` after the pre-orders': the
+History's line, the reminders, the guest's push and feed entry, the guest before's, the block's notice, the change
+stream, the floor's push, then the held pre-order. `BookingReads` reads the branch (with its venue), a table's label
+and a booking from the tracker first; the sweep now loads its branch tracked so the handlers find it there.
+`BookingActivity` stays the one shape of a booking's History line, shared with the pre-orders' `PreOrderActivity`, and
+`ReservationNotices` the decided and link notices' shape, both called only from handlers now.
+
+**The three tracker hooks are handlers.** Signal 5 (`BookingChangeStream`) is written for a booking made, and for a
+change whose status, table, start, end or party differs from `Before` - the same rule the tracker applied against what
+it had loaded - on the old table too for a move, and skipped where the save already names the booking on that table
+(a block's signal 4, the table's own transition when it is seated or freed); seating and completing raise nothing of
+their own, since `TableSeated` and `TableFreed` name the booking. The `approvals` push (`ApprovalStaffPush`) keeps its
+key, `staff-push:approval:{id}:{n}` with a fresh `{n}` (`StaffPushSignals.Again`), and its rule: waiting now, and made so,
+moved into waiting, moved in time or waiting for another reason. The held pre-order of a booking that ended
+(`EndedBookingPreOrder`) is voided in the dispatch, so its `HeldTicketVoided` is handled in the next round instead of by a
+second dispatch from the hook.
+
+**Signal 6 stays a writer after dispatch.** The pre-orders' `PreOrderRailSignal` still only names bookings, and the save
+writes their rows once every event is handled. Written per event, a signal 6 row would land before a signal 5 row of the
+same save whenever a pre-order event is raised before the booking's - and a move raises `OnMyWayAnswersForgotten` before
+its `ReservationRescheduled` - while tablets read the stream in sequence (`PreOrderSideEffectsSnapshotTests` holds that
+order). Signal 5 no longer counts a signal 6 row as its own, so the order is the only reason, and it is enough.
+
+**What stayed in the services**: who may act, the gates and refusals in their order, the replays (`ProcessedCommands`,
+the client command id on the row), the locks - the table's, the account's, the previous table's for a declined change
+(`ReservationWriter`) - the table's evening and the questions to the guest before (`TableShares` decides, accepts,
+declines, withdraws and re-decides; it no longer tells anyone), the pre-order following a move, "not coming" in the
+booking's thread (`GuestThreads.AnswerAsync`, the messages' event), the platform's audit of a lift, the hold given back
+through the table state machine after a release, and:
+
+- **A new booking's reminders**, written just after the insert commits, in a transaction of their own under the
+  account's lock (`ReservationReminders.ScheduleRemindersAsync`): a web booking's reminder carries the manage link, whose
+  plaintext only the creation holds and no event should carry. Replacing and withdrawing them are handlers'.
+- **The no-show block's judgement.** `NoShowBlocks.BlockIfDueAsync` still runs in the services - after a booking's
+  no-show (`ReservationRelease`) and a takeaway order's (`TakeawayService.MarkNoShowAsync`) - and cannot be a handler: it
+  counts the guest's no-shows with a query that must read this one as saved, under the account's lock in its own
+  transaction (handlers run before the save), and the holds of the bookings it cancels are given back through the table
+  state machine after the commit (`ReleaseHoldsOfAsync`), where no handler runs. What the block writes is the events':
+  each cancelled booking's `ReservationCancelled` (the system's History line, its reminders, signal 4, its held
+  pre-order) and the block's `BookingBlockImposed`.
+
+Every booking save goes through `ReservationWriter.SaveAsync`, which dispatches with the writer's dispatcher before
+saving, as the table state machine and the ledger do: in a request it is the context's own, and a test composing the
+booking services over a bare context (`SqlServerFixture.CreateReservationService`, `CreateApprovalExpirySweep`) runs
+production's handlers for its caller. Test seeders that build a booking's history straight to the rows call
+`DequeueEvents()` after the domain call; a booking built with `Create` and never `Book`ed raises nothing.
+
+**Proof it is the same.** `BookingSideEffectsSnapshotTests`, committed on the code before the move: an evening at one
+branch from 15:00 - made from the app (and its replay), the public page and the staff channel, eight tonight waiting for
+the tablet; approved, declined with a reason (a second answer refused), expired by the sweep (a late yes refused); a
+later booking asking the guest before in the app, a yes (and its replay) and a no, one the floor asks and says yes to,
+one settled when the guest before cancels, one crowded out when the guest before moves; a party made smaller (and its
+replay); confirmed bookings moved back to waiting - declined back to the slot they had, approved, declined with the slot
+taken since, expired back by the sweep - a waiting one moved again, a move from the link (and its replay), a declined
+one's move refused; cancelled in time, from the link (twice), late with the kitchen holding its pre-order (twice); let go
+by the venue; "running late", "are you coming?", "on my way"; a party seated and freed; a hold extended (its replay and a
+second refused); a no-show and its replay; a third no-show that blocks the guest and cancels their next booking,
+withdrawn so the block is lifted (twice); another block lifted by the platform. Every activity entry, outbox row (the
+`approvals` staff pushes among them), feed row, change-stream row (signal 5 and 4 among them), the platform's audit,
+and the end state of the bookings, table requests, blocks, the pre-order and the threads' messages are unchanged byte
+for byte (`Integration/Snapshots/BookingSideEffects.approved.txt`); the events are unit-tested in
+`ReservationEventTests`.
+
+**The one deliberate change**, in its own commit: a booking a test seeds straight to the rows (`Reservation.Create` on a
+bare context, never booked) no longer gets a signal 5 row - the hook wrote one for any added booking, the events only
+for one that was made. Production makes bookings only through `ReservationCreation`. The tables' and the pre-orders'
+snapshots seed such bookings and lose exactly those rows (five and one); nothing else in them moved.
+
+**Known, recorded, not changed.** A booking's `decisionSeconds` is measured from when it was made even for a change of a
+confirmed booking (the slot it had is forgotten before the line is written, as before). Signal 5 for "running late" is
+written on every answer, where the tracker skipped a second answer with the same instant. A no-show judged by
+`NoShowBlocks` for a takeaway order still runs from `TakeawayService`, with the bookings' events doing its writing.
 
 ## 7. Testing
 
@@ -449,5 +549,4 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
-| **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
 | **Settings, menu, staff, platform, reviews** | One activity call (or a few) per path | One path per change already: an event buys little. Move only when a second path appears | as needed |

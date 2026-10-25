@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Common;

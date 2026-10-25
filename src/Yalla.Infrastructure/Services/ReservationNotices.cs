@@ -9,10 +9,13 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// What a booking's account is told when somebody else acts on the booking - it was decided, changed or
-/// cancelled from its link, or the guest's no-show block was lifted - the push and the feed entry beside it,
-/// in the caller's unit of work.
+/// What a booking's account is told when somebody else acts on the booking - it was decided, or changed or
+/// cancelled from its link - the push and the feed entry beside it, in the caller's unit of work.
 /// </summary>
+/// <remarks>
+/// The shape of those messages, called only from the bookings' domain-event handlers
+/// (<c>DomainEvents/Bookings/ReservationGuestNotice</c>, <c>docs/domain-events.md</c>).
+/// </remarks>
 internal static class ReservationNotices
 {
     /// <summary>
