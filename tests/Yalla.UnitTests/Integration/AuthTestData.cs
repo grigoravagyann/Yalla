@@ -305,7 +305,7 @@ internal static class AuthTestData
             branch.BranchId, tableId, partySize: 2, seatedAtUtc: nowUtc, seatedByStaffId: branch.WaiterId);
 
         db.TableSessions.Add(session);
-        table.Occupy(session.Id);
+        table.Occupy(session);
 
         var tab = new Tab(
             branchId: branch.BranchId,

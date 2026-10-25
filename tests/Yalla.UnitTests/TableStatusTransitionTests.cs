@@ -15,12 +15,11 @@ public class TableStatusTransitionTests
     public void Free_to_Occupied_is_allowed_for_a_walk_in_or_a_reservation()
     {
         var table = Free();
-        var sessionId = Guid.CreateVersion7();
 
-        table.Occupy(sessionId);
+        var sitting = table.SeatAnyone();
 
         Assert.Equal(TableStatus.Occupied, table.Status);
-        Assert.Equal(sessionId, table.CurrentSessionId);
+        Assert.Equal(sitting.Id, table.CurrentSessionId);
     }
 
     [Fact]
@@ -49,7 +48,7 @@ public class TableStatusTransitionTests
     {
         var table = Held();
 
-        table.Occupy(Guid.CreateVersion7());
+        table.SeatAnyone();
 
         Assert.Equal(TableStatus.Occupied, table.Status);
     }
@@ -108,7 +107,7 @@ public class TableStatusTransitionTests
     {
         var table = OutOfService();
 
-        Assert.Throws<InvalidTableTransitionException>(() => table.Occupy(Guid.CreateVersion7()));
+        Assert.Throws<InvalidTableTransitionException>(() => table.SeatAnyone());
     }
 
     [Fact]
@@ -124,7 +123,7 @@ public class TableStatusTransitionTests
     {
         var table = Occupied();
 
-        Assert.Throws<InvalidTableTransitionException>(() => table.Occupy(Guid.CreateVersion7()));
+        Assert.Throws<InvalidTableTransitionException>(() => table.SeatAnyone());
     }
 
     [Fact]
@@ -206,7 +205,7 @@ public class TableStatusTransitionTests
     private static DiningTable Occupied()
     {
         var table = Free();
-        table.Occupy(Guid.CreateVersion7());
+        table.SeatAnyone();
         return table;
     }
 

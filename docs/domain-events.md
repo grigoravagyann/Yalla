@@ -168,8 +168,8 @@ Handlers live in `Infrastructure/DomainEvents/Payments/`. Payments write no outb
 change-stream row - there is no receipt or "settled" notice to the diner - so the vertical has no tracker hook to fold
 in. What stayed in the services: who may do it, the branch guard, the replay by `clientCommandId` and the refusals (more
 than is owed, a closed tab, a second reversal), the reserve and its no-retry race, and saving through the ledger.
-`Tab.Close` still exists without an event for the table freeing a zero-balance tab (`TableStateService.FreeTableAsync`,
-the Tables vertical's), and `Payment.Reserve` raises nothing, so tests can seed a paid tab. `TabStaffActions` (the bill
+`Tab.Close` still exists without an event for the table freeing a zero-balance tab (`TableStateService.FreeTableAsync`;
+the Tables vertical's `TableFreed` names it), and `Payment.Reserve` raises nothing, so tests can seed a paid tab. `TabStaffActions` (the bill
 presented, the host moved), listed with payments before, writes no money: it stays with the Tabs vertical.
 
 **Proof it is the same.** `PaymentSideEffectsSnapshotTests`, committed on the code before the move: a percent discount,
@@ -246,7 +246,7 @@ not `participant.Approve`).
 
 Handlers live in `Infrastructure/DomainEvents/Tabs/`, registered after the takeaway orders': the History's line, the
 tab's stream, the change stream, then the push. `TabSignals` is gone; `TabAdmissions` keeps only `Signal`, the one
-writer of a same-status tab row, shared with `TableTransferService` (signal 7, the Tables vertical's). `TabService` and
+writer of a same-status tab row, shared with `TableChangeStream` (signal 7, the Tables vertical's hand-over). `TabService` and
 its command classes lose their outbox and activity dependencies; the scan and the staff open now save through
 `TabLedger.SaveAppendedAsync`, so a test's bare context dispatches with the caller's handlers as every other tab save does.
 
@@ -271,6 +271,48 @@ end state of the tabs, participants, invitations, sittings and admission command
 (`Integration/Snapshots/TabLifecycleSideEffects.approved.txt`). One domain tightening, invisible there: `MoveHostTo`
 checks the new host is approved before it touches anything, where `ReassignHost` used to repoint the tab first and
 leave the refusal to the participant (the request failed and nothing was saved either way).
+
+### Tables - migrated 2026-10-25
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `DiningTable.Occupy(sitting, how, booking, reason, clientCommandId, at)` (every seating in `TableStateService`: a waiter's walk-in, a booking, a held party; a QR scan; the booked party seating themselves from the app) | `TableSeated(Table, Sitting, From, How, Booking, Reason, ClientCommandId)` | `TableChangeStream`: the change stream's row (Free/Held to Occupied, naming the sitting and the booking; the reason as given, else "seated walk-in", "opened by QR scan", "seated reservation {code}", "seated by the diner from booking {code}", "seated held party"). `TableActivity`: `booking.seated` for a booking, `table.seated` otherwise (`source` walk-in, scan, booking, held). |
+| `DiningTable.Vacate(sittingId, reservationId, tabId, outstandingAmd, reason, clientCommandId, at)` (`FreeTableAsync`, and the turn-away that frees a scan's table) | `TableFreed(Table, From, SittingId, ReservationId, TabId, TabClosed, OutstandingAmd, ...)` | `TableChangeStream`: Occupied to Free, naming the sitting, booking and tab. `TableActivity`: `table.freed` (the amount left owing, when any). |
+| `DiningTable.PlaceHold(forReservationId, ...)` / `ReleaseHold(...)` | `TableHeld` / `TableHoldReleased` | `TableChangeStream`: to Held (naming the table's next booking) / back to Free. `TableActivity`: `table.held` / `table.hold-released`. |
+| `DiningTable.MarkOutOfService(strandedBookings, ...)` / `ReturnToService(...)` | `TableTakenOutOfService` / `TableReturnedToService` | `TableChangeStream`: to OutOfService / back to Free. `TableActivity`: `table.out-of-service` (`strandedBookings`) / `table.back-in-service`. |
+| `DiningTable.NoteHoldExtended(reservationId, holdExpiresAtUtc, ...)` (`RecordHoldExtendedAsync`, after the diner's extension is saved) | `TableHoldExtended` | `TableChangeStream`: a same-status row naming the booking. No History line here: `booking.hold-extended` is the booking's. |
+| `TableSession.TransferServer(to, tabId, at)` (`TableTransferService.TransferAsync`: a table handed to another waiter, the sitting's `ServerStaffMemberId` moved from now on - listed with the Tabs before, moved here) | `TableTransferred(Sitting, TabId, FromStaffId, ToStaffId)` | `TableActivity`: `table.transferred` (who had it, who has it). `TableChangeStream`: the `TableTransferred` (7) signal naming the tab, through `TabAdmissions.Signal`. |
+
+Handlers live in `Infrastructure/DomainEvents/Tables/`, registered after the takeaway orders' in the order the state
+machine wrote them: the change stream's row, then the History's line (a hand-over: the line, then the signal). The row
+names who acted as the request does (`TableStateActors.Resolve`, shared with the service's stored answer): the waiter,
+the diner or their phone's participant, the system for a scan with no token. `TableStateService` and
+`TableTransferService` dispatch before their save with their own `DomainEventDispatcher`, as the ledger does, so a
+test composing them over a bare context (`SqlServerFixture.CreateService`) runs production's handlers for its caller.
+
+What stayed in the services: who may do it, the replays (`ProcessedCommands`, the audit-row fallback), the
+preconditions and refusals, the table lock, the row-version conflict, the booking marked seated or completed and its
+unshown reminders dropped, the held pre-order put on the tab (`PreOrderSittings`, the pre-orders vertical's), closing
+the sitting, and the tab's own fate when the table is freed. **A zero-balance tab closes with the table and raises
+nothing of its own** (`Tab.Close`, unchanged): `TableFreed` names it (`TabId`, `TabClosed`), and freeing a table has
+never told the tab's stream anything - a phone on an empty tab hears no `TabClosed` (the Tabs vertical's to decide).
+The transfer loads the caller, the target, the branch and the previous waiter tracked, so the handlers read names and
+the venue from the tracker.
+
+Test seeders that build a floor straight to the rows use `TestTableTransitions` (the transition with the event dropped);
+the entity's events are tested in `DiningTableEventTests`.
+
+**Proof it is the same.** `TableSideEffectsSnapshotTests`, committed on the code before the move: a walk-in seated, its
+replay and a second seating refused; a hand-over to a waiter on shift by the table's waiter, one by a manager, one to the
+cook refused and one already done; freed with a zero-balance tab, with a balance left and with no tab, the free
+replayed and a double free refused; a booking seated by the waiter, a stale console row refused
+(`table-sitting-changed`) and the booking's sitting finished; holds placed, released (and replayed), seated for a late
+booking and for nobody's, a queued and a changed-and-changed-back command refused; out of service with a booking
+stranded, a seating refused, back in service; a QR scan seating a table and its turn-away freeing it; the booked party
+seating themselves from the app; a hold the diner extended. Every answer, the change stream in sequence, activity,
+outbox and feed rows, the tabs' streams, the stored answers, and the end state of tables, sittings, tabs and bookings
+(`Integration/Snapshots/TableSideEffects.approved.txt`) are unchanged byte for byte. The one race it cannot script
+deterministically - two writers on one table, `table-state-conflict` - saves nothing either way (`TableStateServiceTests`).
 
 ### Guest messages - migrated
 
@@ -344,7 +386,6 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
-| **Tables** - seat, free, hold, out of service | `TableStateService` (19 sites): change-stream rows, activity, feed | Signals carry the table's status as the save leaves it; events on `DiningTable`/`TableSession` | 1.5 days |
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
 | **Pre-orders** | `PreOrderService`, `PreOrderSittings` (it appends the order's stream events on arrival itself), `PreOrderQuestions`; signal 6 hook | Arrival on the tab should raise its own event rather than append by hand | 1 day |
 | **Settings, menu, staff, platform, reviews** | One activity call (or a few) per path | One path per change already: an event buys little. Move only when a second path appears | as needed |

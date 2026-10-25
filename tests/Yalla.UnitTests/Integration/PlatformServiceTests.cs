@@ -126,7 +126,7 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
         var table = await db.DiningTables.FirstAsync(t => t.Id == branch.FirstTableId);
         var session = TableSession.SeatWalkIn(branch.BranchId, table.Id, 2, Now, branch.WaiterId);
         db.TableSessions.Add(session);
-        table.Occupy(session.Id);
+        table.Occupy(session);
         var tab = new Tab(branch.BranchId, table.Id, session.Id, Now, 10m, TabAdmissionReason.OpenedByStaff);
         db.Tabs.Add(tab);
         session.AttachTab(tab.Id);

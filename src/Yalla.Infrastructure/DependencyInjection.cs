@@ -370,6 +370,25 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TabSettlementModeChanged>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
         services.AddScoped<IDomainEventHandler<TabBillPresented>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleActivity>());
         services.AddScoped<IDomainEventHandler<TabBillPresented>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tabs.TabLifecycleStream>());
+        // Tables: seated, freed, held, released, a hold extended, out of service and back - the change stream's row, then
+        // the History's line, as the state machine wrote them - and handed to another waiter: the line, then the signal.
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>();
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableSeated>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableSeated>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableFreed>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableFreed>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableHeld>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableHeld>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableHoldReleased>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableHoldReleased>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableHoldExtended>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableTakenOutOfService>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableTakenOutOfService>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableReturnedToService>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Venues.TableReturnedToService>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Occupancy.TableTransferred>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableActivity>());
+        services.AddScoped<IDomainEventHandler<Yalla.Domain.Occupancy.TableTransferred>>(sp => sp.GetRequiredService<Yalla.Infrastructure.DomainEvents.Tables.TableChangeStream>());
         // Guest messages: the guest wrote or answered "are you coming?", the venue wrote or asked. The History's line, then
         // the guest's push and feed entry, then the floor's push; one read of the thread's subject and account for all.
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Messages.ConversationReads>();

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Activity;
 using Yalla.Application.Ordering;
@@ -1173,7 +1174,8 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
                 .PlaceOrderAsync(new PlaceOrderCommand(tabId, [new OrderItemInput(menuItemId, quantity)], Guid.CreateVersion7())));
 
     private TableTransferService Transfer(YallaDbContext db, TestClock clock, TestActor actor) =>
-        new(db, clock, actor, fixture.CreateBranchGuard(db, actor), SqlServerFixture.CreateActivityLog(db, clock, actor),
+        new(db, clock, actor, fixture.CreateBranchGuard(db, actor),
+            SqlServerFixture.CreateUnitOfWork(db, clock, actor).GetRequiredService<DomainEventDispatcher>(),
             NullLogger<TableTransferService>.Instance);
 
     private StaffPerformanceReader Performance(YallaDbContext db, TestClock clock, TestActor actor) =>

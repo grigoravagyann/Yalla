@@ -23,8 +23,13 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// In this order: staff (403); the tab (404); the caller at its branch (403); the caller the table's waiter or a manager
 /// or above (403); the sitting still live (409 <c>tab-not-transferable</c>); the target able to take it (422
-/// <c>transfer-target-ineligible</c>). Already theirs is answered as done and writes nothing. The move, its History entry
-/// and a branch change-stream signal (<c>TableTransferred</c>) go in one save.
+/// <c>transfer-target-ineligible</c>). Already theirs is answered as done and writes nothing. The move raises
+/// <c>TableTransferred</c>, whose handlers write its History entry and a branch change-stream signal in the same save
+/// (<c>docs/domain-events.md</c>).
+/// </para>
+/// <para>
+/// The people are loaded tracked - the caller, the target, the waiter it was - so the handlers read their names from the
+/// tracker rather than asking again.
 /// </para>
 /// </remarks>
 internal sealed class TableTransferService(
@@ -32,7 +37,7 @@ internal sealed class TableTransferService(
     IClock clock,
     ICurrentActor actor,
     StaffBranchGuard branchGuard,
-    IActivityLog activity,
+    DomainEventDispatcher domainEvents,
     ILogger<TableTransferService> logger) : ITableTransferService
 {
     private const string Operation = "Transfer a table";
@@ -126,11 +131,7 @@ internal sealed class TableTransferService(
 
         await branchGuard.RequireAsync(callerId, tab.BranchId, "Transferring this table", "tab", cancellationToken);
 
-        var caller = await db.StaffMembers
-            .AsNoTracking()
-            .Where(s => s.Id == callerId)
-            .Select(s => new { s.Role, s.FullName })
-            .FirstAsync(cancellationToken);
+        var caller = await db.StaffMembers.FirstAsync(s => s.Id == callerId, cancellationToken);
 
         // The sitting has no row version, so two transfers at once - a manager and the waiter, two tablets - would both
         // read the same waiter, both write, and log two hand-overs "from" the same person, the later silently winning.
@@ -158,16 +159,10 @@ internal sealed class TableTransferService(
             throw new TabNotTransferableException(tab.Id, tab.Status);
         }
 
-        var venueId = await db.Branches
-            .AsNoTracking()
-            .Where(b => b.Id == tab.BranchId)
-            .Select(b => b.VenueId)
-            .FirstAsync(cancellationToken);
+        var venueId = (await db.Branches.FirstAsync(b => b.Id == tab.BranchId, cancellationToken)).VenueId;
 
         var target = await db.StaffMembers
-            .AsNoTracking()
             .Where(s => s.Id == command.ToStaffMemberId && s.VenueId == venueId)
-            .Select(s => new { s.Id, s.FullName, s.Role, s.BranchId, s.IsActive })
             .FirstOrDefaultAsync(cancellationToken);
 
         if (target is null)
@@ -206,41 +201,17 @@ internal sealed class TableTransferService(
                 tab.DiningTable.Label, WasReplay: true);
         }
 
-        var fromId = session.TransferServer(target.Id, nowUtc);
+        // TableTransferred's handlers write the History's table.transferred and the branch stream's signal, so every
+        // tablet following it re-reads the floor and sees the new waiter.
+        var fromId = session.TransferServer(target.Id, tab.Id, nowUtc);
 
+        // From the tracker when it is the caller; loaded tracked otherwise, for the handlers to read too.
         var fromName = fromId is { } from
-            ? fromId == callerId
-                ? caller.FullName
-                : await db.StaffMembers
-                    .AsNoTracking()
-                    .Where(s => s.Id == from)
-                    .Select(s => s.FullName)
-                    .FirstOrDefaultAsync(cancellationToken)
+            ? (await db.StaffMembers.FindAsync([from], cancellationToken))?.FullName
             : null;
 
-        await activity.RecordAsync(
-            new ActivityRecord(ActivityCategory.Table, ActivityActions.TableTransferred, ActivitySubjects.Tab, tab.Id)
-            {
-                BranchId = tab.BranchId,
-                VenueId = venueId,
-                TableSessionId = session.Id,
-                TableLabel = tab.DiningTable.Label,
-                Before = new { staffMemberId = fromId, name = fromName },
-                After = new { staffMemberId = target.Id, name = target.FullName },
-                Summary = new
-                {
-                    fromStaffMemberId = fromId,
-                    fromName,
-                    toStaffMemberId = target.Id,
-                    toName = target.FullName,
-                },
-            },
-            cancellationToken);
-
-        // Every tablet following the branch's stream re-reads the floor and sees the new waiter.
-        TabAdmissions.Signal(
-            db, tab, TableChangeSignal.TableTransferred, $"handed to {target.FullName}", (ActorType.Staff, callerId), nowUtc);
-
+        // This service's dispatcher, as the state machine's: the scope's in a request, the caller's in a test.
+        await domainEvents.DispatchAsync(db, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
