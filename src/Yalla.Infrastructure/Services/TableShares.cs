@@ -1,7 +1,4 @@
-using System.Globalization;
 using Microsoft.EntityFrameworkCore;
-using Yalla.Application.Abstractions;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
@@ -60,76 +57,39 @@ internal static class TableShares
     }
 
     /// <summary>
-    /// Asks: stages the request, and - when the earlier guest is asked in the app - their push and feed
-    /// entry. Called inside the table's lock, beside the later booking it is for.
+    /// Asks: stages the request and puts the question (<see cref="TableShareRequest.Ask"/>) - whose handler pushes it to
+    /// the earlier guest when they are asked in the app. Called inside the table's lock, beside the later booking it is
+    /// for.
     /// </summary>
-    public static async Task<TableShareRequest> AskAsync(
+    public static TableShareRequest Ask(
         YallaDbContext db,
-        IOutbox outbox,
-        Branch branch,
-        string tableLabel,
         Reservation later,
         Guid earlierReservationId,
         DateTime freeByUtc,
         DateTime expiresAtUtc,
         bool asksEarlierGuest,
         ApprovalTrigger? fallbackTrigger,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
+        DateTime nowUtc)
     {
         var request = new TableShareRequest(
             earlierReservationId, later.Id, later.StartUtc, freeByUtc, nowUtc, expiresAtUtc, asksEarlierGuest,
             fallbackTrigger);
 
         db.TableShareRequests.Add(request);
-
-        if (!asksEarlierGuest)
-        {
-            return request;
-        }
-
-        var earlier = await db.Reservations
-            .AsNoTracking()
-            .FirstAsync(r => r.Id == earlierReservationId, cancellationToken);
-
-        if (earlier.DinerUserId is not { } dinerUserId)
-        {
-            return request;
-        }
-
-        var zone = BranchZone.For(branch.TimeZoneId);
-        var venueName = branch.Venue?.Name ?? branch.Name;
-
-        outbox.Enqueue(
-            OutboxMessageTypes.ReservationTableRequest,
-            Notice(request, earlier.Id, dinerUserId, venueName, tableLabel, zone),
-            nowUtc,
-            OutboxMessageTypes.KeyFor("reservation", earlier.Id, $"table-request:{request.Id:N}"));
-
-        DinerNotices.TableRequested(
-            db,
-            earlier,
-            venueName,
-            branch.Name,
-            request.Id,
-            zone.LocalTimeAt(request.RequestedStartUtc),
-            zone.LocalTimeAt(request.FreeByUtc),
-            nowUtc);
+        request.Ask();
 
         return request;
     }
 
     /// <summary>
     /// The later booking's request was said yes to - by the earlier guest, or by the floor for them: the
-    /// earlier booking promises to free the table by the time asked (its end cut to it), the request is
-    /// accepted, and the earlier guest is told. The caller confirms the later booking.
+    /// earlier booking promises to free the table by the time asked (its end cut to it, the earlier guest told by
+    /// the promise's handler), and the request is accepted. The caller confirms the later booking.
     /// </summary>
     /// <returns>The request, or null when the later booking was waiting on none.</returns>
     public static async Task<TableShareRequest?> ApplyYesAsync(
         YallaDbContext db,
-        IOutbox outbox,
         Guid laterReservationId,
-        Branch branch,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
@@ -165,9 +125,7 @@ internal static class TableShares
         }
 
         request.Accept(nowUtc);
-        earlier.PromiseToFreeBy(request.FreeByUtc);
-
-        await TellEarlierDecidedAsync(db, outbox, earlier, request, branch, accepted: true, nowUtc, cancellationToken);
+        earlier.PromiseToFreeBy(request, nowUtc);
 
         return request;
     }
@@ -244,7 +202,7 @@ internal static class TableShares
     /// <item>
     /// <b>Free now</b> - the earlier booking left, moved off the table, moved early enough, or promised a
     /// time that covers it: the request is withdrawn and the later booking decided again without it
-    /// (<see cref="DecideWithoutTheQuestionAsync"/>): confirmed when nothing else needs a human, otherwise
+    /// (<see cref="DecideWithoutTheQuestion"/>): confirmed when nothing else needs a human, otherwise
     /// left waiting for that reason - which is why a request stores <c>FallbackTrigger</c>.
     /// </item>
     /// <item>
@@ -264,7 +222,6 @@ internal static class TableShares
     /// </remarks>
     public static async Task EarlierChangedAsync(
         YallaDbContext db,
-        IOutbox outbox,
         Reservation earlier,
         Branch branch,
         DateTime nowUtc,
@@ -307,7 +264,7 @@ internal static class TableShares
             if (verdict.IsFree && TableEvening.Holds(verdict, later.EndUtc))
             {
                 request.Withdraw(nowUtc);
-                await DecideWithoutTheQuestionAsync(db, outbox, later, request, branch, nowUtc, cancellationToken);
+                DecideWithoutTheQuestion(later, request, nowUtc);
                 continue;
             }
 
@@ -325,40 +282,26 @@ internal static class TableShares
                         nowUtc,
                         TableShareRequest.AnswerWindowMinutes,
                         verdict.Earlier!.Value.StartUtc,
-                        later.StartUtc));
+                        later.StartUtc),
+                    nowUtc);
 
                 continue;
             }
 
+            // Crowded out: declined, and its guest told, by the decline's handlers.
             request.Decline(nowUtc);
             later.Reject(nowUtc, reason: null, DeclineReason.EarlierGuestDeclined);
-
-            await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", later.Id), cancellationToken);
-            await DinerNotices.CancelUnshownAsync(db, later.Id, nowUtc, cancellationToken);
-
-            var key = await ReservationNotices.DecisionKeyAsync(db, later.Id, "rejected", nowUtc, cancellationToken);
-
-            ReservationNotices.TellDinerDecided(
-                db, outbox, later, branch, approved: false, expired: false, key, nowUtc,
-                because: DeclineReason.EarlierGuestDeclined);
         }
     }
 
     /// <summary>
     /// A booking whose question to the guest before it went away is decided again without it, from the
     /// reason it would have waited for anyway (<see cref="TableShareRequest.FallbackTrigger"/>): confirmed
-    /// when there is none - and its diner told - left as it is when that reason is short notice (it is
-    /// already the floor's, with its fifteen minutes), and otherwise waiting for that reason, as any such
-    /// booking waits, with no clock - the two hours were the question's, and the question is gone.
+    /// when there is none - and its diner told, by the approval's handlers - left as it is when that reason is
+    /// short notice (it is already the floor's, with its fifteen minutes), and otherwise waiting for that reason,
+    /// as any such booking waits, with no clock - the two hours were the question's, and the question is gone.
     /// </summary>
-    public static async Task DecideWithoutTheQuestionAsync(
-        YallaDbContext db,
-        IOutbox outbox,
-        Reservation later,
-        TableShareRequest request,
-        Branch branch,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
+    public static void DecideWithoutTheQuestion(Reservation later, TableShareRequest request, DateTime nowUtc)
     {
         if (later.Status != ReservationStatus.PendingApproval || later.ApprovalHasLapsedAt(nowUtc) || later.StartUtc <= nowUtc)
         {
@@ -368,71 +311,16 @@ internal static class TableShares
         switch (request.FallbackTrigger)
         {
             case null:
-                later.Confirm(nowUtc);
-
-                var key = await ReservationNotices.DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
-
-                ReservationNotices.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
+                later.Confirm(nowUtc, ReservationApprover.NoLongerAsked);
                 break;
 
             case ApprovalTrigger.ShortNotice:
                 break;
 
             case { } other:
-                later.WaitInsteadFor(other, approvalExpiresAtUtc: null);
+                later.WaitInsteadFor(other, approvalExpiresAtUtc: null, nowUtc);
                 break;
         }
-    }
-
-    /// <summary>
-    /// Tells the earlier guest their answer took effect: a feed entry either way, and - for a yes - the
-    /// push that holds them to the time.
-    /// </summary>
-    public static async Task TellEarlierDecidedAsync(
-        YallaDbContext db,
-        IOutbox outbox,
-        Reservation earlier,
-        TableShareRequest request,
-        Branch branch,
-        bool accepted,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
-    {
-        if (earlier.DinerUserId is not { } dinerUserId)
-        {
-            return;
-        }
-
-        var zone = BranchZone.For(branch.TimeZoneId);
-        var venueName = branch.Venue?.Name ?? branch.Name;
-
-        DinerNotices.TableRequestDecided(
-            db,
-            earlier,
-            venueName,
-            branch.Name,
-            request.Id,
-            accepted,
-            zone.LocalTimeAt(request.RequestedStartUtc),
-            zone.LocalTimeAt(request.FreeByUtc),
-            nowUtc);
-
-        if (!accepted)
-        {
-            return;
-        }
-
-        var tableLabel = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.Id == earlier.DiningTableId)
-            .Select(t => t.Label)
-            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
-
-        outbox.Enqueue(
-            OutboxMessageTypes.ReservationTableRequestDecided,
-            Notice(request, earlier.Id, dinerUserId, venueName, tableLabel, zone),
-            nowUtc,
-            OutboxMessageTypes.KeyFor("reservation", earlier.Id, $"table-request-decided:{request.Id:N}"));
     }
 
     /// <summary>The later booking's open request, tracked, or null.</summary>
@@ -444,25 +332,5 @@ internal static class TableShares
             .Where(r => r.LaterReservationId == laterReservationId && r.Status == TableShareRequestStatus.Pending)
             .OrderBy(r => r.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
-
-    private static object Notice(
-        TableShareRequest request,
-        Guid earlierReservationId,
-        Guid dinerUserId,
-        string venueName,
-        string tableLabel,
-        BranchZone zone) =>
-        new
-        {
-            requestId = request.Id,
-            reservationId = earlierReservationId,
-            dinerUserId,
-            venueName,
-            tableLabel,
-            requestedLocalTime = zone.LocalTimeAt(request.RequestedStartUtc),
-            freeByLocalTime = zone.LocalTimeAt(request.FreeByUtc),
-            freeByUtc = request.FreeByUtc,
-            requestedStartUtc = request.RequestedStartUtc.ToString("O", CultureInfo.InvariantCulture),
-        };
 }
 

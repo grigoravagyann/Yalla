@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
-using Yalla.Application.Messaging;
 using Yalla.Application.Public;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
@@ -16,8 +14,7 @@ namespace Yalla.Infrastructure.Services;
 internal sealed class ReservationCancellation(
     YallaDbContext db,
     IClock clock,
-    IOutbox outbox,
-    IActivityLog activity,
+    ReservationWriter reservations,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationViews views)
@@ -108,33 +105,15 @@ internal sealed class ReservationCancellation(
         var madeInTime = reservation.CreatedAtUtc
                          <= ReservationRules.CancellationDeadline(reservation.StartUtc, branch.ReservationPolicy);
 
-        reservation.CancelByDiner(nowUtc, reason, late, countsAgainstGuest: madeInTime);
-
-        await BookingActivity.RecordAsync(
-            activity, db, reservation, ActivityActions.BookingCancelled, cancellationToken,
-            extra: new { late, viaManageLink }, reason: reason, byGuest: true);
+        // The History's line, the unsent reminder and nudge withdrawn with the feed entries not yet shown (a reminder for a
+        // booking cancelled an hour ago is worse than none), the account told of a cancel from the link, the change
+        // stream and a held pre-order voided are the cancellation's handlers'.
+        reservation.CancelByDiner(nowUtc, reason, late, countsAgainstGuest: madeInTime, viaManageLink);
 
         // A question this booking was waiting on goes with it, and a guest who was asked to free their
         // table for it - or a booking waiting on this one's guest - is settled now the table is free.
         await TableShares.CloseForLaterAsync(db, reservation.Id, TableShareRequestStatus.Withdrawn, nowUtc, cancellationToken);
-        await TableShares.EarlierChangedAsync(
-            db, outbox, reservation, branch, nowUtc, cancellationToken);
-
-        // Cancelling the cause cancels the message, in the same transaction. A reminder arriving for
-        // a booking somebody cancelled an hour ago is worse than no reminder at all - it is the push
-        // the diner remembers, and it teaches them the notifications are wrong.
-        await outbox.CancelAsync(
-            OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
-
-        // And its feed entry that has not appeared yet - the reminder - with it (K12).
-        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
-
-        // Cancelled by whoever holds the link: the account holder is told, in this save. After the
-        // cancelling above, which would otherwise take this message with the reminder.
-        if (viaManageLink)
-        {
-            ReservationNotices.TellDinerDoneFromLink(db, outbox, reservation, branch, changed: false, nowUtc);
-        }
+        await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, cancellationToken);
 
         // "Not coming" in the booking's thread, with "booking cancelled" after it - when it answers anybody: the thread
         // exists, or "are you coming?" is being asked (two hours before the start on). One transaction, under the
@@ -144,7 +123,7 @@ internal sealed class ReservationCancellation(
             await GuestThreads.AnswerAsync(
                 db, reservation, Domain.Messages.GuestAnswer.NotComing, null, nowUtc, cancellationToken, onlyWhenAsked: true);
 
-            await db.SaveChangesAsync(cancellationToken);
+            await reservations.SaveAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
 

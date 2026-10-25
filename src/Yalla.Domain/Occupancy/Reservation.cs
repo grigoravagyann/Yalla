@@ -572,8 +572,22 @@ public sealed class Reservation : Entity
     }
 
     /// <summary>
-    /// The guest says they will have left the table by <paramref name="freeByUtc"/> - yes to a later
-    /// guest's request for it (see <see cref="TableShareRequest"/>).
+    /// The booking is made: raises <see cref="ReservationMade"/>, whose handlers write what a new booking tells the rest
+    /// of the system - the History's line, the table's change stream, the floor's push for one that waits.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Create"/>, as placing an order is from building it: a booking built and never booked - a
+    /// test seeding history straight to the rows - tells nobody.
+    /// </remarks>
+    public void Book(DateTime atUtc) => Raise(new ReservationMade(this, Guard.NotLocalTime(atUtc, nameof(atUtc))));
+
+    /// <summary>Where the booking stands now - what a change event carries as where it stood before.</summary>
+    private ReservationStanding Standing() => new(
+        Status, DiningTableId, StartUtc, EndUtc, PartySize, LocalDate, LocalStartTime, ApprovalTrigger, ApprovalExpiresAtUtc);
+
+    /// <summary>
+    /// The guest says they will have left the table by the time <paramref name="request"/> asks - yes to a later
+    /// guest's request for it (see <see cref="TableShareRequest"/>), theirs or the floor's for them.
     /// </summary>
     /// <remarks>
     /// The booking's end is cut to the promise when the promise is sooner, so every rule that reads the
@@ -581,10 +595,17 @@ public sealed class Reservation : Entity
     /// by 19:40 still ends at 19:30, with the promise kept on the row for the floor - and so that the
     /// guest is not asked again. Of two promises the sooner stands.
     /// </remarks>
+    /// <param name="request">The request said yes to: its <see cref="TableShareRequest.FreeByUtc"/> is the promise.</param>
+    /// <param name="atUtc">Now.</param>
     /// <exception cref="DomainStateException">The booking no longer holds the table.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The time is not after the booking's start.</exception>
-    public void PromiseToFreeBy(DateTime freeByUtc)
+    public void PromiseToFreeBy(TableShareRequest request, DateTime atUtc)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var freeByUtc = request.FreeByUtc;
+        var before = Standing();
+
         if (!ReservationOverlap.Blocks(Status))
         {
             throw new DomainStateException(
@@ -605,6 +626,8 @@ public sealed class Reservation : Entity
         {
             EndUtc = promise;
         }
+
+        Raise(new ReservationPromisedToFreeBy(this, before, request, Guard.NotLocalTime(atUtc, nameof(atUtc))));
     }
 
     /// <summary>
@@ -799,10 +822,13 @@ public sealed class Reservation : Entity
                 + "you are running late.");
         }
 
+        var before = Standing();
         var from = HoldExpiresAtUtc is { } current && current > nowUtc ? current : nowUtc;
 
         HoldExpiresAtUtc = from.AddMinutes(extensionMinutes);
         GraceExtensionsUsed++;
+
+        Raise(new ReservationHoldExtended(this, before, extensionMinutes, nowUtc));
     }
 
     /// <summary>
@@ -838,7 +864,13 @@ public sealed class Reservation : Entity
     /// started - approving a booking that is already under way promises a table nobody kept.
     /// </exception>
     /// <exception cref="DomainStateException">The booking is not waiting for approval.</exception>
-    public void Confirm(DateTime confirmedAtUtc)
+    /// <param name="confirmedAtUtc">Now.</param>
+    /// <param name="by">Who said yes: staff, the guest before it on the table, or nobody - the question it waited on went away.</param>
+    /// <param name="answeredRequest">The request the guest before said yes to, when it was theirs.</param>
+    public void Confirm(
+        DateTime confirmedAtUtc,
+        ReservationApprover by = ReservationApprover.Staff,
+        TableShareRequest? answeredRequest = null)
     {
         RequireStillAnswerable(confirmedAtUtc, approving: true);
 
@@ -848,6 +880,8 @@ public sealed class Reservation : Entity
                 $"Only a pending reservation can be confirmed; {Code} is {Status}.");
         }
 
+        var before = Standing();
+
         Status = ReservationStatus.Confirmed;
         ConfirmedAtUtc = Guard.NotLocalTime(confirmedAtUtc, nameof(confirmedAtUtc));
         HoldExpiresAtUtc = null;
@@ -855,6 +889,8 @@ public sealed class Reservation : Entity
 
         // The change is accepted, so there is nothing to go back to.
         ForgetConfirmedSlot();
+
+        Raise(new ReservationApproved(this, before, Guard.Defined(by, nameof(by)), answeredRequest, confirmedAtUtc));
     }
 
     /// <summary>
@@ -874,12 +910,18 @@ public sealed class Reservation : Entity
     /// </para>
     /// </remarks>
     /// <param name="atUtc">Now.</param>
-    /// <param name="because">Who declined the change: staff, or nobody in time.</param>
+    /// <param name="because">Who declined the change: staff, the guest before it on the table, or nobody in time.</param>
+    /// <param name="reason">Why, as somebody typed it - for the History; not stored.</param>
+    /// <param name="answeredRequest">The request the guest before said no to, when it was theirs.</param>
     /// <exception cref="ReservationApprovalExpiredException">A staff decline after the window closed.</exception>
     /// <exception cref="DomainStateException">
     /// Not a waiting change of a confirmed booking, or - for no answer - its window has not run out.
     /// </exception>
-    public void KeepConfirmedSlot(DateTime atUtc, DeclineReason because)
+    public void KeepConfirmedSlot(
+        DateTime atUtc,
+        DeclineReason because,
+        string? reason = null,
+        TableShareRequest? answeredRequest = null)
     {
         if (IsForNoAnswer(because))
         {
@@ -900,6 +942,8 @@ public sealed class Reservation : Entity
                 $"Booking {Code} is {Status} with no confirmed slot to go back to.");
         }
 
+        var before = Standing();
+
         DiningTableId = PreviousDiningTableId!.Value;
         ForgetOnMyWayUnlessStartingAt(PreviousStartUtc!.Value, atUtc);
         StartUtc = PreviousStartUtc!.Value;
@@ -915,6 +959,10 @@ public sealed class Reservation : Entity
         DeclineReason = Guard.Defined(because, nameof(because));
 
         ForgetConfirmedSlot();
+
+        Raise(new ReservationDeclined(
+            this, before, because, reason, WasChange: true, SlotKept: true, before.LocalDate, before.LocalStartTime,
+            answeredRequest, atUtc));
     }
 
     /// <summary>
@@ -922,14 +970,18 @@ public sealed class Reservation : Entity
     /// it went away, and something else still needs a human - with that reason's deadline, or none.
     /// </summary>
     /// <exception cref="DomainStateException">The booking is not waiting.</exception>
-    public void WaitInsteadFor(ApprovalTrigger trigger, DateTime? approvalExpiresAtUtc)
+    public void WaitInsteadFor(ApprovalTrigger trigger, DateTime? approvalExpiresAtUtc, DateTime atUtc)
     {
         if (Status != ReservationStatus.PendingApproval)
         {
             throw new DomainStateException($"Booking {Code} is {Status}; only a waiting booking waits for a reason.");
         }
 
+        var before = Standing();
+
         AwaitDecision(Status, trigger, approvalExpiresAtUtc);
+
+        Raise(new ReservationWaitingInstead(this, before, Guard.NotLocalTime(atUtc, nameof(atUtc))));
     }
 
     /// <summary>
@@ -1003,6 +1055,60 @@ public sealed class Reservation : Entity
             throw new ArgumentOutOfRangeException(nameof(because), because, "Not a reason for nobody answering.");
         }
 
+        var before = Standing();
+
+        EndForNoAnswer(atUtc, because);
+
+        Raise(new ReservationDeclined(
+            this, before, because, null, WasChange: false, SlotKept: false, LocalDate, LocalStartTime, null, atUtc));
+    }
+
+    /// <summary>
+    /// The waiting change of a confirmed booking is declined - by staff, by the guest before it on the table, or by
+    /// nobody in time - and the slot it had is gone too (taken, sat into, over): the booking ends with the change, and its
+    /// guest is told it was their change, and that the slot they had could not be kept.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Reject"/> or <see cref="DeclineForNoAnswer"/>, as <paramref name="because"/> says, by the same rules, for
+    /// a booking that has a confirmed slot to go back to (<see cref="HasConfirmedSlotToReturnTo"/>) when that slot is no
+    /// longer free. When it is, the change is declined with <see cref="KeepConfirmedSlot"/> instead.
+    /// </remarks>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="because">Whose no, or whose silence.</param>
+    /// <param name="reason">Optional free text for somebody's no, recorded as <see cref="CancellationReason"/>.</param>
+    /// <param name="answeredRequest">The request the guest before said no to, when it was theirs.</param>
+    /// <exception cref="DomainStateException">Not a waiting change of a confirmed booking.</exception>
+    public void DeclineChange(
+        DateTime atUtc,
+        DeclineReason because,
+        string? reason,
+        TableShareRequest? answeredRequest = null)
+    {
+        if (Status != ReservationStatus.PendingApproval || !HasConfirmedSlotToReturnTo)
+        {
+            throw new DomainStateException(
+                $"Booking {Code} is {Status} with no confirmed slot behind it; decline the booking instead.");
+        }
+
+        var before = Standing();
+
+        if (IsForNoAnswer(because))
+        {
+            EndForNoAnswer(atUtc, because);
+        }
+        else
+        {
+            EndRejected(atUtc, reason, because);
+        }
+
+        Raise(new ReservationDeclined(
+            this, before, because, reason, WasChange: true, SlotKept: false, LocalDate, LocalStartTime, answeredRequest,
+            atUtc));
+    }
+
+    /// <summary>What <see cref="DeclineForNoAnswer"/> changes.</summary>
+    private void EndForNoAnswer(DateTime atUtc, DeclineReason because)
+    {
         if (!ApprovalHasLapsedAt(atUtc))
         {
             throw new DomainStateException(
@@ -1011,6 +1117,26 @@ public sealed class Reservation : Entity
 
         Cancel(ReservationStatus.CancelledByVenue, atUtc, reason: null, afterDeadline: false);
         DeclineReason = because;
+    }
+
+    /// <summary>What <see cref="Reject"/> changes.</summary>
+    private void EndRejected(DateTime atUtc, string? reason, DeclineReason because)
+    {
+        if (IsForNoAnswer(because))
+        {
+            throw new ArgumentOutOfRangeException(nameof(because), because, "A no is somebody's answer, not the clock's.");
+        }
+
+        RequireStillAnswerable(atUtc, approving: false);
+
+        if (Status != ReservationStatus.PendingApproval)
+        {
+            throw new DomainStateException(
+                $"Only a pending reservation can be rejected; {Code} is {Status}.");
+        }
+
+        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
+        DeclineReason = Guard.Defined(because, nameof(because));
     }
 
     /// <summary>
@@ -1148,6 +1274,7 @@ public sealed class Reservation : Entity
     /// The time the diner accepted to free the table by at the new slot, when its next booking cuts a full
     /// sitting short - see <see cref="Create"/>. Replaces any promise the old slot had.
     /// </param>
+    /// <param name="viaManageLink">Whoever holds the booking's link moved it, not the app: its account is told.</param>
     /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
     public void Reschedule(
         Guid diningTableId,
@@ -1160,12 +1287,15 @@ public sealed class Reservation : Entity
         DateTime nowUtc,
         ApprovalTrigger? approvalTrigger = null,
         DateTime? approvalExpiresAtUtc = null,
-        DateTime? promisedFreeByUtc = null)
+        DateTime? promisedFreeByUtc = null,
+        bool viaManageLink = false)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
         RequireChangeableAt(nowUtc);
         RequireAnswerWindowOpenAt(nowUtc);
+
+        var before = Standing();
 
         if (status is not (ReservationStatus.Confirmed or ReservationStatus.PendingApproval))
         {
@@ -1227,6 +1357,8 @@ public sealed class Reservation : Entity
         // A new request: whatever an earlier one was declined for is history.
         DeclineReason = null;
         AwaitDecision(status, approvalTrigger, approvalExpiresAtUtc);
+
+        Raise(new ReservationRescheduled(this, before, viaManageLink, nowUtc));
     }
 
     /// <summary>
@@ -1296,18 +1428,42 @@ public sealed class Reservation : Entity
     /// cancellation converts it into a no-show, which costs the venue the same slot and also the
     /// chance to resell it.
     /// </remarks>
-    public void CancelByDiner(DateTime atUtc, string? reason, bool afterDeadline, bool countsAgainstGuest = false)
+    /// <param name="atUtc">Now.</param>
+    /// <param name="reason">Why, as the guest typed it.</param>
+    /// <param name="afterDeadline">Past the branch's cancellation deadline: recorded, never refused.</param>
+    /// <param name="countsAgainstGuest">The booking was made before that deadline - see <see cref="LateCancellationCounts"/>.</param>
+    /// <param name="viaManageLink">Whoever holds the booking's link cancelled it, not the app: its account is told.</param>
+    public void CancelByDiner(
+        DateTime atUtc,
+        string? reason,
+        bool afterDeadline,
+        bool countsAgainstGuest = false,
+        bool viaManageLink = false)
     {
         // Read before the status moves: only a confirmed booking's late cancellation counts against the guest.
         var counts = countsAgainstGuest && afterDeadline && Status == ReservationStatus.Confirmed;
+        var before = Standing();
 
         Cancel(ReservationStatus.CancelledByDiner, atUtc, reason, afterDeadline);
         LateCancellationCounts = counts;
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.Guest, reason, viaManageLink, atUtc));
     }
 
-    /// <summary>The venue cancelled a booking it had already accepted.</summary>
-    public void CancelByVenue(DateTime atUtc, string? reason) =>
-        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
+    /// <summary>What a booking the venue let go records as why, when nobody said.</summary>
+    public const string ReleasedByVenueReason = "released: the venue let the booking go";
+
+    /// <summary>The venue cancelled a booking it had already accepted - the floor letting a late booking go.</summary>
+    /// <param name="atUtc">Now.</param>
+    /// <param name="reason">Why, as the floor typed it; <see cref="ReleasedByVenueReason"/> is recorded when nobody did.</param>
+    public void CancelByVenue(DateTime atUtc, string? reason)
+    {
+        var before = Standing();
+
+        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason ?? ReleasedByVenueReason, afterDeadline: false);
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.Venue, reason, ViaManageLink: false, atUtc));
+    }
 
     /// <summary>
     /// The platform cancelled it: its guest was just blocked for three no-shows in three days
@@ -1315,8 +1471,12 @@ public sealed class Reservation : Entity
     /// </summary>
     public void CancelForNoShowBlock(DateTime atUtc)
     {
+        var before = Standing();
+
         Cancel(ReservationStatus.CancelledByVenue, atUtc, NoShowBlockRules.CancellationReason, afterDeadline: false);
         CancelledBecause = CancellationCause.NoShowBlock;
+
+        Raise(new ReservationCancelled(this, before, ReservationCanceller.NoShowBlock, null, ViaManageLink: false, atUtc));
     }
 
     /// <summary>
@@ -1338,24 +1498,21 @@ public sealed class Reservation : Entity
     /// Whose no: a member of staff's (<see cref="Enums.DeclineReason.StaffDeclined"/>), or the guest's before
     /// this booking on the table (<see cref="Enums.DeclineReason.EarlierGuestDeclined"/>).
     /// </param>
+    /// <param name="answeredRequest">The request the guest before said no to, when it was their answer.</param>
     /// <exception cref="DomainStateException">The booking is not waiting for approval.</exception>
-    public void Reject(DateTime atUtc, string? reason, DeclineReason because = Enums.DeclineReason.StaffDeclined)
+    public void Reject(
+        DateTime atUtc,
+        string? reason,
+        DeclineReason because = Enums.DeclineReason.StaffDeclined,
+        TableShareRequest? answeredRequest = null)
     {
-        if (IsForNoAnswer(because))
-        {
-            throw new ArgumentOutOfRangeException(nameof(because), because, "A no is somebody's answer, not the clock's.");
-        }
+        var before = Standing();
 
-        RequireStillAnswerable(atUtc, approving: false);
+        EndRejected(atUtc, reason, because);
 
-        if (Status != ReservationStatus.PendingApproval)
-        {
-            throw new DomainStateException(
-                $"Only a pending reservation can be rejected; {Code} is {Status}.");
-        }
-
-        Cancel(ReservationStatus.CancelledByVenue, atUtc, reason, afterDeadline: false);
-        DeclineReason = Guard.Defined(because, nameof(because));
+        Raise(new ReservationDeclined(
+            this, before, because, reason, WasChange: false, SlotKept: false, LocalDate, LocalStartTime, answeredRequest,
+            atUtc));
     }
 
     /// <summary>
@@ -1371,7 +1528,8 @@ public sealed class Reservation : Entity
     /// <param name="atUtc">Now.</param>
     /// <param name="byStaffId">Who marked it.</param>
     /// <param name="countsTowardBlock">Whether it was marked after the guest's grace - see <see cref="NoShowCountsTowardBlock"/>.</param>
-    public void MarkNoShow(DateTime atUtc, Guid? byStaffId = null, bool countsTowardBlock = false)
+    /// <param name="reason">Why, as the floor typed it - for the History; not stored.</param>
+    public void MarkNoShow(DateTime atUtc, Guid? byStaffId = null, bool countsTowardBlock = false, string? reason = null)
     {
         if (Status != ReservationStatus.Confirmed)
         {
@@ -1384,6 +1542,8 @@ public sealed class Reservation : Entity
             throw new ReservationNotStartedException(Id, Code, StartUtc);
         }
 
+        var before = Standing();
+
         Status = ReservationStatus.NoShow;
         CancelledAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         HoldExpiresAtUtc = null;
@@ -1392,6 +1552,8 @@ public sealed class Reservation : Entity
         NoShowUndoneAtUtc = null;
         NoShowUndoneByStaffId = null;
         NoShowUndoReason = null;
+
+        Raise(new ReservationMarkedNoShow(this, before, reason, atUtc));
     }
 
     /// <summary>
@@ -1407,12 +1569,16 @@ public sealed class Reservation : Entity
             throw new DomainStateException($"Only a no-show can be withdrawn; {Code} is {Status}.");
         }
 
+        var before = Standing();
+
         Status = ReservationStatus.Confirmed;
         CancelledAtUtc = null;
         NoShowCountsTowardBlock = false;
         NoShowUndoneAtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
         NoShowUndoneByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
         NoShowUndoReason = Guard.OptionalText(reason, nameof(reason), FieldLengths.Reason);
+
+        Raise(new ReservationNoShowWithdrawn(this, before, reason, atUtc));
     }
 
     private void Cancel(ReservationStatus to, DateTime atUtc, string? reason, bool afterDeadline)

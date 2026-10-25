@@ -3,8 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Messaging;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messaging;
-using Yalla.Domain.Occupancy;
-using Yalla.Domain.Tabs;
 
 namespace Yalla.Infrastructure.Persistence;
 
@@ -22,12 +20,10 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Here, beside the change-stream signals, for their reason</b> - for <b>approvals</b>, the one kind still detected
-/// rather than told; the others are staged by domain-event handlers through <see cref="StageOne"/>. A booking lands in
-/// "waiting for approval" from the app, the public page, a reschedule, a change sent back for approval and the guest
-/// before it stepping aside. A rule each of those paths had to remember is a rule one of them forgets, and the symptom -
-/// a phone that stays quiet - looks exactly like a quiet evening. So the save itself notices, from the change tracker,
-/// and the message goes in the same transaction as its cause or not at all.
+/// <b>Told, not detected.</b> Every kind is staged by the domain-event handler of the event the floor is told about,
+/// through <see cref="StageOne"/>, in the same save and transaction as its cause or not at all. Until 2026-10-25
+/// <b>approvals</b> was still detected here from the change tracker on every save (<c>Stage</c>); it is the bookings'
+/// <c>ApprovalStaffPush</c> now, and nothing is detected.
 /// </para>
 /// <para>
 /// <b>Only the kind and an id.</b> Who is told, in which language, and whether it is still true are decided when the
@@ -37,19 +33,20 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// The events, as the five switches name them:
 /// </para>
 /// <list type="bullet">
-/// <item><b>approvals</b> - a booking added as <c>PendingApproval</c>, one moved into it, a waiting one moved to
-/// another time, or a waiting one now waiting for another reason (the guest before it stepped aside and the floor
-/// decides now).</item>
+/// <item><b>approvals</b> - a booking made waiting for approval, one moved into it, a waiting one moved to another
+/// time, or a waiting one now waiting for another reason (the guest before it stepped aside and the floor decides now).
+/// Staged by the <c>ReservationMade</c>, <c>ReservationRescheduled</c> and <c>ReservationWaitingInstead</c> domain-event
+/// handler (<c>ApprovalStaffPush</c>), key <c>staff-push:approval:{id}:{n}</c>.</item>
 /// <item><b>guestMessages</b> - a guest's text or answer ("I'm coming", "late", "not coming") added to a thread, from the
 /// app, the manage link or the answer buttons. Staged by the <c>GuestMessageWritten</c> and <c>GuestAnswered</c>
-/// domain-event handler (<c>GuestMessageStaffPush</c>) rather than detected here.</item>
+/// domain-event handler (<c>GuestMessageStaffPush</c>).</item>
 /// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill. Staged by the
-/// <c>ServiceRequestRaised</c> domain-event handler (<c>TableCallStaffPush</c>) rather than detected here.</item>
+/// <c>ServiceRequestRaised</c> domain-event handler (<c>TableCallStaffPush</c>).</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
 /// needs nobody, and is not pushed). Staged by the <c>TakeawayPlaced</c> domain-event handler
-/// (<c>TakeawayStaffPush</c>) rather than detected here.</item>
+/// (<c>TakeawayStaffPush</c>).</item>
 /// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
-/// handler (<c>KitchenReadyStaffPush</c>) rather than detected here: see <c>docs/domain-events.md</c>.</item>
+/// handler (<c>KitchenReadyStaffPush</c>): see <c>docs/domain-events.md</c>.</item>
 /// </list>
 /// </remarks>
 internal static class StaffPushSignals
@@ -58,63 +55,6 @@ internal static class StaffPushSignals
     public const string KeyPrefix = "staff-push:";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-
-    public static void Stage(YallaDbContext db, DateTime nowUtc)
-    {
-        // One scan of the tracker for the reads below, rather than one each: every save passes through here.
-        var detecting = db.ChangeTracker.AutoDetectChangesEnabled;
-
-        if (detecting)
-        {
-            db.ChangeTracker.DetectChanges();
-            db.ChangeTracker.AutoDetectChangesEnabled = false;
-        }
-
-        try
-        {
-            StageDetected(db, nowUtc);
-        }
-        finally
-        {
-            db.ChangeTracker.AutoDetectChangesEnabled = detecting;
-        }
-    }
-
-    private static void StageDetected(YallaDbContext db, DateTime nowUtc)
-    {
-        var events = new List<(StaffPushKinds Kind, Guid SubjectId, string Key)>();
-
-        foreach (var entry in db.ChangeTracker.Entries<Reservation>())
-        {
-            if (entry.Entity.Status != ReservationStatus.PendingApproval)
-            {
-                continue;
-            }
-
-            var entered = entry.State == EntityState.Added
-                          || (entry.State == EntityState.Modified
-                              && ((entry.Property(r => r.Status).IsModified
-                                   && entry.Property(r => r.Status).OriginalValue != ReservationStatus.PendingApproval)
-                                  || entry.Property(r => r.StartUtc).IsModified
-                                  || entry.Property(r => r.ApprovalTrigger).IsModified));
-
-            if (entered)
-            {
-                events.Add((StaffPushKinds.Approvals, entry.Entity.Id, $"{KeyPrefix}approval:{entry.Entity.Id}:{Again()}"));
-            }
-        }
-
-        // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
-        // first kind to move onto domain events (docs/domain-events.md). tableCalls and takeaway are the
-        // ServiceRequestRaised and TakeawayPlaced handlers' (TableCallStaffPush, TakeawayStaffPush), and guestMessages
-        // the GuestMessageWritten and GuestAnswered handler's (GuestMessageStaffPush). Approvals follow their vertical.
-        if (events.Count == 0)
-        {
-            return;
-        }
-
-        StageAll(db, events, nowUtc);
-    }
 
     /// <summary>
     /// Stages one staff push in the caller's unit of work - for a domain-event handler, which knows the event rather than

@@ -50,7 +50,7 @@ frontend's copy - `contract-tests.md` why doubles have contracts - `public-surfa
   `InvalidOperationException` (that is a logged 500).
 - **One unit of work**: the outbox row, the activity entry, the diner feed row and the staff push are added to the
   same `YallaDbContext` and saved by the caller's single `SaveChangesAsync` (or a lock scope's `CommitAsync`).
-  `IOutbox` and `IActivityLog` deliberately have no save; `StaffPushSignals.Stage` runs inside `SaveChangesAsync`.
+  `IOutbox` and `IActivityLog` deliberately have no save; the domain-event handlers run inside `SaveChangesAsync`.
 - **Side effects hang on domain events** (`docs/domain-events.md`): the aggregate raises (`Entity.Raise`) from the
   method that makes the change, and handlers in `Infrastructure/DomainEvents/` write the activity entry, outbox
   message, feed row, tab-stream event and staff push in the same save - dispatched by `SaveChanges` before it writes
@@ -159,9 +159,9 @@ catalogue table in `docs/error-contract.md`.
 ### Add an outbox message (push to a diner) + feed entry
 1. `OutboxMessageTypes.<Name> = "area.what"` in `Application/Messaging/OutboxContracts.cs`, documenting its key.
 2. Enqueue from a **domain-event handler** of the event that causes it: `outbox.Enqueue(type, new { ... }, clock.UtcNow, OutboxMessageTypes.KeyFor("order", id, "ready"))`.
-   Model: `DomainEvents/TabOrders/OrderReadyNotice` (on `TabOrderMoved` to Ready). On a vertical not yet on events, the
-   service enqueues before its save (model: `ReservationNotices.TellDinerUnblocked`); withdraw with
-   `outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", id))`.
+   Model: `DomainEvents/TabOrders/OrderReadyNotice` (on `TabOrderMoved` to Ready); withdraw with
+   `outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", id))` from a handler too (model:
+   `DomainEvents/Bookings/BookingReminders`).
 3. Handler `Infrastructure/Notifications/<Name>Handler.cs : IOutboxHandler` (one per file): `Payload.Read<T>`,
    `Payload.LocaleForAsync`, text in `NotificationText` (hy/ru/en); re-check the subject is still true; throw = retry.
    Model: `DinerBookingsUnblockedHandler`. Register `services.AddScoped<IOutboxHandler, <Name>Handler>()`.
@@ -177,9 +177,8 @@ catalogue table in `docs/error-contract.md`.
 2. Stage it from a **domain-event handler** of the event the floor is told about: `StaffPushSignals.StageOne(db, kind,
    id, $"{StaffPushSignals.KeyPrefix}<what>:{id}", clock.UtcNow)` (append `:{StaffPushSignals.Again()}` when it can
    happen again) - models: `DomainEvents/TabOrders/KitchenReadyStaffPush`, `DomainEvents/Calls/TableCallStaffPush`,
-   `DomainEvents/TakeawayOrders/TakeawayStaffPush`, `DomainEvents/Messages/GuestMessageStaffPush`. Not in services.
-   `approvals`, the one older kind left, is still detected in `StaffPushSignals.StageDetected` from the change tracker
-   until the bookings vertical moves.
+   `DomainEvents/TakeawayOrders/TakeawayStaffPush`, `DomainEvents/Messages/GuestMessageStaffPush`,
+   `DomainEvents/Bookings/ApprovalStaffPush`. Not in services; nothing is detected from the change tracker any more.
 3. `StaffPushHandler`: `KindName`, the subject switch (return null when no longer true), text in `StaffPushText`.
 4. The switch: `StaffNotificationPreferences` + `StaffNotificationSettings` (`StaffPushContracts.cs`), both mappings in
    `StaffPushService`, the request in `StaffDeviceRequests.cs` and `StaffDeviceEndpoints.cs`.
@@ -192,9 +191,9 @@ catalogue table in `docs/error-contract.md`.
    `await activity.RecordAsync(new ActivityRecord(category, action, subjectType, id) { BranchId = ..., SubjectCode = ..., AmountAmd = ..., IsMoney = ..., Before = ..., After = ..., Summary = new { ... } }, ct)`.
    Model: `DomainEvents/TabOrders/TabOrderActivity` (one class, one entry per tab-order event). Who and which device are
    read by the log from the request, so attribution is the same as from a service; a sweep sets `BySystem = true`, a
-   manage link `ByGuest = true` (`DomainEvents/TakeawayOrders/TakeawayOrderActivity` does both). On a vertical not yet on
-   events, the service records it before its save (model: `BookingActivity`) - and a change with one path and one entry
-   (a setting) may stay so.
+   manage link `ByGuest = true` (`DomainEvents/TakeawayOrders/TakeawayOrderActivity` does both;
+   `DomainEvents/Bookings/ReservationActivity` writes a booking's through the shared shape in `Services/BookingActivity`).
+   A change with one path and one entry (a setting) may stay in its service.
 3. `IsMoney` (payments, discounts, comps, voids, write-offs, takeaway collected) keeps it
    `ActivityEntry.MoneyRetentionDays` (1095) instead of `RetentionDays` (365); `ActivityRetention` purges on the
    outbox loop.

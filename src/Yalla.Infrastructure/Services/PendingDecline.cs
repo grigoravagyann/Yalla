@@ -1,6 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Yalla.Application.Abstractions;
-using Yalla.Application.Messaging;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
@@ -42,75 +40,72 @@ internal readonly record struct PendingDeclineOutcome(bool WasChange, bool Origi
 /// not, the booking is declined as a new one would be, and the diner is told that too.
 /// </para>
 /// <para>
-/// The diner is told in the same save: a <c>reservation.decided</c> push with <c>wasChange</c> and
-/// <c>originalKept</c>, and a <c>booking-declined</c> feed entry carrying the same. The sweep passes
-/// <c>quietIfAlreadyStarted</c>: a request it gets to only after the booking would have started -
-/// a machine that slept - is declined without an apology for an evening already gone. A kept
-/// booking still to come is told about whatever else is true.
+/// What it tells the rest of the system is the decline's handlers' (<see cref="ReservationDeclined"/>,
+/// <c>docs/domain-events.md</c>): the History's line, the reminders withdrawn or rewritten, the diner's
+/// <c>reservation.decided</c> push and <c>booking-declined</c> feed entry with <c>wasChange</c> and <c>originalKept</c> - not
+/// sent when it was the clock's decline of a booking that would already have started (a machine that slept) - the guest
+/// before it told of their own no, and the change stream.
 /// </para>
 /// </remarks>
 internal static class PendingDecline
 {
     /// <summary>Declines a waiting booking, or the waiting change to one, and saves.</summary>
+    /// <param name="db">The unit of work.</param>
+    /// <param name="writer">The writer, for the previous table's lock and the save.</param>
+    /// <param name="reservation">The booking, tracked.</param>
+    /// <param name="branch">Its branch.</param>
+    /// <param name="because">Whose no, or whose silence.</param>
+    /// <param name="reason">Why, as somebody typed it.</param>
+    /// <param name="nowUtc">Now.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="answeredRequest">The request the guest before said no to, when it is their answer.</param>
     /// <exception cref="ReservationApprovalExpiredException">A staff decline after the answer window closed.</exception>
     /// <exception cref="DbUpdateConcurrencyException">The booking changed since it was read.</exception>
     /// <exception cref="TableLockTimeoutException">The previous table's lock could not be had in time.</exception>
     public static async Task<PendingDeclineOutcome> DeclineAsync(
         YallaDbContext db,
-        IOutbox outbox,
         ReservationWriter writer,
         Reservation reservation,
         Branch branch,
         DeclineReason because,
         string? reason,
-        bool quietIfAlreadyStarted,
         DateTime nowUtc,
         CancellationToken cancellationToken,
-        Func<CancellationToken, Task>? recordAsync = null)
+        TableShareRequest? answeredRequest = null)
     {
-        var expired = Reservation.IsForNoAnswer(because);
-        var key = await ReservationNotices.DecisionKeyAsync(
-            db, reservation.Id, expired ? "expired" : "rejected", nowUtc, cancellationToken);
+        // The clock's decline of a booking that would already have started is not apologised for (its handler's rule).
+        var quiet = Reservation.IsForNoAnswer(because);
 
         // The question this booking was waiting on - to the guest before it on the table - ends with it:
         // a no, or nobody in time.
         await TableShares.CloseForLaterAsync(
             db,
             reservation.Id,
-            expired ? TableShareRequestStatus.Expired : TableShareRequestStatus.Declined,
+            quiet ? TableShareRequestStatus.Expired : TableShareRequestStatus.Declined,
             nowUtc,
             cancellationToken);
 
         if (!reservation.HasConfirmedSlotToReturnTo)
         {
-            var tell = !quietIfAlreadyStarted || reservation.StartUtc > nowUtc;
+            var tell = !quiet || reservation.StartUtc > nowUtc;
 
-            End(reservation, because, reason, nowUtc);
-            await CancelWhatWasQueuedAsync(db, outbox, reservation, nowUtc, cancellationToken);
+            if (quiet)
+            {
+                reservation.DeclineForNoAnswer(nowUtc, because);
+            }
+            else
+            {
+                reservation.Reject(nowUtc, reason, because, answeredRequest);
+            }
 
             // And whoever was asking this booking's guest for the table no longer has to wait for them.
-            await TableShares.EarlierChangedAsync(
-                db, outbox, reservation, branch, nowUtc, cancellationToken);
+            await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, cancellationToken);
 
-            if (tell)
-            {
-                ReservationNotices.TellDinerDecided(
-                    db, outbox, reservation, branch, approved: false, expired, key, nowUtc, because: because);
-            }
-
-            // The activity entry, in this save (docs/activity.md).
-            if (recordAsync is not null)
-            {
-                await recordAsync(cancellationToken);
-            }
-
-            await db.SaveChangesAsync(cancellationToken);
+            await writer.SaveAsync(cancellationToken);
 
             return new PendingDeclineOutcome(WasChange: false, OriginalKept: false, DinerTold: tell);
         }
 
-        var requestedDate = reservation.LocalDate;
-        var requestedTime = reservation.LocalStartTime;
         var requestedStartUtc = reservation.StartUtc;
         var tableId = reservation.PreviousDiningTableId!.Value;
         var slot = new BookedInterval(reservation.PreviousStartUtc!.Value, reservation.PreviousEndUtc!.Value);
@@ -132,82 +127,26 @@ internal static class PendingDecline
             nowUtc,
             async (free, token) =>
             {
+                // Back to the slot it had - its reminders rewritten for it - or gone with the change.
                 if (free)
                 {
-                    reservation.KeepConfirmedSlot(nowUtc, because);
-
-                    // Its reminder and late nudge were rewritten for the change; they go back to the slot.
-                    await ReservationReminders.ReplaceRemindersAsync(
-                        db, outbox, reservation, branch, tableLabel, nowUtc, token);
+                    reservation.KeepConfirmedSlot(nowUtc, because, reason, answeredRequest);
                 }
                 else
                 {
-                    End(reservation, because, reason, nowUtc);
-                    await CancelWhatWasQueuedAsync(db, outbox, reservation, nowUtc, token);
+                    reservation.DeclineChange(nowUtc, because, reason, answeredRequest);
                 }
 
-                // Back at the slot it had, or gone: either way it moved, and a guest asked to free a
-                // table for it - or whose table it asked for - is settled by where it now stands.
-                await TableShares.EarlierChangedAsync(
-                    db, outbox, reservation, branch, nowUtc, token);
+                // Either way it moved, and a guest asked to free a table for it - or whose table it asked for - is
+                // settled by where it now stands.
+                await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, token);
 
-                // A kept booking is worth telling about while it is still to come; a lost one while the
-                // change it asked for still was.
-                told = !quietIfAlreadyStarted || (free ? reservation.StartUtc : requestedStartUtc) > nowUtc;
-
-                if (told)
-                {
-                    ReservationNotices.TellDinerDecided(
-                        db,
-                        outbox,
-                        reservation,
-                        branch,
-                        approved: false,
-                        expired,
-                        key,
-                        nowUtc,
-                        new DeclinedChange(free, requestedDate, requestedTime),
-                        because);
-                }
-
-                if (recordAsync is not null)
-                {
-                    await recordAsync(token);
-                }
+                // A kept booking is worth telling about while it is still to come; a lost one while the change it
+                // asked for still was.
+                told = !quiet || (free ? reservation.StartUtc : requestedStartUtc) > nowUtc;
             },
             cancellationToken);
 
         return new PendingDeclineOutcome(WasChange: true, OriginalKept: kept, DinerTold: told);
-    }
-
-    /// <summary>
-    /// Ends the booking: declined - by staff, or by the guest before it on the table - or for nobody
-    /// answering in time.
-    /// </summary>
-    private static void End(Reservation reservation, DeclineReason because, string? reason, DateTime nowUtc)
-    {
-        if (Reservation.IsForNoAnswer(because))
-        {
-            reservation.DeclineForNoAnswer(nowUtc, because);
-        }
-        else
-        {
-            reservation.Reject(nowUtc, reason, because);
-        }
-    }
-
-    /// <summary>
-    /// A booking that is not going to happen: its unsent reminder and nudge, and its feed entry not yet
-    /// shown, go with it.
-    /// </summary>
-    private static async Task CancelWhatWasQueuedAsync(
-        YallaDbContext db,
-        IOutbox outbox,
-        Reservation reservation,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
-    {
-        await outbox.CancelAsync(OutboxMessageTypes.PrefixFor("reservation", reservation.Id), cancellationToken);
-        await DinerNotices.CancelUnshownAsync(db, reservation.Id, nowUtc, cancellationToken);
     }
 }

@@ -8,8 +8,8 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Services;
 
 /// <summary>
-/// A booking's entries in the activity log, one shape for every service that writes one - the booking service, the
-/// approval sweep, the on-my-way answers. See <c>docs/activity.md</c>.
+/// A booking's entries in the activity log, one shape for every handler that writes one - the bookings'
+/// <c>ReservationActivity</c> and the pre-orders' answers. See <c>docs/activity.md</c>.
 /// </summary>
 internal static class BookingActivity
 {
@@ -78,6 +78,15 @@ internal static class BookingActivity
         localTime = reservation.LocalStartTime.ToString("HH:mm", CultureInfo.InvariantCulture),
         partySize = reservation.PartySize,
         tableId = reservation.DiningTableId,
+    };
+
+    /// <summary>Where and when a booking stood before a change, in the same shape.</summary>
+    public static object Slot(ReservationStanding standing) => new
+    {
+        localDate = standing.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        localTime = standing.LocalStartTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+        partySize = standing.PartySize,
+        tableId = standing.DiningTableId,
     };
 
     /// <summary>

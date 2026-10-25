@@ -68,6 +68,16 @@ public sealed class BookingBlock : Entity
     public DateTime EndedAtUtc => LiftedAtUtc ?? BlockedUntilUtc;
 
     /// <summary>
+    /// The block takes effect, its guest's bookings not yet started cancelled with it: raises
+    /// <see cref="BookingBlockImposed"/>, whose handler tells the guest - once for the whole block. A block built and never
+    /// imposed - a test seeding history - tells nobody.
+    /// </summary>
+    /// <param name="cancelledBookings">How many bookings it cancelled.</param>
+    /// <param name="blockedUntilLocalDate">The day they can book again, on the wall clock of the venue whose no-show made it.</param>
+    public void Impose(int cancelledBookings, DateOnly blockedUntilLocalDate) =>
+        Raise(new BookingBlockImposed(this, cancelledBookings, blockedUntilLocalDate, BlockedAtUtc));
+
+    /// <summary>
     /// Lifts it now. Nothing it cancelled comes back. Lifting a block already lifted changes nothing.
     /// </summary>
     /// <returns>Whether this call lifted it.</returns>
@@ -82,6 +92,9 @@ public sealed class BookingBlock : Entity
         LiftedBecause = Guard.Defined(because, nameof(because));
         LiftedByStaffId = Guard.NotEmpty(byStaffId, nameof(byStaffId));
         LiftReason = Guard.OptionalText(reason, nameof(reason), FieldLengths.Reason);
+
+        // The guest is told they can book again, by the lift's handler.
+        Raise(new BookingBlockLifted(this, atUtc));
 
         return true;
     }

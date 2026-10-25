@@ -132,7 +132,10 @@ public class PreOrderEventTests
         answered.Reschedule(
             answered.DiningTableId, StartUtc.AddDays(1), new DateOnly(2026, 10, 28), new TimeOnly(18, 0), 4, policy,
             ReservationStatus.Confirmed, StartUtc.AddMinutes(-29));
-        Assert.Equal(StartUtc.AddMinutes(-29), Assert.IsType<OnMyWayAnswersForgotten>(Single(answered)).OccurredAtUtc);
+        // The move itself is the bookings' ReservationRescheduled, raised beside it.
+        Assert.Equal(
+            StartUtc.AddMinutes(-29),
+            Assert.Single(answered.DequeueEvents().Select(e => e.Event).OfType<OnMyWayAnswersForgotten>()).OccurredAtUtc);
 
         var quiet = Booking();
         quiet.Reschedule(

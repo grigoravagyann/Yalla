@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain;
 using Yalla.Domain.Common;
@@ -24,7 +23,6 @@ internal sealed class BookingBlockService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
-    IOutbox outbox,
     ILogger<BookingBlockService> logger) : IBookingBlockService
 {
     /// <summary>The audit action.</summary>
@@ -96,10 +94,9 @@ internal sealed class BookingBlockService(
             throw new DomainStateException("This block has already ended on its own; there is nothing to lift.");
         }
 
+        // The guest is told they can book again by the lift's handler; the platform's audit of it is this service's.
         if (block.Lift(nowUtc, BookingBlockLiftCause.PlatformAdmin, staffId, reason))
         {
-            ReservationNotices.TellDinerUnblocked(db, outbox, block, nowUtc);
-
             await PlatformAudit.RecordAsync(
                 db,
                 actor,

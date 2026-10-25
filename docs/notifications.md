@@ -439,12 +439,15 @@ service is the only thing that wakes a phone in a pocket.
 
 ### The five kinds
 
-One outbox type, **`staff.push`**, written by the save that causes it - `StaffPushSignals`, beside the change-stream
-signals in `YallaDbContext.SaveChanges`, for their reason: each of these happens on several paths, and a rule every
-path had to remember is a rule one of them forgets. `kitchenReady` is the exception, and the direction for the rest:
-it is staged by `KitchenReadyStaffPush`, a handler of the order's `TabOrderMoved` domain event, in the same save
-([domain-events.md](domain-events.md)), `tableCalls` by `TableCallStaffPush`, a handler of `ServiceRequestRaised`, `takeaway` by `TakeawayStaffPush`, a handler of `TakeawayPlaced`, and `guestMessages` by `GuestMessageStaffPush`, a handler of `GuestMessageWritten` and `GuestAnswered`; only `approvals` is still detected from the change tracker. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is
-told, in which words and whether it is still true are decided at send time, seconds later.
+One outbox type, **`staff.push`**, written by the save that causes it, staged through `StaffPushSignals.StageOne` by a
+handler of the domain event the floor is told about ([domain-events.md](domain-events.md)): each of these happens on
+several paths, and a rule every path had to remember is a rule one of them forgets. `kitchenReady` is staged by
+`KitchenReadyStaffPush`, a handler of the order's `TabOrderMoved`, `tableCalls` by `TableCallStaffPush`, a handler of
+`ServiceRequestRaised`, `takeaway` by `TakeawayStaffPush`, a handler of `TakeawayPlaced`, `guestMessages` by
+`GuestMessageStaffPush`, a handler of `GuestMessageWritten` and `GuestAnswered`, and `approvals` by `ApprovalStaffPush`, a
+handler of `ReservationMade`, `ReservationRescheduled` and `ReservationWaitingInstead` - the last kind detected from the
+change tracker, until 2026-10-25. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is told, in which words
+and whether it is still true are decided at send time, seconds later.
 
 | Switch (`kind`) | Written when | Key | Still true at send time when | Deep link (`url`) | Collapse (`tag`) |
 |---|---|---|---|---|---|

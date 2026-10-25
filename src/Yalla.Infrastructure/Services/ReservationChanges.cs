@@ -2,8 +2,6 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
@@ -21,8 +19,6 @@ internal sealed class ReservationChanges(
     YallaDbContext db,
     IClock clock,
     ReservationWriter reservations,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationSlotRules slots,
@@ -264,7 +260,6 @@ internal sealed class ReservationChanges(
 
         var shortNoticeMove = ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc));
         ReservationSlotRules.StatusDecision decided = status;
-        var movedFrom = BookingActivity.Slot(reservation);
 
         var outcome = await MoveUnderTheTableLockAsync(
             reservation,
@@ -302,16 +297,6 @@ internal sealed class ReservationChanges(
 
                 decided = await StageMoveAsync(
                     reservation, command, table, branch, startUtc, decision, ask, verdict, dinerUserId, viaManageLink, nowUtc, ct);
-
-                await BookingActivity.RecordAsync(
-                    activity,
-                    db,
-                    reservation,
-                    ActivityActions.BookingMoved,
-                    ct,
-                    extra: new { viaManageLink },
-                    before: movedFrom,
-                    byGuest: true);
             },
             cancellationToken);
 
@@ -435,19 +420,19 @@ internal sealed class ReservationChanges(
             nowUtc,
             status.Trigger,
             status.ApprovalExpiresAtUtc,
-            promise);
+            promise,
+            viaManageLink);
 
         if (ask is { } question)
         {
-            await TableShares.AskAsync(
-                db, outbox, branch, table.Label, reservation, question.EarlierReservationId, question.FreeByUtc,
-                question.ExpiresAtUtc, question.AsksEarlierGuest, question.FallbackTrigger, nowUtc, cancellationToken);
+            TableShares.Ask(
+                db, reservation, question.EarlierReservationId, question.FreeByUtc, question.ExpiresAtUtc,
+                question.AsksEarlierGuest, question.FallbackTrigger, nowUtc);
         }
 
         // And a guest who was asked to free their table for this one - or whose table this one was
         // asked for - is settled by where it now stands.
-        await TableShares.EarlierChangedAsync(
-            db, outbox, reservation, branch, nowUtc, cancellationToken);
+        await TableShares.EarlierChangedAsync(db, reservation, branch, nowUtc, cancellationToken);
 
         // The pre-order moves with the booking - judged against the new start wherever it is read - unless the kitchen
         // already has it: food cooked for seven cannot be moved to tomorrow (409 pre-order-already-sent). A waiter's
@@ -459,17 +444,9 @@ internal sealed class ReservationChanges(
             db.Entry(preOrder).State = EntityState.Modified;
         }
 
-        // The account is live: the writer took its lock, inside this transaction, before calling here.
-        await ReservationReminders.ReplaceRemindersAsync(db, outbox, reservation, branch, table.Label, nowUtc, cancellationToken);
-
-        // Moved by whoever holds the link: the account holder is told where it stands now. After the
-        // reminders, whose replacing cancels this booking's unsent messages - an earlier change's push among
-        // them, so only the latest goes.
-        if (viaManageLink)
-        {
-            ReservationNotices.TellDinerDoneFromLink(db, outbox, reservation, branch, changed: true, nowUtc);
-        }
-
+        // The History's line, the reminders replaced for the new slot (the account is live: the writer took its lock,
+        // inside this transaction, before calling here), the account told of a move from the link, the change stream
+        // and - for a move back to waiting - the floor's push are the move's handlers'.
         db.ProcessedCommands.Add(new ProcessedCommand(
             command.ClientCommandId,
             RescheduleCommandType,

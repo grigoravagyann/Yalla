@@ -188,7 +188,7 @@ public sealed class YallaDbContext : DbContext
     }
 
     /// <summary>
-    /// Dispatches the tracked entities' domain events, runs the change-tracker hooks, stamps
+    /// Dispatches the tracked entities' domain events, writes the pre-order rail's signal 6 rows they asked for, stamps
     /// <see cref="Entity.CreatedAtUtc"/> on every inserted row that does not already carry one, and saves.
     /// </summary>
     /// <remarks>
@@ -197,8 +197,10 @@ public sealed class YallaDbContext : DbContext
     /// </para>
     /// <para>
     /// <b>Domain events first</b> (<c>docs/domain-events.md</c>): their handlers add rows - an activity entry, an outbox
-    /// message - that the hooks after them then see like any other change. Each event is handled once: a save that fails
-    /// and is retried on the same context keeps what the handlers added and does not run them again.
+    /// message, a change-stream row, a staff push - in the same save. Each event is handled once: a save that fails and is
+    /// retried on the same context keeps what the handlers added and does not run them again. The change-tracker hooks
+    /// that detected the booking signal, the held pre-order of an ended booking and the approvals push are gone
+    /// (2026-10-25): they are the bookings' handlers.
     /// </para>
     /// </remarks>
     public override async Task<int> SaveChangesAsync(
@@ -206,10 +208,7 @@ public sealed class YallaDbContext : DbContext
         CancellationToken cancellationToken = default)
     {
         await _domainEvents.DispatchAsync(this, cancellationToken);
-        await VoidHeldPreOrdersOfEndedBookingsAsync(sync: false, cancellationToken);
-        await SignalBookingChangesAsync(sync: false, cancellationToken);
         await SignalPreOrderChangesAsync(sync: false, cancellationToken);
-        StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
         var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
 
@@ -234,10 +233,7 @@ public sealed class YallaDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
-        VoidHeldPreOrdersOfEndedBookingsAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
-        SignalBookingChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
         SignalPreOrderChangesAsync(sync: true, CancellationToken.None).GetAwaiter().GetResult();
-        StaffPushSignals.Stage(this, _clock.UtcNow);
         StampCreationTimes();
         var saved = base.SaveChanges(acceptAllChangesOnSuccess);
 
@@ -329,162 +325,10 @@ public sealed class YallaDbContext : DbContext
     }
 
     /// <summary>
-    /// Puts every booking event on its table's change stream: a booking made, or one whose status, table, time or
-    /// party changed - approved, declined, moved (both tables), cancelled, marked a no-show, a no-show withdrawn - or
-    /// whose guest answered "on my way" (2026-10-21: the floor shows it beside the table's next booking, so the waiter
-    /// need not call; once per booking, so no flood) - writes one same-status row on each table it touches, naming the booking, with signal
-    /// <see cref="TableChangeSignal.BookingChanged"/>, in the same save and so the same transaction.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Here rather than at each call site because a booking changes in a dozen places - the services, the approval
-    /// sweep, a guest's answer about their table - and a tablet that follows the change stream instead of reading the
-    /// floor every few seconds must hear about all of them: a booking made at 12:50 for 13:00 has to make table 4
-    /// "reserved soon" on every tablet, or a waiter seats a walk-in there (GR-FE-REVIEW B1).
-    /// </para>
-    /// <para>
-    /// The row carries the table's status as this save sees it, and nothing a client should fold: on signal 5 a
-    /// tablet refreshes that table's booking line (re-reads the floor). A booking a no-show block cancelled already
-    /// has its signal-4 row and gets no second one; a save that retries (a door code collision) adds none twice.
-    /// </para>
-    /// </remarks>
-    private async Task SignalBookingChangesAsync(bool sync, CancellationToken cancellationToken)
-    {
-        var touched = new List<(Guid BranchId, Guid TableId, Guid ReservationId)>();
-
-        foreach (var entry in ChangeTracker.Entries<Reservation>())
-        {
-            if (entry.State == EntityState.Added)
-            {
-                touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
-                continue;
-            }
-
-            if (entry.State != EntityState.Modified
-                || !(entry.Property(r => r.Status).IsModified
-                     || entry.Property(r => r.DiningTableId).IsModified
-                     || entry.Property(r => r.StartUtc).IsModified
-                     || entry.Property(r => r.EndUtc).IsModified
-                     || entry.Property(r => r.PartySize).IsModified
-                     || entry.Property(r => r.GuestConfirmedOnWayAtUtc).IsModified
-                     || entry.Property(r => r.GuestRunningLateAtUtc).IsModified
-                     || entry.Property(r => r.StaffAskedOnMyWayAtUtc).IsModified))
-            {
-                continue;
-            }
-
-            touched.Add((entry.Entity.BranchId, entry.Entity.DiningTableId, entry.Entity.Id));
-
-            if (entry.Property(r => r.DiningTableId).OriginalValue is var before && before != entry.Entity.DiningTableId)
-            {
-                touched.Add((entry.Entity.BranchId, before, entry.Entity.Id));
-            }
-        }
-
-        if (touched.Count == 0)
-        {
-            return;
-        }
-
-        // Already signalled in this save - a block's own row, or this method on an earlier attempt of the same save.
-        var signalled = ChangeTracker.Entries<TableStateChange>()
-            .Where(e => e.State == EntityState.Added && e.Entity.ReservationId is not null)
-            .Select(e => (e.Entity.DiningTableId, e.Entity.ReservationId!.Value))
-            .ToHashSet();
-
-        touched = touched.Distinct().Where(t => !signalled.Contains((t.TableId, t.ReservationId))).ToList();
-
-        if (touched.Count == 0)
-        {
-            return;
-        }
-
-        var tableIds = touched.Select(t => t.TableId).Distinct().ToList();
-        var query = DiningTables.AsNoTracking().Where(t => tableIds.Contains(t.Id)).Select(t => new { t.Id, t.Status });
-        var statuses = sync
-            ? query.ToDictionary(t => t.Id, t => t.Status)
-            : await query.ToDictionaryAsync(t => t.Id, t => t.Status, cancellationToken);
-
-        var now = _clock.UtcNow;
-
-        foreach (var (branchId, tableId, reservationId) in touched)
-        {
-            if (!statuses.TryGetValue(tableId, out var status))
-            {
-                continue;
-            }
-
-            TableStateChanges.Add(
-                new TableStateChange(
-                    branchId, tableId, status, status, "booking changed", ActorType.System, now, Guid.CreateVersion7(),
-                    reservationId: reservationId)
-                .WithSignal(TableChangeSignal.BookingChanged));
-        }
-    }
-
-    /// <summary>
     /// Asks for a signal 6 naming each of these bookings in this save - from <c>PreOrderRailSignal</c>, the handler of
-    /// every pre-order event - written by <see cref="SignalPreOrderChangesAsync"/> after the hooks.
+    /// every pre-order event - written by <see cref="SignalPreOrderChangesAsync"/> once the save's events are handled.
     /// </summary>
     internal void SignalPreOrderRail(IEnumerable<Guid> reservationIds) => _preOrderRailSignals.UnionWith(reservationIds);
-
-    /// <summary>
-    /// Voids the held kitchen ticket of every booking this save ends before its party sat - cancelled by the guest or
-    /// the venue, declined, expired, cancelled by a no-show block - so the kitchen stops cooking for nobody.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Here, beside the signals, for their reason: a booking is ended in six places (the app's and the link's cancel,
-    /// the floor's release, a decline or an expiry, a block, a crowded-out request), and a rule each of them had to
-    /// remember is a rule one of them forgets. The void raises the pre-order's <c>HeldTicketVoided</c>, which this
-    /// hook dispatches itself - it runs after the save's dispatch - so its handler puts the ticket on the change stream
-    /// (signal 6) in the same save; the kitchen's list drops it as it drops any voided ticket. (The bookings' to move
-    /// onto their own events, where the dispatcher's next round handles it.)
-    /// </para>
-    /// <para>
-    /// A no-show is not an end here: a sent pre-order followed by a no-show is an ordinary no-show, and its ticket is
-    /// the kitchen's to deal with.
-    /// </para>
-    /// </remarks>
-    private async Task VoidHeldPreOrdersOfEndedBookingsAsync(bool sync, CancellationToken cancellationToken)
-    {
-        var ended = ChangeTracker.Entries<Reservation>()
-            .Where(e => e.State == EntityState.Modified
-                        && e.Entity.Status is ReservationStatus.CancelledByDiner or ReservationStatus.CancelledByVenue
-                        && e.Property(r => r.Status).OriginalValue != e.Entity.Status)
-            .Select(e => e.Entity.Id)
-            .ToList();
-
-        if (ended.Count == 0)
-        {
-            return;
-        }
-
-        var query = PreOrders.Where(p => ended.Contains(p.ReservationId) && p.SentAtUtc != null && p.TabOrderId == null);
-        var held = sync ? query.ToList() : await query.ToListAsync(cancellationToken);
-        var now = _clock.UtcNow;
-
-        var voided = false;
-
-        foreach (var preOrder in held)
-        {
-            voided |= preOrder.VoidHeldBecauseBookingEnded(now);
-        }
-
-        if (!voided)
-        {
-            return;
-        }
-
-        if (sync)
-        {
-            _domainEvents.DispatchAsync(this, CancellationToken.None).GetAwaiter().GetResult();
-        }
-        else
-        {
-            await _domainEvents.DispatchAsync(this, cancellationToken);
-        }
-    }
 
     /// <summary>
     /// Writes the signal 6 rows this save's pre-order events asked for (<see cref="SignalPreOrderRail"/>) - signal
@@ -493,11 +337,13 @@ public sealed class YallaDbContext : DbContext
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The pre-order events' handler (<c>PreOrderRailSignal</c>) decides which bookings; the rows are written here,
-    /// after the change-tracker hooks, where the tracker hook that detected pre-order changes wrote them: after signal
-    /// 5's rows for the same bookings, which signal 5's "already signalled in this save" would otherwise take a signal 6
-    /// row for, and with the table's status as the save leaves it. When signal 5 moves onto the bookings' events, the
-    /// handler can write the row itself.
+    /// The pre-order events' handler (<c>PreOrderRailSignal</c>) decides which bookings; the rows are written here, once
+    /// every event of the save is handled, where the tracker hook that detected pre-order changes wrote them: after the
+    /// save's other change-stream rows - the booking's signal 5 among them - and with the table's status as the save
+    /// leaves it. Not in the handler: a save's rows are numbered in the order they are added, and a booking's own event
+    /// can be raised after a pre-order event of the same save - a move forgets the "on my way" answers
+    /// (<c>OnMyWayAnswersForgotten</c>) before it says it moved - so a row written per event would put 6 before 5 on a
+    /// stream that tablets read in sequence.
     /// </para>
     /// </remarks>
     private async Task SignalPreOrderChangesAsync(bool sync, CancellationToken cancellationToken)

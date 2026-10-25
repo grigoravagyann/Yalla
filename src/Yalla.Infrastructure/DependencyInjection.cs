@@ -405,8 +405,83 @@ public static class DependencyInjection
         // held ticket moved or voided, arriving on the tab, the settings; the guest's answers, the venue's ask, a move
         // forgetting them. The History's line, the question moved or withdrawn, the tab's stream, then signal 6.
         Yalla.Infrastructure.DomainEvents.PreOrders.PreOrderEventHandlers.Add(services);
+        // Bookings: made, approved, declined, waiting for another reason, moved, promised to leave earlier, cancelled,
+        // marked a no-show and withdrawn, a hold extended, "are you coming?" answered; a table asked for; a guest blocked
+        // and unblocked. The History's line, the reminders following the booking, the guest's push and feed entry, the
+        // guest before it told, the change stream, the floor's push, then the held pre-order of a booking that ended.
+        AddBookingHandlers(services);
 
         return services;
+    }
+
+    /// <summary>The bookings' domain-event handlers, in the order each event's side effects are written.</summary>
+    private static void AddBookingHandlers(IServiceCollection services)
+    {
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingReminders>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.EndedBookingPreOrder>();
+
+        Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>(services);
+
+        Add<Yalla.Domain.Occupancy.TableShareAsked, Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationApproved, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationApproved, Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationApproved, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.BookingReminders>(services);
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.ReservationDeclined, Yalla.Infrastructure.DomainEvents.Bookings.EndedBookingPreOrder>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationWaitingInstead, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.ReservationWaitingInstead, Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationRescheduled, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationRescheduled, Yalla.Infrastructure.DomainEvents.Bookings.BookingReminders>(services);
+        Add<Yalla.Domain.Occupancy.ReservationRescheduled, Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationRescheduled, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.ReservationRescheduled, Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationPromisedToFreeBy, Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationPromisedToFreeBy, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationCancelled, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationCancelled, Yalla.Infrastructure.DomainEvents.Bookings.BookingReminders>(services);
+        Add<Yalla.Domain.Occupancy.ReservationCancelled, Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationCancelled, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.ReservationCancelled, Yalla.Infrastructure.DomainEvents.Bookings.EndedBookingPreOrder>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationMarkedNoShow, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMarkedNoShow, Yalla.Infrastructure.DomainEvents.Bookings.BookingReminders>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMarkedNoShow, Yalla.Infrastructure.DomainEvents.Bookings.ReservationGuestNotice>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMarkedNoShow, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationNoShowWithdrawn, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+        Add<Yalla.Domain.Occupancy.ReservationNoShowWithdrawn, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+
+        Add<Yalla.Domain.Occupancy.ReservationHoldExtended, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
+
+        Add<Yalla.Domain.Occupancy.GuestOnTheirWay, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.GuestRunningLate, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+        Add<Yalla.Domain.Occupancy.OnMyWayAskRecorded, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
+
+        Add<Yalla.Domain.Occupancy.BookingBlockImposed, Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>(services);
+        Add<Yalla.Domain.Occupancy.BookingBlockLifted, Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>(services);
+
+        static void Add<TEvent, THandler>(IServiceCollection services)
+            where TEvent : Yalla.Domain.Common.IDomainEvent
+            where THandler : class, IDomainEventHandler<TEvent> =>
+            services.AddScoped<IDomainEventHandler<TEvent>>(sp => sp.GetRequiredService<THandler>());
     }
 
     /// <summary>

@@ -361,8 +361,16 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
 
         var pending = Booking(ReservationStatus.PendingApproval, 30);
         var confirmed = Booking(ReservationStatus.Confirmed, 60);
-        db.Reservations.AddRange(pending, confirmed);
-        await db.SaveChangesAsync();
+
+        // Made, as the booking service makes them: the approvals push hangs on the booking's ReservationMade event,
+        // whose handlers a bare context does not have (docs/domain-events.md).
+        await using (var made = fixture.CreateContextWithHandlers(rig.Factory.Clock, TestActor.Manager(rig.Branch.ManagerId)))
+        {
+            pending.Book(now);
+            confirmed.Book(now);
+            made.Reservations.AddRange(pending, confirmed);
+            await made.SaveChangesAsync();
+        }
 
         // A guest's words and the venue's reply in one save, on the context the host composes: the guest's push hangs on
         // the message's GuestMessageWritten event, whose handlers a bare context does not have (docs/domain-events.md).

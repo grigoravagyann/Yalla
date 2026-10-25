@@ -2,8 +2,6 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
-using Yalla.Application.Activity;
-using Yalla.Application.Messaging;
 using Yalla.Application.Reservations;
 using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
@@ -20,8 +18,6 @@ internal sealed class ReservationAnswers(
     YallaDbContext db,
     IClock clock,
     ReservationWriter reservations,
-    IOutbox outbox,
-    IActivityLog activity,
     ILogger<ReservationService> logger,
     ReservationLookups lookups,
     ReservationViews views)
@@ -100,44 +96,27 @@ internal sealed class ReservationAnswers(
             if (command.Accept)
             {
                 // Yes: the later booking is confirmed, this one held to the time - its end cut to it -
-                // and both diners told.
-                later.Confirm(nowUtc);
+                // and both diners told, by the handlers of the yes and of the promise.
+                later.Confirm(nowUtc, ReservationApprover.EarlierGuest, request);
 
-                await TableShares.ApplyYesAsync(db, outbox, later.Id, branch, nowUtc, cancellationToken);
+                await TableShares.ApplyYesAsync(db, later.Id, nowUtc, cancellationToken);
 
-                await BookingActivity.RecordAsync(
-                    activity, db, later, ActivityActions.BookingGuestAnswered, cancellationToken,
-                    extra: new { answer = "table-request", accepted = true, earlierReservationId = earlier.Id },
-                    byGuest: true);
-
-                var key = await ReservationNotices.DecisionKeyAsync(db, later.Id, "approved", nowUtc, cancellationToken);
-
-                ReservationNotices.TellDinerDecided(db, outbox, later, branch, approved: true, expired: false, key, nowUtc);
-
-                await db.SaveChangesAsync(cancellationToken);
+                await reservations.SaveAsync(cancellationToken);
             }
             else
             {
                 // No: the later booking is declined - or, for a change of a confirmed one, goes back to the
                 // slot it had - and its diner told. Saved inside, with this guest's own record of it.
-                await TableShares.TellEarlierDecidedAsync(
-                    db, outbox, earlier, request, branch, accepted: false, nowUtc, cancellationToken);
-
                 await PendingDecline.DeclineAsync(
                     db,
-                    outbox,
                     reservations,
                     later,
                     branch,
                     DeclineReason.EarlierGuestDeclined,
                     reason: null,
-                    quietIfAlreadyStarted: false,
                     nowUtc,
                     cancellationToken,
-                    ct => BookingActivity.RecordAsync(
-                        activity, db, later, ActivityActions.BookingGuestAnswered, ct,
-                        extra: new { answer = "table-request", accepted = false, earlierReservationId = earlier.Id },
-                        byGuest: true));
+                    request);
             }
         }
         catch (Exception ex) when (ex is DbUpdateConcurrencyException

@@ -805,6 +805,9 @@ public sealed class ReservationRescheduleTests(SqlServerFixture fixture)
                 dinerUserId: dinerUserId);
 
             missed.MarkNoShow(startUtc.AddMinutes(30));
+
+            // History, written straight to the rows: what the no-show told was told then.
+            missed.DequeueEvents();
             db.Reservations.Add(missed);
         }
 
