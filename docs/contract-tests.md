@@ -112,7 +112,7 @@ Three call sites read `DinerUserId` on a path a tab participant can reach:
 | --- | --- | --- |
 | `TabOrderService.AuthoriseAndCreateAsync` | Refused every participant | Reads `ParticipantId` |
 | `TabLedger.ResolveActor` | Wrote a **null actor** onto every diner-driven tab event | Participant first, then the account |
-| `TableStateService.ResolveActor` | Same, on the table audit log | Same |
+| `TableStateService.ResolveActor` (now `TableStateActors.Resolve`) | Same, on the table audit log | Same |
 
 The two `ResolveActor` cases were not refusals, which is why nobody noticed: the event stream and the
 audit log simply recorded "somebody" for nearly every diner action, and a log that cannot say who is

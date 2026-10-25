@@ -74,13 +74,14 @@ person's PIN before any token names them; the entry is theirs, on the phone bein
 
 Staff actions throughout; the system's; the guest's only where they matter to the venue.
 
-- **Bookings** (`ReservationService`, `TableStateService`, the approval sweep, pre-order answers): the guest's booking
+- **Bookings** (`ReservationService`, the tables' `TableActivity` handler, the approval sweep, pre-order answers): the guest's booking
   made, moved and cancelled (app or link), the hold extended, the "on my way" / "running late" answers and a table
   request answered; staff approve, decline, seat, no-show, release, withdraw a no-show, mark not coming; the system's
   auto-decline when nobody answered in time. There is no staff "create a booking" path in the API, so none is logged.
 - **Tables and tabs**: a party seated (walk-in, scan, held), freed, held, hold released, out of / back in service; a tab
   opened by staff, admitted, turned away; the host moved; the bill presented; **the table transferred**; **a call
-  claimed**.
+  claimed**. The table's own lines (seated, freed, held, released, out of / back in service, transferred) are written by
+  `TableActivity`, the handler of the table's domain events ([domain-events.md](domain-events.md)).
 - **Orders**: a waiter's order (straight to the kitchen), a guest's phone order, a pre-order sent, the kitchen rail's
   moves (in kitchen, ready, served), a line voided, an order voided. Written by `TabOrderActivity`, the handler of the
   order's domain events ([domain-events.md](domain-events.md)), not by the service - the pre-order's own entry aside.
