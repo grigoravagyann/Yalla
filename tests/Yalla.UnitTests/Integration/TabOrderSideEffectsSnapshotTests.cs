@@ -39,6 +39,7 @@ public sealed class TabOrderSideEffectsSnapshotTests(SqlServerFixture fixture)
     private static readonly JsonSerializerOptions Render = new(JsonSerializerDefaults.Web)
     {
         ReferenceHandler = ReferenceHandler.IgnoreCycles,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         WriteIndented = false,
     };
 
@@ -263,7 +264,11 @@ public sealed class TabOrderSideEffectsSnapshotTests(SqlServerFixture fixture)
                                       || m.PayloadJson.Contains(k, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
-        var feed = await db.DinerNotifications.AsNoTracking().Where(n => n.DinerUserId == aniUserId).ToListAsync();
+        // In the order the feed numbered them; the number itself is the database's, shared with every other test.
+        var feed = await db.DinerNotifications.AsNoTracking()
+            .Where(n => n.DinerUserId == aniUserId)
+            .OrderBy(n => n.Sequence)
+            .ToListAsync();
         var stream = await db.TabEvents.AsNoTracking().Where(e => e.TabId == tab.TabId).OrderBy(e => e.Sequence).ToListAsync();
         var changes = await db.TableStateChanges.AsNoTracking().Where(c => c.BranchId == branch.BranchId).ToListAsync();
         var tabRow = await db.Tabs.AsNoTracking().Where(t => t.Id == tab.TabId).ToListAsync();
@@ -283,7 +288,7 @@ public sealed class TabOrderSideEffectsSnapshotTests(SqlServerFixture fixture)
         var text = new StringBuilder();
         Section(text, "ActivityEntries", activity, Normalised, sorted: true);
         Section(text, "OutboxMessages", outbox, Normalised, sorted: true);
-        Section(text, "DinerNotifications", feed, Normalised, sorted: true);
+        Section(text, "DinerNotifications", feed, Normalised, sorted: false, drop: "sequence");
         Section(text, "TabEvents", stream, Normalised, sorted: false);
         Section(text, "TableStateChanges", changes, Normalised, sorted: true);
         Section(text, "Tab", tabRow, Normalised, sorted: true);
@@ -299,10 +304,21 @@ public sealed class TabOrderSideEffectsSnapshotTests(SqlServerFixture fixture)
     /// order does not depend on the random part of an id - and the rows sorted the same way unless their order is the
     /// contract.
     /// </summary>
-    private static void Section<T>(StringBuilder text, string title, IEnumerable<T> rows, Func<string, string> normalise, bool sorted)
+    private static void Section<T>(
+        StringBuilder text, string title, IEnumerable<T> rows, Func<string, string> normalise, bool sorted, string? drop = null)
     {
         var rendered = rows
-            .Select(row => SortArrays(JsonNode.Parse(normalise(RenderRow(row!))))!.ToJsonString(Render))
+            .Select(row =>
+            {
+                var node = SortArrays(JsonNode.Parse(normalise(RenderRow(row!))))!.AsObject();
+
+                if (drop is not null)
+                {
+                    node.Remove(drop);
+                }
+
+                return node.ToJsonString(Render);
+            })
             .ToList();
 
         text.Append("## ").Append(title).Append(" (").Append(rendered.Count).Append(")\n");
