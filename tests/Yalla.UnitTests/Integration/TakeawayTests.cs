@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
@@ -531,24 +532,11 @@ public class TakeawayTests(SqlServerFixture fixture)
         var answered = (await PlaceAsync(diner, x, new { at = "15:00" })).GetProperty("id").GetGuid();
         await OkAsync(await waiter.PostAsJsonAsync($"/api/takeaway-orders/{answered}/accept", new { readyAt = Afternoon.AddMinutes(60) }));
 
-        var clock = new TestClock(Afternoon.AddMinutes(4));
+        Assert.Equal(0, await SweepAsync(factory, Afternoon.AddMinutes(4)));
+        Assert.True(await SweepAsync(factory, Afternoon.AddMinutes(5)) >= 1);
+        Assert.Equal(0, await SweepAsync(factory, Afternoon.AddMinutes(5)));
 
-        await using (var db = fixture.CreateContext(clock))
-        {
-            Assert.Equal(0, await Sweep(db, clock).RunOnceAsync());
-        }
-
-        clock.UtcNow = Afternoon.AddMinutes(5);
-
-        await using (var db = fixture.CreateContext(clock))
-        {
-            Assert.True(await Sweep(db, clock).RunOnceAsync() >= 1);
-        }
-
-        await using (var db = fixture.CreateContext(clock))
-        {
-            Assert.Equal(0, await Sweep(db, clock).RunOnceAsync());
-        }
+        var clock = new TestClock(Afternoon.AddMinutes(5));
 
         var told = await ReadAsync(diner, $"/api/diner/takeaway-orders/{lapsed}");
         Assert.Equal((int)TakeawayStatus.Declined, told.GetProperty("status").GetInt32());
@@ -651,13 +639,18 @@ public class TakeawayTests(SqlServerFixture fixture)
         return (await registered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!;
     }
 
-    private TakeawayExpirySweep Sweep(YallaDbContext db, TestClock clock) =>
-        new(
-            db,
-            clock,
-            fixture.CreateOutbox(db, clock),
-            SqlServerFixture.CreateActivityLog(db, clock, new TestActor(Domain.Enums.ActorType.System, null, null)),
-            NullLogger<TakeawayExpirySweep>.Instance);
+    /// <summary>
+    /// One pass of the sweep at <paramref name="atUtc"/>, composed by the host as its background loop composes it - so
+    /// the orders' events are handled by production's handlers, in the sweep's own scope.
+    /// </summary>
+    private static async Task<int> SweepAsync(YallaApiFactory factory, DateTime atUtc)
+    {
+        factory.Clock.UtcNow = atUtc;
+
+        await using var scope = factory.Services.CreateAsyncScope();
+
+        return await scope.ServiceProvider.GetRequiredService<TakeawayExpirySweep>().RunOnceAsync();
+    }
 
     private static OutboxDispatcher Dispatcher(YallaDbContext db, TestClock clock, RecordingChannel channel) =>
         new(

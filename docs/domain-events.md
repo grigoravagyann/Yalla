@@ -98,14 +98,15 @@ instead of silently dropping the side effects. Production contexts always come f
 
 `YallaDbContext.SaveChanges` still runs four hooks that detect events from the change tracker rather than being told:
 the booking signal (signal 5), the pre-order signal (signal 6), voiding a held pre-order of an ended booking, and
-`StaffPushSignals` for **approvals, guestMessages and takeaway**. They predate this mechanism and do the
+`StaffPushSignals` for **approvals and guestMessages**. They predate this mechanism and do the
 same job for their verticals - one place, every path - by inspection. They stay until their verticals move (section
 7), each then becoming a handler of that vertical's event; they run after dispatch, so they also see what handlers
 wrote.
 
 `kitchenReady` was the fifth staff push kind; it is now `KitchenReadyStaffPush`, a `TabOrderMoved` handler, and the
-tracker hook no longer looks at orders. `tableCalls` is now `TableCallStaffPush`, a `ServiceRequestRaised` handler, and
-the hook no longer looks at service requests. A new staff push kind goes on events: `AGENTS.md`, "Add a staff push kind".
+tracker hook no longer looks at orders. `tableCalls` is now `TableCallStaffPush`, a `ServiceRequestRaised` handler,
+and `takeaway` is `TakeawayStaffPush`, a `TakeawayPlaced` handler (section 6, takeaway orders); the hook no longer looks
+at service requests or takeaway orders. A new staff push kind goes on events: `AGENTS.md`, "Add a staff push kind".
 
 ## 6. Tab orders - the migrated vertical
 
@@ -184,6 +185,43 @@ order (`AdjustmentReductions`). They differ when another adjustment stands: in t
 a standing 10 % discount reads 2,880 in the History and 3,200 in the reports. The move keeps both as they were;
 reconciling them is its own decision.
 
+### Takeaway orders - migrated
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `TakeawayOrder.Place(acceptAutomatically)` (from `TakeawayService.PlaceAsync`; at an automatic branch it is accepted inside it, ready when the guest asked, by nobody) | `TakeawayPlaced(Order, AcceptedOnPlacing)` | `TakeawayOrderActivity`: `takeaway.placed` (the guest's; shown as sent - waiting, no ready time), and `takeaway.accepted` (the system's) when accepted on placing. `TakeawayGuestNotice`: accepted on placing, the `takeaway-accepted` feed entry and no push (the answer to the guest's tap says it). `TakeawayStaffPush`: otherwise, `staff.push` kind `takeaway`, key `staff-push:takeaway:{id}`. |
+| `TakeawayOrder.Accept(readyAt, staffId, at)` (the counter; the sweep at a branch that turned automatic acceptance on, `staffId` null) | `TakeawayAccepted(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.accepted` (the system's when nobody's). `TakeawayGuestNotice`: `takeaway.accepted` push and feed entry. |
+| `TakeawayOrder.Decline(reason, staffId, at)` / `DeclineForNoAnswer(at)` (the sweep) | `TakeawayDeclined(Order, Cause, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.declined` with the reason, or `takeaway.auto-declined` (the system's). `TakeawayGuestNotice`: `takeaway.declined` push and feed entry (`noAnswer`, the reason). |
+| `TakeawayOrder.CancelByGuest(at)` | `TakeawayCancelled(Order)` | `TakeawayOrderActivity`: `takeaway.cancelled` (the guest's). |
+| `TakeawayOrder.MarkReady(staffId, at)` (the kitchen) | `TakeawayMarkedReady(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.ready`. `TakeawayGuestNotice`: `takeaway.ready` push and feed entry. |
+| `TakeawayOrder.Collect(method, staffId, at)` | `TakeawayCollected(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.collected` (money: what was taken). |
+| `TakeawayOrder.MarkNoShow(staffId, at)` | `TakeawayMarkedNoShow(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.no-show`. |
+
+Handlers live in `Infrastructure/DomainEvents/TakeawayOrders/`, registered after the tab orders' in the order the
+services wrote them: the activity entry, the guest's notice, the floor's push. `TakeawayGuestNotice` takes the
+account's lock (`db.EnsureTransactionAsync`, then `DinerAccountLock.IsLiveAsync`), as `TakeawayNotices` did; placing,
+the counter's answers and the sweep already hold a transaction, which it joins. `TakeawayActivity` and
+`TakeawayNotices` are gone; the `StaffPushSignals` hook no longer looks at takeaway orders. The kitchen's queue shows
+takeaway tickets by reading the orders (`TabOrderService`), so no write feeds it.
+
+What stayed in the services: who may act, the replays and refusals, the counter's race handling, the code and its
+retry, the branch's lock - and **the no-show block**. `TakeawayService.MarkNoShowAsync` still judges it with
+`NoShowBlocks` after the no-show is saved, under the guest's account lock in its own transaction, and frees the
+cancelled bookings' holds after the commit: the count must read the no-show as saved (handlers run before the save),
+the rule is shared with a booking's no-show (the bookings vertical's), and the release is after the commit, where no
+handler runs. It moves with the bookings vertical.
+
+Test seeders that build an order's history straight to the rows (`ReportTests`, `ActivityHistoryTests`,
+`GuestRecordTakeawayTests`) call `order.DequeueEvents()` before saving on a bare context: those moves were told when
+they happened. The sweep is tested as the host composes it (`TakeawayTests.SweepAsync`).
+
+**Proof it is the same.** `TakeawaySideEffectsSnapshotTests` was committed on the code before the move: placed and
+replayed, auto-accepted on placing, accepted and replayed, declined with a reason, cancelled and replayed, declined
+and accepted by the sweep, ready, collected, and a third no-show that blocks the guest and cancels her booking - every
+activity entry, outbox row (the guest's pushes, the staff push, the block's notice), feed row, change-stream row, and
+the end state of the orders, lines, block and booking (`Integration/Snapshots/TakeawaySideEffects.approved.txt`). The
+refactor keeps it byte for byte.
+
 ## 7. Testing
 
 - The mechanism: `DomainEventDispatchTests` (handled once before the save; sync save; a failing save and a rollback
@@ -219,6 +257,5 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 | **Tables** - seat, free, hold, out of service | `TableStateService` (19 sites): change-stream rows, activity, feed | Signals carry the table's status as the save leaves it; events on `DiningTable`/`TableSession` | 1.5 days |
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |
 | **Pre-orders** | `PreOrderService`, `PreOrderSittings` (it appends the order's stream events on arrival itself), `PreOrderQuestions`; signal 6 hook | Arrival on the tab should raise its own event rather than append by hand | 1 day |
-| **Takeaway** | `TakeawayService`, `TakeawayNotices`, `TakeawayExpirySweep`, `TakeawayActivity`; `takeaway` push in the hook | Straightforward; the sweep's handler runs as the system actor | 1 day |
 | **Messages** | `GuestMessageService`, `GuestThreads`; `guestMessages` push in the hook | Small | 0.5-1 day |
 | **Settings, menu, staff, platform, reviews** | One activity call (or a few) per path | One path per change already: an event buys little. Move only when a second path appears | as needed |

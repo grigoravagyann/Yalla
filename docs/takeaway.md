@@ -6,7 +6,9 @@ order and hands it over, the kitchen cooks it from its own screen, the console s
 Takeaway" design).
 
 Domain: `Domain/Takeaway` (`TakeawayOrder`, `TakeawayRules`). Service: `Infrastructure/Services/TakeawayService.cs`,
-the sweep `TakeawayExpirySweep.cs`, the notices `TakeawayNotices.cs`. Endpoints: `Api/Endpoints/TakeawayEndpoints.cs`.
+the sweep `TakeawayExpirySweep.cs`. What each move tells the rest of the system - the activity entry, the guest's push and
+feed entry, the floor's push - is written by the order's domain-event handlers, `Infrastructure/DomainEvents/TakeawayOrders/`
+([domain-events.md](domain-events.md)). Endpoints: `Api/Endpoints/TakeawayEndpoints.cs`.
 
 ---
 

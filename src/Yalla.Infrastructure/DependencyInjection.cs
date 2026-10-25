@@ -33,6 +33,8 @@ using Yalla.Infrastructure.Time;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.DomainEvents.TabOrders;
 using Yalla.Infrastructure.DomainEvents.Payments;
+using Yalla.Domain.Takeaway;
+using Yalla.Infrastructure.DomainEvents.TakeawayOrders;
 
 namespace Yalla.Infrastructure;
 
@@ -325,6 +327,22 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TabAdjustmentReversed>>(sp => sp.GetRequiredService<PaymentStream>());
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentActivity>());
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentStream>());
+        // Takeaway orders: placed (accepted on placing at an automatic branch), accepted, declined, cancelled, ready,
+        // collected, not collected. The History's line, then the guest's push and feed entry, then the floor's push.
+        services.AddScoped<TakeawayOrderActivity>();
+        services.AddScoped<TakeawayGuestNotice>();
+        services.AddScoped<IDomainEventHandler<TakeawayPlaced>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayPlaced>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
+        services.AddScoped<IDomainEventHandler<TakeawayPlaced>, TakeawayStaffPush>();
+        services.AddScoped<IDomainEventHandler<TakeawayAccepted>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayAccepted>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
+        services.AddScoped<IDomainEventHandler<TakeawayDeclined>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayDeclined>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
+        services.AddScoped<IDomainEventHandler<TakeawayCancelled>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
+        services.AddScoped<IDomainEventHandler<TakeawayCollected>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayMarkedNoShow>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
 
         return services;
     }

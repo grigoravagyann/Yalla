@@ -443,7 +443,7 @@ One outbox type, **`staff.push`**, written by the save that causes it - `StaffPu
 signals in `YallaDbContext.SaveChanges`, for their reason: each of these happens on several paths, and a rule every
 path had to remember is a rule one of them forgets. `kitchenReady` is the exception, and the direction for the rest:
 it is staged by `KitchenReadyStaffPush`, a handler of the order's `TabOrderMoved` domain event, in the same save
-([domain-events.md](domain-events.md)), and `tableCalls` by `TableCallStaffPush`, a handler of `ServiceRequestRaised`. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is
+([domain-events.md](domain-events.md)), `tableCalls` by `TableCallStaffPush`, a handler of `ServiceRequestRaised`, and `takeaway` by `TakeawayStaffPush`, a handler of `TakeawayPlaced`. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is
 told, in which words and whether it is still true are decided at send time, seconds later.
 
 | Switch (`kind`) | Written when | Key | Still true at send time when | Deep link (`url`) | Collapse (`tag`) |

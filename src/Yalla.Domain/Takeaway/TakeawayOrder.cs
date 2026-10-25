@@ -19,6 +19,11 @@ namespace Yalla.Domain.Takeaway;
 /// venue's own: staff record the method and the amount, which is the total.
 /// </para>
 /// <para>
+/// <b>Each move raises its event</b> (<c>TakeawayOrderEvents.cs</c>, <c>docs/domain-events.md</c>): the activity entry,
+/// the guest's push and feed entry and the floor's push are its handlers', written in the same save. A refused or
+/// repeated move raises nothing.
+/// </para>
+/// <para>
 /// <b>The code</b> - "T-482" - is what the guest says at the counter. Three digits, unique per branch per local day
 /// (<see cref="LocalDate"/>), by a unique index; nothing is authorised by quoting it.
 /// </para>
@@ -26,6 +31,9 @@ namespace Yalla.Domain.Takeaway;
 public sealed class TakeawayOrder : Entity
 {
     private readonly List<TakeawayOrderLine> _lines = [];
+
+    /// <summary>Whether <see cref="Place"/> has run on this instance. Not mapped: a loaded order is long placed.</summary>
+    private bool _placed;
 
     public Guid BranchId { get; private set; }
 
@@ -116,7 +124,10 @@ public sealed class TakeawayOrder : Entity
     {
     }
 
-    /// <summary>A new order, <see cref="TakeawayStatus.Sent"/>, with five minutes for the venue to answer.</summary>
+    /// <summary>
+    /// A new order, <see cref="TakeawayStatus.Sent"/>, with five minutes for the venue to answer. Built, not yet placed:
+    /// <see cref="Place"/> sends it, and is what tells the rest of the system.
+    /// </summary>
     /// <param name="branchId">Where.</param>
     /// <param name="dinerUserId">Who.</param>
     /// <param name="code">"T-482", unused at the branch on <paramref name="localDate"/>.</param>
@@ -183,8 +194,37 @@ public sealed class TakeawayOrder : Entity
     }
 
     /// <summary>
-    /// The venue accepts it, ready at <paramref name="readyAtUtc"/>: it goes to the kitchen. A null
-    /// <paramref name="staffId"/> is the branch accepting automatically.
+    /// Sends the built order to the venue and raises <see cref="TakeawayPlaced"/>, which is what writes its activity
+    /// entry, pushes the floor, and - accepted on placing - tells the guest's feed.
+    /// </summary>
+    /// <remarks>
+    /// At a branch that accepts automatically it is accepted here, as part of being placed: ready when the guest asked
+    /// for it, by nobody at the venue (<see cref="AcceptedByStaffId"/> null), and the event says so - one step, so the
+    /// floor is never pushed about an order nobody has to accept.
+    /// </remarks>
+    /// <param name="acceptAutomatically">The branch accepts takeaway orders automatically.</param>
+    /// <exception cref="DomainStateException">The order was already placed.</exception>
+    public void Place(bool acceptAutomatically)
+    {
+        if (_placed || Status != TakeawayStatus.Sent)
+        {
+            throw new DomainStateException("This takeaway order is already placed.");
+        }
+
+        _placed = true;
+
+        if (acceptAutomatically)
+        {
+            MarkAccepted(RequestedPickupUtc, null, CreatedAtUtc);
+        }
+
+        Raise(new TakeawayPlaced(this, acceptAutomatically, CreatedAtUtc));
+    }
+
+    /// <summary>
+    /// The venue accepts it, ready at <paramref name="readyAtUtc"/>: it goes to the kitchen, and
+    /// <see cref="TakeawayAccepted"/> tells the guest. A null <paramref name="staffId"/> is the branch accepting
+    /// automatically - the sweep, for an order sent before the switch was turned on.
     /// </summary>
     /// <returns>False when it was already accepted - two tablets, one answer.</returns>
     public bool Accept(DateTime readyAtUtc, Guid? staffId, DateTime nowUtc)
@@ -194,6 +234,15 @@ public sealed class TakeawayOrder : Entity
             return false;
         }
 
+        MarkAccepted(readyAtUtc, staffId, nowUtc);
+        Raise(new TakeawayAccepted(this, AcceptedByStaffId, AcceptedAtUtc!.Value));
+
+        return true;
+    }
+
+    /// <summary>The acceptance itself, refused unless the order is still waiting; raises nothing - its callers do.</summary>
+    private void MarkAccepted(DateTime readyAtUtc, Guid? staffId, DateTime nowUtc)
+    {
         Require(TakeawayStatus.Sent, "Only an order still waiting for an answer can be accepted.");
 
         if (!TakeawayRules.ReadyAtIsAcceptable(Guard.NotLocalTime(readyAtUtc, nameof(readyAtUtc)), nowUtc))
@@ -215,8 +264,6 @@ public sealed class TakeawayOrder : Entity
         AcceptedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         AcceptedByStaffId = staffId is { } id ? Guard.NotEmpty(id, nameof(staffId)) : null;
         AcceptDeadlineUtc = null;
-
-        return true;
     }
 
     /// <summary>The venue says no, with or without a reason the guest is shown.</summary>
@@ -237,6 +284,8 @@ public sealed class TakeawayOrder : Entity
         DeclineReason = Guard.OptionalText(reason, nameof(reason), TakeawayRules.MaxDeclineReasonLength);
         AcceptDeadlineUtc = null;
 
+        Raise(new TakeawayDeclined(this, TakeawayDeclineCause.StaffDeclined, staffId, nowUtc));
+
         return true;
     }
 
@@ -253,6 +302,8 @@ public sealed class TakeawayOrder : Entity
         DeclinedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         DeclinedBecause = TakeawayDeclineCause.NoAnswer;
         AcceptDeadlineUtc = null;
+
+        Raise(new TakeawayDeclined(this, TakeawayDeclineCause.NoAnswer, null, nowUtc));
 
         return true;
     }
@@ -272,6 +323,8 @@ public sealed class TakeawayOrder : Entity
         CancelledAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         AcceptDeadlineUtc = null;
 
+        Raise(new TakeawayCancelled(this, nowUtc));
+
         return true;
     }
 
@@ -289,6 +342,8 @@ public sealed class TakeawayOrder : Entity
         Status = TakeawayStatus.Ready;
         MarkedReadyAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         MarkedReadyByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        Raise(new TakeawayMarkedReady(this, staffId, nowUtc));
 
         return true;
     }
@@ -309,6 +364,8 @@ public sealed class TakeawayOrder : Entity
         PaidAmountAmd = TotalAmd;
         CollectedAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         CollectedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        Raise(new TakeawayCollected(this, staffId, nowUtc));
 
         return true;
     }
@@ -335,6 +392,8 @@ public sealed class TakeawayOrder : Entity
         Status = TakeawayStatus.NoShow;
         NoShowAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
         NoShowByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
+
+        Raise(new TakeawayMarkedNoShow(this, staffId, nowUtc));
 
         return true;
     }

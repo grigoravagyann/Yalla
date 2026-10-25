@@ -6,7 +6,6 @@ using Yalla.Domain.Messages;
 using Yalla.Domain.Messaging;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Tabs;
-using Yalla.Domain.Takeaway;
 
 namespace Yalla.Infrastructure.Persistence;
 
@@ -46,7 +45,8 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill. Staged by the
 /// <c>ServiceRequestRaised</c> domain-event handler (<c>TableCallStaffPush</c>) rather than detected here.</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
-/// needs nobody, and is not pushed).</item>
+/// needs nobody, and is not pushed). Staged by the <c>TakeawayPlaced</c> domain-event handler
+/// (<c>TakeawayStaffPush</c>) rather than detected here.</item>
 /// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
 /// handler (<c>KitchenReadyStaffPush</c>) rather than detected here: see <c>docs/domain-events.md</c>.</item>
 /// </list>
@@ -113,17 +113,10 @@ internal static class StaffPushSignals
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<TakeawayOrder>())
-        {
-            if (entry.State == EntityState.Added && entry.Entity.Status == TakeawayStatus.Sent)
-            {
-                events.Add((StaffPushKinds.Takeaway, entry.Entity.Id, $"{KeyPrefix}takeaway:{entry.Entity.Id}"));
-            }
-        }
-
         // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
-        // first kind to move onto domain events (docs/domain-events.md). tableCalls is the ServiceRequestRaised
-        // handler's (TableCallStaffPush). The other three follow their verticals.
+        // first kind to move onto domain events (docs/domain-events.md). tableCalls and takeaway are the
+        // ServiceRequestRaised and TakeawayPlaced handlers' (TableCallStaffPush, TakeawayStaffPush). The other two
+        // follow their verticals.
         if (events.Count == 0)
         {
             return;

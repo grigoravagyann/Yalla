@@ -22,13 +22,17 @@ namespace Yalla.Infrastructure.Services;
 /// Takeaway orders: the diner's availability, ordering, status and cancel; the floor's counter and its five actions;
 /// the console's settings. See <c>docs/takeaway.md</c>.
 /// </summary>
+/// <remarks>
+/// It decides whether a move may happen and makes it through the order; what the move tells the rest of the system -
+/// the History's line, the guest's push and feed entry, the floor's push - is the order's events' handlers'
+/// (<c>DomainEvents/TakeawayOrders</c>, <c>docs/domain-events.md</c>), written in the same save.
+/// </remarks>
 internal sealed class TakeawayService(
     YallaDbContext db,
     IClock clock,
     ICurrentActor actor,
     IAuthorizationQueries authorization,
     StaffBranchGuard branchGuard,
-    IOutbox outbox,
     NoShowBlocks noShowBlocks,
     IActivityLog activity,
     ILogger<TakeawayService> logger) : ITakeawayService
@@ -247,18 +251,10 @@ internal sealed class TakeawayService(
                 command.ClientCommandId,
                 nowUtc);
 
+            // Auto-accept: ready when the guest asked for it, straight to the kitchen - accepted as part of being placed.
+            // The feed records it; no push - the answer to this request already says so.
+            order.Place(acceptAutomatically: branch.TakeawayAutoAccept);
             db.TakeawayOrders.Add(order);
-
-            await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayPlaced, cancellationToken, byGuest: true);
-
-            // Auto-accept: ready when the guest asked for it, straight to the kitchen. The feed records it; no push - the
-            // answer to this request already says so.
-            if (branch.TakeawayAutoAccept)
-            {
-                order.Accept(pickupUtc, null, nowUtc);
-                await TakeawayNotices.WriteAsync(db, outbox, order, TakeawayNotices.Step.Accepted, nowUtc, cancellationToken, push: false);
-                await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayAccepted, cancellationToken, bySystem: true);
-            }
 
             try
             {
@@ -306,8 +302,6 @@ internal sealed class TakeawayService(
         {
             return await GuestViewAsync(orderId, wasReplay: true, cancellationToken);
         }
-
-        await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayCancelled, cancellationToken, byGuest: true);
 
         try
         {
@@ -377,9 +371,7 @@ internal sealed class TakeawayService(
             "Accept a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Accepted,
-            ActivityActions.TakeawayAccepted,
             (order, staffId, nowUtc) => order.Accept(AsUtc(readyAtUtc), staffId, nowUtc),
-            TakeawayNotices.Step.Accepted,
             cancellationToken);
 
     public Task<StaffTakeawayOrderView> DeclineAsync(Guid orderId, string? reason, CancellationToken cancellationToken = default)
@@ -402,9 +394,7 @@ internal sealed class TakeawayService(
             "Decline a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Declined,
-            ActivityActions.TakeawayDeclined,
             (order, staffId, nowUtc) => order.Decline(reason, staffId, nowUtc),
-            TakeawayNotices.Step.Declined,
             cancellationToken);
     }
 
@@ -414,9 +404,7 @@ internal sealed class TakeawayService(
             "Mark a takeaway order ready",
             kitchenMay: true,
             TakeawayStatus.Ready,
-            ActivityActions.TakeawayReady,
             (order, staffId, nowUtc) => order.MarkReady(staffId, nowUtc),
-            TakeawayNotices.Step.Ready,
             cancellationToken);
 
     public Task<StaffTakeawayOrderView> CollectAsync(
@@ -426,9 +414,7 @@ internal sealed class TakeawayService(
             "Hand over a takeaway order",
             kitchenMay: false,
             TakeawayStatus.Collected,
-            ActivityActions.TakeawayCollected,
             (order, staffId, nowUtc) => order.Collect(method, staffId, nowUtc),
-            null,
             cancellationToken);
 
     /// <summary>
@@ -438,6 +424,12 @@ internal sealed class TakeawayService(
     /// never written twice. A block cancels the guest's bookings still to come, and their tables' holds are given back
     /// after the commit. Unlike a booking's, it cannot be withdrawn.
     /// </summary>
+    /// <remarks>
+    /// The order's own side effects are its <see cref="TakeawayMarkedNoShow"/> handlers' (the History's line). The block
+    /// stays here: it is judged on the no-show as saved, and a handler runs before the save; it is the bookings' rule as
+    /// much as this one's (<see cref="NoShowBlocks"/>, shared with a booking's no-show); and the holds it frees are given
+    /// back after the commit, which no handler sees.
+    /// </remarks>
     public async Task<StaffTakeawayOrderView> MarkNoShowAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
         var order = await db.TakeawayOrders
@@ -452,8 +444,6 @@ internal sealed class TakeawayService(
         {
             return await StaffViewAsync(orderId, wasReplay: true, cancellationToken);
         }
-
-        await TakeawayActivity.RecordAsync(activity, order, ActivityActions.TakeawayNoShow, cancellationToken);
 
         IReadOnlyList<Domain.Occupancy.Reservation> cancelledByBlock = [];
 
@@ -502,18 +492,17 @@ internal sealed class TakeawayService(
     }
 
     /// <summary>
-    /// One staff action: the caller may act at the order's branch, the order makes the move, the guest is told in the
-    /// same save. The move already made is answered as a replay - two tablets, one answer; the order moved elsewhere
-    /// under the save is 409 <c>takeaway-status-conflict</c> with where it is now.
+    /// One staff action: the caller may act at the order's branch, the order makes the move, and its event's handlers
+    /// write the History's line and tell the guest in the same save. The move already made is answered as a replay - two
+    /// tablets, one answer; the order moved elsewhere under the save is 409 <c>takeaway-status-conflict</c> with where it
+    /// is now.
     /// </summary>
     private async Task<StaffTakeawayOrderView> StaffActAsync(
         Guid orderId,
         string operation,
         bool kitchenMay,
         TakeawayStatus target,
-        string action,
         Func<TakeawayOrder, Guid, DateTime, bool> act,
-        TakeawayNotices.Step? tell,
         CancellationToken cancellationToken)
     {
         var order = await db.TakeawayOrders
@@ -529,15 +518,8 @@ internal sealed class TakeawayService(
             return await StaffViewAsync(orderId, wasReplay: true, cancellationToken);
         }
 
-        await TakeawayActivity.RecordAsync(
-            activity, order, action, cancellationToken, reason: action == ActivityActions.TakeawayDeclined ? order.DeclineReason : null);
-
+        // The guest's notice takes the account's lock in the save's transaction, and joins this one.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-
-        if (tell is { } step)
-        {
-            await TakeawayNotices.WriteAsync(db, outbox, order, step, nowUtc, cancellationToken);
-        }
 
         try
         {
