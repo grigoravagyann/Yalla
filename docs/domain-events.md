@@ -98,13 +98,14 @@ instead of silently dropping the side effects. Production contexts always come f
 
 `YallaDbContext.SaveChanges` still runs four hooks that detect events from the change tracker rather than being told:
 the booking signal (signal 5), the pre-order signal (signal 6), voiding a held pre-order of an ended booking, and
-`StaffPushSignals` for **approvals, guestMessages, tableCalls and takeaway**. They predate this mechanism and do the
+`StaffPushSignals` for **approvals, guestMessages and takeaway**. They predate this mechanism and do the
 same job for their verticals - one place, every path - by inspection. They stay until their verticals move (section
 7), each then becoming a handler of that vertical's event; they run after dispatch, so they also see what handlers
 wrote.
 
 `kitchenReady` was the fifth staff push kind; it is now `KitchenReadyStaffPush`, a `TabOrderMoved` handler, and the
-tracker hook no longer looks at orders. A new staff push kind goes on events: `AGENTS.md`, "Add a staff push kind".
+tracker hook no longer looks at orders. `tableCalls` is now `TableCallStaffPush`, a `ServiceRequestRaised` handler, and
+the hook no longer looks at service requests. A new staff push kind goes on events: `AGENTS.md`, "Add a staff push kind".
 
 ## 6. Tab orders - the migrated vertical
 
@@ -126,6 +127,29 @@ summaries, attribution, device labels), outbox row (keys, payloads), feed row, t
 change-stream row, and the end state of the tab, its sitting, orders and lines
 (`Integration/Snapshots/TabOrderSideEffects.approved.txt`). The refactor keeps it byte for byte. Regenerate only on
 purpose: `YALLA_UPDATE_SNAPSHOTS=1 dotnet test tests/Yalla.UnitTests --filter "FullyQualifiedName~TabOrderSideEffectsSnapshotTests"`.
+
+### Calls (service requests) - migrated
+
+| Raised by | Event | Handlers and what they write |
+|---|---|---|
+| `ServiceRequest.Send()` (from `ServiceRequestService.RaiseAsync`, after the constructor) | `ServiceRequestRaised(Request)` | `CallStream`: `ServiceRequested` (the scope and tip percentage, never the priced amounts). `TableCallStaffPush`: `staff.push` kind `tableCalls`, key `staff-push:call:{id}`. |
+| `ServiceRequest.Claim(at, staffId)` (from `ClaimAsync`), and `Acknowledge` of a call nobody had claimed, just before its `ServiceRequestAcknowledged` | `ServiceRequestClaimed(Request, ByStaffId)` | `CallClaimActivity`: `table.call-claimed` with `responseSeconds` from the call. |
+| `ServiceRequest.Acknowledge(at, staffId)` (from `AcknowledgeAsync`) | `ServiceRequestAcknowledged(Request, ByStaffId)` | `CallStream`: `ServiceRequestAcknowledged`. |
+
+Handlers live in `Infrastructure/DomainEvents/Calls/`. What stayed in `ServiceRequestService`: who may call or answer,
+the rate limit, pricing a request for the bill, the row lock on a claim or an answer, and saving through the ledger (a
+claim too, which used to save on the context). Raising nothing, on purpose: a constructed call that is not sent (a test
+seeding history); `Supersede`, which writes nothing today - the newer request's `ServiceRequested` is what the table
+and the floor hear; and `AnswerForTurnedAwayTab`, the turn-away answering a phantom tab's open calls, which the tab's
+own `TabAdmissionRejected` and `table.tab-turned-away` tell. Second claims and answers are no-ops and raise nothing.
+
+**Proof it is the same.** `CallSideEffectsSnapshotTests` (`Integration/Snapshots/CallSideEffects.approved.txt`),
+committed on the code before the move: calls raised, claimed twice, answered after a claim and without one, answered
+twice; requests for the bill with a scope and a tip replaced by the same guest but not a tablemate, a plain one that
+replaces nothing, a replaced one claimed and answered (no-ops); the rate limit; and a scan turned away with a claimed and
+an unclaimed call. Activity, staff push outbox rows, both tabs' streams, change-stream rows and the end state of calls,
+tabs and sittings are unchanged byte for byte. Regenerate only on purpose:
+`YALLA_UPDATE_SNAPSHOTS=1 dotnet test tests/Yalla.UnitTests --filter "FullyQualifiedName~CallSideEffectsSnapshotTests"`.
 
 ## 7. Testing
 
@@ -159,7 +183,6 @@ Remaining, in the order worth doing them (rough effort, one person, with the sna
 | Vertical | Hand-written side effects today | Notes | Effort |
 |---|---|---|---|
 | **Payments** - cash, discount/comp and their reversal, write-off | `TabPaymentService`, `TabOrderService` adjustments, `TabStaffActions`: activity, tab stream | Money: the History's amounts must match the reports to the dram; `PaymentRecorded`, `AdjustmentAdded/Reversed`, `TabWrittenOff` on `Tab`/`TabAdjustment` | 1 day |
-| **Calls** (service requests) | `ServiceRequestService`: activity, tab stream; `tableCalls` staff push in the tracker hook | The "claimed call still pushed" QA find lives here; `CallRaised/Claimed/Acknowledged` on `ServiceRequest` | 0.5 day |
 | **Tabs** - join, admit, turn away, host moved, bill presented, transfer | `TabRoster`, `TabJoining`, `TabAdmissions(Commands)`, `TabSignals`, `TabOpener`, `TableTransferService`: tab stream, change-stream signals 1-3 and 7, activity, outbox | Many small paths and the admission app lock; `TabSignals` becomes handlers | 1.5-2 days |
 | **Tables** - seat, free, hold, out of service | `TableStateService` (19 sites): change-stream rows, activity, feed | Signals carry the table's status as the save leaves it; events on `DiningTable`/`TableSession` | 1.5 days |
 | **Bookings** - made, moved, cancelled, approved/declined, no-show, reminders, blocks, shares | `ReservationCreation/Changes/Cancellation/Decisions/Answers/Release/Notices/Reminders`, `NoShowBlocks`, `TableShares`, `PendingDecline`, `ApprovalExpirySweep`: activity, outbox (+ cancellation by prefix), feed; the booking signal, the held-pre-order void and the `approvals` push are tracker hooks | The largest: events on `Reservation` would replace three `SaveChanges` hooks; locking paths (`ReservationWriter`) already hold transactions | 3-4 days |

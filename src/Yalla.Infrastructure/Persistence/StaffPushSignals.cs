@@ -43,7 +43,8 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// another time, or a waiting one now waiting for another reason (the guest before it stepped aside and the floor
 /// decides now).</item>
 /// <item><b>guestMessages</b> - a guest's text or answer ("I'm coming", "late", "not coming") added to a thread.</item>
-/// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill.</item>
+/// <item><b>tableCalls</b> - a service request raised: a waiter called, water, napkins, the bill. Staged by the
+/// <c>ServiceRequestRaised</c> domain-event handler (<c>TableCallStaffPush</c>) rather than detected here.</item>
 /// <item><b>takeaway</b> - a takeaway order placed and waiting to be accepted (one a branch accepts automatically
 /// needs nobody, and is not pushed).</item>
 /// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
@@ -112,14 +113,6 @@ internal static class StaffPushSignals
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<ServiceRequest>())
-        {
-            if (entry.State == EntityState.Added)
-            {
-                events.Add((StaffPushKinds.TableCalls, entry.Entity.Id, $"{KeyPrefix}call:{entry.Entity.Id}"));
-            }
-        }
-
         foreach (var entry in db.ChangeTracker.Entries<TakeawayOrder>())
         {
             if (entry.State == EntityState.Added && entry.Entity.Status == TakeawayStatus.Sent)
@@ -129,7 +122,8 @@ internal static class StaffPushSignals
         }
 
         // kitchenReady is not detected here any more: it is the TabOrderMoved handler's (KitchenReadyStaffPush), the
-        // first kind to move onto domain events (docs/domain-events.md). The other four follow their verticals.
+        // first kind to move onto domain events (docs/domain-events.md). tableCalls is the ServiceRequestRaised
+        // handler's (TableCallStaffPush). The other three follow their verticals.
         if (events.Count == 0)
         {
             return;
