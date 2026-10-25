@@ -94,9 +94,14 @@ public sealed class DomainEventRulesTests
                 offenders.Add($"{name} is declared in {handler.Assembly.GetName().Name}, not Yalla.Infrastructure");
             }
 
-            if (handler.IsNested || !handler.IsNotPublic)
+            if (handler.IsPublic || handler.IsNestedPublic)
             {
-                offenders.Add($"{name} is not a top-level internal class");
+                offenders.Add($"{name} is public");
+            }
+
+            if (handler.IsNested)
+            {
+                offenders.Add($"{name} is nested in {ProductionCode.NameOf(handler.DeclaringType!)}");
             }
 
             if (!handler.IsSealed)
@@ -128,9 +133,9 @@ public sealed class DomainEventRulesTests
         {
             foreach (var handled in HandledEvents(handler))
             {
-                var resolved = unit.HandlersOf(handled);
+                var resolved = unit.HandlersOf(handled, offenders);
 
-                if (!resolved.Any(handler.IsInstanceOfType))
+                if (resolved is not null && !resolved.Any(handler.IsInstanceOfType))
                 {
                     offenders.Add(
                         $"{ProductionCode.NameOf(handler)} implements IDomainEventHandler<{ProductionCode.NameOf(handled)}> "
@@ -155,20 +160,13 @@ public sealed class DomainEventRulesTests
 
         foreach (var handled in unit.RegisteredEventTypes())
         {
-            try
+            foreach (var instance in unit.HandlersOf(handled, offenders) ?? [])
             {
-                foreach (var instance in unit.HandlersOf(handled))
+                if (!HandlerTypes().Contains(instance.GetType()))
                 {
-                    if (!HandlerTypes().Contains(instance.GetType()))
-                    {
-                        offenders.Add($"IDomainEventHandler<{ProductionCode.NameOf(handled)}> resolves "
-                                      + $"{ProductionCode.NameOf(instance.GetType())}, which the handler rules do not see");
-                    }
+                    offenders.Add($"IDomainEventHandler<{ProductionCode.NameOf(handled)}> resolves "
+                                  + $"{ProductionCode.NameOf(instance.GetType())}, which the handler rules do not see");
                 }
-            }
-            catch (Exception e) when (e is InvalidOperationException or ArgumentException)
-            {
-                offenders.Add($"IDomainEventHandler<{ProductionCode.NameOf(handled)}> does not resolve: {e.Message}");
             }
         }
 
@@ -184,22 +182,27 @@ public sealed class DomainEventRulesTests
     public void Every_domain_event_has_a_registered_handler_or_a_reason_on_the_allow_list()
     {
         using var unit = new HandlerComposition();
+        var offenders = new List<string>();
 
-        var unhandled = DomainEvents()
-            .Where(e => !EventsWithoutHandlers.ContainsKey(e))
-            .Where(e => unit.HandlersOf(e).Count == 0)
-            .Select(e => $"{ProductionCode.NameOf(e)} is raised but has no registered handler")
-            .ToList();
+        foreach (var domainEvent in DomainEvents())
+        {
+            var count = unit.HandlersOf(domainEvent, offenders)?.Count;
+            var allowed = EventsWithoutHandlers.ContainsKey(domainEvent);
 
-        var stale = EventsWithoutHandlers.Keys
-            .Where(e => unit.HandlersOf(e).Count > 0)
-            .Select(e => $"{ProductionCode.NameOf(e)} is on EventsWithoutHandlers but has a handler now: take it off")
-            .ToList();
+            if (count == 0 && !allowed)
+            {
+                offenders.Add($"{ProductionCode.NameOf(domainEvent)} is raised but has no registered handler");
+            }
+            else if (count > 0 && allowed)
+            {
+                offenders.Add($"{ProductionCode.NameOf(domainEvent)} is on EventsWithoutHandlers but has a handler now: take it off");
+            }
+        }
 
-        Assert.True(unhandled.Count + stale.Count == 0, ProductionCode.Violation(
+        Assert.True(offenders.Count == 0, ProductionCode.Violation(
             "Every domain event has at least one handler registered in AddDomainEventHandlers, or is on "
             + "DomainEventRulesTests.EventsWithoutHandlers with the reason nothing listens yet.",
-            unhandled.Concat(stale),
+            offenders,
             "register the handler that writes the event's side effect (docs/domain-events.md section 3), or - when it is "
             + "a deliberate seam - add the event to EventsWithoutHandlers with a comment saying why."));
     }
@@ -365,9 +368,28 @@ public sealed class DomainEventRulesTests
                 .Select(t => t.GetGenericArguments()[0])
                 .Distinct();
 
-        /// <summary>What dispatch would run for <paramref name="eventType"/>, resolved as it resolves them.</summary>
-        public IReadOnlyList<object> HandlersOf(Type eventType) =>
-            [.. _scope.ServiceProvider.GetServices(HandlerOpen.MakeGenericType(eventType)).OfType<object>()];
+        /// <summary>
+        /// What dispatch would run for <paramref name="eventType"/>, resolved as it resolves them - or null, with the
+        /// reason added to <paramref name="offenders"/>, when they do not resolve.
+        /// </summary>
+        public IReadOnlyList<object>? HandlersOf(Type eventType, List<string> offenders)
+        {
+            try
+            {
+                return [.. _scope.ServiceProvider.GetServices(HandlerOpen.MakeGenericType(eventType)).OfType<object>()];
+            }
+            catch (InvalidOperationException e)
+            {
+                var problem = $"IDomainEventHandler<{ProductionCode.NameOf(eventType)}> does not resolve: {e.Message}";
+
+                if (!offenders.Contains(problem))
+                {
+                    offenders.Add(problem);
+                }
+
+                return null;
+            }
+        }
 
         public void Dispose()
         {
