@@ -195,7 +195,7 @@ internal sealed class PublicBookingService(
         // Whether cancelling would do anything - not whether it would be free. Cancelling past the
         // deadline is allowed and merely recorded, which is the whole point of the deadline being
         // a record rather than a block.
-        CanCancel: ReservationService.CanStillCancel(row.Status),
+        CanCancel: ReservationCancellation.CanStillCancel(row.Status),
         CancelledAfterDeadline: row.CancelledAfterDeadline,
 
         // Whose answer a waiting booking waits for: the guest before it, in the app, or the venue.

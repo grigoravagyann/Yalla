@@ -72,7 +72,7 @@ internal sealed class NoShowBlocks(
             .Where(d => d.Id == account && d.PhoneVerifiedAtUtc != null)
             .Select(d => d.PhoneE164)
             .FirstOrDefaultAsync(cancellationToken);
-        var phone = ReservationService.BookerPhone(proved);
+        var phone = ReservationCreation.BookerPhone(proved);
 
         if (await GuestRecords.BlockedUntilAsync(db, account, phone, nowUtc, cancellationToken) is not null)
         {

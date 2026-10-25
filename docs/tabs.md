@@ -332,7 +332,7 @@ host taps approve. There is no code to say out loud, and the next table cannot o
 The joiner sits on "waiting for the host", and the host has no reason to open the People screen. So
 a join that lands **pending** - a scan of a table whose tab is open, or `POST /api/tabs/join` with
 the host's invitation - tells them twice, in the same `SaveChanges` as the participant row
-(`TabService.AnnouncePendingJoin`):
+(`TabJoining.AnnouncePendingJoin`):
 
 - **On the stream.** One `ParticipantJoined` (2), in the shape of every other roster event, so the
   redactor's participant rule already decides it (section 7.4):

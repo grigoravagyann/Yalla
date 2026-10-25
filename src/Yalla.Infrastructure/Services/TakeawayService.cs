@@ -147,7 +147,7 @@ internal sealed class TakeawayService(
             .FirstOrDefaultAsync(cancellationToken);
 
         if (await GuestRecords.BlockedUntilAsync(
-                db, dinerUserId, ReservationService.BookerPhone(phone), clock.UtcNow, cancellationToken) is { } blockedUntil)
+                db, dinerUserId, ReservationCreation.BookerPhone(phone), clock.UtcNow, cancellationToken) is { } blockedUntil)
         {
             throw new Domain.Occupancy.BookingBlockedForNoShowsException(
                 blockedUntil, Domain.Occupancy.BookingBlockedForNoShowsException.TakeawayMessage(blockedUntil));
