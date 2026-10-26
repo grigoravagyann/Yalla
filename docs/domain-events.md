@@ -224,7 +224,8 @@ services wrote them: the activity entry, the change stream, the guest's notice, 
 every takeaway event, in the same save, so the floor re-reads its counter when an order moves instead of polling it every
 ten seconds. The row is about the counter, not a table (`TableStateChange.ForTakeaway`: no `DiningTableId`, Free to
 Free, the system's, no order named); `TableStateChanges.DiningTableId` became nullable for it. The snapshot below gained
-exactly those rows (17 in its script), on purpose. `TakeawayGuestNotice` takes the
+exactly those rows (17 in its script), on purpose, and `MessageSideEffectsSnapshotTests` the one row of the takeaway
+order its script places. `TakeawayGuestNotice` takes the
 account's lock (`db.EnsureTransactionAsync`, then `DinerAccountLock.IsLiveAsync`), as `TakeawayNotices` did; placing,
 the counter's answers and the sweep already hold a transaction, which it joins. `TakeawayActivity` and
 `TakeawayNotices` are gone; the `StaffPushSignals` hook no longer looks at takeaway orders. The kitchen's queue shows
