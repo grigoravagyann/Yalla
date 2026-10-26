@@ -291,6 +291,58 @@ public class TabEndpointTests(SqlServerFixture fixture)
         Assert.False(view.GetProperty("me").GetProperty("canOrderNow").GetBoolean());
     }
 
+    /// <summary>
+    /// The waiter frees a table whose tab has nothing on it: the tab closes with the table, and a phone on it learns so
+    /// from its own poll of the tab read - closed, closed when, nothing more to order - which the diner's tab screen
+    /// polls every few seconds whatever the stream says, and draws the end of the tab from. The stream carries no
+    /// <c>TabClosed</c> for it (only a settled bill writes one, <c>TabSettled</c>): the phones do not need it
+    /// (<c>docs/domain-events.md</c>, tables).
+    /// </summary>
+    [SkippableFact]
+    public async Task A_table_freed_with_an_empty_tab_closes_it_and_the_phones_read_of_the_tab_says_so()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var (branch, qrTokens) = await ArrangeAsync(factory);
+
+        using var anonymous = factory.CreateClient();
+        var host = await OpenAsync(anonymous, qrTokens[0], "phone-host");
+        using var hostClient = factory.CreateClientWithToken(host.AccessToken);
+
+        var before = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+        Assert.Equal(TabStatus.Open, EnumOf<TabStatus>(before.GetProperty("status")));
+        var sequenceBefore = before.GetProperty("maxSequence").GetInt64();
+
+        Guid tableId;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            tableId = await db.DiningTables.AsNoTracking()
+                .Where(t => t.QrToken == qrTokens[0])
+                .Select(t => t.Id)
+                .SingleAsync();
+        }
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+
+        var freed = await waiter.PostAsJsonAsync(
+            $"/api/branches/{branch.BranchId}/tables/{tableId}/free", new { clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.OK, freed.StatusCode);
+
+        // The phone's next poll of the tab: over, and when.
+        var after = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}");
+        Assert.Equal(TabStatus.Closed, EnumOf<TabStatus>(after.GetProperty("status")));
+        Assert.Equal(JsonValueKind.String, after.GetProperty("closedAtUtc").ValueKind);
+        Assert.False(after.GetProperty("me").GetProperty("canOrderNow").GetBoolean());
+
+        // The stream says nothing of it.
+        var events = await ReadAsync(hostClient, $"/api/tabs/{host.TabId}/events?afterSequence={sequenceBefore}");
+        Assert.DoesNotContain(
+            events.GetProperty("events").EnumerateArray(),
+            e => e.GetProperty("type").GetInt32() == (int)TabEventType.TabClosed);
+    }
+
     // ------------------------------------------------------------ settlement mode, over HTTP
 
     /// <summary>

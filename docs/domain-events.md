@@ -313,7 +313,22 @@ preconditions and refusals, the table lock, the row-version conflict, the bookin
 unshown reminders dropped, the held pre-order put on the tab (`PreOrderSittings`, the pre-orders vertical's), closing
 the sitting, and the tab's own fate when the table is freed. **A zero-balance tab closes with the table and raises
 nothing of its own** (`Tab.Close`, unchanged): `TableFreed` names it (`TabId`, `TabClosed`), and freeing a table has
-never told the tab's stream anything - a phone on an empty tab hears no `TabClosed` (the Tabs vertical's to decide).
+never told the tab's stream anything - a phone on an empty tab hears no `TabClosed`.
+
+**Looked at 2026-10-26 and left so: the phones learn it from the tab read.** The diner's tab screen polls
+`GET /api/tabs/{tabId}` every 8 seconds whatever the stream says (`useDinerTab(tabId, { pollMs })` in the frontend's
+`app/tab/[tabId]/index.tsx`, "staff may close the table meanwhile"), and so do its people and waiting screens; the
+screens pushed above it (menu, tray, settle) read the same cached query, which the tab screen beneath keeps polling.
+The stream is only a faster reason to refetch: the app reads every event type, `tabClosed` included, as "refetch the
+tab", and never acts on its payload. So within one poll the read answers `status: Closed` with `closedAtUtc` and
+`canOrderNow: false`; the screen shows the closed tab's paid view and forgets it as the active tab, the menu says the
+tab is closed instead of offering Add, and an order sent meanwhile is refused. Past the receipt grace (`Jwt:ParticipantReceiptGraceMinutes`, 120) the
+token answers `tab-closed` and the app shows that access ended. The staff screens learn from the change stream
+(`TableFreed` names the tab and that it closed); nothing on the web reads a tab's stream. Raising an event for it would
+make the table state machine save through the ledger to number a stream row, for a phone that is told at most eight
+seconds later anyway. Pinned by `TabEndpointTests.A_table_freed_with_an_empty_tab_closes_it_and_the_phones_read_of_the_tab_says_so`
+(the read says closed, the stream carries no `TabClosed`); revisit if a client ever ends a tab screen from the stream
+alone.
 The transfer loads the caller, the target, the branch and the previous waiter tracked, so the handlers read names and
 the venue from the tracker.
 
