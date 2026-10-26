@@ -97,6 +97,16 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
         Assert.Equal("branchId", unnamed.GetProperty("context").GetProperty("field").GetString());
         await OkAsync(await ownerClient.GetAsync($"/api/staff/me/performance?branchId={branch.BranchId}"));
 
+        // My results in one read: the same caller, the same refusals.
+        var results = await OkAsync(await waiter.GetAsync("/api/staff/me/results"));
+        Assert.Equal(branch.WaiterId, results.GetProperty("kpis").GetProperty("staffMemberId").GetGuid());
+        Assert.Equal(branch.BranchId, results.GetProperty("branchId").GetGuid());
+        Assert.Equal(HttpStatusCode.Forbidden, (await waiter.GetAsync($"/api/staff/me/results?branchId={otherVenue.BranchId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await kitchen.GetAsync("/api/staff/me/results")).StatusCode);
+        var unnamedResults = await ProblemAsync(await ownerClient.GetAsync("/api/staff/me/results"), HttpStatusCode.UnprocessableEntity, "validation-failed");
+        Assert.Equal("branchId", unnamedResults.GetProperty("context").GetProperty("field").GetString());
+        await OkAsync(await ownerClient.GetAsync($"/api/staff/me/results?branchId={branch.BranchId}"));
+
         // Somebody who does not work at this venue is not found, and nothing about a tab that is not here either.
         await ProblemAsync(await manager.GetAsync($"{b}/staff/{otherVenue.WaiterId}/performance"), HttpStatusCode.NotFound, "not-found");
         await ProblemAsync(await manager.GetAsync($"{b}/activity/subjects/tab/{Guid.NewGuid()}"), HttpStatusCode.NotFound, "not-found");
@@ -108,6 +118,101 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
             "validation-failed");
         Assert.Equal(
             ["date", "category", "limit"],
+            refused.GetProperty("context").GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("field").GetString()!).ToArray());
+    }
+
+    /// <summary>
+    /// My results in one read: the waiter seats a table, sends three orders and takes the bill in cash from the tablet.
+    /// <c>/api/staff/me/results</c> answers the figures and chart <c>/api/staff/me/performance</c> answers, and each
+    /// recent list exactly as that route's own <c>list</c> - so a list's cursor continues there. <c>limit</c> is per list
+    /// (default 10), <c>list</c> and <c>cursor</c> are not read, and a bad limit is the same 422.
+    /// </summary>
+    [SkippableFact]
+    public async Task My_results_answer_every_list_at_once_as_the_separate_reads_do()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+        TestMenu menu;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 1);
+            menu = await TestMenuBuilder.CreateAsync(db, branch.BranchId);
+        }
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        var b = $"/api/branches/{branch.BranchId}";
+
+        await OkAsync(await waiter.PostAsJsonAsync(
+            $"{b}/tables/{branch.FirstTableId}/seat-walk-in", new { partySize = 2, clientCommandId = Guid.NewGuid() }));
+        var tabId = (await OkAsync(await waiter.PostAsJsonAsync(
+            $"{b}/tables/{branch.FirstTableId}/open-tab", new { clientCommandId = Guid.NewGuid() }))).GetProperty("tabId").GetGuid();
+
+        foreach (var item in new[] { menu.Coffee, menu.Khachapuri, menu.Wine })
+        {
+            factory.Clock.UtcNow = factory.Clock.UtcNow.AddMinutes(1);
+            var placed = await waiter.PostAsJsonAsync(
+                $"/api/tabs/{tabId}/staff-orders",
+                new { items = new[] { new { menuItemId = item, quantity = 1 } }, clientCommandId = Guid.CreateVersion7() });
+            Assert.Equal(HttpStatusCode.Created, placed.StatusCode);
+        }
+
+        factory.Clock.UtcNow = factory.Clock.UtcNow.AddMinutes(1);
+        var total = (await OkAsync(await waiter.GetAsync($"/api/tabs/{tabId}/participants")))
+            .GetProperty("totals").GetProperty("totalAmd").GetInt64();
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await waiter.PostAsJsonAsync(
+                $"/api/tabs/{tabId}/payments/cash", new { amountAmd = total, tipAmd = 0L, clientCommandId = Guid.CreateVersion7() })).StatusCode);
+
+        // Two of each list, in one call: the same as the separate reads, list by list.
+        var results = await OkAsync(await waiter.GetAsync("/api/staff/me/results?limit=2"));
+        var orders = await OkAsync(await waiter.GetAsync("/api/staff/me/performance?list=orders&limit=2"));
+
+        Assert.Equal(orders.GetProperty("kpis").GetRawText(), results.GetProperty("kpis").GetRawText());
+        Assert.Equal(orders.GetProperty("dailySales").GetRawText(), results.GetProperty("dailySales").GetRawText());
+        Assert.Equal(orders.GetProperty("from").GetString(), results.GetProperty("from").GetString());
+        Assert.Equal(orders.GetProperty("to").GetString(), results.GetProperty("to").GetString());
+        Assert.Equal(1, results.GetProperty("kpis").GetProperty("tables").GetInt32());
+        Assert.Equal(total, results.GetProperty("kpis").GetProperty("salesAmd").GetInt64());
+        Assert.Equal(total, results.GetProperty("kpis").GetProperty("cashAmd").GetInt64());
+
+        var recent = results.GetProperty("recent");
+        Assert.Equal(
+            ["orders", "messages", "bookings", "cash", "calls"],
+            recent.EnumerateObject().Select(p => p.Name).ToArray());
+
+        foreach (var list in recent.EnumerateObject())
+        {
+            var alone = await OkAsync(await waiter.GetAsync($"/api/staff/me/performance?list={list.Name}&limit=2"));
+            Assert.Equal(alone.GetProperty("recent").GetRawText(), list.Value.GetRawText());
+            Assert.Equal(list.Name, list.Value.GetProperty("list").GetString());
+        }
+
+        // Orders: the cash bill and the last order on this page; its cursor continues on the separate read.
+        Assert.Equal(
+            [ActivityActions.PaymentCash, ActivityActions.OrderSent],
+            recent.GetProperty("orders").GetProperty("items").EnumerateArray().Select(i => i.GetProperty("action").GetString()!).ToArray());
+        var cursor = recent.GetProperty("orders").GetProperty("nextCursor").GetString();
+        var rest = await OkAsync(await waiter.GetAsync($"/api/staff/me/performance?list=orders&limit=2&cursor={cursor}"));
+        Assert.Equal(2, rest.GetProperty("recent").GetProperty("items").GetArrayLength());
+        Assert.Equal(
+            ActivityActions.PaymentCash,
+            Assert.Single(recent.GetProperty("cash").GetProperty("items").EnumerateArray()).GetProperty("action").GetString());
+        Assert.Equal(0, recent.GetProperty("calls").GetProperty("items").GetArrayLength());
+
+        // No limit: ten a list, so all four orders and no cursor. `list` and `cursor` are not read here.
+        var all = await OkAsync(await waiter.GetAsync("/api/staff/me/results?list=bogus&cursor=junk"));
+        Assert.Equal(4, all.GetProperty("recent").GetProperty("orders").GetProperty("items").GetArrayLength());
+        Assert.False(all.GetProperty("recent").GetProperty("orders").TryGetProperty("nextCursor", out var none) && none.ValueKind != JsonValueKind.Null);
+
+        // A bad window or limit: the one 422 naming each.
+        var refused = await ProblemAsync(
+            await waiter.GetAsync("/api/staff/me/results?from=yesterday&limit=500"), HttpStatusCode.UnprocessableEntity, "validation-failed");
+        Assert.Equal(
+            ["from", "limit"],
             refused.GetProperty("context").GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("field").GetString()!).ToArray());
     }
 

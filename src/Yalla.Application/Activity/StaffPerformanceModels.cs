@@ -170,6 +170,40 @@ public sealed record PersonPerformance(
     IReadOnlyList<DailySales> DailySales,
     RecentPage Recent);
 
+/// <summary>
+/// The first page of each of a person's recent lists, read together for My results. Each page is the one
+/// <c>/api/staff/me/performance?list=…</c> answers, cursor included, so "more" continues there.
+/// </summary>
+/// <param name="Orders">Orders sent, pre-orders sent, voids, discounts, comps, bills closed in cash.</param>
+/// <param name="Messages">Replies and "are you coming?".</param>
+/// <param name="Bookings">Approved, declined, seated, no-show.</param>
+/// <param name="Cash">Cash at tables and at the takeaway counter.</param>
+/// <param name="Calls">Calls claimed.</param>
+public sealed record RecentLists(
+    RecentPage Orders,
+    RecentPage Messages,
+    RecentPage Bookings,
+    RecentPage Cash,
+    RecentPage Calls);
+
+/// <summary>
+/// My results in one read: the caller's numbers, their chart and the first page of every recent list - what the
+/// staff phone's screen shows for a period, which took one <c>/api/staff/me/performance</c> call per list before.
+/// </summary>
+/// <param name="BranchId">The branch read.</param>
+/// <param name="From">The first date.</param>
+/// <param name="To">The last, inclusive.</param>
+/// <param name="Kpis">Their row, as on Staff → Results.</param>
+/// <param name="DailySales">As on a person's page: one entry per local date, a week ending on <c>to</c> at least.</param>
+/// <param name="Recent">Every list's first page, <c>limit</c> entries each.</param>
+public sealed record MyResults(
+    Guid BranchId,
+    DateOnly From,
+    DateOnly To,
+    StaffPerformanceRow Kpis,
+    IReadOnlyList<DailySales> DailySales,
+    RecentLists Recent);
+
 /// <summary>The performance reads.</summary>
 public interface IStaffPerformanceQuery
 {
@@ -182,6 +216,13 @@ public interface IStaffPerformanceQuery
 
     /// <summary>The caller's own, at their home branch (or <c>branchId</c> for the venue-wide). A waiter or above.</summary>
     Task<PersonPerformance> GetMineAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The caller's own with every recent list at once: the same person, branch and checks as <see cref="GetMineAsync"/>;
+    /// <see cref="StaffPerformanceQuery.List"/> and <see cref="StaffPerformanceQuery.Cursor"/> are not read, and the
+    /// limit is per list (default <see cref="StaffPerformanceRules.ResultsDefaultLimit"/>).
+    /// </summary>
+    Task<MyResults> GetMyResultsAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default);
 }
 
 /// <summary>The performance reads' bounds and their query check.</summary>
@@ -194,6 +235,9 @@ public static class StaffPerformanceRules
 
     /// <summary>The chart's least reach: a week ending on <c>to</c>.</summary>
     public const int ChartDays = 7;
+
+    /// <summary>My results' page of each list when no <c>limit</c> is sent: a few of each, five lists at once.</summary>
+    public const int ResultsDefaultLimit = 10;
 
     public static class Fields
     {

@@ -216,6 +216,7 @@ acknowledged.
 | `GET /api/branches/{branchId}/staff-performance.csv` | `exportStaffPerformance` | manager+ at the branch |
 | `GET /api/branches/{branchId}/staff/{staffMemberId}/performance` | `getStaffMemberPerformance` | manager+ at the branch |
 | `GET /api/staff/me/performance` | `getMyPerformance` | the caller, waiter or above |
+| `GET /api/staff/me/results` | `getMyResults` | the caller, waiter or above |
 
 "At the branch" is the stored row, checked by `StaffBranchGuard`: a branch manager their own branch, the owner and the
 general manager every branch of their venue, a platform admin any. A waiter, the kitchen, or a manager of another
@@ -265,6 +266,17 @@ waiter's sales.
 
 A person's page adds a **daily series** (a week ending on `to` at least) and **recent lists** - `orders`, `messages`,
 `bookings`, `cash`, `calls` - which are History entries, keyset-paged, with `seconds` where the action measures it.
+
+**My results in one read** (2026-10-26). `getMyResults` (`GET /api/staff/me/results`) is the staff phone's My results
+for a period in one request - it took one `getMyPerformance` per list before (orders, messages, bookings and calls:
+four, each recomputing the figures and the chart). It answers `{ branchId, from, to, kpis, dailySales, recent }`:
+`kpis` and `dailySales` are `getMyPerformance`'s, and `recent` is `{ orders, messages, bookings, cash, calls }`, each
+exactly the page `getMyPerformance?list=…` answers for the same `limit`, `nextCursor` included - "more" of one list
+continues on `getMyPerformance` with that cursor. `limit` is per list, 1 to 100, default 10; `list` and `cursor` are not
+read. The caller, the branch (`branchId` for an owner or general manager) and every refusal are `getMyPerformance`'s:
+the same code path (`StaffPerformanceReader.MineAsync`), so a waiter reaches only their own numbers. The read is the
+person's figures once, then one keyset query per list - still a fixed number of statements. `getMyPerformance` stays
+for paging a list.
 
 ## 9. Reports and the old "no leaderboard" note
 

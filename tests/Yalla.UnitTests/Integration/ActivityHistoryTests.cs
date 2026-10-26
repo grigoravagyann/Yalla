@@ -749,7 +749,7 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
     }
 
     /// <summary>
-    /// The results, the History's page and a bill's timeline cost the same number of statements for one bill as for
+    /// The results, a person's page, My results, the History's page and a bill's timeline cost the same number of statements for one bill as for
     /// three with twice the lines: a fixed read per source, never one per bill, line or person.
     /// </summary>
     [SkippableFact]
@@ -778,6 +778,7 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
 
             await Performance(db, clock, actor).GetBranchAsync(branch.BranchId, new StaffPerformanceQuery());
             await Performance(db, clock, actor).GetPersonAsync(branch.BranchId, branch.WaiterId, new StaffPerformanceQuery());
+            await Performance(db, clock, TestActor.Waiter(branch.WaiterId)).GetMyResultsAsync(new StaffPerformanceQuery());
             await History(db, clock, actor).ListAsync(branch.BranchId, new ActivityFeedQuery());
             await History(db, clock, actor).TimelineAsync(branch.BranchId, ActivitySubjects.Tab, tabId);
 
