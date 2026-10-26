@@ -7,8 +7,10 @@ namespace Yalla.Application.Floor;
 /// </summary>
 /// <param name="Sequence">Position in the stream. Strictly increasing per branch.</param>
 /// <param name="TableStateChangeId">The audit row this came from.</param>
-/// <param name="DiningTableId">The table that changed.</param>
-/// <param name="TableLabel">Its label, so a client can render without a second lookup.</param>
+/// <param name="DiningTableId">
+/// The table that changed. Null only on a <paramref name="Signal"/> 8 entry, which is about the takeaway counter.
+/// </param>
+/// <param name="TableLabel">Its label, so a client can render without a second lookup. Null when there is no table.</param>
 /// <param name="FromStatus">1 Free, 2 Held, 4 Occupied, 5 OutOfService.</param>
 /// <param name="ToStatus">The status after the change.</param>
 /// <param name="Reason">Free text recorded with the transition.</param>
@@ -22,14 +24,16 @@ namespace Yalla.Application.Floor;
 /// Set when the entry is about more than the table's status: 1 a scan's tab is waiting to be let in, 2 it was
 /// admitted, 3 it was turned away (on the Occupied-to-Free row when that freed the table) - refetch the
 /// awaiting-admission list; 4 a booking the platform cancelled for a no-show block and 5 any other booking event -
-/// re-read the floor; 6 a booking's pre-order changed - re-read the pre-order rail. Absent on every ordinary
-/// change. A same-status row (4 to 6) is never folded.
+/// re-read the floor; 6 a booking's pre-order changed - re-read the pre-order rail; 7 the table was handed to another
+/// waiter - re-read the floor; 8 a takeaway order was placed, accepted, declined, cancelled, marked ready, collected or
+/// marked not collected - re-read the takeaway counter and the kitchen's queue (no table, both statuses Free). Absent on
+/// every ordinary change. A same-status row (4 to 8) is never folded.
 /// </param>
 public sealed record BranchChange(
     long Sequence,
     Guid TableStateChangeId,
-    Guid DiningTableId,
-    string TableLabel,
+    Guid? DiningTableId,
+    string? TableLabel,
     TableStatus FromStatus,
     TableStatus ToStatus,
     string Reason,

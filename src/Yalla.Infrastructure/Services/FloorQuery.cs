@@ -170,7 +170,7 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 c.Sequence,
                 c.Id,
                 c.DiningTableId,
-                c.DiningTable.Label,
+                c.DiningTable != null ? c.DiningTable.Label : null,
                 c.FromStatus,
                 c.ToStatus,
                 c.Reason,

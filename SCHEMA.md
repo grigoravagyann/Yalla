@@ -509,6 +509,11 @@ than in a service-layer check because two replays can race each other, and a che
 would let both through. Every state change and its log row are written in one `SaveChanges`, so a
 transition can never exist without its audit row.
 
+The log is also the branch's change stream (`Sequence`, `Signal`). One kind of row is about no table:
+the takeaway signal (`Signal` 8, 2026-10-26, `TableStateChange.ForTakeaway`) tells the floor a takeaway order
+moved, so `DiningTableId` is nullable - null on those rows only, which are Free to Free and the system's
+(migration `TakeawaySignalRowsHaveNoTable`; its `Down` deletes them).
+
 ## Why enum values are pinned, with gaps in them
 
 Every enum in `Yalla.Domain.Enums` writes its numbers out:

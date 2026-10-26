@@ -76,7 +76,9 @@ public static class TableStateEndpoints
                 + "`maxSequence` in the response is where the branch's stream ends right now, not "
                 + "the last entry in this page - so a short page still tells you that you are up to "
                 + "date. `hasMore` is set when the page hit its cap; call again with the last "
-                + "sequence you received.")
+                + "sequence you received. "
+                + "A `signal` 8 entry (takeaway) is about the counter, not a table: `diningTableId` and "
+                + "`tableLabel` are null and both statuses are Free - re-read the takeaway counter, never fold it.")
             .Produces<BranchChangePage>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 

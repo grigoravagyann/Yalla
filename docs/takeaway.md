@@ -106,8 +106,14 @@ time per step without an event stream. The app shows Accepted as "Accepted · be
 Ready, oldest first, each Sent one with `acceptDeadlineUtc` - the answer countdown), `finishedToday` (Collected, NoShow,
 Declined placed on the branch's service day, newest first), `sentCount` and `readyCount` (the tab's badge). Each order
 carries the guest's name and proved number (empty for a platform admin), the lines, the note, the requested and
-promised times, `noShowFromUtc` and the payment once collected. **The tablet polls**, as the rest of the floor is polled:
-takeaway writes nothing to the change stream.
+promised times, `noShowFromUtc` and the payment once collected. **The floor follows the change stream** (2026-10-26):
+every move of an order - placed (accepted on placing or not), accepted, declined (by staff or by the sweep), cancelled
+by the guest, ready, collected, not collected - writes one row on the branch's change stream
+(`GET /api/branches/{id}/tables/changes`) in the same save, **`signal` 8 `TakeawayChanged`**, and the tablet and the
+staff phone re-read the counter on it. The row is about the counter, not a table: `diningTableId` and `tableLabel`
+null, both statuses Free (never fold them), `actorType` 3, no order named - the client re-reads the whole counter. A
+replay or a refusal writes none. Written by `TakeawayChangeStream`, a handler of every takeaway event
+(`docs/domain-events.md`). The counter is still polled, slowly, as a fallback for a stream that is not answering.
 
 **The kitchen.** `GET /api/branches/{branchId}/orders` - the kitchen queue - carries the accepted and ready takeaway
 orders beside the tabs' orders and the held pre-orders: the code as `tableLabel`, no `tabId`, status InKitchen or
@@ -162,7 +168,7 @@ Added 2026-10-23 (Yalla#61's follow-up).
 - **No delivery.** The guest comes to the counter.
 - **One day.** Slots are today's (the open block's); there is no ordering for tomorrow.
 - **No editing** an order once sent: cancel while Sent, and order again.
-- **No change-stream signal**: the counter polls.
+- **No order id on the change stream**: signal 8 says the counter changed, not which order; the client reads the counter.
 - The account's deletion keeps the order (the venue's record of what it cooked and was paid) with the account link cut.
 
 ## In the History (2026-10-24)
