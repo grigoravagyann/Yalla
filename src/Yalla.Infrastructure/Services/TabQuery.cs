@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Media;
 using Yalla.Application.Tabs;
+using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
@@ -215,14 +216,26 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             .Where(e => e.TabId == tabId)
             .MaxAsync(e => (long?)e.Sequence, cancellationToken) ?? 0L;
 
-        // What each adjustment actually took off. Computed here rather than stored, from the same
-        // base the bill uses: a percentage against the line it names, or against the tab subtotal
-        // when it names none.
-        var lineTotals = lines.ToDictionary(
-            l => l.Id,
-            l => l.VoidedAtUtc is null ? l.UnitPriceAmdSnapshot * l.Quantity : 0L);
+        // What each standing adjustment actually took off: its own reduction in the bill's order
+        // (TabBilling.Reductions) - a line's own adjustments off that line in turn, then the tab-wide
+        // ones off what is left - the rule TabLedger.ReductionOf, the History, the reports and the
+        // answer to giving one use. In the order the ledger applies them: given, then id, compared
+        // here rather than by the database, which sorts uniqueidentifier differently. A reversed one
+        // took nothing.
+        var standing = adjustments
+            .Where(a => a.VoidedAtUtc is null)
+            .OrderBy(a => a.CreatedAtUtc)
+            .ThenBy(a => a.Id)
+            .ToList();
 
-        var liveSubtotal = lineTotals.Values.Sum();
+        var standingReductions = TabBilling.Reductions(
+            [.. lines.Select(l => new BillingLine(
+                l.Id, null, l.UnitPriceAmdSnapshot, l.Quantity, l.VoidedAtUtc is not null, false, []))],
+            [.. standing.Select(a => new BillingAdjustment(a.TabOrderLineId, a.Percent, a.AmountAmd))]);
+
+        var reductionOf = standing
+            .Select((a, index) => (a.Id, Reduction: standingReductions[index]))
+            .ToDictionary(x => x.Id, x => x.Reduction);
 
         return new TabSnapshot(
             tab.Id,
@@ -294,9 +307,7 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                     a.Kind,
                     a.Percent,
                     a.AmountAmd,
-                    ReductionAmd: a.VoidedAtUtc is not null
-                        ? 0L
-                        : Reduction(a.Percent, a.AmountAmd, a.TabOrderLineId, lineTotals, liveSubtotal),
+                    ReductionAmd: reductionOf.GetValueOrDefault(a.Id),
                     a.Reason,
                     a.CreatedAtUtc,
                     IsVoided: a.VoidedAtUtc is not null)),
@@ -308,27 +319,5 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
                 tab.AdmissionDecidedAtUtc,
                 tab.AdmissionDecidedByStaffId,
                 tab.Admission == TabAdmission.Rejected ? tab.RejectFreedTable : null));
-    }
-
-    /// <summary>
-    /// What one adjustment takes off, against the line it names or the tab as a whole.
-    /// </summary>
-    /// <remarks>
-    /// Uses <see cref="TabAdjustment.ReductionOn"/> so the number a diner reads on the bill comes
-    /// out of the same rounding rule the bill itself was computed with. A second implementation
-    /// here would show a diner a discount that does not add up to the total beneath it.
-    /// </remarks>
-    private static long Reduction(
-        decimal? percent,
-        long? amountAmd,
-        Guid? lineId,
-        IReadOnlyDictionary<Guid, long> lineTotals,
-        long liveSubtotal)
-    {
-        var baseAmd = lineId is { } id
-            ? lineTotals.GetValueOrDefault(id)
-            : liveSubtotal;
-
-        return TabAdjustment.ReductionFor(percent, amountAmd, baseAmd);
     }
 }
