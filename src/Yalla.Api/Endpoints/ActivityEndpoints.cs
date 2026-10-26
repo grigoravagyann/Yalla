@@ -182,6 +182,28 @@ public static class ActivityEndpoints
             .ProducesProblem<Errors.ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity, "A bad query value, or `branchId` missing for somebody venue-wide.");
 
+        app.MapGet("/api/staff/me/results", MyResultsAsync)
+            .WithTags(EndpointConventions.StaffTag)
+            .RequireAuthorization(YallaPolicies.WaiterOrAbove)
+            .WithName("getMyResults")
+            .WithSummary("My results in one read: the caller's numbers, chart and every recent list")
+            .WithDescription(
+                "What the staff phone's My results shows for a period, in one call: `getMyPerformance`'s figures and "
+                + "chart with the first page of **every** recent list instead of one.\n\n"
+                + "Query: `from`, `to` as `getMyPerformance`; `limit` - entries per list, 1 to 100, default 10; "
+                + "`branchId` for an owner or general manager, as there. `list` and `cursor` are not read.\n\n"
+                + "Answers `{ branchId, from, to, kpis, dailySales, recent }`: `kpis` and `dailySales` as "
+                + "`getMyPerformance`; `recent` is `{ orders, messages, bookings, cash, calls }`, each the page "
+                + "`getMyPerformance?list=…` answers - `{ list, items, nextCursor }`, newest first - so a list's "
+                + "`nextCursor` continues there. A cash bill is on both `orders` and `cash`, as on the separate lists.\n\n"
+                + "The same caller and the same refusals as `getMyPerformance`: a waiter or above by the stored row, "
+                + "their own numbers only; the kitchen and the platform are 403.")
+            .Produces<MyResults>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "`forbidden`: the kitchen, the platform, or a branch not theirs.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblem<Errors.ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity, "A bad query value, or `branchId` missing for somebody venue-wide.");
+
         app.MapPost("/api/tabs/{tabId:guid}/transfer", TransferAsync)
             .WithTags(EndpointConventions.StaffTag)
             .RequireAuthorization(YallaPolicies.WaiterOrAbove, YallaPolicies.BranchScoped)
@@ -370,6 +392,16 @@ public static class ActivityEndpoints
         string? branchId = null) =>
         Results.Ok(await performance.GetMineAsync(
             new StaffPerformanceQuery(from, to, list, cursor, limit, branchId), cancellationToken));
+
+    private static async Task<IResult> MyResultsAsync(
+        IStaffPerformanceQuery performance,
+        CancellationToken cancellationToken,
+        string? from = null,
+        string? to = null,
+        string? limit = null,
+        string? branchId = null) =>
+        Results.Ok(await performance.GetMyResultsAsync(
+            new StaffPerformanceQuery(from, to, Limit: limit, BranchId: branchId), cancellationToken));
 
     private static async Task<IResult> TransferAsync(
         Guid tabId, TransferTableRequest request, ITableTransferService transfers, CancellationToken cancellationToken)

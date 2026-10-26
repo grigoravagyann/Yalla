@@ -134,6 +134,25 @@ internal sealed class StaffPerformanceReader(
         return await PersonAsync(branchId, branch.TimeZoneId, staffId, filter, cancellationToken);
     }
 
+    public Task<MyResults> GetMyResultsAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default)
+    {
+        // Contract stub: the shape the frontend generates from; the read follows on this branch.
+        ArgumentNullException.ThrowIfNull(query);
+
+        var today = DateOnly.FromDateTime(clock.UtcNow);
+        RecentPage Empty(RecentList list) => new(StaffPerformanceRules.Word(list), [], null);
+
+        return Task.FromResult(new MyResults(
+            Guid.Empty,
+            today,
+            today,
+            new Tally().ToRow(actor.StaffMemberId ?? Guid.Empty, string.Empty, actor.Role ?? StaffRole.Waiter, true),
+            [],
+            new RecentLists(
+                Empty(RecentList.Orders), Empty(RecentList.Messages), Empty(RecentList.Bookings), Empty(RecentList.Cash),
+                Empty(RecentList.Calls))));
+    }
+
     // ---------------------------------------------------------------- one person
 
     private async Task<PersonPerformance> PersonAsync(
