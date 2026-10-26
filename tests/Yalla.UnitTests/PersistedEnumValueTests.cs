@@ -449,6 +449,9 @@ public class PersistedEnumValueTests
 
         // Activity history (2026-10-24): a table handed to another waiter.
         Assert.Equal(7, (int)TableChangeSignal.TableTransferred);
+
+        // Takeaway (2026-10-26): any takeaway order's move, on a row with no table.
+        Assert.Equal(8, (int)TableChangeSignal.TakeawayChanged);
     }
 
     /// <summary>The activity log's two stored enums (2026-10-24). On the wire they are words; on disk, these numbers.</summary>

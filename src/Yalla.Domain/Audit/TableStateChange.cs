@@ -28,9 +28,13 @@ public sealed class TableStateChange : Entity
 
     public Branch Branch { get; private set; } = null!;
 
-    public Guid DiningTableId { get; private set; }
+    /// <summary>
+    /// The table that changed. Null only on a <see cref="TableChangeSignal.TakeawayChanged"/> row, which is about the
+    /// takeaway counter (<see cref="ForTakeaway"/>).
+    /// </summary>
+    public Guid? DiningTableId { get; private set; }
 
-    public DiningTable DiningTable { get; private set; } = null!;
+    public DiningTable? DiningTable { get; private set; }
 
     public TableStatus FromStatus { get; private set; }
 
@@ -124,6 +128,31 @@ public sealed class TableStateChange : Entity
 
     private TableStateChange()
     {
+    }
+
+    /// <summary>
+    /// A <see cref="TableChangeSignal.TakeawayChanged"/> row: a takeaway order at the branch moved, so every client
+    /// following the branch's stream re-reads the counter. About no table - <see cref="DiningTableId"/> is null and both
+    /// statuses are Free, which mean nothing here - and written by the system, naming nobody: the History's line says
+    /// who did it.
+    /// </summary>
+    /// <param name="branchId">The order's branch.</param>
+    /// <param name="reason">What happened, in words: "takeaway placed", "takeaway collected".</param>
+    /// <param name="atUtc">When.</param>
+    public static TableStateChange ForTakeaway(Guid branchId, string reason, DateTime atUtc) =>
+        new TableStateChange(branchId, reason, atUtc).WithSignal(TableChangeSignal.TakeawayChanged);
+
+    private TableStateChange(Guid branchId, string reason, DateTime atUtc)
+        : base(Guid.CreateVersion7())
+    {
+        BranchId = Guard.NotEmpty(branchId, nameof(branchId));
+        DiningTableId = null;
+        FromStatus = TableStatus.Free;
+        ToStatus = TableStatus.Free;
+        Reason = Guard.NotBlank(reason, nameof(reason), FieldLengths.Reason);
+        ActorType = ActorType.System;
+        AtUtc = Guard.NotLocalTime(atUtc, nameof(atUtc));
+        ClientCommandId = Guid.CreateVersion7();
     }
 
     public TableStateChange(

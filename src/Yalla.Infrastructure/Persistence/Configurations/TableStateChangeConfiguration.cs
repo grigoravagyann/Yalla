@@ -37,6 +37,8 @@ internal sealed class TableStateChangeConfiguration : EntityConfiguration<TableS
             .HasForeignKey(c => c.BranchId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Optional since 2026-10-26: a takeaway signal row (signal 8, TableStateChange.ForTakeaway) is about the
+        // counter and names no table. Every table transition and every other signal still names one.
         builder.HasOne(c => c.DiningTable)
             .WithMany()
             .HasForeignKey(c => c.DiningTableId)

@@ -12,8 +12,8 @@ using Yalla.Infrastructure.Persistence;
 namespace Yalla.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(YallaDbContext))]
-    [Migration("20261026171047_StructuredDeviceLabels")]
-    partial class StructuredDeviceLabels
+    [Migration("20261026170121_TakeawaySignalRowsHaveNoTable")]
+    partial class TakeawaySignalRowsHaveNoTable
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -66,16 +66,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("DeviceId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int?>("DeviceKind")
-                        .HasColumnType("int");
-
                     b.Property<string>("DeviceLabel")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
-
-                    b.Property<string>("DeviceOwnerName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("GuestName")
                         .HasMaxLength(200)
@@ -271,7 +264,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<Guid>("DiningTableId")
+                    b.Property<Guid?>("DiningTableId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<int>("FromStatus")
@@ -655,9 +648,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int?>("Browser")
-                        .HasColumnType("int");
-
                     b.Property<string>("ClientDeviceId")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -682,9 +672,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
-
-                    b.Property<int?>("Platform")
-                        .HasColumnType("int");
 
                     b.Property<int?>("PushKinds")
                         .HasColumnType("int");
@@ -3229,8 +3216,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasOne("Yalla.Domain.Venues.DiningTable", "DiningTable")
                         .WithMany()
                         .HasForeignKey("DiningTableId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Branch");
 
