@@ -164,7 +164,7 @@ tabs and sittings are unchanged byte for byte. Regenerate only on purpose:
 |---|---|---|
 | `Tab.TakePayment(payment, at, sitting)` (from `TabPaymentService.RecordCashAsync`, after the payment is added and the totals applied with it) - the split locks | `TabPaymentRecorded(Tab, Payment, SettledTheBill)` | `PaymentActivity`: `payment.cash` (money: amount, tip, what remains, the total, whether it closed the tab, the table's server - the tip is theirs). `PaymentStream`: `PaymentRecorded`. |
 | the same call, when nothing is owed after it: the tab closes, and its sitting when still open - not the table | `TabSettled(Tab, SittingClosed)` | `PaymentStream`: `TabClosed` (`tableSessionClosed`), after the `PaymentRecorded`. |
-| `TabAdjustment.ByPercent` / `ByAmount` (from `TabOrderService.AddAdjustmentAsync`) | `TabAdjustmentAdded(Adjustment)` | `PaymentActivity`: `payment.discount` / `payment.comp` (money: what it took off the subtotal, the line's name, the total before and after - "before" is the bill with it not standing, `TabLedger.ComputeTogglingAdjustment`). `PaymentStream`: `AdjustmentAdded`. |
+| `TabAdjustment.ByPercent` / `ByAmount` (from `TabOrderService.AddAdjustmentAsync`) | `TabAdjustmentAdded(Adjustment)` | `PaymentActivity`: `payment.discount` / `payment.comp` (money: its own reduction in the bill's order, `TabLedger.ReductionOf` - the reports' rule; the line's name, the total before and after - "before" is the bill with it not standing, `TabLedger.ComputeTogglingAdjustment`). `PaymentStream`: `AdjustmentAdded`. |
 | `TabAdjustment.Void(at, byStaffId)` (from `VoidAdjustmentAsync`) | `TabAdjustmentReversed(Adjustment)` | `PaymentActivity`: `payment.adjustment-reversed` (money: the total before and after, `ComputeTogglingAdjustment` again). `PaymentStream`: `AdjustmentVoided`. |
 | `Tab.WriteOff(at, byStaffId, reason)` (from `TabPaymentService.AbandonAsync`, and `TableStateService.AbandonTabAsync`, which now saves through the ledger) - replaces `MarkAbandoned` | `TabWrittenOff(Tab, WrittenOffAmd, Reason, ByStaffId)` | `PaymentActivity`: `payment.unpaid` (money: what was still owed, the total, what had been paid). `PaymentStream`: `TabAbandoned`. |
 
@@ -185,11 +185,25 @@ Results and the waiter's cash list (`Integration/Snapshots/PaymentSideEffects.ap
 byte for byte. The one deliberate change, in its own commit before the move: `TableStateService.AbandonTabAsync` (no
 route of its own) now tells the tab's stream `TabAbandoned` as the payment route does.
 
-**Known, recorded, not changed.** A discount's or comp's History amount is what the subtotal dropped by with the bill as
-it stood when it was given; the revenue report and Staff → Results count each adjustment's own reduction in the bill's
-order (`AdjustmentReductions`). They differ when another adjustment stands: in the snapshot, a comp of a 3,200 dish under
-a standing 10 % discount reads 2,880 in the History and 3,200 in the reports. The move keeps both as they were;
-reconciling them is its own decision.
+**A discount's or comp's History amount is the reports' (2026-10-26).** It used to be what the subtotal dropped by
+with the bill as it stood when it was given, while the revenue report and Staff → Results count each adjustment's own
+reduction in the bill's order (`AdjustmentReductions`). They differed when another adjustment stood: in the snapshot, a
+comp of a 3,200 dish under a standing 10 % discount read 2,880 in the History (the discount then takes 320 less) and
+3,200 in the reports. Decided: the History uses the reports' rule - `TabLedger.ReductionOf`, the same
+`TabBilling.Reductions` over the bill in the tracker, in the same order - so the line and the reports name the same
+amount; the total before and after still describe the bill. The snapshot's comp line moved from 2,880 to 3,200 and
+nothing else (`ActivityHistoryTests.A_comp_under_a_standing_discount_reads_in_the_History_what_the_reports_count`).
+Two things stay as they are, on purpose:
+
+- **Entries written before the change keep their amount.** The History is a record of what was written, and the old
+  amount cannot be recomputed safely after the fact: it needs the bill as it stood at that instant, and lines voided and
+  adjustments reversed since are not in a query of today's rows. Only a line's discount or comp given under a standing
+  tab-wide discount differs, by what that discount stopped taking (any other new adjustment comes off after every
+  standing one, so it took exactly what the subtotal dropped by); no migration.
+- **The History says what an adjustment took when it was given; the reports read the bill as it stands.** A later
+  change to the bill moves an earlier adjustment's reduction in the reports and not its line: a comp given after a
+  tab-wide discount shrinks what the discount takes (the comp comes off its line first), and a reversed adjustment
+  changes what the ones after it take. The History is append-only; the reversal has its own line.
 
 ### Takeaway orders - migrated
 
@@ -299,7 +313,22 @@ preconditions and refusals, the table lock, the row-version conflict, the bookin
 unshown reminders dropped, the held pre-order put on the tab (`PreOrderSittings`, the pre-orders vertical's), closing
 the sitting, and the tab's own fate when the table is freed. **A zero-balance tab closes with the table and raises
 nothing of its own** (`Tab.Close`, unchanged): `TableFreed` names it (`TabId`, `TabClosed`), and freeing a table has
-never told the tab's stream anything - a phone on an empty tab hears no `TabClosed` (the Tabs vertical's to decide).
+never told the tab's stream anything - a phone on an empty tab hears no `TabClosed`.
+
+**Looked at 2026-10-26 and left so: the phones learn it from the tab read.** The diner's tab screen polls
+`GET /api/tabs/{tabId}` every 8 seconds whatever the stream says (`useDinerTab(tabId, { pollMs })` in the frontend's
+`app/tab/[tabId]/index.tsx`, "staff may close the table meanwhile"), and so do its people and waiting screens; the
+screens pushed above it (menu, tray, settle) read the same cached query, which the tab screen beneath keeps polling.
+The stream is only a faster reason to refetch: the app reads every event type, `tabClosed` included, as "refetch the
+tab", and never acts on its payload. So within one poll the read answers `status: Closed` with `closedAtUtc` and
+`canOrderNow: false`; the screen shows the closed tab's paid view and forgets it as the active tab, the menu says the
+tab is closed instead of offering Add, and an order sent meanwhile is refused. Past the receipt grace (`Jwt:ParticipantReceiptGraceMinutes`, 120) the
+token answers `tab-closed` and the app shows that access ended. The staff screens learn from the change stream
+(`TableFreed` names the tab and that it closed); nothing on the web reads a tab's stream. Raising an event for it would
+make the table state machine save through the ledger to number a stream row, for a phone that is told at most eight
+seconds later anyway. Pinned by `TabEndpointTests.A_table_freed_with_an_empty_tab_closes_it_and_the_phones_read_of_the_tab_says_so`
+(the read says closed, the stream carries no `TabClosed`); revisit if a client ever ends a tab screen from the stream
+alone.
 The transfer loads the caller, the target, the branch and the previous waiter tracked, so the handlers read names and
 the venue from the tracker.
 
