@@ -90,6 +90,49 @@ public enum StaffDeviceKind
 }
 
 /// <summary>
+/// What a paired phone said it runs on, read by its own browser from its user agent. Stored as the integer on
+/// <c>StaffDevice</c>; never renumber. The console words it in the reader's language - "iPhone · Safari" - rather than
+/// the server or the phone writing an English label.
+/// </summary>
+public enum StaffDevicePlatform
+{
+    /// <summary>None the phone recognised: the console says "Phone" in the reader's language.</summary>
+    Other = 1,
+
+    IPhone = 2,
+
+    /// <summary>An iPad, including one whose Safari asks for the desktop site and calls itself a Mac.</summary>
+    IPad = 3,
+
+    Android = 4,
+
+    Windows = 5,
+
+    Mac = 6,
+
+    Linux = 7,
+}
+
+/// <summary>
+/// What browser a paired phone said it is, read by the browser from its own user agent. Stored as the integer on
+/// <c>StaffDevice</c>; never renumber. Absent when the phone did not recognise its browser.
+/// </summary>
+public enum StaffDeviceBrowser
+{
+    Safari = 1,
+
+    Chrome = 2,
+
+    Edge = 3,
+
+    Firefox = 4,
+
+    Opera = 5,
+
+    SamsungInternet = 6,
+}
+
+/// <summary>
 /// The kinds of staff push a device can ask for, as flags. Stored as the integer on <c>StaffDevice</c>; never
 /// renumber a bit.
 /// </summary>

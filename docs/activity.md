@@ -30,7 +30,8 @@ tries again, so an entry is never written twice or for the losing attempt.
 | `OccurredAtUtc` | When. |
 | `ActorKind` | `1 Staff`, `2 Diner` (the guest), `3 System`, `4 PlatformAdmin` - pinned ints in the database; on the wire the words `staff`, `guest`, `system`, `platform`, as the feed's `actorKind` filter takes them. |
 | `StaffMemberId?`, `ActorName` | Who, and their name **then** (copied from the stored row, not the token). The guest's name for a guest; nothing for the system. |
-| `DeviceId?`, `DeviceLabel` | The enrolled device the request came from and its label then: a tablet's name ("Hall tablet"), a personal phone's person ("Aram's phone"), or `Console` for a console sign-in. |
+| `DeviceId?`, `DeviceLabel` | The enrolled device the request came from and its label then: a tablet's name ("Hall tablet"), a personal phone's person ("Aram's phone"), or `Console` for a console sign-in. English for a phone and the console - kept for the CSV export and for entries written before the two below. |
+| `DeviceKind?`, `DeviceOwnerName?` | The same as parts (2026-10-26), for a client to word in its reader's language: `1 Tablet` or `2 Phone`, and a phone's person by full name then. On the wire `deviceKind` is `console` (staff with no device - derived, so older entries have it too), `tablet` or `phone`, and absent for the guest, the system, a device not found, and a tablet or phone on an entry written before - read `deviceLabel` then. Entries already written were not backfilled. |
 | `Category` | `1 booking`, `2 table`, `3 order`, `4 payment`, `5 takeaway`, `6 message`, `7 settings`, `8 staff`, `9 device` - pinned ints, words on the wire. |
 | `Action` | A stable code, `category.verb` - §3. |
 | `SubjectType`, `SubjectId`, `SubjectCode?` | What it was done to - the detail link - and its short code (`T-482`, a booking's). |
@@ -62,8 +63,9 @@ the venue's History.
 Read from the request, never passed in. `ICurrentActor.DeviceId` is the `deviceId` claim of **any staff token that
 carries one** - a tablet's staff session or a personal phone's - and the log looks the device up in `StaffDevices` by
 id. A tablet is labelled with its `Name`; a phone (`Kind = Phone`) with its bound person's first name, "Aram's phone",
-not the name the browser gave itself when it was paired. A device it cannot find is recorded by id with no label; a
-staff token with no device is the console.
+not the name the browser gave itself when it was paired - and keeps the kind and the phone's person beside that English
+label, so a client never has to read the label apart. A device it cannot find is recorded by id with no label; a staff
+token with no device is the console.
 
 A caller may say only three things about the actor: **the system did it** (`BySystem` - a deadline passed: the approval
 and takeaway sweeps, a takeaway auto-accepted), **the guest did it** (`ByGuest` - a booking's manage link carries no

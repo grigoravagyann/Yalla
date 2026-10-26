@@ -268,6 +268,8 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
         Assert.Equal("staff", sold.GetProperty("actorKind").GetString());
         Assert.Equal(branch.ManagerId, sold.GetProperty("staffMemberId").GetGuid());
         Assert.Equal("Console", sold.GetProperty("deviceLabel").GetString());
+        Assert.Equal("console", sold.GetProperty("deviceKind").GetString());
+        Assert.False(sold.TryGetProperty("deviceOwnerName", out _));
         Assert.False(sold.TryGetProperty("deviceId", out _));
         Assert.True(sold.GetProperty("before").GetProperty("isAvailable").GetBoolean());
         Assert.False(sold.GetProperty("after").GetProperty("isAvailable").GetBoolean());
@@ -276,6 +278,7 @@ public class ActivityEndpointTests(SqlServerFixture fixture)
         {
             Assert.Equal("Test Waiter", seat.GetProperty("actorName").GetString());
             Assert.Equal("Test tablet", seat.GetProperty("deviceLabel").GetString());
+            Assert.Equal("tablet", seat.GetProperty("deviceKind").GetString());
             Assert.Equal(JsonValueKind.String, seat.GetProperty("deviceId").ValueKind);
             Assert.Equal(2, seat.GetProperty("summary").GetProperty("partySize").GetInt32());
         }

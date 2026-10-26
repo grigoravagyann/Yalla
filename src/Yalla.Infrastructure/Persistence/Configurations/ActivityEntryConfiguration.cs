@@ -23,6 +23,8 @@ internal sealed class ActivityEntryConfiguration : EntityConfiguration<ActivityE
         builder.Property(e => e.ActorName).HasMaxLength(FieldLengths.PersonName);
         builder.Property(e => e.DeviceId);
         builder.Property(e => e.DeviceLabel).HasMaxLength(FieldLengths.DeviceName);
+        builder.Property(e => e.DeviceKind);
+        builder.Property(e => e.DeviceOwnerName).HasMaxLength(FieldLengths.PersonName);
         builder.Property(e => e.Category).IsRequired();
 
         builder.Property(e => e.Action)

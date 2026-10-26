@@ -77,6 +77,16 @@ public sealed class StaffDevice : Entity
     public StaffMember? BoundStaffMember { get; private set; }
 
     /// <summary>
+    /// A phone's platform, as it said when it paired - the parts the console words its device column from, in the
+    /// reader's language. Null on a tablet, and on a phone paired before 2026-10-26 or by an app that did not say:
+    /// <see cref="Name"/> is then all there is.
+    /// </summary>
+    public StaffDevicePlatform? Platform { get; private set; }
+
+    /// <summary>A phone's browser, as it said when it paired. Null on a tablet, or when it did not say or know.</summary>
+    public StaffDeviceBrowser? Browser { get; private set; }
+
+    /// <summary>
     /// Which staff pushes this device asked for. Null until somebody chooses, and then
     /// <see cref="StaffPushKinds.Defaults"/> applies - see <see cref="EffectivePushKinds"/>.
     /// </summary>
@@ -139,6 +149,21 @@ public sealed class StaffDevice : Entity
             Kind = StaffDeviceKind.Phone,
             BoundStaffMemberId = Guard.NotEmpty(boundStaffMemberId, nameof(boundStaffMemberId)),
         };
+
+    /// <summary>
+    /// What a phone runs on, as it said when it paired (again): replaced whole, so a browser that no longer says
+    /// clears what an earlier one did. Ignored on a tablet, whose name is the manager's.
+    /// </summary>
+    public void Describe(StaffDevicePlatform? platform, StaffDeviceBrowser? browser)
+    {
+        if (Kind != StaffDeviceKind.Phone)
+        {
+            return;
+        }
+
+        Platform = platform is { } p && Enum.IsDefined(p) ? p : null;
+        Browser = browser is { } b && Enum.IsDefined(b) ? b : null;
+    }
 
     /// <summary>Whether this is a phone bound to somebody other than <paramref name="staffMemberId"/>.</summary>
     public bool IsBoundToSomebodyOtherThan(Guid staffMemberId) =>

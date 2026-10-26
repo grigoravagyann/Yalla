@@ -101,8 +101,17 @@ public sealed record ActivityCursor(DateTime OccurredAtUtc, Guid EntryId)
 /// <param name="DeviceId">The tablet or phone it came from; absent from the console.</param>
 /// <param name="DeviceLabel">
 /// That device's label then - a tablet's name, "Aram's phone" for a personal phone - or <c>Console</c>; absent for the
-/// guest and the system.
+/// guest and the system. English for a phone and the console: word those from <paramref name="DeviceKind"/> and
+/// <paramref name="DeviceOwnerName"/> instead. Kept for the CSV export and for entries written before 2026-10-26, which
+/// carry no kind for a device.
 /// </param>
+/// <param name="DeviceKind">
+/// Where it came from, as parts rather than words: <c>console</c> (staff signed in to the console, no device),
+/// <c>tablet</c> (its name is <paramref name="DeviceLabel"/>) or <c>phone</c> (its person is
+/// <paramref name="DeviceOwnerName"/>). Absent for the guest and the system, for a device that was not found, and for a
+/// tablet or phone on an entry written before 2026-10-26 - read <paramref name="DeviceLabel"/> then.
+/// </param>
+/// <param name="DeviceOwnerName">A phone's person then, by full name: whose phone. Absent for anything but a phone.</param>
 /// <param name="Category">The filter word.</param>
 /// <param name="Action">The stable code - see <c>docs/activity.md</c>.</param>
 /// <param name="SubjectType">What it was done to: <c>reservation</c>, <c>tab</c>, <c>takeaway</c>, <c>menu-item</c>...</param>
@@ -131,6 +140,8 @@ public sealed record ActivityItem(
     string? ActorName,
     Guid? DeviceId,
     string? DeviceLabel,
+    string? DeviceKind,
+    string? DeviceOwnerName,
     string Category,
     string Action,
     string SubjectType,

@@ -236,6 +236,21 @@ public static class ActivityWords
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not an actor kind."),
     };
 
+    /// <summary>
+    /// Where an entry came from, as the wire says it: <c>console</c> for staff (or a platform admin) with no device,
+    /// <c>tablet</c> or <c>phone</c> for a device whose kind the entry kept, null otherwise - the guest, the system, a
+    /// device not found, or an entry written before the kind was kept.
+    /// </summary>
+    public static string? DeviceKindOf(ActivityActorKind actor, Guid? deviceId, StaffDeviceKind? kind) =>
+        deviceId is null
+            ? actor is ActivityActorKind.Staff or ActivityActorKind.PlatformAdmin ? "console" : null
+            : kind switch
+            {
+                StaffDeviceKind.Tablet => "tablet",
+                StaffDeviceKind.Phone => "phone",
+                _ => null,
+            };
+
     /// <summary>The actor kind a wire word names, or null when it names none.</summary>
     public static ActivityActorKind? ActorKindFrom(string word) =>
         Enum.GetValues<ActivityActorKind>().Cast<ActivityActorKind?>()

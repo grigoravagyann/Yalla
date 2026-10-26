@@ -44,7 +44,9 @@ public static class AdminDeviceEndpoints
                 "Revoked devices are included, so the list is an audit trail rather than a roster.\n\n"
                 + "`kind` narrows it: `1` tablets, `2` personal phones; absent, both. Each item says its `kind`; a "
                 + "phone also names its person in `boundStaffMember` (`id`, `fullName`, `role`), and its `name` is "
-                + "what the phone called itself when it paired - its platform and browser, \"iPhone · Safari\". "
+                + "what the phone called itself when it paired - its platform and browser in English, \"iPhone · Safari\" - "
+                + "and `platform` and `browser` are the same as parts, for the console to word in its reader's language "
+                + "(absent on a phone paired before them; read `name` then). "
                 + "`lastSeenAtUtc` moves with every PIN sign-in and session renewal on the device; `revokedAtUtc` "
                 + "is when it was revoked or unpaired.")
             .Produces<IReadOnlyList<StaffDeviceSummary>>()

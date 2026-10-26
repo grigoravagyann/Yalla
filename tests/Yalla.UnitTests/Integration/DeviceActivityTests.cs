@@ -35,6 +35,10 @@ public sealed class DeviceActivityTests(SqlServerFixture fixture)
         Assert.Equal("Test Waiter", paired.ActorName);
         Assert.Equal(paired.SubjectId, paired.DeviceId);
         Assert.Equal("Test's phone", paired.DeviceLabel);
+
+        // The same as parts, for a client to word in its reader's language rather than read the English apart.
+        Assert.Equal(StaffDeviceKind.Phone, paired.DeviceKind);
+        Assert.Equal("Test Waiter", paired.DeviceOwnerName);
         Assert.Equal(ActivityCategory.Device, paired.Category);
         Assert.Equal(factory.Clock.UtcNow, paired.OccurredAtUtc, TimeSpan.FromSeconds(1));
 
@@ -67,6 +71,8 @@ public sealed class DeviceActivityTests(SqlServerFixture fixture)
         var byConsole = Assert.Single(await EntriesAsync(factory, branch, ActivityActions.DevicePhoneUnpaired), e => e.SubjectId == second);
         Assert.Equal(branch.ManagerId, byConsole.StaffMemberId);
         Assert.Equal("Console", byConsole.DeviceLabel);
+        Assert.Null(byConsole.DeviceKind);
+        Assert.Null(byConsole.DeviceOwnerName);
         Assert.Equal("console", Cause(byConsole));
         Assert.Equal("Test Waiter", JsonDocument.Parse(byConsole.SummaryJson).RootElement.GetProperty("staffName").GetString());
 
@@ -123,6 +129,7 @@ public sealed class DeviceActivityTests(SqlServerFixture fixture)
         var managers = Assert.Single(await EntriesAsync(factory, branch, ActivityActions.DevicePhonePaired), e => e.StaffMemberId == branch.ManagerId);
         Assert.Equal(managers.SubjectId, managers.DeviceId);
         Assert.EndsWith("'s phone", managers.DeviceLabel, StringComparison.Ordinal);
+        Assert.Equal((StaffDeviceKind.Phone, "Test Manager"), (managers.DeviceKind!.Value, managers.DeviceOwnerName));
     }
 
     [SkippableFact]

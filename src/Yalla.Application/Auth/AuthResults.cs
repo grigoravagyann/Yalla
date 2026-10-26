@@ -257,9 +257,16 @@ public sealed record StaffRosterEntry(
 /// <param name="Kind">1 Tablet, 2 Phone.</param>
 /// <param name="BoundStaffMember">A phone's person; absent on a tablet.</param>
 /// <param name="RevokedAtUtc">When it was revoked or unpaired; absent while live.</param>
+/// <param name="Platform">
+/// A phone's platform as it said when it paired (<c>1</c> other ... <c>7</c> Linux); absent on a tablet and on a phone
+/// paired before 2026-10-26.
+/// </param>
+/// <param name="Browser">A phone's browser as it said when it paired; absent on a tablet, or when it did not say.</param>
 /// <remarks>
-/// A phone's <paramref name="Name"/> is what the phone called itself when it paired - its platform and browser,
-/// such as "iPhone · Safari" - so the console's Phones tab shows it as the device column.
+/// A phone's <paramref name="Name"/> is what the phone called itself when it paired - its platform and browser in
+/// English, such as "iPhone · Safari". The console's Phones tab words the device column from
+/// <paramref name="Platform"/> and <paramref name="Browser"/> in its reader's language, and reads the name only for a
+/// phone that sent neither.
 /// </remarks>
 public sealed record StaffDeviceSummary(
     Guid Id,
@@ -270,4 +277,6 @@ public sealed record StaffDeviceSummary(
     bool IsRevoked,
     StaffDeviceKind Kind = StaffDeviceKind.Tablet,
     BoundStaffMemberView? BoundStaffMember = null,
-    DateTime? RevokedAtUtc = null);
+    DateTime? RevokedAtUtc = null,
+    StaffDevicePlatform? Platform = null,
+    StaffDeviceBrowser? Browser = null);

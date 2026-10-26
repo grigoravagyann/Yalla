@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
@@ -146,10 +147,23 @@ public sealed record PhonePairPreviewRequest([Required] string Code);
 /// one reuses the phone rather than adding a row.
 /// </param>
 /// <param name="DeviceName">
-/// What the console's Phones tab shows for it - the platform and browser, such as "iPhone · Safari".
+/// The platform and browser in a phrase, such as "iPhone · Safari": what the console's Phones tab shows for a phone that
+/// did not send <paramref name="Platform"/>, and the name its History entries keep.
+/// </param>
+/// <param name="Platform">
+/// What the phone runs on, read from its own user agent: <c>1</c> other, <c>2</c> iPhone, <c>3</c> iPad, <c>4</c>
+/// Android, <c>5</c> Windows, <c>6</c> Mac, <c>7</c> Linux. The console words the device from this and
+/// <paramref name="Browser"/> in its reader's language. Optional for an app that predates it; a number this list does
+/// not name is kept as nothing rather than refused (the sign-in routes are outside the validation filter).
+/// </param>
+/// <param name="Browser">
+/// Its browser: <c>1</c> Safari, <c>2</c> Chrome, <c>3</c> Edge, <c>4</c> Firefox, <c>5</c> Opera, <c>6</c> Samsung
+/// Internet. Absent when the phone does not recognise it.
 /// </param>
 public sealed record PhonePairRequest(
     [Required] string Code,
     [Required][StringLength(12, MinimumLength = 4)] string Pin,
     [Required][StringLength(128, MinimumLength = 8)] string ClientDeviceId,
-    [Required][StringLength(100, MinimumLength = 1)] string DeviceName);
+    [Required][StringLength(100, MinimumLength = 1)] string DeviceName,
+    [EnumDataType(typeof(StaffDevicePlatform))] StaffDevicePlatform? Platform = null,
+    [EnumDataType(typeof(StaffDeviceBrowser))] StaffDeviceBrowser? Browser = null);

@@ -147,6 +147,8 @@ public interface IStaffAuthService
         string pin,
         string clientDeviceId,
         string deviceName,
+        Domain.Enums.StaffDevicePlatform? platform = null,
+        Domain.Enums.StaffDeviceBrowser? browser = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
