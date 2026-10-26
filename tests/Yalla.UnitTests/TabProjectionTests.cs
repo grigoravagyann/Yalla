@@ -96,6 +96,41 @@ public class TabProjectionTests
         Assert.Equal([coffeeAt, teaAt], TabProjection.ProjectForStaff(tab).Lines.Select(l => l.OrderedAtUtc));
     }
 
+    /// <summary>
+    /// The time travels with the line and changes nothing about which lines are shown: a guest the
+    /// host hid the total from gets the time on her own lines and still no table lines, and a voided
+    /// line keeps the time it was ordered, still worth nothing.
+    /// </summary>
+    [Fact]
+    public void The_order_time_follows_the_line_under_a_hidden_total_and_on_a_voided_line()
+    {
+        var coffeeAt = Opened.AddMinutes(4);
+        var teaAt = Opened.AddMinutes(11);
+        var cakeAt = Opened.AddMinutes(19);
+        var tab = Tab(aniSeesTotal: false) with
+        {
+            Lines =
+            [
+                Line(HostId, "Coffee", 2_500L) with { OrderedAtUtc = coffeeAt },
+                Line(AniId, "Tea", 2_400L) with { OrderedAtUtc = teaAt },
+                Line(AniId, "Cake", 3_000L)
+                    with { OrderedAtUtc = cakeAt, IsVoided = true, VoidedAtUtc = cakeAt.AddMinutes(5), VoidReason = "out of stock" },
+            ],
+        };
+
+        var ani = TabProjection.Project(tab, AniId)!;
+
+        Assert.False(ani.TableTotalVisible);
+        Assert.Null(ani.TableTotal);
+        Assert.Null(ani.TableLines);
+        Assert.Equal([teaAt, cakeAt], ani.MyLines.Select(l => l.OrderedAtUtc));
+        Assert.DoesNotContain(ani.MyLines, l => l.OrderedAtUtc == coffeeAt);
+
+        var cake = Assert.Single(ani.MyLines, l => l.IsVoided);
+        Assert.Equal(0L, cake.LineTotalAmd);
+        Assert.Equal(2_400L, ani.MyItemsSubtotalAmd);
+    }
+
     /// <summary>Test case 7, the read half: a pending participant sees only their own state.</summary>
     [Fact]
     public void A_pending_participant_sees_only_themselves()
