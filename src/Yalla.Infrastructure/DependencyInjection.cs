@@ -332,21 +332,30 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentActivity>());
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentStream>());
         // Takeaway orders: placed (accepted on placing at an automatic branch), accepted, declined, cancelled, ready,
-        // collected, not collected. The History's line, then the guest's push and feed entry, then the floor's push.
+        // collected, not collected. The History's line, the branch's change stream (signal 8), then the guest's push and
+        // feed entry, then the floor's push.
         services.AddScoped<TakeawayOrderActivity>();
+        services.AddScoped<TakeawayChangeStream>();
         services.AddScoped<TakeawayGuestNotice>();
         services.AddScoped<IDomainEventHandler<TakeawayPlaced>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayPlaced>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayPlaced>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
         services.AddScoped<IDomainEventHandler<TakeawayPlaced>, TakeawayStaffPush>();
         services.AddScoped<IDomainEventHandler<TakeawayAccepted>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayAccepted>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayAccepted>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
         services.AddScoped<IDomainEventHandler<TakeawayDeclined>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayDeclined>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayDeclined>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
         services.AddScoped<IDomainEventHandler<TakeawayCancelled>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayCancelled>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayMarkedReady>>(sp => sp.GetRequiredService<TakeawayGuestNotice>());
         services.AddScoped<IDomainEventHandler<TakeawayCollected>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayCollected>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         services.AddScoped<IDomainEventHandler<TakeawayMarkedNoShow>>(sp => sp.GetRequiredService<TakeawayOrderActivity>());
+        services.AddScoped<IDomainEventHandler<TakeawayMarkedNoShow>>(sp => sp.GetRequiredService<TakeawayChangeStream>());
         // Tabs: opened, let in or turned away, people asking to join and let on, turned away, taken off or leaving, the
         // host moved, the split changed, the bill presented. The History's line, the tab's stream, the branch's change
         // stream, then the push.
