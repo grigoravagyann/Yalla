@@ -127,9 +127,10 @@ catalogue table in `docs/error-contract.md`.
    Title = "...")]` (no `Title` = the slug humanised) and one `[ProblemContext("name", typeof(T))]` per context
    member, in wire order (`Optional = true` when left out of some contexts, `typeof(Guid?)` / `Nullable = true`
    when it can be null; enums, arrays and records are fine). No `TitleFor` arm: there is none any more.
-3. `Api/Errors/ApiExceptionMapper.cs`: a `Refuse(ErrorCodes.X, e.Message, context: ...)` arm placed ABOVE any arm
-   for a type it derives from (`DomainStateException`, `KeyNotFoundException`, `ArgumentException`). Never write a
-   status there: `Refuse` takes it from the declaration.
+3. `Api/Errors/ApiExceptionMapper.<Area>.cs`: a `Refuse(ErrorCodes.X, e.Message, context: ...)` arm in the area's
+   group, placed ABOVE any arm for a type it derives from (`DomainStateException`, `KeyNotFoundException`,
+   `ArgumentException`). The first match wins: `Map` in `ApiExceptionMapper.cs` asks the groups in order, and the
+   general arms stay last in `MapFallbacks`. Never write a status there: `Refuse` takes it from the declaration.
 4. If clients read the context in the endpoint's own responses: `XxxContext` + `XxxProblem : ProblemShape` in
    `Errors/ProblemShapes.cs`, and `.ProducesProblem<XxxProblem>` on the endpoints.
 5. Regenerate the catalogue table: `YALLA_UPDATE_DOCS=1 dotnet test tests/Yalla.UnitTests --filter
