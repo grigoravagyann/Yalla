@@ -209,16 +209,22 @@ Two things stay as they are, on purpose:
 
 | Raised by | Event | Handlers and what they write |
 |---|---|---|
-| `TakeawayOrder.Place(acceptAutomatically)` (from `TakeawayService.PlaceAsync`; at an automatic branch it is accepted inside it, ready when the guest asked, by nobody) | `TakeawayPlaced(Order, AcceptedOnPlacing)` | `TakeawayOrderActivity`: `takeaway.placed` (the guest's; shown as sent - waiting, no ready time), and `takeaway.accepted` (the system's) when accepted on placing. `TakeawayGuestNotice`: accepted on placing, the `takeaway-accepted` feed entry and no push (the answer to the guest's tap says it). `TakeawayStaffPush`: otherwise, `staff.push` kind `takeaway`, key `staff-push:takeaway:{id}`. |
-| `TakeawayOrder.Accept(readyAt, staffId, at)` (the counter; the sweep at a branch that turned automatic acceptance on, `staffId` null) | `TakeawayAccepted(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.accepted` (the system's when nobody's). `TakeawayGuestNotice`: `takeaway.accepted` push and feed entry. |
-| `TakeawayOrder.Decline(reason, staffId, at)` / `DeclineForNoAnswer(at)` (the sweep) | `TakeawayDeclined(Order, Cause, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.declined` with the reason, or `takeaway.auto-declined` (the system's). `TakeawayGuestNotice`: `takeaway.declined` push and feed entry (`noAnswer`, the reason). |
-| `TakeawayOrder.CancelByGuest(at)` | `TakeawayCancelled(Order)` | `TakeawayOrderActivity`: `takeaway.cancelled` (the guest's). |
-| `TakeawayOrder.MarkReady(staffId, at)` (the kitchen) | `TakeawayMarkedReady(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.ready`. `TakeawayGuestNotice`: `takeaway.ready` push and feed entry. |
-| `TakeawayOrder.Collect(method, staffId, at)` | `TakeawayCollected(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.collected` (money: what was taken). |
-| `TakeawayOrder.MarkNoShow(staffId, at)` | `TakeawayMarkedNoShow(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.no-show`. |
+| `TakeawayOrder.Place(acceptAutomatically)` (from `TakeawayService.PlaceAsync`; at an automatic branch it is accepted inside it, ready when the guest asked, by nobody) | `TakeawayPlaced(Order, AcceptedOnPlacing)` | `TakeawayOrderActivity`: `takeaway.placed` (the guest's; shown as sent - waiting, no ready time), and `takeaway.accepted` (the system's) when accepted on placing. `TakeawayChangeStream`: signal 8 (one row, accepted on placing or not). `TakeawayGuestNotice`: accepted on placing, the `takeaway-accepted` feed entry and no push (the answer to the guest's tap says it). `TakeawayStaffPush`: otherwise, `staff.push` kind `takeaway`, key `staff-push:takeaway:{id}`. |
+| `TakeawayOrder.Accept(readyAt, staffId, at)` (the counter; the sweep at a branch that turned automatic acceptance on, `staffId` null) | `TakeawayAccepted(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.accepted` (the system's when nobody's). `TakeawayChangeStream`: signal 8. `TakeawayGuestNotice`: `takeaway.accepted` push and feed entry. |
+| `TakeawayOrder.Decline(reason, staffId, at)` / `DeclineForNoAnswer(at)` (the sweep) | `TakeawayDeclined(Order, Cause, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.declined` with the reason, or `takeaway.auto-declined` (the system's). `TakeawayChangeStream`: signal 8. `TakeawayGuestNotice`: `takeaway.declined` push and feed entry (`noAnswer`, the reason). |
+| `TakeawayOrder.CancelByGuest(at)` | `TakeawayCancelled(Order)` | `TakeawayOrderActivity`: `takeaway.cancelled` (the guest's). `TakeawayChangeStream`: signal 8. |
+| `TakeawayOrder.MarkReady(staffId, at)` (the kitchen) | `TakeawayMarkedReady(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.ready`. `TakeawayChangeStream`: signal 8. `TakeawayGuestNotice`: `takeaway.ready` push and feed entry. |
+| `TakeawayOrder.Collect(method, staffId, at)` | `TakeawayCollected(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.collected` (money: what was taken). `TakeawayChangeStream`: signal 8. |
+| `TakeawayOrder.MarkNoShow(staffId, at)` | `TakeawayMarkedNoShow(Order, ByStaffId)` | `TakeawayOrderActivity`: `takeaway.no-show`. `TakeawayChangeStream`: signal 8. |
 
 Handlers live in `Infrastructure/DomainEvents/TakeawayOrders/`, registered after the tab orders' in the order the
-services wrote them: the activity entry, the guest's notice, the floor's push. `TakeawayGuestNotice` takes the
+services wrote them: the activity entry, the change stream, the guest's notice, the floor's push.
+
+**Signal 8 (2026-10-26).** `TakeawayChangeStream` writes one `TakeawayChanged` row on the branch's change stream for
+every takeaway event, in the same save, so the floor re-reads its counter when an order moves instead of polling it every
+ten seconds. The row is about the counter, not a table (`TableStateChange.ForTakeaway`: no `DiningTableId`, Free to
+Free, the system's, no order named); `TableStateChanges.DiningTableId` became nullable for it. The snapshot below gained
+exactly those rows (17 in its script), on purpose. `TakeawayGuestNotice` takes the
 account's lock (`db.EnsureTransactionAsync`, then `DinerAccountLock.IsLiveAsync`), as `TakeawayNotices` did; placing,
 the counter's answers and the sweep already hold a transaction, which it joins. `TakeawayActivity` and
 `TakeawayNotices` are gone; the `StaffPushSignals` hook no longer looks at takeaway orders. The kitchen's queue shows
