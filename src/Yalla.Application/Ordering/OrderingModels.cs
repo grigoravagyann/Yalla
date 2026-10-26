@@ -168,7 +168,11 @@ public sealed record TabTotalsSnapshot(
 /// <param name="Kind">1 Discount, 2 Comp.</param>
 /// <param name="Percent">Percentage off, when that is how it was expressed.</param>
 /// <param name="AmountAmd">Flat dram off, when that is how it was expressed.</param>
-/// <param name="ReductionAmd">What it actually took off, in whole dram.</param>
+/// <param name="ReductionAmd">
+/// What it actually took off, in whole dram: its own reduction worked out in the bill's order (a line's own adjustments
+/// before the tab-wide ones) - the amount the History and the reports give it. Not the subtotal's drop, which under a
+/// standing tab-wide discount is less than a line's comp took. Zero once reversed.
+/// </param>
 /// <param name="Reason">Why. Shown to the diner for the same reason a void is.</param>
 /// <param name="CreatedAtUtc">When.</param>
 /// <param name="IsVoided">True once reversed. It stays on the record either way.</param>

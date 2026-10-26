@@ -470,7 +470,9 @@ internal sealed class TabOrderService(
             "{Kind} applied to tab {TabId} by manager {StaffId}: {Reason}. Subtotal {Before} to {After}.",
             adjustment.Kind, tab.Id, staffId, adjustment.Reason, before, bill.SubtotalAmd);
 
-        return ToView(adjustment, before - bill.SubtotalAmd);
+        // Its own reduction in the bill's order - what the History and the reports say it took off - not the subtotal's
+        // drop: under a standing tab-wide discount, a line's comp drops the subtotal by less than the comp itself took.
+        return ToView(adjustment, ledger.ReductionOf(tab, adjustment.Id));
     }
 
     public async Task<AdjustmentView> VoidAdjustmentAsync(

@@ -332,8 +332,9 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
     /// <summary>
     /// A comp of the 3,200 khachapuri under a standing 10 % discount: the subtotal drops by 2,880 (the discount now takes
     /// 320 less), but the comp itself took 3,200 - and the History's line says 3,200, as the revenue report and Staff →
-    /// Results count it (<c>AdjustmentReductions</c>), not the subtotal's drop it used to read. The totals before and
-    /// after stay the bill's.
+    /// Results count it (<c>AdjustmentReductions</c>), not the subtotal's drop it used to read - and so do the answer to
+    /// giving it (<see cref="AdjustmentView.ReductionAmd"/>) and the tab's own read, where the discount takes what is left.
+    /// The totals before and after stay the bill's.
     /// </summary>
     [SkippableFact]
     public async Task A_comp_under_a_standing_discount_reads_in_the_History_what_the_reports_count()
@@ -369,7 +370,7 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
         }
 
         clock.UtcNow = SeatedAt.AddMinutes(11);
-        await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+        var given = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
             fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
                 tabId, khachapuri, AdjustmentKind.Comp, null, 5_000L, "Came cold", Guid.CreateVersion7())));
 
@@ -380,6 +381,17 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
         {
             var tab = await db.Tabs.AsNoTracking().SingleAsync(t => t.Id == tabId);
             (total, subtotal) = (tab.TotalAmd, tab.SubtotalAmd);
+
+            // The tab as the tablet and the diner read it gives each adjustment the same: the comp its 3,200, the
+            // discount what it now takes off the coffees - together exactly what came off the bill.
+            var read = (await fixture.CreateTabQuery(db).GetForStaffAsync(tabId))!;
+            var compRead = read.Adjustments.Single(a => a.Kind == AdjustmentKind.Comp);
+            var discountRead = read.Adjustments.Single(a => a.Kind == AdjustmentKind.Discount);
+            Assert.Equal(TestMenu.KhachapuriAmd, compRead.ReductionAmd);
+            Assert.Equal(Domain.Common.Money.PercentOf(3 * TestMenu.CoffeeAmd, 10m), discountRead.ReductionAmd);
+            Assert.Equal(
+                TestMenu.KhachapuriAmd + 3 * TestMenu.CoffeeAmd - subtotal,
+                compRead.ReductionAmd + discountRead.ReductionAmd);
         }
 
         await AsAsync(clock, TestActor.Waiter(lilit), async (db, actor) =>
@@ -403,6 +415,9 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
             TestMenu.KhachapuriAmd - (discountWithKhachapuri - discountWithout));
 
         Assert.Equal(TestMenu.KhachapuriAmd, comp.AmountAmd);
+
+        // And the answer to giving it says the same, so the console and the tablet show what the History does.
+        Assert.Equal(TestMenu.KhachapuriAmd, given.ReductionAmd);
         Assert.Equal(
             TestMenu.KhachapuriAmd,
             Assert.Single(revenue.Adjustments, a => a.Kind == AdjustmentKind.Comp).TotalAmd);

@@ -263,7 +263,8 @@ public static class AuthEndpoints
                 + "and counts toward the person's five; the fifth is `403 account-locked`. A wrong PIN leaves the "
                 + "code usable until it expires.\n\n"
                 + "**The same browser again.** A live phone of this person's at the branch with the same "
-                + "`clientDeviceId` is reused (renamed to `deviceName`, a new device token). A live phone of "
+                + "`clientDeviceId` is reused (renamed to `deviceName`, its `platform` and `browser` replaced, a new "
+                + "device token). A live phone of "
                 + "somebody else's with it, or this person's at another branch, is unpaired - the browser holds one "
                 + "device token, and now it is this one. A live **tablet** with it is refused with `409` - a "
                 + "manager revokes the tablet first.\n\n"
@@ -540,7 +541,8 @@ public static class AuthEndpoints
         IStaffAuthService service,
         CancellationToken cancellationToken) =>
         Results.Ok(await service.PairPhoneAsync(
-            request.Code, request.Pin, request.ClientDeviceId, request.DeviceName, cancellationToken));
+            request.Code, request.Pin, request.ClientDeviceId, request.DeviceName, request.Platform, request.Browser,
+            cancellationToken));
 
     private static async Task<IResult> RedeemEnrolmentCodeAsync(
         RedeemEnrolmentCodeRequest request,

@@ -328,6 +328,8 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
         Assert.Equal((int)StaffDeviceKind.Phone, listed.GetProperty("kind").GetInt32());
         Assert.Equal(branch.WaiterId, listed.GetProperty("boundStaffMember").GetProperty("id").GetGuid());
         Assert.Equal("iPhone · Safari", listed.GetProperty("name").GetString());
+        Assert.Equal(2, listed.GetProperty("platform").GetInt32());
+        Assert.Equal(1, listed.GetProperty("browser").GetInt32());
 
         var tablets = await (await manager.GetAsync($"/api/branches/{branch.BranchId}/devices?kind=1")).Content.ReadFromJsonAsync<JsonElement>();
         Assert.Empty(tablets.EnumerateArray());
@@ -449,6 +451,73 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
     }
 
+    /// <summary>
+    /// What the phone runs on is kept as parts for the console to word in its reader's language: pairing again replaces
+    /// them whole, an app that predates them pairs with its name alone (listed without them), a number that names
+    /// nothing is kept as nothing, and a tablet never has them.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_phone_says_what_it_runs_on_as_parts_beside_its_name()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var branch = await SeedBranchAsync(factory);
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+        using var phone = factory.CreateClient();
+        var browser = $"browser-{Guid.NewGuid():N}";
+
+        (await PairAsync(phone, await IssueAsync(manager, branch, branch.WaiterId), branch.WaiterPin, browser))
+            .EnsureSuccessStatusCode();
+        var listed = await ListedPhoneAsync();
+        Assert.Equal((2, 1), (listed.GetProperty("platform").GetInt32(), listed.GetProperty("browser").GetInt32()));
+
+        // The same browser again, now an Android phone whose browser it did not recognise: replaced whole.
+        (await PairWithAsync(new { platform = (int)StaffDevicePlatform.Android, deviceName = "Android" })).EnsureSuccessStatusCode();
+        listed = await ListedPhoneAsync();
+        Assert.Equal("Android", listed.GetProperty("name").GetString());
+        Assert.Equal(4, listed.GetProperty("platform").GetInt32());
+        Assert.False(listed.TryGetProperty("browser", out _));
+
+        // An app that predates the parts: its name is all there is.
+        (await PairWithAsync(new { deviceName = "Phone" })).EnsureSuccessStatusCode();
+        listed = await ListedPhoneAsync();
+        Assert.Equal("Phone", listed.GetProperty("name").GetString());
+        Assert.False(listed.TryGetProperty("platform", out _));
+        Assert.False(listed.TryGetProperty("browser", out _));
+
+        // A number that names nothing - a newer app's platform, say - is kept as nothing rather than refused: the
+        // sign-in routes stay outside the validation filter, and the phone is paired all the same.
+        (await PairWithAsync(new { platform = 99, browser = 0, deviceName = "iPhone · Safari" })).EnsureSuccessStatusCode();
+        listed = await ListedPhoneAsync();
+        Assert.False(listed.TryGetProperty("platform", out _));
+        Assert.False(listed.TryGetProperty("browser", out _));
+
+        // A tablet is the manager's name and nothing else.
+        await StaffAuthTests.EnrolDeviceAsync(factory, branch);
+        var tablet = Assert.Single(
+            (await (await manager.GetAsync($"/api/branches/{branch.BranchId}/devices?kind=1")).Content
+                .ReadFromJsonAsync<JsonElement>()).EnumerateArray());
+        Assert.False(tablet.TryGetProperty("platform", out _));
+        Assert.False(tablet.TryGetProperty("browser", out _));
+
+        async Task<HttpResponseMessage> PairWithAsync(object parts)
+        {
+            var body = JsonSerializer.SerializeToNode(parts)!.AsObject();
+            body["code"] = await IssueAsync(manager, branch, branch.WaiterId);
+            body["pin"] = branch.WaiterPin;
+            body["clientDeviceId"] = browser;
+
+            return await phone.PostAsJsonAsync("/api/auth/staff/phone-pair", body);
+        }
+
+        async Task<JsonElement> ListedPhoneAsync() =>
+            Assert.Single(
+                (await (await manager.GetAsync($"/api/branches/{branch.BranchId}/devices?kind=2")).Content
+                    .ReadFromJsonAsync<JsonElement>()).EnumerateArray(),
+                d => !d.GetProperty("isRevoked").GetBoolean());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     internal static string PairingsRoute(AuthBranch branch, Guid staffMemberId) =>
@@ -462,10 +531,19 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
         return (await issued.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString()!;
     }
 
+    /// <summary>Pairs as the staff app does: the English name, and the same as parts - an iPhone (2) in Safari (1).</summary>
     internal static Task<HttpResponseMessage> PairAsync(HttpClient phone, string code, string pin, string? browser = null) =>
         phone.PostAsJsonAsync(
             "/api/auth/staff/phone-pair",
-            new { code, pin, clientDeviceId = browser ?? $"browser-{Guid.NewGuid():N}", deviceName = "iPhone · Safari" });
+            new
+            {
+                code,
+                pin,
+                clientDeviceId = browser ?? $"browser-{Guid.NewGuid():N}",
+                deviceName = "iPhone · Safari",
+                platform = (int)StaffDevicePlatform.IPhone,
+                browser = (int)StaffDeviceBrowser.Safari,
+            });
 
     /// <summary>Pairs the branch's waiter's phone, returning its device token and the waiter's session token.</summary>
     internal static async Task<(string DeviceToken, string SessionToken)> PairWaiterAsync(YallaApiFactory factory, AuthBranch branch)

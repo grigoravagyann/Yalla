@@ -228,6 +228,50 @@ public class ActivityRulesTests
         Assert.Equal("{}", entry.SummaryJson);
     }
 
+    /// <summary>
+    /// The device as parts: a kind only beside a device, a person only for a phone - and on the wire the console is a
+    /// kind of its own, read from an entry with staff and no device, so entries written before the parts have it too.
+    /// </summary>
+    [Fact]
+    public void An_entry_keeps_its_device_as_parts_and_the_wire_words_them()
+    {
+        var phone = Entry(Guid.CreateVersion7(), StaffDeviceKind.Phone, "Aram Petrosyan");
+        Assert.Equal((StaffDeviceKind.Phone, "Aram Petrosyan"), (phone.DeviceKind!.Value, phone.DeviceOwnerName));
+
+        var tablet = Entry(Guid.CreateVersion7(), StaffDeviceKind.Tablet, "Aram Petrosyan");
+        Assert.Equal(StaffDeviceKind.Tablet, tablet.DeviceKind);
+        Assert.Null(tablet.DeviceOwnerName);
+
+        var console = Entry(deviceId: null, StaffDeviceKind.Phone, "Aram Petrosyan");
+        Assert.Null(console.DeviceKind);
+        Assert.Null(console.DeviceOwnerName);
+
+        Assert.Equal("phone", ActivityWords.DeviceKindOf(ActivityActorKind.Staff, Guid.CreateVersion7(), StaffDeviceKind.Phone));
+        Assert.Equal("tablet", ActivityWords.DeviceKindOf(ActivityActorKind.Staff, Guid.CreateVersion7(), StaffDeviceKind.Tablet));
+        Assert.Equal("console", ActivityWords.DeviceKindOf(ActivityActorKind.Staff, null, null));
+        Assert.Equal("console", ActivityWords.DeviceKindOf(ActivityActorKind.PlatformAdmin, null, null));
+        Assert.Null(ActivityWords.DeviceKindOf(ActivityActorKind.Staff, Guid.CreateVersion7(), null));
+        Assert.Null(ActivityWords.DeviceKindOf(ActivityActorKind.System, null, null));
+        Assert.Null(ActivityWords.DeviceKindOf(ActivityActorKind.Diner, null, null));
+
+        static ActivityEntry Entry(Guid? deviceId, StaffDeviceKind kind, string owner) => new(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            new DateTime(2026, 10, 26, 14, 0, 0, DateTimeKind.Utc),
+            ActivityActorKind.Staff,
+            Guid.CreateVersion7(),
+            "Aram Petrosyan",
+            deviceId,
+            "Aram's phone",
+            ActivityCategory.Order,
+            ActivityActions.OrderSent,
+            ActivitySubjects.Tab,
+            Guid.CreateVersion7(),
+            "{}",
+            deviceKind: kind,
+            deviceOwnerName: owner);
+    }
+
     [Fact]
     public void An_entry_by_staff_must_name_them() =>
         Assert.Throws<ArgumentException>(() => new ActivityEntry(

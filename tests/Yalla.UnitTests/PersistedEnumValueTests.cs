@@ -348,7 +348,7 @@ public class PersistedEnumValueTests
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
-            nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffDeviceKind), nameof(StaffPushKinds), nameof(StaffRole), nameof(StayHint),
+            nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffDeviceBrowser), nameof(StaffDeviceKind), nameof(StaffDevicePlatform), nameof(StaffPushKinds), nameof(StaffRole), nameof(StayHint),
             nameof(SubscriptionTier), nameof(TabAdmission), nameof(TabAdmissionReason), nameof(TabEventType),
             nameof(TabOrderStatus), nameof(TabStatus), nameof(TableChangeSignal),
             nameof(TableSessionSource), nameof(TableShareRequestStatus), nameof(TableStatus),
@@ -517,6 +517,21 @@ public class PersistedEnumValueTests
     {
         Assert.Equal(1, (int)StaffDeviceKind.Tablet);
         Assert.Equal(2, (int)StaffDeviceKind.Phone);
+
+        Assert.Equal(1, (int)StaffDevicePlatform.Other);
+        Assert.Equal(2, (int)StaffDevicePlatform.IPhone);
+        Assert.Equal(3, (int)StaffDevicePlatform.IPad);
+        Assert.Equal(4, (int)StaffDevicePlatform.Android);
+        Assert.Equal(5, (int)StaffDevicePlatform.Windows);
+        Assert.Equal(6, (int)StaffDevicePlatform.Mac);
+        Assert.Equal(7, (int)StaffDevicePlatform.Linux);
+
+        Assert.Equal(1, (int)StaffDeviceBrowser.Safari);
+        Assert.Equal(2, (int)StaffDeviceBrowser.Chrome);
+        Assert.Equal(3, (int)StaffDeviceBrowser.Edge);
+        Assert.Equal(4, (int)StaffDeviceBrowser.Firefox);
+        Assert.Equal(5, (int)StaffDeviceBrowser.Opera);
+        Assert.Equal(6, (int)StaffDeviceBrowser.SamsungInternet);
 
         Assert.Equal(1, (int)StaffPushKinds.Approvals);
         Assert.Equal(2, (int)StaffPushKinds.GuestMessages);

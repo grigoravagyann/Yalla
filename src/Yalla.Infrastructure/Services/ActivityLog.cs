@@ -25,6 +25,11 @@ namespace Yalla.Infrastructure.Services;
 /// that names none is the console. A tablet is labelled with its name ("Hall tablet"), a personal phone with its
 /// person's ("Aram's phone") - what the manager would call it, not whatever the browser called itself when paired.
 /// </para>
+/// <para>
+/// <b>The parts beside the label.</b> That label is English, so the entry also keeps the device's kind and a phone's
+/// person (<see cref="ActivityEntry.DeviceKind"/>, <see cref="ActivityEntry.DeviceOwnerName"/>): a client words "Aram's
+/// phone" and "Console" in its reader's language from those, and the label stays for the CSV export and older readers.
+/// </para>
 /// </remarks>
 internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock clock) : IActivityLog
 {
@@ -89,7 +94,9 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
             beforeJson: Serialize(record.Before),
             afterJson: Serialize(record.After),
             reason: record.Reason,
-            tableSessionId: record.TableSessionId));
+            tableSessionId: record.TableSessionId,
+            deviceKind: who.DeviceKind,
+            deviceOwnerName: who.DeviceOwnerName));
     }
 
     private static string? Serialize(object? value) =>
@@ -154,16 +161,17 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
             return new Actor(kind, staffId, name, null, ConsoleLabel, venueId);
         }
 
-        var label = await DeviceLabelAsync(device, staffId, name, cancellationToken);
+        var (label, deviceKind, owner) = await DeviceLabelAsync(device, staffId, name, cancellationToken);
 
-        return new Actor(kind, staffId, name, device, label, venueId);
+        return new Actor(kind, staffId, name, device, label, venueId, deviceKind, owner);
     }
 
     /// <summary>
     /// A tablet's name, or "{first name}'s phone" for a personal phone - its person, read from their row when they
-    /// are not the one acting. Null for a device that is not found.
+    /// are not the one acting - with the parts a client words it from: the kind, and a phone's person. All null for a
+    /// device that is not found.
     /// </summary>
-    private async Task<string?> DeviceLabelAsync(
+    private async Task<(string? Label, StaffDeviceKind? Kind, string? Owner)> DeviceLabelAsync(
         Guid deviceId, Guid actingStaffId, string? actingName, CancellationToken cancellationToken)
     {
         var tracked = db.StaffDevices.Local.FirstOrDefault(d => d.Id == deviceId);
@@ -178,12 +186,12 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
 
         if (device is null)
         {
-            return null;
+            return (null, null, null);
         }
 
         if (device.Kind != StaffDeviceKind.Phone || device.BoundStaffMemberId is not { } personId)
         {
-            return device.Name;
+            return (device.Name, device.Kind, null);
         }
 
         var person = personId == actingStaffId
@@ -195,7 +203,7 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
                   .Select(s => s.FullName)
                   .FirstOrDefaultAsync(cancellationToken);
 
-        return PhoneLabel(person) ?? device.Name;
+        return (PhoneLabel(person) ?? device.Name, device.Kind, person);
     }
 
     /// <summary>"Aram's phone" for Aram Petrosyan; null for nobody.</summary>
@@ -215,7 +223,9 @@ internal sealed class ActivityLog(YallaDbContext db, ICurrentActor actor, IClock
         string? Name,
         Guid? DeviceId,
         string? DeviceLabel,
-        Guid? VenueId = null)
+        Guid? VenueId = null,
+        StaffDeviceKind? DeviceKind = null,
+        string? DeviceOwnerName = null)
     {
         public static readonly Actor System = new(ActivityActorKind.System, null, null, null, null);
 

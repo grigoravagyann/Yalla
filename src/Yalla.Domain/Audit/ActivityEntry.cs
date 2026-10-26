@@ -61,8 +61,22 @@ public sealed class ActivityEntry : Entity
     /// <summary>The tablet or phone the request came from; null from the console, and for the guest and the system.</summary>
     public Guid? DeviceId { get; private set; }
 
-    /// <summary>What that device was called then - "Hall tablet" - or <c>Console</c> for staff signed in to the console.</summary>
+    /// <summary>
+    /// What that device was called then - "Hall tablet", "Aram's phone" - or <c>Console</c> for staff signed in to the
+    /// console. English for a phone and the console: kept for the CSV export and for entries written before
+    /// <see cref="DeviceKind"/>; a client words those two from <see cref="DeviceKind"/> and <see cref="DeviceOwnerName"/>.
+    /// </summary>
     public string? DeviceLabel { get; private set; }
+
+    /// <summary>
+    /// Whether <see cref="DeviceId"/> was a tablet or a phone then. Null from the console, for the guest and the system,
+    /// for a device that was not found, and on entries written before 2026-10-26 (their <see cref="DeviceLabel"/> is all
+    /// there is).
+    /// </summary>
+    public StaffDeviceKind? DeviceKind { get; private set; }
+
+    /// <summary>A phone's person then, by full name: who "Aram's phone" is. Null for anything but a phone.</summary>
+    public string? DeviceOwnerName { get; private set; }
 
     public ActivityCategory Category { get; private set; }
 
@@ -133,7 +147,9 @@ public sealed class ActivityEntry : Entity
         string? beforeJson = null,
         string? afterJson = null,
         string? reason = null,
-        Guid? tableSessionId = null)
+        Guid? tableSessionId = null,
+        StaffDeviceKind? deviceKind = null,
+        string? deviceOwnerName = null)
         : base(Guid.CreateVersion7())
     {
         VenueId = Guard.NotEmpty(venueId, nameof(venueId));
@@ -158,6 +174,8 @@ public sealed class ActivityEntry : Entity
         ActorName = Clip(actorName, FieldLengths.PersonName);
         DeviceId = deviceId == Guid.Empty ? null : deviceId;
         DeviceLabel = Clip(deviceLabel, FieldLengths.DeviceName);
+        DeviceKind = DeviceId is not null && deviceKind is { } kind && Enum.IsDefined(kind) ? kind : null;
+        DeviceOwnerName = DeviceKind == StaffDeviceKind.Phone ? Clip(deviceOwnerName, FieldLengths.PersonName) : null;
         SubjectCode = Clip(subjectCode, FieldLengths.ActivitySubjectCode);
         TableLabel = Clip(tableLabel, FieldLengths.TableLabel);
         GuestName = Clip(guestName, FieldLengths.PersonName);

@@ -542,6 +542,8 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
             entry.ActorName,
             entry.DeviceId,
             entry.DeviceLabel,
+            ActivityWords.DeviceKindOf(entry.ActorKind, entry.DeviceId, entry.DeviceKind),
+            entry.DeviceOwnerName,
             ActivityWords.Of(entry.Category),
             entry.Action,
             entry.SubjectType,

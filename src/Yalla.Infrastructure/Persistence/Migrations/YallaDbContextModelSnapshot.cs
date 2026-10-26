@@ -63,9 +63,16 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("DeviceId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int?>("DeviceKind")
+                        .HasColumnType("int");
+
                     b.Property<string>("DeviceLabel")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("DeviceOwnerName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("GuestName")
                         .HasMaxLength(200)
@@ -645,6 +652,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int?>("Browser")
+                        .HasColumnType("int");
+
                     b.Property<string>("ClientDeviceId")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -669,6 +679,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("Platform")
+                        .HasColumnType("int");
 
                     b.Property<int?>("PushKinds")
                         .HasColumnType("int");

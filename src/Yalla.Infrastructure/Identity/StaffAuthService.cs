@@ -609,7 +609,9 @@ internal sealed class StaffAuthService(
                 d.BoundStaffMember == null
                     ? null
                     : new BoundStaffMemberView(d.BoundStaffMember.Id, d.BoundStaffMember.FullName, d.BoundStaffMember.Role),
-                d.RevokedAtUtc))
+                d.RevokedAtUtc,
+                d.Platform,
+                d.Browser))
             .ToListAsync(cancellationToken);
 
     public async Task<bool> RevokeDeviceAsync(
@@ -809,6 +811,8 @@ internal sealed class StaffAuthService(
         string pin,
         string clientDeviceId,
         string deviceName,
+        StaffDevicePlatform? platform = null,
+        StaffDeviceBrowser? browser = null,
         CancellationToken cancellationToken = default)
     {
         var nowUtc = clock.UtcNow;
@@ -870,6 +874,9 @@ internal sealed class StaffAuthService(
         {
             device.Rename(deviceName);
         }
+
+        // The parts the console words the device column from, in its reader's language.
+        device.Describe(platform, browser);
 
         // Concurrency token on RedeemedAtUtc, as for a tablet: two phones racing for one code cannot both win.
         pairing.Redeem(device.Id, nowUtc);

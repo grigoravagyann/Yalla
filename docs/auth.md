@@ -549,7 +549,7 @@ the manager asks for a new one cannot both succeed - whichever saves second gets
   branch (at it or venue-wide; anybody else is `404` here) and be active. **Kitchen staff get no phone**:
   `409 kitchen-phone-not-allowed` - the kitchen stays on its tablet. Audited `staff.phone-pairing-issued`.
 - **The phone redeems it** with the person's own PIN: `POST /api/auth/staff/phone-pair
-  { code, pin, clientDeviceId, deviceName }` (anonymous, `pin` rate limit) answers `{ device, session }` -
+  { code, pin, clientDeviceId, deviceName, platform?, browser? }` (anonymous, `pin` rate limit) answers `{ device, session }` -
   `device` exactly `enrolStaffDevice`'s body, `session` exactly `signInStaffWithPin`'s. The PIN check is the
   tablet's, lockout included; a wrong PIN leaves the code usable until it expires. Before the PIN, the phone
   may ask *is this you?* with `POST /api/auth/staff/phone-pair/preview { code }`, which names the person,
@@ -574,7 +574,9 @@ manager's *Today* summary (`GET /api/staff/today`, below), which reaches what th
 
 **Taking it away.** The console's device list covers phones (`GET /api/branches/{branchId}/devices?kind=2`;
 each item `kind`, `boundStaffMember`, `name` - the platform and browser the phone reported, "iPhone ·
-Safari" - `lastSeenAtUtc` and `revokedAtUtc`), and `revoke` unpairs one: its token and its session stop on
+Safari", in English - `platform` and `browser` - the same as parts, pinned ints the phone read from its own user
+agent (2026-10-26), which the console words in its reader's language; absent on a phone paired before them, which
+the console shows by `name` - `lastSeenAtUtc` and `revokedAtUtc`), and `revoke` unpairs one: its token and its session stop on
 the next request, exactly as for a tablet, audited `staff.phone-unpaired`. The phone can unpair itself -
 `POST /api/staff/device/unpair` with its own PIN session (a tablet is `409`: a shared device is a manager's to
 revoke). **Deactivating somebody unpairs their phones** in the same save (and kills their unused codes); so does

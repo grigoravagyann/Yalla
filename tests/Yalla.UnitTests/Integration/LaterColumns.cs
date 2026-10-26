@@ -49,11 +49,22 @@ internal static class LaterColumns
         await AddActivityColumnsAsync(db);
     }
 
-    /// <summary>The <c>ActivityHistory</c> migration's columns on existing tables: whose each table, order, payment and claim was.</summary>
-    public static Task AddActivityColumnsAsync(YallaDbContext db) =>
-        db.Database.ExecuteSqlRawAsync(
+    /// <summary>
+    /// The <c>ActivityHistory</c> migration's columns on existing tables: whose each table, order, payment and claim was -
+    /// and every later migration's.
+    /// </summary>
+    public static async Task AddActivityColumnsAsync(YallaDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE dbo.TableSessions ADD ServerStaffMemberId uniqueidentifier NULL, ServerAssignedAtUtc datetime2 NULL; "
             + "ALTER TABLE dbo.TabOrders ADD ServerStaffMemberId uniqueidentifier NULL; "
             + "ALTER TABLE dbo.Payments ADD RecordedByStaffId uniqueidentifier NULL, ServerStaffMemberId uniqueidentifier NULL; "
             + "ALTER TABLE dbo.ServiceRequests ADD ClaimedAtUtc datetime2 NULL, ClaimedByStaffId uniqueidentifier NULL;");
+
+        await AddStructuredDeviceColumnsAsync(db);
+    }
+
+    /// <summary>The <c>StructuredDeviceLabels</c> migration's columns on existing tables: what a phone runs on.</summary>
+    public static Task AddStructuredDeviceColumnsAsync(YallaDbContext db) =>
+        db.Database.ExecuteSqlRawAsync("ALTER TABLE dbo.StaffDevices ADD Platform int NULL, Browser int NULL;");
 }
