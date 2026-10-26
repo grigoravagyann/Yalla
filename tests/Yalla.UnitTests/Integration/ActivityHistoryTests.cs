@@ -332,8 +332,8 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
     /// <summary>
     /// A comp of the 3,200 khachapuri under a standing 10 % discount: the subtotal drops by 2,880 (the discount now takes
     /// 320 less), but the comp itself took 3,200 - and the History's line says 3,200, as the revenue report and Staff →
-    /// Results count it (<c>AdjustmentReductions</c>), not the subtotal's drop it used to read. The totals before and
-    /// after stay the bill's.
+    /// Results count it (<c>AdjustmentReductions</c>), not the subtotal's drop it used to read - and so does the answer to
+    /// giving it (<see cref="AdjustmentView.ReductionAmd"/>). The totals before and after stay the bill's.
     /// </summary>
     [SkippableFact]
     public async Task A_comp_under_a_standing_discount_reads_in_the_History_what_the_reports_count()
@@ -369,7 +369,7 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
         }
 
         clock.UtcNow = SeatedAt.AddMinutes(11);
-        await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
+        var given = await AsAsync(clock, TestActor.Manager(branch.ManagerId), (db, actor) =>
             fixture.CreateOrderService(db, clock, actor).AddAdjustmentAsync(new AddAdjustmentCommand(
                 tabId, khachapuri, AdjustmentKind.Comp, null, 5_000L, "Came cold", Guid.CreateVersion7())));
 
@@ -403,6 +403,9 @@ public class ActivityHistoryTests(SqlServerFixture fixture)
             TestMenu.KhachapuriAmd - (discountWithKhachapuri - discountWithout));
 
         Assert.Equal(TestMenu.KhachapuriAmd, comp.AmountAmd);
+
+        // And the answer to giving it says the same, so the console and the tablet show what the History does.
+        Assert.Equal(TestMenu.KhachapuriAmd, given.ReductionAmd);
         Assert.Equal(
             TestMenu.KhachapuriAmd,
             Assert.Single(revenue.Adjustments, a => a.Kind == AdjustmentKind.Comp).TotalAmd);

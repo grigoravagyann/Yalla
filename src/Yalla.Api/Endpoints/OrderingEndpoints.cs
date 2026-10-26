@@ -252,7 +252,10 @@ public static class OrderingEndpoints
                 + "line; leaving it out applies it to the whole tab.\n\n"
                 + "**The service charge is computed after this**, so comping a dish comps its "
                 + "service charge with it - which is what a manager means by comping a dish.\n\n"
-                + "Visible to the diner with its reason, for the same reason a void is.")
+                + "Visible to the diner with its reason, for the same reason a void is.\n\n"
+                + "`reductionAmd` is what this adjustment itself took off, in the bill's order - the amount the "
+                + "History and the reports give it - not the subtotal's drop: a comp under a standing tab-wide "
+                + "discount takes its line's whole price, while the subtotal drops by less.")
             .Produces<AdjustmentView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Requires the Manager role.");
 
