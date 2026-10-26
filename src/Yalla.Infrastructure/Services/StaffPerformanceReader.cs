@@ -76,6 +76,42 @@ internal sealed class StaffPerformanceReader(
 
     public async Task<PersonPerformance> GetMineAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default)
     {
+        var mine = await MineAsync(query, cancellationToken);
+
+        return await PersonAsync(mine.BranchId, mine.TimeZoneId, mine.StaffMemberId, mine.Filter, cancellationToken);
+    }
+
+    public async Task<MyResults> GetMyResultsAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        // Every list's first page: no list to choose and no cursor to continue - "more" is getMyPerformance's.
+        var mine = await MineAsync(query with { List = null, Cursor = null }, cancellationToken);
+        var filter = string.IsNullOrWhiteSpace(query.Limit)
+            ? mine.Filter with { Limit = StaffPerformanceRules.ResultsDefaultLimit }
+            : mine.Filter;
+
+        var (row, daily) = await FiguresAsync(mine.BranchId, mine.TimeZoneId, mine.StaffMemberId, filter, cancellationToken);
+
+        Task<RecentPage> Page(RecentList list) =>
+            RecentAsync(mine.BranchId, mine.TimeZoneId, mine.StaffMemberId, filter with { List = list }, cancellationToken);
+
+        // One context: the pages one after the other.
+        var recent = new RecentLists(
+            await Page(RecentList.Orders),
+            await Page(RecentList.Messages),
+            await Page(RecentList.Bookings),
+            await Page(RecentList.Cash),
+            await Page(RecentList.Calls));
+
+        return new MyResults(mine.BranchId, filter.From, filter.To, row, daily, recent);
+    }
+
+    /// <summary>The caller, their branch and the query checked: what both "my own" reads start from.</summary>
+    private sealed record Mine(Guid BranchId, string TimeZoneId, Guid StaffMemberId, StaffPerformanceFilter Filter);
+
+    private async Task<Mine> MineAsync(StaffPerformanceQuery query, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(query);
 
         const string Operation = "Read your own results";
@@ -131,31 +167,22 @@ internal sealed class StaffPerformanceReader(
         // Checked again against the branch's own today, now its zone is known.
         var filter = StaffPerformanceRules.Check(query, BranchZone.For(branch.TimeZoneId).LocalDateAt(clock.UtcNow));
 
-        return await PersonAsync(branchId, branch.TimeZoneId, staffId, filter, cancellationToken);
-    }
-
-    public Task<MyResults> GetMyResultsAsync(StaffPerformanceQuery query, CancellationToken cancellationToken = default)
-    {
-        // Contract stub: the shape the frontend generates from; the read follows on this branch.
-        ArgumentNullException.ThrowIfNull(query);
-
-        var today = DateOnly.FromDateTime(clock.UtcNow);
-        RecentPage Empty(RecentList list) => new(StaffPerformanceRules.Word(list), [], null);
-
-        return Task.FromResult(new MyResults(
-            Guid.Empty,
-            today,
-            today,
-            new Tally().ToRow(actor.StaffMemberId ?? Guid.Empty, string.Empty, actor.Role ?? StaffRole.Waiter, true),
-            [],
-            new RecentLists(
-                Empty(RecentList.Orders), Empty(RecentList.Messages), Empty(RecentList.Bookings), Empty(RecentList.Cash),
-                Empty(RecentList.Calls))));
+        return new Mine(branchId, branch.TimeZoneId, staffId, filter);
     }
 
     // ---------------------------------------------------------------- one person
 
     private async Task<PersonPerformance> PersonAsync(
+        Guid branchId, string timeZoneId, Guid staffMemberId, StaffPerformanceFilter filter, CancellationToken cancellationToken)
+    {
+        var (row, daily) = await FiguresAsync(branchId, timeZoneId, staffMemberId, filter, cancellationToken);
+
+        return new PersonPerformance(
+            branchId, filter.From, filter.To, row, daily, await RecentAsync(branchId, timeZoneId, staffMemberId, filter, cancellationToken));
+    }
+
+    /// <summary>A person's row over the window and their chart: a person's page without its list.</summary>
+    private async Task<(StaffPerformanceRow Row, List<DailySales> Daily)> FiguresAsync(
         Guid branchId, string timeZoneId, Guid staffMemberId, StaffPerformanceFilter filter, CancellationToken cancellationToken)
     {
         var report = await ComputeAsync(branchId, timeZoneId, filter.From, filter.To, cancellationToken, onlyFor: staffMemberId);
@@ -183,8 +210,7 @@ internal sealed class StaffPerformanceReader(
             .Select(date => byDay.TryGetValue(date, out var day) ? new DailySales(date, day.Amd, day.Tables) : new DailySales(date, 0L, 0))
             .ToList();
 
-        return new PersonPerformance(
-            branchId, filter.From, filter.To, row, daily, await RecentAsync(branchId, timeZoneId, staffMemberId, filter, cancellationToken));
+        return (row, daily);
     }
 
     private async Task<RecentPage> RecentAsync(
