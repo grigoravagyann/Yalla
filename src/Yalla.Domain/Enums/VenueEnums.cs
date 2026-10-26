@@ -109,6 +109,7 @@ public enum DerivedTableState
 /// <remarks>
 /// Written on a same-status row (Occupied to Occupied) - the precedent is the hold-extended row - or on
 /// the reject's own Occupied to Free row, so every tablet following the branch stream learns of it.
+/// <see cref="TakeawayChanged"/> alone is on a row with no table at all.
 /// </remarks>
 public enum TableChangeSignal
 {
@@ -147,4 +148,12 @@ public enum TableChangeSignal
     /// re-read the floor - its <c>serverStaffMemberId</c> and <c>serverName</c> moved. See <c>docs/activity.md</c>.
     /// </summary>
     TableTransferred = 7,
+
+    /// <summary>
+    /// A takeaway order at the branch was placed, accepted, declined (by staff or by the sweep), cancelled by the guest,
+    /// marked ready, collected or marked not collected (2026-10-26). The one row about the counter rather than a table:
+    /// no <c>DiningTableId</c>, both statuses Free and meaning nothing - never fold it. Re-read the takeaway counter
+    /// (<c>GET /api/branches/{id}/takeaway-orders</c>) and the kitchen's queue.
+    /// </summary>
+    TakeawayChanged = 8,
 }

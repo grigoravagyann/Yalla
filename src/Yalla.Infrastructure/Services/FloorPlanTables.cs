@@ -66,7 +66,9 @@ internal sealed class FloorPlanTables(YallaDbContext db, IClock clock)
         var reserved = db.Reservations.Where(r => tableIds.Contains(r.DiningTableId)).Select(r => r.DiningTableId);
         var seated = db.TableSessions.Where(s => tableIds.Contains(s.DiningTableId)).Select(s => s.DiningTableId);
         var billed = db.Tabs.Where(t => tableIds.Contains(t.DiningTableId)).Select(t => t.DiningTableId);
-        var audited = db.TableStateChanges.Where(c => tableIds.Contains(c.DiningTableId)).Select(c => c.DiningTableId);
+        var audited = db.TableStateChanges
+            .Where(c => c.DiningTableId != null && tableIds.Contains(c.DiningTableId.Value))
+            .Select(c => c.DiningTableId!.Value);
 
         var used = await reserved.Union(seated).Union(billed).Union(audited).Distinct().ToListAsync(cancellationToken);
 

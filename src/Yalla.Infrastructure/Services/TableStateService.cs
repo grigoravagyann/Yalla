@@ -821,7 +821,8 @@ internal sealed class TableStateService(
     private Task<TableStateChange?> FindReplayAsync(Guid clientCommandId, CancellationToken cancellationToken) =>
         db.TableStateChanges
             .AsNoTracking()
-            .FirstOrDefaultAsync(c => c.ClientCommandId == clientCommandId, cancellationToken);
+            // A table command's own row: a takeaway signal row has no table, and its command id is the server's.
+            .FirstOrDefaultAsync(c => c.ClientCommandId == clientCommandId && c.DiningTableId != null, cancellationToken);
 
     /// <summary>
     /// Rebuilds the original answer from the audit row, which is why that row records the session
@@ -831,14 +832,16 @@ internal sealed class TableStateService(
         TableStateChange change,
         CancellationToken cancellationToken)
     {
+        // FindReplayAsync answers only rows that name a table.
+        var tableId = change.DiningTableId.GetValueOrDefault();
         var table = await db.DiningTables
             .AsNoTracking()
-            .Where(t => t.Id == change.DiningTableId)
+            .Where(t => t.Id == tableId)
             .Select(t => new { t.Label, t.Branch.ReservationPolicy.BufferMinutes })
             .FirstOrDefaultAsync(cancellationToken);
 
         var nowUtc = clock.UtcNow;
-        var next = await FindNextReservationAsync(change.DiningTableId, nowUtc, null, cancellationToken);
+        var next = await FindNextReservationAsync(tableId, nowUtc, null, cancellationToken);
         var bufferMinutes = table?.BufferMinutes ?? 0;
 
         logger.LogInformation(
@@ -848,7 +851,7 @@ internal sealed class TableStateService(
         return new TableStateChangeResult
         {
             BranchId = change.BranchId,
-            TableId = change.DiningTableId,
+            TableId = tableId,
             TableLabel = table?.Label ?? string.Empty,
             FromStatus = change.FromStatus,
             ToStatus = change.ToStatus,

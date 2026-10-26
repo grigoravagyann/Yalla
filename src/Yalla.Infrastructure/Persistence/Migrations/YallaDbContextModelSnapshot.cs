@@ -261,7 +261,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<Guid>("DiningTableId")
+                    b.Property<Guid?>("DiningTableId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<int>("FromStatus")
@@ -3213,8 +3213,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasOne("Yalla.Domain.Venues.DiningTable", "DiningTable")
                         .WithMany()
                         .HasForeignKey("DiningTableId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Branch");
 
