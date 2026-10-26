@@ -123,6 +123,13 @@ public sealed class ForwardedHeadersTests(SqlServerFixture fixture)
             .With("ForwardedHeaders:KnownProxies:0", Proxy)
             .With("RateLimiting:Enabled", "true")
 
+            // The shipped per-place budget (appsettings.json's 120), over an hour rather than the shipped minute. The
+            // limiter's fixed window runs on the real clock (System.Threading.RateLimiting takes no TimeProvider) and
+            // starts with a caller's first request; on a loaded machine 121 requests can outlast a minute, and a window
+            // that rolls over mid-test hands out a fresh budget - a 200 where the 429 was due. The count is what this
+            // test proves, not the length of the window.
+            .With("RateLimiting:PublicPlaceWindowSeconds", "3600")
+
             // Generous, so the per-place budget from appsettings.json is the one that fires.
             .With("RateLimiting:GlobalPermitLimit", "10000")
             .With("RateLimiting:PublicBranchPermitLimit", "10000");

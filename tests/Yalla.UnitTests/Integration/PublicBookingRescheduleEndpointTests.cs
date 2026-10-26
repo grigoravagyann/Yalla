@@ -349,10 +349,14 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
 
         const int limit = 3;
 
+        // The limiter's fixed window runs on the real clock (System.Threading.RateLimiting takes no TimeProvider) and
+        // starts with the link's first request. An hour, not the shipped minute: on a loaded machine five reschedules
+        // and two reads can outlast a minute, and a window that rolls over mid-test hands out a fresh budget - a fourth
+        // 200 where the 429 was due. The count is what this test proves, not the length of the window.
         await using var factory = NewFactory()
             .With("RateLimiting:Enabled", "true")
             .With("RateLimiting:PublicBookingPermitLimit", limit.ToString())
-            .With("RateLimiting:PublicBookingWindowSeconds", "60")
+            .With("RateLimiting:PublicBookingWindowSeconds", "3600")
             .With("RateLimiting:PublicPermitLimit", "1000")
             .With("RateLimiting:PublicBranchPermitLimit", "1000")
             .With("RateLimiting:GlobalPermitLimit", "1000")
