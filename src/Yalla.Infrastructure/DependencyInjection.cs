@@ -95,6 +95,10 @@ public static class DependencyInjection
         // purpose: that one is PlatformAdminOnly and carries fields the platform keeps to itself.
         services.AddScoped<IManagedVenueQuery, ManagedVenueQuery>();
         services.AddScoped<IBranchSettingsService, BranchSettingsService>();
+
+        // The settings' History lines: the one settings class that holds the activity log. The service composes the
+        // rest of its parts itself.
+        services.AddScoped<BranchSettingsHistory>();
         services.AddScoped<IMenuService, MenuService>();
 
         // The onboarding checklist, answered by the server. Registered before the platform service

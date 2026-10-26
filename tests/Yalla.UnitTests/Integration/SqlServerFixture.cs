@@ -374,7 +374,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
             CreateMenuQuery(db));
 
     internal BranchSettingsService CreateBranchSettingsService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateBranchGuard(db, actor), CreateActivityLog(db, clock, actor),
+        new(db, clock, actor, CreateBranchGuard(db, actor), new BranchSettingsHistory(CreateActivityLog(db, clock, actor)),
             NullLogger<BranchSettingsService>.Instance);
 
     internal MenuService CreateMenuService(YallaDbContext db, ICurrentActor? actor = null, IClock? clock = null) =>
