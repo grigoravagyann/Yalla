@@ -103,6 +103,11 @@ public sealed record DeviceEnrolmentResult(
 /// <param name="FullName">Shown on the tablet so the waiter can see whose session is open.</param>
 /// <param name="Role">Coarse permission level: 1 Owner, 6 GeneralManager, 2 Manager (a branch manager), 3 Waiter, 4 Kitchen.</param>
 /// <param name="BranchId">The branch this session may act on, and only this one.</param>
+/// <param name="Features">
+/// The features the platform allows at the branch, in numeric order - read again on every renewal, so a change reaches
+/// the tablet within one. Hide what is not listed (table service 5, takeaway 4, guest messages 6, kitchen display 9,
+/// staff phone 8, pre-orders 3); the venue's own switches still apply inside it.
+/// </param>
 public sealed record StaffSessionResult(
     string AccessToken,
     string RenewalToken,
@@ -110,7 +115,8 @@ public sealed record StaffSessionResult(
     Guid StaffMemberId,
     string FullName,
     StaffRole Role,
-    Guid BranchId);
+    Guid BranchId,
+    IReadOnlyList<BranchFeature> Features);
 
 /// <summary>An owner or manager signed in to the admin panel.</summary>
 /// <param name="AccessToken">Bearer token for the admin surface.</param>
@@ -142,6 +148,11 @@ public sealed record VenueUserSignInResult(
 /// <param name="LastSeenAtUtc">When it was last used.</param>
 /// <param name="Kind">1 Tablet (the branch's, anybody's PIN), 2 Phone (one person's, only their PIN).</param>
 /// <param name="BoundStaffMember">On a phone, the one person whose PIN opens it; absent on a tablet.</param>
+/// <param name="Features">
+/// The features the platform allows at the branch, in numeric order, for the PIN screen and the app shell before
+/// anybody signs in (a kitchen screen without kitchen display 9, a phone without staff phone 8). Absent only from a
+/// response built before 2026-10-27.
+/// </param>
 public sealed record EnrolledDeviceView(
     Guid DeviceId,
     string ClientDeviceId,
@@ -151,6 +162,7 @@ public sealed record EnrolledDeviceView(
     string VenueName,
     DateTime EnrolledAtUtc,
     DateTime? LastSeenAtUtc,
+    IReadOnlyList<BranchFeature> Features,
     StaffDeviceKind Kind = StaffDeviceKind.Tablet,
     BoundStaffMemberView? BoundStaffMember = null);
 

@@ -292,7 +292,7 @@ internal sealed class TabOpener(
             // The sticker on the table outlives the business relationship. A suspended or deleted
             // venue seats nobody new, whatever is still printed on the furniture.
             VenueGate.RequireOpenForBusiness(table.Branch);
-            TabLookups.RequirePaid(table.Branch);
+            TabLookups.RequireTableService(table.Branch);
 
             if (table.Status == TableStatus.OutOfService)
             {

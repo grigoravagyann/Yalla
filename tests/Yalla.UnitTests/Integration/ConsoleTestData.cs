@@ -130,7 +130,7 @@ internal static class ConsoleTestData
     /// </summary>
     public static async Task<TestBranch> ReadyBranchAsync(YallaDbContext db, DateTime atUtc, string? venueName = null)
     {
-        var branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
+        var branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
 
         await TestMenuBuilder.CreateAsync(db, branch.BranchId);
         await ReviewTestData.SavePolicyAsync(db, branch.BranchId, atUtc);
@@ -159,12 +159,12 @@ internal static class ConsoleTestData
         await db.SaveChangesAsync();
     }
 
-    /// <summary>Another branch at the builder's venue, on the given tier, with no tables.</summary>
+    /// <summary>Another branch at the builder's venue, with the given features allowed, and no tables.</summary>
     public static async Task<Guid> AddBranchAsync(
         YallaDbContext db,
         Guid venueId,
         string name,
-        SubscriptionTier tier,
+        IReadOnlyList<BranchFeature> features,
         bool isActive = true)
     {
         var venue = await db.Venues.FirstAsync(v => v.Id == venueId);
@@ -176,7 +176,7 @@ internal static class ConsoleTestData
             latitude: 40.19,
             longitude: 44.52,
             timeZoneId: "Asia/Yerevan",
-            subscriptionTier: tier);
+            allowedFeatures: features);
 
         branch.SetActive(isActive);
         db.Branches.Add(branch);

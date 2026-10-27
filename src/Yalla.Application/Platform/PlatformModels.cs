@@ -88,7 +88,17 @@ public sealed record CreateVenueCommand(
     }
 }
 
-/// <summary>Add a branch. The tier is per branch - a chain with four locations pays four times.</summary>
+/// <summary>Add a branch. Features are per branch - a chain with four locations is four customers.</summary>
+/// <param name="Name">Its name.</param>
+/// <param name="Slug">URL segment, unique within the venue.</param>
+/// <param name="Address">Street address.</param>
+/// <param name="Latitude">The map pin.</param>
+/// <param name="Longitude">The map pin.</param>
+/// <param name="TimeZoneId">IANA zone.</param>
+/// <param name="Features">
+/// The features the platform allows there. Absent is the Basic preset - everything but table service (5). Pre-orders
+/// (3) need app (1) or web (2) bookings.
+/// </param>
 public sealed record CreateBranchCommand(
     string Name,
     string Slug,
@@ -96,7 +106,7 @@ public sealed record CreateBranchCommand(
     double Latitude,
     double Longitude,
     string TimeZoneId,
-    SubscriptionTier SubscriptionTier = SubscriptionTier.Free);
+    IReadOnlyList<BranchFeature>? Features = null);
 
 /// <summary>Patch a venue. Every field optional; only the ones supplied change.</summary>
 public sealed record UpdateVenueCommand(
@@ -112,8 +122,14 @@ public sealed record UpdateBranchCommand(
     double? Latitude = null,
     double? Longitude = null,
     string? TimeZoneId = null,
-    bool? IsActive = null,
-    SubscriptionTier? SubscriptionTier = null);
+    bool? IsActive = null);
+
+/// <summary>The whole set of features the platform allows, for a branch or for every branch of a venue.</summary>
+/// <param name="Features">
+/// Every feature to allow; anything left out is blocked, so <c>[]</c> blocks them all. Repeats are harmless. Pre-orders
+/// (3) need app (1) or web (2) bookings.
+/// </param>
+public sealed record SetBranchFeaturesCommand(IReadOnlyList<BranchFeature> Features);
 
 /// <summary>Search, filters, sorting and paging for the venue list.</summary>
 /// <param name="Search">
@@ -126,7 +142,6 @@ public sealed record UpdateBranchCommand(
 /// wins when both are sent.
 /// </param>
 /// <param name="Status">One of <see cref="VenueListFilters.Statuses"/>; <c>live</c> (every venue not deleted) by default.</param>
-/// <param name="Tier">One of <see cref="VenueListFilters.Tiers"/>, matched against <see cref="VenueSummary.TierMix"/>; every tier by default.</param>
 /// <param name="Sort">One of <see cref="VenueListFilters.Sorts"/>; <c>name</c> by default.</param>
 /// <param name="Dir"><c>asc</c> (default) or <c>desc</c>. A venue with no rating sorts below every rated one.</param>
 public sealed record VenueListQuery(
@@ -135,7 +150,6 @@ public sealed record VenueListQuery(
     int PageSize = 20,
     bool IncludeDeleted = false,
     string? Status = null,
-    string? Tier = null,
     string? Sort = null,
     string? Dir = null);
 
@@ -160,15 +174,6 @@ public static class VenueListFilters
     /// <summary>Soft-deleted.</summary>
     public const string Deleted = "deleted";
 
-    /// <summary>Every branch on the Free tier (and a venue with no branch).</summary>
-    public const string Free = "free";
-
-    /// <summary>Some branches paid, some not.</summary>
-    public const string Mixed = "mixed";
-
-    /// <summary>Every branch on the Paid tier.</summary>
-    public const string Paid = "paid";
-
     public const string SortName = "name";
 
     /// <summary>The average of the published reviews across every branch.</summary>
@@ -187,9 +192,6 @@ public static class VenueListFilters
     /// <summary>The accepted <c>status</c> values.</summary>
     public static readonly IReadOnlyList<string> Statuses = [Live, All, Active, Suspended, Inactive, Deleted];
 
-    /// <summary>The accepted <c>tier</c> values.</summary>
-    public static readonly IReadOnlyList<string> Tiers = [Free, Mixed, Paid];
-
     /// <summary>The accepted <c>sort</c> values.</summary>
     public static readonly IReadOnlyList<string> Sorts = [SortName, SortRating, SortTables, SortCreated];
 
@@ -200,7 +202,7 @@ public static class VenueListFilters
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSize, int TotalCount);
 
 /// <summary>
-/// One venue as the platform sees it, with the per-branch tier rolled up.
+/// One venue as the platform sees it, with its branches' rollups.
 /// </summary>
 /// <param name="VenueId">The venue.</param>
 /// <param name="Name">Its name.</param>
@@ -216,21 +218,11 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSi
 /// How many <b>active</b> tables across all of them. A table kept only for its history is not one the
 /// room has, the same rule the readiness checklist counts by.
 /// </param>
-/// <param name="PaidBranchCount">How many of those branches are on the paid tier.</param>
-/// <param name="SubscriptionTier">
-/// The older rollup: <c>Paid</c> when every branch is paid, otherwise <c>Free</c> - a mixed venue reads
-/// Free here. <paramref name="TierMix"/> says which it is; the real flag is per branch, in
-/// <paramref name="Branches"/>.
-/// </param>
 /// <param name="Status">
 /// The four booleans above as one value: 4 Deleted, else 2 Suspended, else 3 Inactive (switched off),
 /// else 1 Active.
 /// </param>
-/// <param name="TierMix">
-/// 1 Free (no branch paid, or no branch at all), 2 Mixed (some), 3 Paid (every one) - what the list's
-/// tier column shows, with <paramref name="PaidBranchCount"/> of <paramref name="BranchCount"/>.
-/// </param>
-/// <param name="Branches">Every branch with its own tier, active ones first, then by name.</param>
+/// <param name="Branches">Every branch with the features the platform allows there, active ones first, then by name.</param>
 /// <param name="AverageRating">
 /// The average of the published reviews across every branch, to one decimal; absent with none. The
 /// same rule the public pages use, over the whole venue.
@@ -264,11 +256,8 @@ public sealed record VenueSummary(
     DateTime? DeletedAtUtc,
     int BranchCount,
     int TableCount,
-    int PaidBranchCount,
-    SubscriptionTier SubscriptionTier,
     VenueStatus Status,
-    TierMix TierMix,
-    IReadOnlyList<BranchTierView> Branches,
+    IReadOnlyList<VenueBranchView> Branches,
     double? AverageRating,
     int ReviewCount,
     int OpenTabCount,
@@ -279,10 +268,12 @@ public sealed record VenueSummary(
     string? Cuisine,
     DateTime CreatedAtUtc);
 
-/// <summary>One branch's tier and what it still lacks, as the venue list shows it.</summary>
+/// <summary>One branch's features and what it still lacks, as the venue list shows it.</summary>
 /// <param name="BranchId">The branch.</param>
 /// <param name="Name">Its name.</param>
-/// <param name="SubscriptionTier">1 Free, 2 Paid. Set per branch with <c>PATCH /api/platform/branches/{id}</c>.</param>
+/// <param name="Features">
+/// The features the platform allows there, in numeric order. Set with <c>PUT /api/platform/branches/{id}/features</c>.
+/// </param>
 /// <param name="IsActive">Whether the branch is switched on.</param>
 /// <param name="Issues">
 /// What a guest would find missing at the branch, in checklist order: <c>no-tables</c>, <c>no-menu</c>,
@@ -291,10 +282,10 @@ public sealed record VenueSummary(
 /// <c>GET /api/branches/{id}/readiness</c>.
 /// </param>
 /// <param name="District">The branch's district as the listing form saved it; absent when it has none.</param>
-public sealed record BranchTierView(
+public sealed record VenueBranchView(
     Guid BranchId,
     string Name,
-    SubscriptionTier SubscriptionTier,
+    IReadOnlyList<BranchFeature> Features,
     bool IsActive,
     IReadOnlyList<ReadinessIssue> Issues,
     string? District);
@@ -315,7 +306,11 @@ public sealed record VenueReadinessIssue(string Code, int? Count, string BranchN
 /// <param name="Longitude">The map pin.</param>
 /// <param name="TimeZoneId">IANA zone; every local time at the branch is in it.</param>
 /// <param name="IsActive">Whether the branch is switched on.</param>
-/// <param name="SubscriptionTier">1 Free, 2 Paid.</param>
+/// <param name="Features">
+/// The features the platform allows there, in numeric order: 1 AppBookings, 2 WebBookings, 3 PreOrders, 4 Takeaway,
+/// 5 TableService, 6 GuestMessages, 7 Reviews, 8 StaffPhone, 9 KitchenDisplay, 10 Reports. The owner's own switches
+/// work inside it. Set with <c>PUT /api/platform/branches/{id}/features</c>.
+/// </param>
 /// <param name="TableCount">Active tables. A table kept only for its history is not counted.</param>
 /// <param name="OpenTabCount">Tabs open or closing at the branch right now.</param>
 /// <param name="District">As the listing form saved it.</param>
@@ -329,7 +324,7 @@ public sealed record BranchSummary(
     double Longitude,
     string TimeZoneId,
     bool IsActive,
-    SubscriptionTier SubscriptionTier,
+    IReadOnlyList<BranchFeature> Features,
     int TableCount,
     int OpenTabCount,
     string? District);
@@ -377,4 +372,22 @@ public interface IPlatformService
     Task<BranchSummary> AddBranchAsync(Guid venueId, CreateBranchCommand command, CancellationToken cancellationToken = default);
 
     Task<BranchSummary> UpdateBranchAsync(Guid branchId, UpdateBranchCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces the features the platform allows at one branch. Audited as <c>branch.features-change</c> when the set
+    /// changed; a set equal to the current one writes nothing.
+    /// </summary>
+    /// <exception cref="FieldValidationException">An undefined value, or pre-orders with no booking channel.</exception>
+    /// <exception cref="Domain.Venues.BranchNotReadyForDinersException">Turning table service on with unfinished dishes.</exception>
+    /// <exception cref="DomainStateException">Turning table service off with tabs open, or a branch of a deleted venue.</exception>
+    Task<BranchSummary> SetBranchFeaturesAsync(Guid branchId, SetBranchFeaturesCommand command, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gives every branch of a venue the same set, in one transaction: all of them change or none does. Each branch
+    /// that changed is audited as <c>branch.features-change</c>, and the call as <c>venue.features-apply</c>.
+    /// </summary>
+    /// <exception cref="FieldValidationException">An undefined value, or pre-orders with no booking channel.</exception>
+    /// <exception cref="Domain.Venues.BranchNotReadyForDinersException">A branch would turn table service on with unfinished dishes.</exception>
+    /// <exception cref="DomainStateException">A branch would turn table service off with tabs open, or the venue is deleted.</exception>
+    Task<VenueDetail> ApplyVenueFeaturesAsync(Guid venueId, SetBranchFeaturesCommand command, CancellationToken cancellationToken = default);
 }

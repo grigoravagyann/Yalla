@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -84,7 +85,7 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
-            branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
+            branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
             await ConsoleTestData.RenameVenueAsync(db, branch.VenueId, $"Sunset {marker}");
         }
 
@@ -95,14 +96,13 @@ public sealed class PlatformConsoleEndpointTests(SqlServerFixture fixture)
 
         var row = Assert.Single(page.GetProperty("items").EnumerateArray());
         Assert.Equal(branch.VenueId, row.GetProperty("venueId").GetGuid());
-        Assert.Equal(3, row.GetProperty("tierMix").GetInt32());
+        Assert.False(row.TryGetProperty("tierMix", out _));
         Assert.Equal(1, row.GetProperty("status").GetInt32());
         var listed = Assert.Single(row.GetProperty("branches").EnumerateArray());
         Assert.Equal(branch.BranchId, listed.GetProperty("branchId").GetGuid());
-        Assert.Equal(2, listed.GetProperty("subscriptionTier").GetInt32());
+        Assert.Equal(Enumerable.Range(1, 10), listed.GetProperty("features").EnumerateArray().Select(f => f.GetInt32()));
         Assert.True(listed.TryGetProperty("name", out _));
         Assert.False(listed.TryGetProperty("district", out _), "a branch with no district leaves it out");
-        Assert.Equal(1, row.GetProperty("paidBranchCount").GetInt32());
         Assert.Equal(0, row.GetProperty("openTabCount").GetInt32());
         Assert.Equal(0, row.GetProperty("reviewCount").GetInt32());
         Assert.False(row.TryGetProperty("averageRating", out _), "an unrated venue leaves averageRating out");

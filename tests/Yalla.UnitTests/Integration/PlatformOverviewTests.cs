@@ -8,11 +8,12 @@ using Yalla.Domain.Messaging;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
 /// <summary>
-/// The platform console's Home, against a real database: venue counts by tier mix, bookings per
+/// The platform console's Home, against a real database: venue counts by state, bookings per
 /// day on the branch's calendar, pending requests and open tabs per venue, the branches not ready,
 /// the newest venues and the outbox - and no guest's name or number anywhere in it.
 /// </summary>
@@ -30,7 +31,7 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
     private static TestClock NewClock() => new(TestNow.UtcNow.AddYears(1));
 
     [SkippableFact]
-    public async Task Venues_are_counted_by_their_branches_tier_mix_and_state_with_deleted_ones_apart()
+    public async Task Venues_are_counted_by_state_with_deleted_ones_apart()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -41,13 +42,13 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
 
         var before = (await query.GetOverviewAsync()).Venues;
 
-        var paid = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
-        var free = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
-        var mixed = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
-        await ConsoleTestData.AddBranchAsync(db, mixed.VenueId, "Second", SubscriptionTier.Free);
-        var suspended = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
-        var deleted = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
-        var switchedOff = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
+        var paid = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
+        var free = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
+        var mixed = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
+        await ConsoleTestData.AddBranchAsync(db, mixed.VenueId, "Second", BranchFeatures.Basic);
+        var suspended = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
+        var deleted = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
+        var switchedOff = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
 
         var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
         await platform.SuspendVenueAsync(suspended.VenueId);
@@ -56,22 +57,16 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
 
         var after = (await query.GetOverviewAsync()).Venues;
 
-        // Five venues not deleted: one paid, one mixed, three free - the suspended and the switched-off
-        // ones count by their tier like any other. The deleted one is only in Deleted.
+        // Five venues not deleted, whatever their branches' features. The deleted one is only in Deleted.
         Assert.Equal(before.Total + 5, after.Total);
-        Assert.Equal(before.Paid + 1, after.Paid);
-        Assert.Equal(before.Mixed + 1, after.Mixed);
-        Assert.Equal(before.Free + 3, after.Free);
         Assert.Equal(before.Active + 3, after.Active);
         Assert.Equal(before.Suspended + 1, after.Suspended);
         Assert.Equal(before.Inactive + 1, after.Inactive);
         Assert.Equal(before.Deleted + 1, after.Deleted);
-        Assert.Equal(after.Total, after.Paid + after.Mixed + after.Free);
         Assert.Equal(after.Total, after.Active + after.Suspended + after.Inactive);
 
-        // Six branches under those five venues, two of them paid; the deleted venue's paid branch is not counted.
+        // Six branches under those five venues; the deleted venue's branch is not counted.
         Assert.Equal(before.Branches + 6, after.Branches);
-        Assert.Equal(before.PaidBranches + 2, after.PaidBranches);
 
         _ = paid;
         _ = free;
@@ -221,7 +216,7 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
 
         clock.Advance(TimeSpan.FromSeconds(1));
         var ready = await ConsoleTestData.ReadyBranchAsync(db, clock.UtcNow);
-        var off = await ConsoleTestData.AddBranchAsync(db, ready.VenueId, "Closed for works", SubscriptionTier.Free, isActive: false);
+        var off = await ConsoleTestData.AddBranchAsync(db, ready.VenueId, "Closed for works", BranchFeatures.Basic, isActive: false);
 
         // Unfinished and reachable: the builder's branch has tables, hours and staff, and nothing else.
         clock.Advance(TimeSpan.FromSeconds(1));
@@ -264,9 +259,9 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
         var query = fixture.CreatePlatformOverviewQuery(db, clock, actor);
 
         clock.Advance(TimeSpan.FromMinutes(1));
-        var older = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
+        var older = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
         clock.Advance(TimeSpan.FromMinutes(1));
-        var newer = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
+        var newer = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
         clock.Advance(TimeSpan.FromMinutes(1));
         var gone = await TestBranchBuilder.CreateAsync(db);
         await fixture.CreatePlatformService(db, clock, actor).DeleteVenueAsync(gone.VenueId);
@@ -278,11 +273,8 @@ public sealed class PlatformOverviewTests(SqlServerFixture fixture)
         Assert.Equal(newer.VenueId, recent[0].VenueId);
         Assert.Equal(older.VenueId, recent[1].VenueId);
 
-        Assert.Equal(TierMix.Paid, recent[0].TierMix);
-        Assert.Equal(TierMix.Free, recent[1].TierMix);
         Assert.Equal(VenueStatus.Active, recent[0].Status);
         Assert.Equal(1, recent[0].BranchCount);
-        Assert.Equal(1, recent[0].PaidBranchCount);
         Assert.Equal(
             await db.Venues.Where(v => v.Id == newer.VenueId).Select(v => v.CreatedAtUtc).FirstAsync(),
             recent[0].CreatedAtUtc);

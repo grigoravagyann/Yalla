@@ -70,7 +70,6 @@ internal sealed class PlatformOverviewQuery(
                 IsDeleted = v.DeletedAtUtc != null,
                 CreatedAtUtc = v.CreatedAtUtc,
                 BranchCount = v.Branches.Count,
-                PaidBranchCount = v.Branches.Count(b => b.SubscriptionTier == SubscriptionTier.Paid),
             })
             .ToListAsync(cancellationToken);
 
@@ -110,9 +109,7 @@ internal sealed class PlatformOverviewQuery(
                     v.Slug,
                     v.Type,
                     PlatformRollups.StatusOf(v.IsActive, v.IsSuspended, v.IsDeleted),
-                    PlatformRollups.TierMixOf(v.BranchCount, v.PaidBranchCount),
                     v.BranchCount,
-                    v.PaidBranchCount,
                     v.CreatedAtUtc))],
             new OverviewOutbox(
                 health.Pending,
@@ -293,20 +290,15 @@ internal sealed class PlatformOverviewQuery(
 
     private static OverviewVenueCounts VenueCounts(List<VenueRow> all, List<VenueRow> live)
     {
-        var mixes = live.Select(v => PlatformRollups.TierMixOf(v.BranchCount, v.PaidBranchCount)).ToList();
         var states = live.Select(v => PlatformRollups.StatusOf(v.IsActive, v.IsSuspended, v.IsDeleted)).ToList();
 
         return new OverviewVenueCounts(
             Total: live.Count,
-            Paid: mixes.Count(m => m == TierMix.Paid),
-            Mixed: mixes.Count(m => m == TierMix.Mixed),
-            Free: mixes.Count(m => m == TierMix.Free),
             Active: states.Count(s => s == VenueStatus.Active),
             Suspended: states.Count(s => s == VenueStatus.Suspended),
             Inactive: states.Count(s => s == VenueStatus.Inactive),
             Deleted: all.Count - live.Count,
-            Branches: live.Sum(v => v.BranchCount),
-            PaidBranches: live.Sum(v => v.PaidBranchCount));
+            Branches: live.Sum(v => v.BranchCount));
     }
 
     private async Task<OverviewBookings> BookingsAsync(
@@ -532,8 +524,6 @@ internal sealed class PlatformOverviewQuery(
         public DateTime CreatedAtUtc { get; init; }
 
         public int BranchCount { get; init; }
-
-        public int PaidBranchCount { get; init; }
     }
 
     private sealed class BranchRow

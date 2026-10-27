@@ -97,7 +97,7 @@ public sealed class TabEventReadPathTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(world.Clock))
         {
             var branch = await db.Branches.FirstAsync(b => b.Id == world.Branch.BranchId);
-            branch.SetSubscriptionTier(SubscriptionTier.Free);
+            branch.SetAllowedFeatures(BranchFeatures.Basic, incompleteMenuItemCount: 0);
             await db.SaveChangesAsync();
         }
 
@@ -109,6 +109,7 @@ public sealed class TabEventReadPathTests(SqlServerFixture fixture)
                     () => billing.GetEventsAsync(world.TabId, reader, after, limit: 0));
 
                 Assert.Equal(world.Branch.BranchId, refused.BranchId);
+                Assert.Equal(BranchFeature.TableService, refused.Feature);
             }
         }
 

@@ -64,7 +64,19 @@ internal static class LaterColumns
         await AddStructuredDeviceColumnsAsync(db);
     }
 
-    /// <summary>The <c>StructuredDeviceLabels</c> migration's columns on existing tables: what a phone runs on.</summary>
-    public static Task AddStructuredDeviceColumnsAsync(YallaDbContext db) =>
-        db.Database.ExecuteSqlRawAsync("ALTER TABLE dbo.StaffDevices ADD Platform int NULL, Browser int NULL;");
+    /// <summary>The <c>StructuredDeviceLabels</c> migration's columns on existing tables: what a phone runs on - and every later migration's.</summary>
+    public static async Task AddStructuredDeviceColumnsAsync(YallaDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE dbo.StaffDevices ADD Platform int NULL, Browser int NULL;");
+
+        await AddBranchFeatureColumnsAsync(db);
+    }
+
+    /// <summary>
+    /// The <c>ReplaceSubscriptionTierWithBranchFeatures</c> migration's column: the features the platform allows, every
+    /// one here (1023). The older <c>SubscriptionTier</c> keeps its database default, so a builder never names it.
+    /// </summary>
+    public static Task AddBranchFeatureColumnsAsync(YallaDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE dbo.Branches ADD AllowedFeatures int NOT NULL CONSTRAINT DF_Test_AllowedFeatures DEFAULT 1023;");
 }

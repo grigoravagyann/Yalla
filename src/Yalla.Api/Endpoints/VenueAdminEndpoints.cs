@@ -280,7 +280,7 @@ public static class VenueAdminEndpoints
                 + "reservation policy reviewed, staff enrolled, at least one tablet.\n\n"
                 + "The console used to render this from a client-side guess, which meant the console "
                 + "and the server had two different ideas of ready - and only the server's decides "
-                + "whether the branch may be switched to `Paid`. `incompleteMenuItemCount` is the line "
+                + "whether table service may be turned on there. `incompleteMenuItemCount` is the line "
                 + "that gate enforces, and `incompleteMenuItemIds` says which items to finish.\n\n"
                 + "`blockers` says what is left in sentences; `issues` says the same lines, one for one "
                 + "and in the same order, as stable codes - `no-tables`, `tables-unlabelled`, `no-menu`, "
@@ -633,7 +633,7 @@ public static class VenueAdminEndpoints
                 + "That is not the order the work happens in.\n\n"
                 + "So the rule moved rather than went away. An item saved without them comes back with "
                 + "`isComplete: false`; `GET /api/branches/{branchId}/readiness` counts it; the branch "
-                + "cannot be switched to `Paid` while any remain; and the diner-facing menu does not "
+                + "cannot have table service turned on while any remain; and the diner-facing menu does not "
                 + "return it at all.")
             .Produces<MenuItemView>(StatusCodes.Status201Created)
             .ProducesProblemDetails(StatusCodes.Status400BadRequest, "The name is blank, or the price is negative.");

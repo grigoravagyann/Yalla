@@ -49,7 +49,10 @@ public sealed record ManagedVenueView(
 /// <param name="Slug">Its URL-safe handle.</param>
 /// <param name="TimeZoneId">IANA time zone, so the console can show the branch's own clock.</param>
 /// <param name="IsActive">False for a branch the platform has switched off. It is listed so the switcher can say so.</param>
-/// <param name="SubscriptionTier">Free or Paid; tabs and payments are a Paid feature.</param>
+/// <param name="Features">
+/// The features the platform allows at the branch, in numeric order. The console shows the others <b>locked</b>
+/// ("contact SHURJ"), never hidden; the owner's own switches work only inside this set.
+/// </param>
 /// <param name="TableCount">How many tables it has, active or not.</param>
 public sealed record ManagedBranchView(
     Guid BranchId,
@@ -58,7 +61,7 @@ public sealed record ManagedBranchView(
     string Slug,
     string TimeZoneId,
     bool IsActive,
-    SubscriptionTier SubscriptionTier,
+    IReadOnlyList<BranchFeature> Features,
     int TableCount);
 
 /// <summary>

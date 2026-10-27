@@ -2680,6 +2680,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
+                    b.Property<int>("AllowedFeatureBits")
+                        .HasColumnType("int")
+                        .HasColumnName("AllowedFeatures");
+
                     b.Property<string>("AmenityKeys")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
@@ -2758,11 +2762,6 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(0);
-
-                    b.Property<int>("SubscriptionTier")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(1);
 
                     b.Property<bool>("TakeawayAutoAccept")
                         .ValueGeneratedOnAdd()

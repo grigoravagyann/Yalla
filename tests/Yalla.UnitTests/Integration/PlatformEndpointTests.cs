@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Yalla.Domain.Enums;
 using Yalla.Infrastructure.Identity;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -61,10 +62,10 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.OK, (await anonymous.GetAsync($"/api/branches/{branch.BranchId}/availability")).StatusCode);
     }
 
-    // ------------------------------------------------------------ 7. the paid-branch gate
+    // ------------------------------------------------------------ 7. the table-service gate
 
     [SkippableFact]
-    public async Task Tab_endpoints_answer_not_enabled_for_a_Free_branch_and_work_for_a_Paid_one()
+    public async Task Tab_endpoints_answer_not_enabled_without_table_service_and_work_with_it()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -75,7 +76,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
+            branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
             admin = await AuthTestData.CreatePlatformAdminAsync(db);
             qrToken = await db.DiningTables.Where(t => t.Id == branch.FirstTableId).Select(t => t.QrToken).FirstAsync();
         }
@@ -90,6 +91,9 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var problem = await refused.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("feature-not-enabled", problem.GetProperty("code").GetString());
         Assert.Contains("not enabled for this branch", problem.GetProperty("detail").GetString());
+        Assert.Equal((int)BranchFeature.TableService, problem.GetProperty("context").GetProperty("feature").GetInt32());
+        Assert.Equal(branch.BranchId, problem.GetProperty("context").GetProperty("branchId").GetGuid());
+        Assert.False(problem.GetProperty("context").TryGetProperty("currentTier", out _));
 
         // No tab, no session, no seating: the refusal happened before anything was written.
         await using (var verify = fixture.CreateContext(factory.Clock))
@@ -98,11 +102,14 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             Assert.Equal(0, await verify.TableSessions.CountAsync(s => s.BranchId == branch.BranchId));
         }
 
-        // The platform admin upgrades the branch.
+        // The platform admin allows table service there.
         using var platform = factory.CreateClientWithToken(await SignInPlatformAdminAsync(factory, admin));
-        var upgraded = await platform.PatchAsJsonAsync(
-            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Paid });
+        var upgraded = await platform.PutAsJsonAsync(
+            $"/api/platform/branches/{branch.BranchId}/features", new { features = BranchFeatures.Full });
         Assert.Equal(HttpStatusCode.OK, upgraded.StatusCode);
+        Assert.Equal(
+            Enumerable.Range(1, 10),
+            (await upgraded.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("features").EnumerateArray().Select(f => f.GetInt32()));
 
         var opened = await anonymous.PostAsJsonAsync(
             "/api/tabs/open", new { qrToken, deviceId = "phone-a", clientCommandId = Guid.CreateVersion7() });
@@ -115,25 +122,25 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         using var diner = factory.CreateClientWithToken(token);
         Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/tabs/{tabId}")).StatusCode);
 
-        // Downgrading now would switch the tab endpoints off under a party that is still eating,
+        // Blocking it now would switch the tab endpoints off under a party that is still eating,
         // hiding a live bill from the people who owe it - so it waits, and says which table.
-        var strand = await platform.PatchAsJsonAsync(
-            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Free });
+        var strand = await platform.PutAsJsonAsync(
+            $"/api/platform/branches/{branch.BranchId}/features", new { features = BranchFeatures.Basic });
 
         Assert.Equal(HttpStatusCode.Conflict, strand.StatusCode);
         Assert.Contains("open tab", (await strand.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("detail").GetString()!);
 
-        // The refusal changed nothing: the tab is still readable and the branch is still Paid.
+        // The refusal changed nothing: the tab is still readable and the branch still has table service.
         Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/tabs/{tabId}")).StatusCode);
 
         await using (var verify = fixture.CreateContext(factory.Clock))
         {
             Assert.Equal(
-                SubscriptionTier.Paid,
-                await verify.Branches.Where(b => b.Id == branch.BranchId).Select(b => b.SubscriptionTier).FirstAsync());
+                BranchFeatures.FullBits,
+                await verify.Branches.Where(b => b.Id == branch.BranchId).Select(b => b.AllowedFeatureBits).FirstAsync());
         }
 
-        // A branch with nothing outstanding downgrades, and the gate applies from then on.
+        // A branch with nothing outstanding loses it, and the gate applies from then on.
         await using (var settle = fixture.CreateContext(factory.Clock))
         {
             var tab = await settle.Tabs.FirstAsync(t => t.Id == tabId);
@@ -141,8 +148,8 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             await settle.SaveChangesAsync();
         }
 
-        var downgraded = await platform.PatchAsJsonAsync(
-            $"/api/platform/branches/{branch.BranchId}", new { subscriptionTier = SubscriptionTier.Free });
+        var downgraded = await platform.PutAsJsonAsync(
+            $"/api/platform/branches/{branch.BranchId}/features", new { features = BranchFeatures.Basic });
         Assert.Equal(HttpStatusCode.OK, downgraded.StatusCode);
 
         var gated = await diner.GetAsync($"/api/tabs/{tabId}");
@@ -181,7 +188,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
                 latitude = 40.18,
                 longitude = 44.51,
                 timeZoneId = "Asia/Yerevan",
-                subscriptionTier = SubscriptionTier.Paid,
+                features = BranchFeatures.Full,
             },
         });
 
@@ -287,15 +294,15 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/platform/venues")).StatusCode);
     }
 
-    // ------------------------------------------------------------ 21. the tier is per branch
+    // ------------------------------------------------------------ 21. features are per branch
 
     /// <summary>
-    /// Billing is per branch, so one branch of a chain can pilot ordering while the others do not.
-    /// A venue-level flag would make that impossible, which is why the rollup is a read and the
-    /// flag lives on the branch.
+    /// Features are per branch, so one branch of a chain can pilot ordering while the others do not.
+    /// A venue-level flag would make that impossible, which is why "apply to every branch" is a
+    /// convenience over the branches and the set lives on each one.
     /// </summary>
     [SkippableFact]
-    public async Task One_branch_of_a_venue_can_be_paid_while_another_stays_free()
+    public async Task One_branch_of_a_venue_can_have_table_service_while_another_does_not()
     {
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
@@ -315,7 +322,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             name = $"Chain {marker}",
             type = VenueType.Cafe,
             slug = $"chain-{marker}",
-            firstBranch = NewBranch("paid", subscriptionTier: SubscriptionTier.Paid),
+            firstBranch = NewBranch("paid", BranchFeatures.Full),
         });
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
@@ -323,16 +330,22 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         var venueId = venue.GetProperty("venue").GetProperty("venueId").GetGuid();
         var paidBranchId = venue.GetProperty("branches")[0].GetProperty("branchId").GetGuid();
 
+        // No features sent: the Basic preset, every feature but table service.
         var second = await platform.PostAsJsonAsync(
-            $"/api/platform/venues/{venueId}/branches", NewBranch("free", SubscriptionTier.Free));
+            $"/api/platform/venues/{venueId}/branches", NewBranch("free", features: null));
 
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
-        var freeBranchId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("branchId").GetGuid();
+        var secondBody = await second.Content.ReadFromJsonAsync<JsonElement>();
+        var freeBranchId = secondBody.GetProperty("branchId").GetGuid();
+        Assert.Equal(BranchFeatures.Basic.Select(f => (int)f), Features(secondBody));
 
-        // The venue rolls up to Free, because not every branch is paid - and says how many are.
+        // The venue's list row carries each branch's own set; there is no venue-level rollup.
         var detail = await platform.GetFromJsonAsync<JsonElement>($"/api/platform/venues/{venueId}");
-        Assert.Equal((int)SubscriptionTier.Free, detail.GetProperty("venue").GetProperty("subscriptionTier").GetInt32());
-        Assert.Equal(1, detail.GetProperty("venue").GetProperty("paidBranchCount").GetInt32());
+        Assert.False(detail.GetProperty("venue").TryGetProperty("subscriptionTier", out _));
+        var rows = detail.GetProperty("venue").GetProperty("branches").EnumerateArray()
+            .ToDictionary(b => b.GetProperty("branchId").GetGuid(), Features);
+        Assert.Equal(Enumerable.Range(1, 10), rows[paidBranchId]);
+        Assert.DoesNotContain((int)BranchFeature.TableService, rows[freeBranchId]);
 
         // What actually matters: the gate follows the branch, not the venue.
         string paidQr;
@@ -356,7 +369,56 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Equal(
             "feature-not-enabled",
             (await onFree.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        // Apply to every branch: one set, both branches, one transaction. The second branch has no menu, so it has no
+        // unfinished dishes to refuse table service for.
+        var applied = await platform.PutAsJsonAsync(
+            $"/api/platform/venues/{venueId}/features",
+            new { features = new[] { BranchFeature.WebBookings, BranchFeature.PreOrders, BranchFeature.TableService } });
+        Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+
+        var after = (await applied.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("branches").EnumerateArray().ToList();
+        Assert.Equal(2, after.Count);
+        Assert.All(after, b => Assert.Equal([2, 3, 5], Features(b)));
+
+        var onceFree = await anonymous.PostAsJsonAsync(
+            "/api/tabs/open", new { qrToken = freeQr, deviceId = "phone-b", clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.OK, onceFree.StatusCode);
+
+        // Pre-orders ride on bookings: without a booking channel the set is refused on `features`, and nothing moves.
+        var orphan = await platform.PutAsJsonAsync(
+            $"/api/platform/venues/{venueId}/features", new { features = new[] { BranchFeature.PreOrders } });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, orphan.StatusCode);
+        var orphanProblem = await orphan.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("validation-failed", orphanProblem.GetProperty("code").GetString());
+        Assert.Equal(
+            "features",
+            Assert.Single(orphanProblem.GetProperty("context").GetProperty("fields").EnumerateArray()).GetProperty("field").GetString());
+
+        var unknown = await platform.PutAsJsonAsync(
+            $"/api/platform/branches/{freeBranchId}/features", new { features = new[] { 11 } });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, unknown.StatusCode);
+
+        // The set is required: a body without it is not "block everything".
+        var missing = await platform.PutAsJsonAsync($"/api/platform/branches/{freeBranchId}/features", new { });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, missing.StatusCode);
+
+        // Both the branch and the venue route were audited, the branch rows once per branch that changed.
+        await using (var verify = fixture.CreateContext(factory.Clock))
+        {
+            var actions = await verify.PlatformAuditLogs
+                .Where(a => a.TargetId == venueId || a.TargetId == paidBranchId || a.TargetId == freeBranchId)
+                .Select(a => a.Action)
+                .ToListAsync();
+
+            Assert.Equal(2, actions.Count(a => a == "branch.features-change"));
+            Assert.Single(actions, "venue.features-apply");
+            Assert.Equal([2, 3, 5], (await verify.Branches.FirstAsync(b => b.Id == freeBranchId)).AllowedFeatures.Select(f => (int)f));
+        }
     }
+
+    private static IEnumerable<int> Features(JsonElement branch) =>
+        branch.GetProperty("features").EnumerateArray().Select(f => f.GetInt32()).ToList();
 
     // ------------------------------------------------------------ the missing first branch
 
@@ -496,7 +558,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
                 name = $"{name} {marker}",
                 type,
                 slug = $"{name.ToLowerInvariant()}-{marker}",
-                firstBranch = NewBranch("main", SubscriptionTier.Free),
+                firstBranch = NewBranch("main", BranchFeatures.Basic),
             });
 
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -541,7 +603,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             name = $"Nowhere {marker}",
             type = 4,
             slug = $"nowhere-{marker}",
-            firstBranch = NewBranch("main", SubscriptionTier.Free),
+            firstBranch = NewBranch("main", BranchFeatures.Basic),
         });
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, unknown.StatusCode);
@@ -551,7 +613,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         Assert.Contains("1 Cafe, 2 Restaurant, 3 Bar", field.GetProperty("message").GetString());
     }
 
-    private static object NewBranch(string slugPart, SubscriptionTier subscriptionTier) => new
+    private static object NewBranch(string slugPart, IReadOnlyList<BranchFeature>? features) => new
     {
         name = $"Branch {slugPart}",
         slug = $"{slugPart}-{Guid.NewGuid():N}"[..24],
@@ -559,7 +621,7 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
         latitude = 40.18,
         longitude = 44.51,
         timeZoneId = "Asia/Yerevan",
-        subscriptionTier,
+        features,
     };
 
     private static async Task<string> QrTokenAsync(Yalla.Infrastructure.Persistence.YallaDbContext db, Guid branchId)

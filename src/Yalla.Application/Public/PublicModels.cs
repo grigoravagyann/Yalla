@@ -127,6 +127,13 @@ public sealed record PublicBranchCard(
 /// Whether the diner app may book here: <paramref name="AcceptsWebBookings"/> <b>and</b> a reservation
 /// policy somebody at the venue has saved (K9). Read live, like <paramref name="AcceptsWebBookings"/>.
 /// </param>
+/// <param name="Features">
+/// The features <b>on</b> here as a diner sees them, in numeric order: allowed by the platform <b>and</b> switched on by
+/// the venue where the venue has a switch - app bookings (1: online bookings on and a saved reservation policy), web
+/// bookings (2: online bookings on), pre-orders (3: accepted), takeaway (4: enabled), guest
+/// messages (6: guests may write); the rest (5 table service, 7 reviews, 8-10) as allowed. Hide what is not listed.
+/// Read live, like <paramref name="AcceptsWebBookings"/>.
+/// </param>
 /// <param name="VenueBranchCount">
 /// How many branches the venue's chooser (<c>GET /api/public/venues</c>) lists for this venue - its
 /// branches that are switched on, this one included - so the page can say "All 3 branches" without
@@ -155,6 +162,7 @@ public sealed record PublicBranchPage(
     int BookingWindowDays,
     PublicReservationPolicy Policy,
     DateTime AsOfUtc,
+    IReadOnlyList<BranchFeature> Features,
     Media.PhotoView? CoverPhoto = null,
     bool AcceptsAppBookings = false,
     int VenueBranchCount = 1);

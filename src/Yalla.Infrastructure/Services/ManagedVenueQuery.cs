@@ -113,6 +113,6 @@ internal sealed class ManagedVenueQuery(YallaDbContext db, ICurrentActor actor) 
             b.Slug,
             b.TimeZoneId,
             b.IsActive,
-            b.SubscriptionTier,
+            BranchFeatures.FromBits(b.AllowedFeatureBits),
             b.DiningTables.Count);
 }

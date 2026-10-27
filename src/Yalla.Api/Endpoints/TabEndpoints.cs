@@ -97,7 +97,9 @@ public static class TabEndpoints
                 StatusCodes.Status409Conflict,
                 "The table is out of service, or the tab there is being settled and takes no new people. "
                 + "Also returned when this `clientCommandId` was used by a different device. "
-                + "`scan-turned-away`: a waiter just turned a scan away (`context.retryAfterUtc`).")
+                + "`scan-turned-away`: a waiter just turned a scan away (`context.retryAfterUtc`). "
+                + "`feature-not-enabled` (`context.feature` 5 TableService, `context.branchId`): the platform has not "
+                + "allowed table service at the branch - every tab route answers it there.")
             .RequireRateLimiting(RateLimitingExtensions.AuthPolicy);
 
         group.MapPost("/join", JoinAsync)
@@ -365,8 +367,9 @@ public static class TabEndpoints
                 "`table-not-seated`: nobody is sitting there - seat the party first. (A table still "
                 + "Occupied after its last bill was paid is not refused: the party gets a new sitting "
                 + "and the new tab on it.) Also returned, "
-                + "with no `context`, when the table is out of service, the branch is not on a tier "
-                + "with tabs, or this `clientCommandId` opened a tab somewhere else.");
+                + "with no `context`, when the table is out of service or this `clientCommandId` opened a tab "
+                + "somewhere else; and as `feature-not-enabled` (`context.feature` 5, `context.branchId`) when the "
+                + "platform has not allowed table service at the branch.");
     }
 
     // ---------------------------------------------------------------------------------------

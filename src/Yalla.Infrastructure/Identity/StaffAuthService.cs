@@ -10,6 +10,7 @@ using Yalla.Domain;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Identity;
 using Yalla.Domain.Staff;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 
@@ -212,7 +213,7 @@ internal sealed class StaffAuthService(
 
         await db.SaveChangesAsync(cancellationToken);
 
-        return SignedIn(staff, device, session, renewalToken);
+        return await SignedInAsync(staff, device, session, renewalToken, cancellationToken);
     }
 
     /// <summary>
@@ -295,7 +296,12 @@ internal sealed class StaffAuthService(
     }
 
     /// <summary>Mints the session token for a session that has been saved.</summary>
-    private StaffSessionResult SignedIn(StaffMember staff, StaffDevice device, StaffSession session, string renewalToken)
+    private async Task<StaffSessionResult> SignedInAsync(
+        StaffMember staff,
+        StaffDevice device,
+        StaffSession session,
+        string renewalToken,
+        CancellationToken cancellationToken)
     {
         var (accessToken, _) = tokens.IssueStaffSessionToken(
             staff.Id, session.Id, device.Id, device.BranchId, device.VenueId, staff.Role);
@@ -311,8 +317,20 @@ internal sealed class StaffAuthService(
             staff.Id,
             staff.FullName,
             staff.Role,
-            device.BranchId);
+            device.BranchId,
+            await AllowedFeaturesAsync(device.BranchId, cancellationToken));
     }
+
+    /// <summary>
+    /// What the platform allows at the branch, for the session the tablet or phone holds. Read on every sign-in and
+    /// renewal, so a change reaches the floor within one renewal.
+    /// </summary>
+    private async Task<IReadOnlyList<BranchFeature>> AllowedFeaturesAsync(Guid branchId, CancellationToken cancellationToken) =>
+        BranchFeatures.FromBits(await db.Branches
+            .AsNoTracking()
+            .Where(b => b.Id == branchId)
+            .Select(b => b.AllowedFeatureBits)
+            .FirstAsync(cancellationToken));
 
     public async Task<StaffSessionResult> RenewSessionAsync(
         string renewalToken,
@@ -386,7 +404,8 @@ internal sealed class StaffAuthService(
             session.StaffMemberId,
             session.StaffMember.FullName,
             session.StaffMember.Role,
-            session.BranchId);
+            session.BranchId,
+            await AllowedFeaturesAsync(session.BranchId, cancellationToken));
     }
 
     public async Task SignOutSessionAsync(string renewalToken, CancellationToken cancellationToken = default)
@@ -423,6 +442,7 @@ internal sealed class StaffAuthService(
                 d.Branch.Venue.Name,
                 d.CreatedAtUtc,
                 d.LastSeenAtUtc,
+                BranchFeatures.FromBits(d.Branch.AllowedFeatureBits),
                 d.Kind,
                 d.BoundStaffMember == null
                     ? null
@@ -940,7 +960,7 @@ internal sealed class StaffAuthService(
 
         return new PhonePairingResult(
             new DeviceEnrolmentResult(deviceToken, device.Id, device.BranchId, device.Name, expiresAtUtc),
-            SignedIn(staff, device, session, renewalToken));
+            await SignedInAsync(staff, device, session, renewalToken, cancellationToken));
     }
 
     public async Task UnpairOwnPhoneAsync(

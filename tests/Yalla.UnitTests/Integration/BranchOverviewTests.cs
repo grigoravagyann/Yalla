@@ -608,7 +608,7 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
         await using var db = fixture.CreateContext(clock);
 
         var branch = await TestBranchBuilder.CreateAsync(db);
-        var sibling = await ConsoleTestData.AddBranchAsync(db, branch.VenueId, "Sibling", SubscriptionTier.Paid);
+        var sibling = await ConsoleTestData.AddBranchAsync(db, branch.VenueId, "Sibling", BranchFeatures.Full);
         var owner = await AuthTestData.SeedOwnerAsync(db, branch.VenueId);
 
         var manager = fixture.CreateBranchOverviewQuery(db, clock, TestActor.Manager(branch.ManagerId));

@@ -33,14 +33,14 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
     /// need a photo" is something they can finish this afternoon.
     /// </remarks>
     [SkippableFact]
-    public async Task A_branch_with_incomplete_menu_items_cannot_be_switched_to_paid()
+    public async Task A_branch_with_incomplete_menu_items_cannot_have_table_service_turned_on()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
-        var branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Free);
+        var branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Basic);
 
         var menu = fixture.CreateMenuService(db);
         var photoId = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
@@ -56,18 +56,26 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
         var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
 
         var refused = await Assert.ThrowsAsync<BranchNotReadyForDinersException>(
-            () => platform.UpdateBranchAsync(
-                branch.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid)));
+            () => platform.SetBranchFeaturesAsync(branch.BranchId, new SetBranchFeaturesCommand(BranchFeatures.Full)));
 
         Assert.Equal(3, refused.IncompleteMenuItemCount);
         Assert.Contains("3 menu item(s)", refused.Message);
         Assert.Equal(branch.BranchId, refused.BranchId);
 
-        // And the tier really did not move - the refusal is not cosmetic.
-        await using var stillFree = fixture.CreateContext(clock);
-        Assert.Equal(
-            SubscriptionTier.Free,
-            (await stillFree.Branches.AsNoTracking().FirstAsync(b => b.Id == branch.BranchId)).SubscriptionTier);
+        // Applied to the whole venue, the same branch refuses the same way, and nothing moves.
+        await Assert.ThrowsAsync<BranchNotReadyForDinersException>(
+            () => platform.ApplyVenueFeaturesAsync(branch.VenueId, new SetBranchFeaturesCommand(BranchFeatures.Full)));
+
+        // Any other change goes through with the menu as it is: the rule guards table service, nothing else.
+        var withoutReports = await platform.SetBranchFeaturesAsync(
+            branch.BranchId,
+            new SetBranchFeaturesCommand([.. BranchFeatures.Basic.Where(f => f != BranchFeature.Reports)]));
+        Assert.DoesNotContain(BranchFeature.Reports, withoutReports.Features);
+
+        // And table service really did not come on - the refusal is not cosmetic.
+        await using var stillOff = fixture.CreateContext(clock);
+        Assert.False(
+            (await stillOff.Branches.AsNoTracking().FirstAsync(b => b.Id == branch.BranchId)).Allows(BranchFeature.TableService));
 
         // Finish the three, and the same call goes through.
         var incomplete = await SqlServerFixture.CreateReadinessQuery(db).IncompleteMenuItemIdsAsync(branch.BranchId);
@@ -83,14 +91,13 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
                 PrepMinutes: 10));
         }
 
-        var upgraded = await platform.UpdateBranchAsync(
-            branch.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
+        var upgraded = await platform.SetBranchFeaturesAsync(branch.BranchId, new SetBranchFeaturesCommand(BranchFeatures.Full));
 
-        Assert.Equal(SubscriptionTier.Paid, upgraded.SubscriptionTier);
+        Assert.Equal(BranchFeatures.Full, upgraded.Features);
     }
 
     /// <summary>
-    /// A branch that is already Paid is not re-gated by an unrelated edit.
+    /// A branch that already has table service is not re-gated by an unrelated edit.
     /// </summary>
     /// <remarks>
     /// The gate is on <i>going</i> live, not on being live. A venue that is trading and adds a
@@ -99,14 +106,14 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
     /// protection that actually matters.
     /// </remarks>
     [SkippableFact]
-    public async Task An_already_paid_branch_can_still_be_edited_with_an_unfinished_menu()
+    public async Task A_branch_with_table_service_can_still_be_edited_with_an_unfinished_menu()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(Now);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
-        var branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
+        var branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
 
         var menu = fixture.CreateMenuService(db);
         var category = await menu.CreateCategoryAsync(branch.BranchId, new CreateMenuCategoryCommand("Specials"));
@@ -114,11 +121,15 @@ public sealed class BranchReadinessTests(SqlServerFixture fixture)
 
         var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
 
-        var renamed = await platform.UpdateBranchAsync(
-            branch.BranchId, new UpdateBranchCommand(Name: "Renamed Branch", SubscriptionTier: SubscriptionTier.Paid));
+        var renamed = await platform.UpdateBranchAsync(branch.BranchId, new UpdateBranchCommand(Name: "Renamed Branch"));
 
         Assert.Equal("Renamed Branch", renamed.Name);
-        Assert.Equal(SubscriptionTier.Paid, renamed.SubscriptionTier);
+        Assert.Equal(BranchFeatures.Full, renamed.Features);
+
+        // Nor is a features change that keeps table service on: it is turning it on that asks for the finished menu.
+        var fewer = await platform.SetBranchFeaturesAsync(
+            branch.BranchId, new SetBranchFeaturesCommand([BranchFeature.TableService, BranchFeature.Reports]));
+        Assert.Equal([BranchFeature.TableService, BranchFeature.Reports], fewer.Features);
     }
 
     // ------------------------------------------------------------ 4. the checklist

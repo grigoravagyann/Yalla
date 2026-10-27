@@ -208,9 +208,14 @@ internal sealed class PublicVenueQuery(
 
             // Read live, not from the cached plan. A venue that switches bookings off must not
             // have its page go on offering the button - see LiveBranchAsync.
+            //
+            // The features likewise: what the platform allows narrowed by the venue's own switches, so a feature the
+            // platform blocks leaves the page on the next read. The booleans are the same answers.
             PhoneE164 = live.PhoneE164,
-            AcceptsWebBookings = live.AcceptsWebBookings,
-            AcceptsAppBookings = live.AcceptsAppBookings,
+            Features = live.Features,
+            AcceptsWebBookings = live.Features.Contains(BranchFeature.WebBookings),
+            AcceptsAppBookings = live.Features.Contains(BranchFeature.AppBookings),
+            Policy = plan.Page.Policy with { AcceptsPreOrders = live.Features.Contains(BranchFeature.PreOrders) },
             VenueBranchCount = live.VenueBranchCount,
             FloorPlan = plan.Page.FloorPlan with { Tables = tables },
         };
@@ -323,31 +328,43 @@ internal sealed class PublicVenueQuery(
                         && b.Venue.IsActive
                         && b.Venue.SuspendedAtUtc == null
                         && b.Venue.DeletedAtUtc == null)
-            .Select(b => new LiveBranch(
+            .Select(b => new
+            {
                 b.PhoneE164,
-                b.AcceptsWebBookings,
+                b.AllowedFeatureBits,
 
-                // K9: switched on, and a policy somebody at the venue has saved. Live for the same
-                // reason as the switch itself - the reservation service refuses on it live.
-                b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
+                // The venue's own switches. K9 among them: the app books only where bookings are switched on and a
+                // policy somebody at the venue has saved - live for the same reason as the switch itself, the
+                // reservation service refuses on it live.
+                Switches = new BranchFeatures.OwnerSwitches(
+                    b.AcceptsWebBookings,
+                    b.ReservationPolicyReviewedAtUtc != null,
+                    b.AcceptsPreOrders,
+                    b.TakeawayEnabled,
+                    b.GuestsCanMessage),
                 b.FloorPlanVersion,
 
                 // The venue's branches the chooser lists - switched on, the venue being live, which
                 // the filter above has just established. A correlated count on the same statement.
-                b.Venue.Branches.Count(other => other.IsActive)))
-            .FirstOrDefaultAsync(cancellationToken);
+                VenueBranchCount = b.Venue.Branches.Count(other => other.IsActive),
+            })
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
 
-        return live ?? throw new KeyNotFoundException($"Branch {branchId} is not published.");
+        return new LiveBranch(
+            live.PhoneE164,
+            BranchFeatures.Effective(live.AllowedFeatureBits, live.Switches),
+            live.FloorPlanVersion,
+            live.VenueBranchCount);
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
     /// <param name="PhoneE164">The branch's phone.</param>
-    /// <param name="AcceptsWebBookings">Bookings switched on.</param>
-    /// <param name="AcceptsAppBookings">Switched on, with a reviewed reservation policy.</param>
+    /// <param name="Features">The effective set: allowed by the platform, narrowed by the venue's switches.</param>
     /// <param name="FloorPlanVersion">The plan revision now: a cached plan from another one is redrawn.</param>
     /// <param name="VenueBranchCount">The venue's switched-on branches, as the chooser lists them.</param>
     private sealed record LiveBranch(
-        string? PhoneE164, bool AcceptsWebBookings, bool AcceptsAppBookings, int FloorPlanVersion, int VenueBranchCount);
+        string? PhoneE164, IReadOnlyList<BranchFeature> Features, int FloorPlanVersion, int VenueBranchCount);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.
@@ -552,6 +569,9 @@ internal sealed class PublicVenueQuery(
             // Placeholder. Stamped by the caller, for the same reason as the free-table count: a
             // cached "as of" would tell the diner the count is fresh when it is minutes old.
             AsOfUtc: default,
+
+            // Placeholder, read live by the caller with the booking switch it narrows.
+            Features: [],
             CoverPhoto: cover);
 
         return new BranchPlan(branch.Id, branch.FloorPlanVersion, page);

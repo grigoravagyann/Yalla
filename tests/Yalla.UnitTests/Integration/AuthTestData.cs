@@ -182,7 +182,7 @@ internal static class AuthTestData
             latitude: 40.19,
             longitude: 44.52,
             timeZoneId: timeZoneId,
-            subscriptionTier: SubscriptionTier.Paid);
+            allowedFeatures: BranchFeatures.Full);
 
         branch.SetActive(isActive);
         db.Branches.Add(branch);

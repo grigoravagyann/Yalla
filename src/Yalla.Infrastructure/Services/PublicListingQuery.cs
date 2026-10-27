@@ -130,12 +130,6 @@ internal sealed class PublicListingQuery(
                 b.WebsiteUrl,
                 b.PhoneE164,
                 b.AmenityKeys,
-                b.AcceptsWebBookings,
-
-                // K9: the app books only where bookings are switched on AND somebody at the venue has
-                // saved the reservation policy, rather than the defaults a new branch ships with.
-                AcceptsAppBookings = b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
-                b.TakeawayEnabled,
                 b.TakeawayPrepMinutes,
             })
             .FirstAsync(cancellationToken);
@@ -162,6 +156,11 @@ internal sealed class PublicListingQuery(
         // side by side must agree - this is the screen a diner comes back to right after reviewing.
         var summary = await ReviewSummaryAsync(branchId, cancellationToken);
 
+        // The effective set, read live with the row: allowed by the platform and switched on by the venue. The
+        // booleans below are the same answers, kept for the screens that read them (K9 included: the app books only
+        // where bookings are switched on AND somebody at the venue has saved the reservation policy).
+        var features = row.EffectiveFeatures;
+
         return new PublicBranchDetail(
             ToListing(row, stats, latitude, longitude, (summary.Count, summary.Sum)),
             extra.About,
@@ -172,12 +171,12 @@ internal sealed class PublicListingQuery(
             await OpeningCalendars.UpcomingAsync(db, branchId, row.TimeZoneId, clock.UtcNow, cancellationToken),
             gallery,
             tableCount,
-            extra.AcceptsWebBookings,
-            extra.AcceptsAppBookings,
+            features.Contains(BranchFeature.WebBookings),
+            features.Contains(BranchFeature.AppBookings),
             recent,
             summary.RatingCounts,
             rooms,
-            new PublicTakeawayInfo(extra.TakeawayEnabled, extra.TakeawayPrepMinutes),
+            new PublicTakeawayInfo(features.Contains(BranchFeature.Takeaway), extra.TakeawayPrepMinutes),
             clock.UtcNow);
     }
 
@@ -267,6 +266,12 @@ internal sealed class PublicListingQuery(
             CoverFullPath = b.CoverPhoto!.FullPath,
             CoverWidth = b.CoverPhoto!.Width,
             CoverHeight = b.CoverPhoto!.Height,
+            FeatureBits = b.AllowedFeatureBits,
+            AcceptsWebBookings = b.AcceptsWebBookings,
+            ReservationPolicyReviewed = b.ReservationPolicyReviewedAtUtc != null,
+            AcceptsPreOrders = b.AcceptsPreOrders,
+            TakeawayEnabled = b.TakeawayEnabled,
+            GuestsCanMessage = b.GuestsCanMessage,
         });
 
     private async Task<List<EstateRow>> EstateAsync(CancellationToken cancellationToken) =>
@@ -396,6 +401,7 @@ internal sealed class PublicListingQuery(
                 count,
                 rating),
             Cover(row),
+            row.EffectiveFeatures,
             row.District);
     }
 
@@ -655,5 +661,24 @@ internal sealed class PublicListingQuery(
         public int? CoverWidth { get; init; }
 
         public int? CoverHeight { get; init; }
+
+        /// <summary>What the platform allows, one bit per feature.</summary>
+        public int FeatureBits { get; init; }
+
+        public bool AcceptsWebBookings { get; init; }
+
+        public bool ReservationPolicyReviewed { get; init; }
+
+        public bool AcceptsPreOrders { get; init; }
+
+        public bool TakeawayEnabled { get; init; }
+
+        public bool GuestsCanMessage { get; init; }
+
+        /// <summary>What a diner sees as on: allowed, and switched on by the venue where it has a switch.</summary>
+        public IReadOnlyList<BranchFeature> EffectiveFeatures => BranchFeatures.Effective(
+            FeatureBits,
+            new BranchFeatures.OwnerSwitches(
+                AcceptsWebBookings, ReservationPolicyReviewed, AcceptsPreOrders, TakeawayEnabled, GuestsCanMessage));
     }
 }

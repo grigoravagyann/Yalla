@@ -31,6 +31,12 @@ namespace Yalla.Application.Public;
 /// <param name="ReviewCount">How many reviews.</param>
 /// <param name="Badges"><c>"popular"</c> and/or <c>"new"</c>, derived - see <c>BranchBadgeRules</c>.</param>
 /// <param name="CoverPhoto">The hero picture, or absent.</param>
+/// <param name="Features">
+/// The features <b>on</b> here as a diner sees them, in numeric order: allowed by the platform <b>and</b> switched on by
+/// the venue where the venue has a switch - app bookings (1: online bookings on and a saved reservation policy), web
+/// bookings (2: online bookings on), pre-orders (3: accepted), takeaway (4: enabled), guest
+/// messages (6: guests may write); the rest (5 table service, 7 reviews, 8-10) as allowed. Hide what is not listed.
+/// </param>
 /// <param name="District">
 /// The part of town, e.g. "Kentron" - what the app prints after the venue type and the cuisine. Free
 /// text from the venue, or absent when not set. Search matches it.
@@ -56,6 +62,7 @@ public sealed record PublicBranchListing(
     int ReviewCount,
     IReadOnlyList<string> Badges,
     PhotoView? CoverPhoto,
+    IReadOnlyList<BranchFeature> Features,
     string? District = null);
 
 /// <summary>
@@ -74,10 +81,11 @@ public sealed record PublicBranchListing(
 /// </param>
 /// <param name="Gallery">Pictures beyond the cover, in the venue's order.</param>
 /// <param name="TableCount">Active tables on the plan.</param>
-/// <param name="AcceptsWebBookings">Whether the public page offers booking.</param>
+/// <param name="AcceptsWebBookings">Whether the public page offers booking: web bookings (2) is in <c>listing.features</c>.</param>
 /// <param name="AcceptsAppBookings">
-/// Whether the diner app may book here: online bookings switched on <b>and</b> the reservation policy
-/// saved by somebody at the venue (K9). False means hide the booking button.
+/// Whether the diner app may book here: app bookings allowed by the platform, online bookings switched on <b>and</b>
+/// the reservation policy saved by somebody at the venue (K9) - app bookings (1) is in <c>listing.features</c>. False
+/// means hide the booking button.
 /// </param>
 /// <param name="RecentReviews">The newest three published reviews, by when they were first written. The rest are paged on the reviews route.</param>
 /// <param name="RatingCounts">
@@ -113,7 +121,7 @@ public sealed record PublicBranchDetail(
     DateTime AsOfUtc);
 
 /// <summary>A place's takeaway, as the place page shows it.</summary>
-/// <param name="Enabled">The venue takes takeaway orders from the app.</param>
+/// <param name="Enabled">The venue takes takeaway orders from the app: allowed by the platform and switched on by the venue.</param>
 /// <param name="PrepMinutes">"Ready in about 20 minutes".</param>
 public sealed record PublicTakeawayInfo(bool Enabled, int PrepMinutes);
 

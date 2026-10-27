@@ -34,6 +34,9 @@ internal sealed class TabBillingQuery(
     ITabQuery tabs,
     ILogger<TabBillingQuery> logger) : ITabBillingQuery
 {
+    /// <summary>Table service's bit in <c>Branches.AllowedFeatures</c>, asked in SQL beside the read.</summary>
+    private static readonly int TableServiceBit = Yalla.Domain.Venues.BranchFeatures.Bit(BranchFeature.TableService);
+
     /// <summary>The most events one catch-up will return. A client that wants more asks again.</summary>
     private const int MaxEventPageSize = 500;
 
@@ -116,7 +119,7 @@ internal sealed class TabBillingQuery(
         var capped = Math.Clamp(limit <= 0 ? MaxEventPageSize : limit, 1, MaxEventPageSize);
 
         // Who is reading, and whether the branch has tabs at all: one statement, before the stream.
-        // The tier first, so a branch below Paid answers every page the same - an empty poll used to
+        // Table service first, so a branch without it answers every page the same - an empty poll used to
         // pass where a page with something on it was refused - and the same way the tab read does.
         var reader = await db.TabParticipants
             .AsNoTracking()
@@ -126,14 +129,14 @@ internal sealed class TabBillingQuery(
                 p.Status,
                 p.CanSeeTableTotal,
                 p.Tab.BranchId,
-                Tier = p.Tab.Branch.SubscriptionTier,
+                TableService = (p.Tab.Branch.AllowedFeatureBits & TableServiceBit) != 0,
             })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new TabPermissionException("Reading the tab's events", "somebody on this tab");
 
-        if (reader.Tier != SubscriptionTier.Paid)
+        if (!reader.TableService)
         {
-            throw new FeatureNotEnabledException("Tabs and ordering", reader.BranchId, reader.Tier);
+            throw new FeatureNotEnabledException(BranchFeature.TableService, reader.BranchId);
         }
 
         // Decided by the same two TabPermissions functions as the reader's tab read. Somebody who may

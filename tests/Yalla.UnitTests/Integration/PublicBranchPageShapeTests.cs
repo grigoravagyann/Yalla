@@ -78,6 +78,9 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 "branchId",
                 "branchName",
                 "branchSlug",
+
+                // 2026-10-27: what is on here - allowed by the platform and switched on by the venue.
+                "features",
                 "floorPlan",
                 "freeTableCount",
                 "isOpenNow",
@@ -99,6 +102,12 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
                 "venueType",
             },
             page.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        // The builder's branch has every feature allowed; the venue has switched web bookings on but not saved the
+        // policy (so no app bookings), and takeaway and pre-orders are off as shipped.
+        Assert.Equal(
+            [2, 5, 6, 7, 8, 9, 10],
+            page.GetProperty("features").EnumerateArray().Select(f => f.GetInt32()));
 
         Assert.Equal(
             new[]

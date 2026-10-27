@@ -50,7 +50,7 @@ internal static class TestBranchBuilder
         int seatsPerTable = 4,
         ReservationPolicy? policy = null,
         IReadOnlyList<(TimeOnly Opens, TimeOnly Closes, bool ClosesNextDay)>? openingHours = null,
-        SubscriptionTier subscriptionTier = SubscriptionTier.Paid,
+        IReadOnlyList<BranchFeature>? features = null,
         bool pinTables = true,
         bool roomPhoto = true,
         CancellationToken cancellationToken = default)
@@ -69,7 +69,7 @@ internal static class TestBranchBuilder
             longitude: 44.51,
             timeZoneId: timeZoneId,
             reservationPolicy: policy,
-            subscriptionTier: subscriptionTier);
+            allowedFeatures: features ?? BranchFeatures.Full);
 
         db.Branches.Add(branch);
 
