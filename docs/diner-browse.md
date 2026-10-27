@@ -550,7 +550,7 @@ With `DevSeed:Enabled` true - on in `appsettings.Development.json`, and never re
 Development - every start seeds, idempotently:
 
 - **The demo venue and branch**: venue `yalla-demo` ("Yalla Demo Cafe", a cafe), branch
-  `yerevan-centre` ("Yerevan Centre", 12 Abovyan Street, `Asia/Yerevan`, on the Paid tier so tabs and
+  `yerevan-centre` ("Yerevan Centre", 12 Abovyan Street, `Asia/Yerevan`, with every feature allowed (Full) so tabs and
   ordering work), a waiter and a manager, eight tables (labels 1-4 seat two, 5-7 seat four, 8 seats
   ten) and opening hours.
 - **The listing** (`DevListingSeeder`), filled only while every listing field - amenities included -

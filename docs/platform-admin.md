@@ -75,38 +75,78 @@ a change that rolled back cannot either.
 | Action | Endpoint | Notes |
 | --- | --- | --- |
 | Create a venue **with its first branch** | `POST /api/platform/venues` | A venue with no branch is useless. One `SaveChanges`: venue, branch and both audit rows commit together or not at all. `type` is `1` Cafe, `2` Restaurant or `3` Bar; the first branch ships that type's reservation-policy defaults (a 120-minute turn for a cafe or a bar, 90 for a restaurant). |
-| List venues | `GET /api/platform/venues?search=&page=&pageSize=&status=&tier=&sort=&dir=` | The console's venue table: counts, `tierMix` and every branch's tier, rating, open tabs, the first readiness issue, the cover thumbnail - see §5. Deleted venues are hidden unless `status=deleted` or `all` (or the older `includeDeleted=true`). |
+| List venues | `GET /api/platform/venues?search=&page=&pageSize=&status=&sort=&dir=` | The console's venue table: counts, every branch's `features`, rating, open tabs, the first readiness issue, the cover thumbnail - see §5. Deleted venues are hidden unless `status=deleted` or `all` (or the older `includeDeleted=true`). |
 | Read one venue | `GET /api/platform/venues/{id}` | The venue and every branch under it. |
 | Edit a venue | `PATCH /api/platform/venues/{id}` | Name, type (`1` Cafe, `2` Restaurant, `3` Bar), slug, active flag. Changing the type does not touch the policies existing branches already have. |
 | **Suspend** / reactivate | `POST .../suspend`, `.../reactivate` | What non-payment does. The venue disappears from diner browsing but keeps every row and stays visible to its owner. |
 | **Soft-delete** | `DELETE /api/platform/venues/{id}` | Never a hard delete. Refused, naming the blockers, while any tab is open or any confirmed booking is still in the future. |
 | **Restore** | `POST /api/platform/venues/{id}/restore` | Undoes a soft delete; the venue comes back as it was - see below. |
-| Add a branch | `POST /api/platform/venues/{id}/branches` | |
-| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, active flag, **subscription tier**. Refused for a branch of a deleted venue, and a downgrade to `Free` is refused while any tab is open (see below). |
+| Add a branch | `POST /api/platform/venues/{id}/branches` | `features` optional; absent is the Basic preset. |
+| Edit a branch | `PATCH /api/platform/branches/{id}` | Name, address, coordinates, time zone, active flag. Refused for a branch of a deleted venue. |
+| **Branch features** | `PUT /api/platform/branches/{id}/features` | The whole allowed set, `{ "features": [1, 2, ...] }` - see below. |
+| **Features for every branch** | `PUT /api/platform/venues/{id}/features` | The same set on every branch of the venue, in one transaction. |
 
 An owner can do none of these. An owner configures the venue they have; the platform decides
-which venues exist and what each branch pays for.
+which venues exist and which features each branch may use.
 
-### The subscription tier is per branch
+### Branch features (2026-10-27; replaced the Free/Paid tier)
 
-`Branch.SubscriptionTier` is `Free` or `Paid`. Billing is per branch, not per brand — a chain
-with four locations is four paying customers — so the flag lives on the branch and the venue
-list shows a **rollup**: `Paid` only when every branch is paid, plus the paid-branch count.
+The platform admin allows or blocks **ten features per branch** (`BranchFeature`, on the wire as the
+number). Per branch, never per brand - a chain with four locations is four customers - so the set
+lives on the branch, and "apply to every branch" is a convenience over them, not a venue value.
 
-| Tier | Gets |
+| # | Feature | Covers |
+| --- | --- | --- |
+| 1 | `AppBookings` | Diner-app bookings: create and reschedule |
+| 2 | `WebBookings` | Public-page bookings, the `/booking/{token}` manage link's reschedule included |
+| 3 | `PreOrders` | Pre-orders on bookings - **needs 1 or 2** (422 on `features` otherwise) |
+| 4 | `Takeaway` | Takeaway orders |
+| 5 | `TableService` | Tabs, QR and waiter ordering, bill request and tip, payments - what Paid gated |
+| 6 | `GuestMessages` | Venue-guest threads |
+| 7 | `Reviews` | Writing, showing publicly, console replies |
+| 8 | `StaffPhone` | Staff phone pairing, sign-in and pushes |
+| 9 | `KitchenDisplay` | The kitchen screen and its tickets |
+| 10 | `Reports` | Console reports and CSV export |
+
+**Presets** (the console's, not the server's): **Basic** is every feature but 5 - what Free was, and
+what a new branch starts with; **Full** is all ten - what Paid was. The migration
+`ReplaceSubscriptionTierWithBranchFeatures` gave every Free branch Basic and every Paid branch Full,
+and dropped `SubscriptionTier`.
+
+**Storage**: one int of bits, `Branches.AllowedFeatures`, bit `1 << (value - 1)` (Basic 1007, Full
+1023). A table of rows would be normalised, but the set is always read whole, with the branch, on
+requests that already load that row; one column keeps the gate a column read, a change a single-row
+update, and the migration one `UPDATE`. On the wire it is always a list, never the number.
+
+**Two layers.** The owner's own switches (`takeawayEnabled`, `acceptsPreOrders`, `acceptsWebBookings`,
+`guestsCanMessage`) keep working, **inside** the allowed set. Blocking a feature never clears them, so
+allowing it again restores what the owner had. What a diner sees is `allowed AND the owner's switch`
+(`BranchFeatures.Effective`).
+
+| Route | Answers |
 | --- | --- |
-| `Free` | floor plan, reservations |
-| `Paid` | adds tabs, ordering, payments, analytics |
+| `PUT /api/platform/branches/{id}/features` | `BranchSummary`. A set equal to the current one writes nothing. |
+| `PUT /api/platform/venues/{id}/features` | `VenueDetail`. Every branch (switched-off ones included) or none: a refusal at any branch rolls the whole call back and names it. |
 
-The tab endpoints check the branch's tier inside the service, on every open, join, read and
-mutation. A `Free` branch answers **409 `feature-not-enabled`** with the branch id and current tier
-in `context` — not a 403, because the caller is allowed to be there; the branch has not paid for
-what they asked. Nothing here bills anybody; it is a flag that gates features.
+Both refuse on the old Paid rules, moved to table service: **turning 5 on needs a finished menu**
+(`branch-not-ready`, `incompleteMenuItemCount`), and **turning 5 off waits for open tabs** (409 naming
+the tables - the gate covers reads and settlement, so blocking it mid-meal would hide a live bill).
+Both are refused for a deleted venue. Audited as `branch.features-change` per branch that changed
+(`venueId`, `from`, `to`, `added`, `removed`, `viaVenue`) and, for the venue route, one
+`venue.features-apply` (`features`, `branchCount`, `changedBranchIds`) when anything changed.
 
-Because the gate covers reads and settlement as well as ordering, **a downgrade waits for the open
-tabs.** Moving a branch to `Free` while a party is mid-meal would hide a live bill from the people
-who owe it, so the request is refused and names the tables — the same shape as refusing to delete a
-venue with an open tab. Upgrades are never blocked.
+**When a feature is blocked**, new actions answer **409 `feature-not-enabled`** with `context.feature`
+(the number) and `context.branchId` - not a 403, the caller may be there; the branch does not have it.
+Work in flight finishes: an open tab, a placed takeaway, a sent pre-order, an existing booking's
+cancellation. **Today only table service is enforced** - on every tab open, join, read and mutation,
+exactly where Paid was checked; the other nine are exposed but not yet gated (phase 2).
+
+**Where clients read it**: `features` (allowed) on `BranchSummary`, the venue list's `branches[]`, the
+console's `GET /api/venues/{id}/manage` branches (locked, not hidden), the staff session
+(`POST /api/auth/staff/pin`, `/renew`, phone pairing) and `GET /api/auth/staff/device`; `features`
+(effective) on the diner listing (`listing.features` on the detail too) and the public page, whose
+`acceptsWebBookings`, `acceptsAppBookings`, `takeaway.enabled` and `policy.acceptsPreOrders` are now
+the effective answers as well.
 
 ### Suspended versus deleted
 
@@ -149,11 +189,11 @@ which is why a restore never finds it taken; should that ever change, the restor
 
 **The venue itself** (`GET /api/venues/{id}/manage`) — the read the console opens a venue with:
 name, type, slug, the suspended and deleted flags, and the branches the caller's own staff row
-covers (id, name, slug, time zone, active flag, tier, table count), active ones first. An owner
+covers (id, name, slug, time zone, active flag, the allowed `features`, table count), active ones first. An owner
 and a general manager get every branch; a branch manager gets their own; a platform admin gets
 everything. **Venue users never read `/api/platform`** — everything
 there is `PlatformAdminOnly`, and this read carries none of what the platform keeps to itself
-(tier rollup, paid-branch count, suspension timestamps).
+(suspension timestamps, the audit).
 
 **Reservation policy** (`GET`/`PUT /api/branches/{id}/reservation-policy`) — every field of the
 owned `ReservationPolicy`, replaced as one form. Out-of-range values are **refused, never
@@ -352,24 +392,18 @@ its guests; the platform sees numbers.
 There is **no outbox retry endpoint**, by decision: a dead letter is a decision to stop (see
 `docs/notifications.md` §5). Home's alert links to `GET /api/platform/outbox` for the details.
 
-### The tier is per branch; the console shows a mix
+### Features are per branch; there is no venue rollup
 
-`Branch.SubscriptionTier` stays the real flag, set with `PATCH /api/platform/branches/{id}`. Every
-venue-level answer derives a **`tierMix`** from its branches - `1` Free (no branch paid, and a venue
-with no branch at all), `2` Mixed (some), `3` Paid (every one) - alongside `paidBranchCount` and
-`branchCount`, which is everything "Paid" or "Mixed · 1/2" needs. The venue row also lists every
-branch's own tier in `branches`. The older `subscriptionTier` rollup on a venue row is kept for the
-callers that read it; it reads `Free` for a mixed venue. A button that changes a whole venue's tier
-is the console sending one `PATCH` per branch; each is refused on its own terms (`branch-not-ready`
-going Paid, open tabs going Free).
+Until 2026-10-27 every venue-level answer derived a `tierMix` and a `paidBranchCount` from its branches'
+`SubscriptionTier`, and the list took a `tier` filter. All of it went with the tier: each branch row
+carries its own `features`, and "apply to every branch" is `PUT /api/platform/venues/{id}/features`.
 
 ### `GET /api/platform/overview`
 
 ```json
 {
   "generatedAtUtc": "2026-10-18T10:32:00Z",
-  "venues": { "total": 8, "paid": 4, "mixed": 1, "free": 3, "active": 6, "suspended": 1, "inactive": 1,
-              "deleted": 1, "branches": 10, "paidBranches": 6 },
+  "venues": { "total": 8, "active": 6, "suspended": 1, "inactive": 1, "deleted": 1, "branches": 10 },
   "bookings": { "last7Days": 312, "previous7Days": 278, "changePercent": 12.2,
                 "labelTimeZoneId": "Asia/Yerevan",
                 "perDay": [ { "date": "2026-09-19", "count": 31 }, "… 30 entries, today last" ] },
@@ -378,14 +412,14 @@ going Paid, open tabs going Free).
   "notReady": { "total": 4, "branches": [ { "venueId": "…", "venueName": "Riverside Restaurant",
                 "branchId": "…", "branchName": "Main", "issues": [ { "code": "incomplete-dishes", "count": 3 } ] } ] },
   "recentVenues": [ { "venueId": "…", "name": "Riverside Restaurant", "slug": "riverside-restaurant", "type": 2,
-                      "status": 1, "tierMix": 3, "branchCount": 1, "paidBranchCount": 1, "createdAtUtc": "…" } ],
+                      "status": 1, "branchCount": 1, "createdAtUtc": "…" } ],
   "outbox": { "pending": 0, "due": 0, "failed": 0, "deadLettered": 2, "sentLastDay": 118, "deadLetteredLastDay": 2 }
 }
 ```
 
 | Part | Rule |
 | --- | --- |
-| `venues` | Venues not deleted, split by `tierMix` and by `status` (1 Active, 2 Suspended, 3 Inactive - switched off); `deleted` is counted apart and is in no other number. `branches` and `paidBranches` are the branches of the venues in `total`. |
+| `venues` | Venues not deleted, split by `status` (1 Active, 2 Suspended, 3 Inactive - switched off); `deleted` is counted apart and is in no other number. `branches` is the branches of the venues in `total`. |
 | `bookings` | Bookings by the **day of the visit** (`Reservation.LocalDate`, the branch's own date), **cancelled ones left out** (diner, venue, and a rejected request, which is a venue cancellation). Each branch counts on its own calendar - "so many days before that branch's today" - and the `date` labels are in the zone most branches share. `perDay` is 30 entries, oldest first, today last; **the 14-day chart is the last fourteen**. `last7Days` is today and the six days before it; `previous7Days` the seven before those - a rolling week, so "this week" on a Monday is not one day long. `changePercent` is to one decimal and absent when the previous week had none. Deleted venues are left out. |
 | `pendingApprovals` | Requests still `PendingApproval` **whose visit is ahead and whose answer window is open** (`ApprovalExpiresAtUtc` null or ahead) - the predicate the venue's own approval queue lists by; one whose time or window has passed is not something anybody can approve. Per venue, the most first. |
 | `openTabs` | Tabs `Open` or `Closing` right now, per venue, the most first. |
@@ -430,11 +464,9 @@ are; the single-branch read is that call with one id.
 
 New query parameters, all optional: `status` = `live` (default: every venue not deleted), `all`,
 `active`, `suspended`, `inactive` or `deleted` - the older `includeDeleted=true` means `all` when no
-`status` is sent, and a `status` wins when both are; `tier` = `free`, `mixed` or `paid` (the
-`tierMix`); `sort` = `name` (default), `rating`, `tables` or `created`; `dir` = `asc` (default) or
+`status` is sent, and a `status` wins when both are; `sort` = `name` (default), `rating`, `tables` or `created`; `dir` = `asc` (default) or
 `desc` - a venue with no rating sorts below every rated one. Name and id break every tie. `search` now
-also matches each branch's name and district. A blank value (`tier=`, as an empty select sends it) is
-no filter. A value it does not know is a **400** naming the parameter in `context.field`.
+also matches each branch's name and district. A value it does not know is a **400** naming the parameter in `context.field`.
 
 Each row (`VenueSummary`, also the `venue` of `GET /api/platform/venues/{id}`) gained these, named as
 the console's gateway maps them:
@@ -442,7 +474,7 @@ the console's gateway maps them:
 | Field | Meaning |
 | --- | --- |
 | `status` | 1 Active, 2 Suspended, 3 Inactive, 4 Deleted |
-| `tierMix`, `branches` | See above; `branches` is every branch - `branchId`, `name`, `subscriptionTier`, and also `isActive`, its `issues` and its own `district` (absent when it has none, so the console can search every branch's) - active ones first, then by name. With `paidBranchCount` and `branchCount` it is "Paid" or "Mixed · 1/2" |
+| `branches` | Every branch - `branchId`, `name`, `features` (allowed), and also `isActive`, its `issues` and its own `district` (absent when it has none, so the console can search every branch's) - active ones first, then by name |
 | `averageRating`, `reviewCount` | Over the **published** reviews of every branch - the public pages' rule, venue-wide. `averageRating` is absent with none |
 | `openTabCount` | Tabs open or closing now |
 | `readinessIssue` | `{ code, count, branchName }`: the first thing a guest would find missing, at the first branch in `branches` that has one - `no-tables`, `no-menu`, `incomplete-dishes` (with `count`), `no-hours` or `no-photo`. Absent when nothing is; never worked out for a deleted venue |
@@ -496,11 +528,12 @@ and they stay in the log.
 
 ```json
 { "items": [ {
-  "id": "…", "atUtc": "2026-10-18T08:10:00Z", "action": "branch.tier-change",
+  "id": "…", "atUtc": "2026-10-27T08:10:00Z", "action": "branch.features-change",
   "actor": { "staffMemberId": "…", "role": 5, "displayName": "Grigor Avagyan" },
   "target": { "type": "Branch", "id": "…", "displayName": "Kaskad" },
   "venue": { "venueId": "…", "name": "Luna Cafe" },
-  "detail": { "venueId": "…", "from": 1, "to": 2 }
+  "detail": { "venueId": "…", "from": [1, 2, 3, 4, 6, 7, 8, 9, 10], "to": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+              "added": [5], "removed": [], "viaVenue": false }
 } ] }
 ```
 
@@ -515,8 +548,10 @@ ones they had then. `detail` is the row's JSON as written:
 | `venue.create`, `venue.update` | platform | `after` (and `before`): name, type, slug, active flag |
 | `venue.suspend`, `venue.reactivate`, `venue.delete` | platform | the timestamps; `snapshot` on delete |
 | `venue.restore` | platform | `wasDeletedAtUtc`, `after` (active flag, suspended) |
-| `branch.create`, `branch.update` | platform | `after` (and `before`): the branch's fields, tier included |
-| `branch.tier-change` | platform | `venueId`, `from`, `to` (1 Free, 2 Paid) |
+| `branch.create`, `branch.update` | platform | `after` (and `before`): the branch's fields, `features` included |
+| `branch.features-change` | platform | `venueId`, `from`, `to`, `added`, `removed` (feature numbers), `viaVenue` |
+| `venue.features-apply` | platform | `features`, `branchCount`, `changedBranchIds` |
+| `branch.tier-change` | platform, **before 2026-10-27 only** | `venueId`, `from`, `to` (1 Free, 2 Paid) - history; nothing writes it now |
 | `branch.relocate` | owner or platform | `old`, `new` address and coordinates |
 | `staff.create` | owner, manager or platform | `role`, `branchId`, `canSignIn` - never a PIN or password |
 | `staff.sign-in-issued` | owner, manager or platform | `email`, `emailBefore`, `expiresAtUtc`, `replacedExistingSignIn` - never the link |
@@ -537,9 +572,8 @@ ones they had then. `detail` is the row's JSON as written:
 | `account.password-change-failed` | owner, general or branch manager | `reason` (`current-password-wrong`); the venue console's lockout counter, **left out of the feed** like the admin's |
 | `account.sign-out-others` | owner, general or branch manager, of themself | `endedSessions` |
 
-**A tier change is its own entry.** `PATCH /api/platform/branches/{id}` that moves the tier writes
-`branch.tier-change`; anything else the same request changed is a `branch.update` beside it; a request
-that changes nothing still writes the `branch.update` it always has.
+**A features change is its own entry**, written by the features routes only; `PATCH
+/api/platform/branches/{id}` writes the `branch.update` it always has, even when nothing changed.
 
 ### Dismissing review reports
 
