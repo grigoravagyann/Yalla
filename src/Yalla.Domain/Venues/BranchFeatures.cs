@@ -45,6 +45,22 @@ public static class BranchFeatures
     /// <summary>Whether <paramref name="bits"/> includes <paramref name="feature"/>.</summary>
     public static bool Has(int bits, BranchFeature feature) => (bits & Bit(feature)) != 0;
 
+    /// <summary>
+    /// Refuses a new action that needs <paramref name="feature"/> at a branch whose allowed bits do not include it. Work
+    /// already in flight is never asked: see <c>docs/branch-features.md</c> for what each feature gates and what runs on.
+    /// </summary>
+    /// <param name="allowedBits">The branch's <c>AllowedFeatureBits</c>.</param>
+    /// <param name="feature">What the action needs.</param>
+    /// <param name="branchId">The branch, for the problem's context.</param>
+    /// <exception cref="FeatureNotEnabledException">The feature is blocked at the branch.</exception>
+    public static void Require(int allowedBits, BranchFeature feature, Guid branchId)
+    {
+        if (!Has(allowedBits, feature))
+        {
+            throw new FeatureNotEnabledException(feature, branchId);
+        }
+    }
+
     /// <summary>The bits of a set. Repeats are harmless.</summary>
     /// <exception cref="ArgumentOutOfRangeException">A value that is not a <see cref="BranchFeature"/>; the parameter is <c>features</c>.</exception>
     public static int BitsOf(IEnumerable<BranchFeature> features)

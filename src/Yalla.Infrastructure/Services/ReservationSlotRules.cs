@@ -24,6 +24,10 @@ internal sealed class ReservationSlotRules(
     /// </summary>
     internal static void RequireChannelAccepted(ReservationChannel channel, Branch branch)
     {
+        // The platform's switch first (docs/branch-features.md): a channel the branch is not allowed is
+        // feature-not-enabled whatever the owner chose, so the client shows it locked rather than "switched off".
+        RequireChannelAllowed(channel, branch);
+
         // A branch that never agreed to take bookings from its public page does not take them.
         // Checked here rather than at the endpoint because the public page books through this same
         // service - there is no separate public booking route to guard - and because a rule that
@@ -40,6 +44,49 @@ internal sealed class ReservationSlotRules(
             throw new AppBookingsNotAcceptedException(branch.Id, branch.Name);
         }
     }
+
+    /// <summary>
+    /// Refuses a diner's booking - or a move of one - over a channel the platform has not allowed at the branch:
+    /// <see cref="BranchFeature.AppBookings"/> for <see cref="ReservationChannel.App"/>,
+    /// <see cref="BranchFeature.WebBookings"/> for <see cref="ReservationChannel.Web"/> (the public page and its
+    /// manage link).
+    /// </summary>
+    /// <remarks>
+    /// Both callers are a diner's: creation and the move from the app or the link. The channel is self-reported, so a
+    /// client that sends <see cref="ReservationChannel.Unknown"/> or <see cref="ReservationChannel.Staff"/> - or a
+    /// booking made before the column existed - needs at least one of the two diner channels allowed: otherwise
+    /// leaving the field out would book at a branch the platform allows no diner bookings at. Refused as
+    /// <see cref="BranchFeature.AppBookings"/> then.
+    /// </remarks>
+    internal static void RequireChannelAllowed(ReservationChannel channel, Branch branch)
+    {
+        switch (channel)
+        {
+            case ReservationChannel.App:
+                branch.RequireAllowed(BranchFeature.AppBookings);
+                break;
+
+            case ReservationChannel.Web:
+                branch.RequireAllowed(BranchFeature.WebBookings);
+                break;
+
+            default:
+                if (!branch.Allows(BranchFeature.WebBookings))
+                {
+                    branch.RequireAllowed(BranchFeature.AppBookings);
+                }
+
+                break;
+        }
+    }
+
+    /// <summary>Whether a diner may book or move over <paramref name="channel"/> as the platform allows: <see cref="RequireChannelAllowed"/>'s answer.</summary>
+    internal static bool ChannelAllowed(ReservationChannel channel, int allowedBits) => channel switch
+    {
+        ReservationChannel.App => BranchFeatures.Has(allowedBits, BranchFeature.AppBookings),
+        ReservationChannel.Web => BranchFeatures.Has(allowedBits, BranchFeature.WebBookings),
+        _ => BranchFeatures.Has(allowedBits, BranchFeature.AppBookings) || BranchFeatures.Has(allowedBits, BranchFeature.WebBookings),
+    };
 
     /// <summary>
     /// Refuses a booking from the public page at a branch that has not switched web bookings on.

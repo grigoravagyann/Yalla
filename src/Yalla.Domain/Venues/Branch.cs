@@ -309,6 +309,10 @@ public sealed class Branch : Entity
     /// <summary>Whether the platform allows <paramref name="feature"/> here.</summary>
     public bool Allows(BranchFeature feature) => BranchFeatures.Has(AllowedFeatureBits, feature);
 
+    /// <summary>Refuses a new action that needs <paramref name="feature"/> where the platform has not allowed it.</summary>
+    /// <exception cref="FeatureNotEnabledException">The feature is blocked here.</exception>
+    public void RequireAllowed(BranchFeature feature) => BranchFeatures.Require(AllowedFeatureBits, feature, Id);
+
     /// <summary>What a diner sees as on: allowed, and switched on by the owner wherever the owner has a switch.</summary>
     public IReadOnlyList<BranchFeature> EffectiveFeatures => BranchFeatures.Effective(AllowedFeatureBits, Switches);
 
