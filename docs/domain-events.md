@@ -166,11 +166,11 @@ tabs and sittings are unchanged byte for byte. Regenerate only on purpose:
 | the same call, when nothing is owed after it: the tab closes, and its sitting when still open - not the table | `TabSettled(Tab, SittingClosed)` | `PaymentStream`: `TabClosed` (`tableSessionClosed`), after the `PaymentRecorded`. |
 | `TabAdjustment.ByPercent` / `ByAmount` (from `TabOrderService.AddAdjustmentAsync`) | `TabAdjustmentAdded(Adjustment)` | `PaymentActivity`: `payment.discount` / `payment.comp` (money: its own reduction in the bill's order, `TabLedger.ReductionOf` - the reports' rule; the line's name, the total before and after - "before" is the bill with it not standing, `TabLedger.ComputeTogglingAdjustment`). `PaymentStream`: `AdjustmentAdded`. |
 | `TabAdjustment.Void(at, byStaffId)` (from `VoidAdjustmentAsync`) | `TabAdjustmentReversed(Adjustment)` | `PaymentActivity`: `payment.adjustment-reversed` (money: the total before and after, `ComputeTogglingAdjustment` again). `PaymentStream`: `AdjustmentVoided`. |
-| `Tab.WriteOff(at, byStaffId, reason)` (from `TabPaymentService.AbandonAsync`, and `TableStateService.AbandonTabAsync`, which now saves through the ledger) - replaces `MarkAbandoned` | `TabWrittenOff(Tab, WrittenOffAmd, Reason, ByStaffId)` | `PaymentActivity`: `payment.unpaid` (money: what was still owed, the total, what had been paid). `PaymentStream`: `TabAbandoned`. |
+| `Tab.WriteOff(at, byStaffId, reason)` (from `TabPaymentService.AbandonAsync`, and `TableStateService.AbandonTabAsync`, which now saves through the ledger) - replaces `MarkAbandoned` | `TabWrittenOff(Tab, WrittenOffAmd, Reason, ByStaffId)` | `PaymentActivity`: `payment.unpaid` (money: what was still owed, the total, what had been paid). `PaymentStream`: `TabAbandoned`. `WrittenOffTabCalls`: the tab's open calls answered by the manager, not claimed (2026-10-27). `WrittenOffTabFloorSignal`: signal 9 `TabWrittenOff` on the change stream. |
 
-Handlers live in `Infrastructure/DomainEvents/Payments/`. Payments write no outbox message, feed entry, staff push or
-change-stream row - there is no receipt or "settled" notice to the diner - so the vertical has no tracker hook to fold
-in. What stayed in the services: who may do it, the branch guard, the replay by `clientCommandId` and the refusals (more
+Handlers live in `Infrastructure/DomainEvents/Payments/`. Payments write no outbox message, feed entry or staff push -
+there is no receipt or "settled" notice to the diner - and one change-stream row, a write-off's signal 9 (below), so the
+vertical has no tracker hook to fold in. What stayed in the services: who may do it, the branch guard, the replay by `clientCommandId` and the refusals (more
 than is owed, a closed tab, a second reversal), the reserve and its no-retry race, and saving through the ledger.
 `Tab.Close` still exists without an event for the table freeing a zero-balance tab (`TableStateService.FreeTableAsync`;
 the Tables vertical's `TableFreed` names it), and `Payment.Reserve` raises nothing, so tests can seed a paid tab. `TabStaffActions` (the bill
@@ -184,6 +184,29 @@ activity entries, outbox and feed rows, both tabs' streams in sequence, the chan
 Results and the waiter's cash list (`Integration/Snapshots/PaymentSideEffects.approved.txt`). The refactor keeps it
 byte for byte. The one deliberate change, in its own commit before the move: `TableStateService.AbandonTabAsync` (no
 route of its own) now tells the tab's stream `TabAbandoned` as the payment route does.
+
+**A written-off tab leaves nothing live on the floor (2026-10-27).** QA found that writing a tab off left the table's
+open calls - its "bill, please" among them - on the floor's rail, and its orders (a phone's waiting to be sent, the
+kitchen's, one up at the pass, a pre-order's held ticket that had arrived on the tab) on the kitchen's queue. Closing a
+tab had never touched either: a settled tab's party usually sits on, may still call for water, and is still owed the
+food it paid for - so parity with closing was not the rule; the write-off's own meaning is (the party has gone). Decided:
+
+- **Calls are answered, not deleted** (`WrittenOffTabCalls`, a `TabWrittenOff` handler): by the manager, at the
+  write-off's instant (`ServiceRequest.AnswerForWrittenOffTab`), under the calls' row locks as a claim and an answer take
+  them. **Not claimed**, unlike the turn-away's answer: nobody walked over, so it is no waiter's response time in Staff →
+  Results; a claim made before stays as it was. Raising nothing: the write-off is what is told. A phone still holding the
+  tab's token (the receipt grace) is refused a new call (`conflicting-state`); a settled tab's phones still may call.
+- **Orders keep their status and leave the queue by the tab's** (`TabOrderService.GetBranchOrdersAsync` leaves out a
+  written-off tab's orders; `MoveOrderStatusAsync` refuses any move of one, `conflicting-state`). Not voided: a void takes
+  an order off the bill, and the bill was written off as it stood - `payment.unpaid`'s amount, the tab's remaining, the
+  menu report's "sold" and the voids in Staff → Results would no longer agree. This is the rule the diner's own list
+  already used (`DinerOrderQuery`: a closed or written-off tab ends every order on it whatever the rail says); the queue
+  applies it to a written-off tab only, since a settled tab's food is still to come.
+- **The floor is told** (`WrittenOffTabFloorSignal`): signal 9 `TabWrittenOff`, a same-status row on the tab's table naming
+  the tab and the manager, in the table's status as it stands - writing a tab off moves no table, and the table may have
+  been freed with the balance outstanding before the manager decided. Tablets re-read the calls, the queue and the floor
+  instead of waiting for their next poll. `PaymentSideEffectsSnapshotTests` gained exactly that one row for its written-off
+  tab, on purpose. Pinned by `WrittenOffTabTests` and `PreOrderTests.A_held_ticket_on_a_tab_that_is_written_off_leaves_the_kitchens_queue`.
 
 **A discount's or comp's History amount is the reports' (2026-10-26).** It used to be what the subtotal dropped by
 with the bill as it stood when it was given, while the revenue report and Staff → Results count each adjustment's own
