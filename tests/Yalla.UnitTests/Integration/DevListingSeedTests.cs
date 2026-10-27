@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Media;
@@ -115,6 +117,11 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             // the host's own context: this database is not the fixture's.
             using var readScope = factory.Services.CreateScope();
             var db = readScope.ServiceProvider.GetRequiredService<YallaDbContext>();
+
+            // Created with every feature the platform has: the demo branch exists to exercise all of them.
+            Assert.Equal(
+                BranchFeatures.FullBits,
+                await db.Branches.AsNoTracking().Where(b => b.Id == branchId).Select(b => b.AllowedFeatureBits).SingleAsync());
 
             var photos = await db.Photos.AsNoTracking().Where(p => p.BranchId == branchId).ToListAsync();
 
@@ -261,6 +268,60 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             Assert.False(branch.AcceptsWebBookings);
             Assert.Equal(reviewedAt, branch.ReservationPolicyReviewedAtUtc!.Value, TimeSpan.FromMilliseconds(10));
         }
+    }
+
+    /// <summary>
+    /// The demo branch is created with every feature, and a switch a platform admin turned off since is still off after
+    /// the next start.
+    /// </summary>
+    /// <remarks>
+    /// The seeder used to set every feature on at each start, so turning the kitchen display off on the demo branch -
+    /// to see what the floor does without it - was undone by the next restart. The branch is the shared database's demo
+    /// branch, so the switches are put back as the seeder made them whatever the assertions say.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_feature_switched_off_on_the_demo_branch_stays_off_after_the_next_seed()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        var clock = new TestClock(TestNow.UtcNow);
+
+        await RunSeederAsync(clock);
+
+        try
+        {
+            await using (var db = fixture.CreateContext(clock))
+            {
+                var branch = await DemoBranchAsync(db);
+
+                branch.SetAllowedFeatures(
+                    BranchFeatures.Full.Where(f => f != BranchFeature.KitchenDisplay), incompleteMenuItemCount: 0);
+                await db.SaveChangesAsync();
+            }
+
+            await RunSeederAsync(clock);
+
+            await using (var db = fixture.CreateContext(clock))
+            {
+                var branch = await db.Branches.AsNoTracking()
+                    .SingleAsync(b => b.Slug == "yerevan-centre" && b.Venue.Slug == "yalla-demo");
+
+                Assert.False(branch.Allows(BranchFeature.KitchenDisplay), "The seeder turned the kitchen display back on.");
+                Assert.Equal(
+                    BranchFeatures.FullBits & ~BranchFeatures.Bit(BranchFeature.KitchenDisplay),
+                    branch.AllowedFeatureBits);
+            }
+        }
+        finally
+        {
+            await using var db = fixture.CreateContext(clock);
+            var branch = await DemoBranchAsync(db);
+            branch.SetAllowedFeatures(BranchFeatures.Full, incompleteMenuItemCount: 0);
+            await db.SaveChangesAsync();
+        }
+
+        static Task<Branch> DemoBranchAsync(YallaDbContext db) =>
+            db.Branches.SingleAsync(b => b.Slug == "yerevan-centre" && b.Venue.Slug == "yalla-demo");
     }
 
     [Theory]
