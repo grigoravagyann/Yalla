@@ -41,6 +41,9 @@ public sealed partial class BranchFeatureEnforcementTests
         Assert.Equal(1, (await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor"))
             .GetProperty("messages").GetProperty("unreadTotal").GetInt32());
 
+        Assert.True((await ReadAsync(manager, staffThread)).GetProperty("canWrite").GetBoolean());
+        Assert.True((await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations")).GetProperty("waitersCanWrite").GetBoolean());
+
         await BlockAsync(factory, branch.BranchId, BranchFeature.GuestMessages);
 
         // Nobody writes.
@@ -62,13 +65,17 @@ public sealed partial class BranchFeatureEnforcementTests
         Assert.Single(guestView.GetProperty("messages").EnumerateArray());
         Assert.False(guestView.GetProperty("guestsCanWrite").GetBoolean());
 
-        var staffView = await ReadAsync(waiter, staffThread);
-        Assert.Single(staffView.GetProperty("messages").EnumerateArray());
-        Assert.False(staffView.GetProperty("canWrite").GetBoolean());
+        // Nobody on the floor is offered the composer - a manager, who may always write otherwise, included.
+        foreach (var staff in new[] { waiter, manager })
+        {
+            var staffView = await ReadAsync(staff, staffThread);
+            Assert.Single(staffView.GetProperty("messages").EnumerateArray());
+            Assert.False(staffView.GetProperty("canWrite").GetBoolean());
+        }
 
-        Assert.Contains(
-            (await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations")).GetProperty("items").EnumerateArray(),
-            row => row.GetProperty("conversationId").GetGuid() == conversationId);
+        var inbox = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/conversations");
+        Assert.Contains(inbox.GetProperty("items").EnumerateArray(), row => row.GetProperty("conversationId").GetGuid() == conversationId);
+        Assert.False(inbox.GetProperty("waitersCanWrite").GetBoolean());
 
         // The floor neither badges nor reminds.
         var floor = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/floor");

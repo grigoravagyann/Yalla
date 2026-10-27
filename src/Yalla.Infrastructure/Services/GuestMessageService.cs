@@ -201,7 +201,7 @@ internal sealed class GuestMessageService(
         var settings = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.MessageRemindAfterMinutes, b.MessageTemplatesJson, b.WaitersCanMessage })
+            .Select(b => new { b.MessageRemindAfterMinutes, b.MessageTemplatesJson, b.WaitersCanMessage, b.AllowedFeatureBits })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
@@ -290,7 +290,9 @@ internal sealed class GuestMessageService(
             ordered.Sum(i => i.UnreadFromGuest),
             settings.MessageRemindAfterMinutes,
             Domain.Venues.Branch.TemplatesFrom(settings.MessageTemplatesJson),
-            settings.WaitersCanMessage,
+
+            // The effective answer (docs/branch-features.md): the venue's setting inside what the platform allows.
+            settings.WaitersCanMessage && BranchFeatures.Has(settings.AllowedFeatureBits, BranchFeature.GuestMessages),
             nowUtc);
     }
 
@@ -776,10 +778,14 @@ internal sealed class GuestMessageService(
             .Select(s => s.Role)
             .FirstAsync(cancellationToken);
 
-    /// <summary>Managers, the general manager and the owner always; a waiter while the venue lets waiters write.</summary>
+    /// <summary>
+    /// Nobody where the platform has blocked guest messages (docs/branch-features.md); otherwise managers, the general
+    /// manager and the owner always, and a waiter while the venue lets waiters write.
+    /// </summary>
     private static bool MayWrite(StaffRole role, GuestThreads.Subject facts) =>
-        role is StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner
-        || (role == StaffRole.Waiter && facts.WaitersCanWrite);
+        facts.MessagesAllowed
+        && (role is StaffRole.Manager or StaffRole.GeneralManager or StaffRole.Owner
+            || (role == StaffRole.Waiter && facts.WaitersCanWrite));
 
     private static void RequireOpen(GuestThreads.Subject facts, DateTime nowUtc)
     {
