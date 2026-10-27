@@ -159,6 +159,10 @@ internal sealed class ReviewModerationService(
 
         // Who first, then the body: a platform admin is told they may not, not that their text is short.
         var author = await RequireVenueRankAsync(branchId, "Replying to a review", cancellationToken);
+
+        // A reply is published beside the review: not at a branch the platform keeps reviews off (docs/branch-features.md).
+        // Taking a reply down, and hiding or showing a review, stay open - they publish nothing new.
+        await BranchFeatureGate.RequireAsync(db, branchId, BranchFeature.Reviews, cancellationToken);
         var text = BranchReview.CheckReply(command.Text);
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);

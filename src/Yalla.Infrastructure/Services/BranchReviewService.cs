@@ -41,6 +41,13 @@ internal sealed class BranchReviewService(
 
         await RequirePublishedAsync(branchId, cancellationToken);
 
+        // Reviews blocked by the platform are hidden from diners, their own included (docs/branch-features.md): the
+        // same 404 as no review. The row stays, and shows again when the platform allows reviews again.
+        if (!await BranchFeatureGate.AllowsAsync(db, branchId, BranchFeature.Reviews, cancellationToken))
+        {
+            throw new KeyNotFoundException("You have not reviewed this place.");
+        }
+
         var row = await db.BranchReviews
             .AsNoTracking()
             .Where(r => r.BranchId == branchId && r.DinerUserId == dinerUserId)
@@ -61,6 +68,7 @@ internal sealed class BranchReviewService(
         var dinerUserId = RequireDiner();
 
         await RequirePublishedAsync(branchId, cancellationToken);
+        await BranchFeatureGate.RequireAsync(db, branchId, BranchFeature.Reviews, cancellationToken);
         await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, Operation, cancellationToken);
 
         BranchReview.Check(command.Rating, command.Text);
@@ -106,6 +114,7 @@ internal sealed class BranchReviewService(
         var dinerUserId = RequireDiner();
 
         await RequirePublishedAsync(branchId, cancellationToken);
+        await BranchFeatureGate.RequireAsync(db, branchId, BranchFeature.Reviews, cancellationToken);
         await DinerPhoneGate.RequireVerifiedPhoneAsync(db, dinerUserId, Operation, cancellationToken);
 
         BranchReview.Check(command.Rating, command.Text);
@@ -172,9 +181,12 @@ internal sealed class BranchReviewService(
                         && r.Branch.Venue.IsActive
                         && r.Branch.Venue.SuspendedAtUtc == null
                         && r.Branch.Venue.DeletedAtUtc == null)
-            .Select(r => new { r.DinerUserId, r.BranchId })
+            .Select(r => new { r.DinerUserId, r.BranchId, r.Branch.AllowedFeatureBits })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Review {reviewId} was not found.");
+
+        // A new report is a new action on a feature the platform may have blocked here (docs/branch-features.md).
+        BranchFeatures.Require(review.AllowedFeatureBits, BranchFeature.Reviews, review.BranchId);
 
         if (review.DinerUserId == dinerUserId)
         {
