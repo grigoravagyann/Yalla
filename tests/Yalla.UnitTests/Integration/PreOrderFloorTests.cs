@@ -151,6 +151,59 @@ public partial class PreOrderTests
     }
 
     /// <summary>
+    /// The held ticket that became the party's first order leaves the kitchen's queue when their tab is written off, as
+    /// every other order on it does - and keeps the place on the rail it had reached, with nothing taken off the bill.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_held_ticket_on_a_tab_that_is_written_off_leaves_the_kitchens_queue()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var x = await ArrangeAsync(factory);
+        using var diner = factory.CreateClientWithToken((await SignInVerifiedDinerAsync(factory)).Token);
+        var booking = await CreatedAsync(diner, AppBooking(factory, x.Branch, daysAhead: 2));
+        var id = booking.GetProperty("id").GetGuid();
+        var tableId = booking.GetProperty("tableId").GetGuid();
+        var startUtc = booking.GetProperty("startUtc").GetDateTime();
+
+        var preOrderId = (await OkAsync(await diner.PutAsJsonAsync($"/api/reservations/{id}/pre-order", new
+        {
+            lines = new[] { new { menuItemId = x.Menu.Khachapuri, quantity = 2 } },
+            clientCommandId = Guid.CreateVersion7(),
+        }))).GetProperty("preOrder").GetProperty("id").GetGuid();
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, x.Branch));
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, x.Branch));
+        factory.Clock.UtcNow = startUtc.AddMinutes(-25);
+
+        await OkAsync(await waiter.PostAsJsonAsync($"/api/reservations/{id}/pre-order/send", new { clientCommandId = Guid.CreateVersion7() }));
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await waiter.PostAsJsonAsync(
+                $"/api/branches/{x.Branch.BranchId}/tables/{tableId}/seat-reservation",
+                new { reservationId = id, clientCommandId = Guid.CreateVersion7() })).StatusCode);
+
+        var ticket = (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/orders")).EnumerateArray()
+            .Single(o => o.GetProperty("orderId").GetGuid() == preOrderId);
+        var tabId = ticket.GetProperty("tabId").GetGuid();
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await manager.PostAsJsonAsync($"/api/tabs/{tabId}/abandon", new { reason = "they walked out" })).StatusCode);
+
+        Assert.DoesNotContain(
+            (await ReadAsync(waiter, $"/api/branches/{x.Branch.BranchId}/orders")).EnumerateArray(),
+            o => o.GetProperty("orderId").GetGuid() == preOrderId);
+
+        await using var db = fixture.CreateContext(factory.Clock);
+        Assert.Equal(TabOrderStatus.InKitchen, await db.TabOrders.Where(o => o.Id == preOrderId).Select(o => o.Status).SingleAsync());
+        Assert.Equal(
+            2 * TestMenu.KhachapuriAmd,
+            await db.TabOrderLines.Where(l => l.TabOrderId == preOrderId && l.VoidedAtUtc == null).SumAsync(l => l.UnitPriceAmdSnapshot * l.Quantity));
+    }
+
+    /// <summary>
     /// The guest opens the tab themselves with the booking code, after the waiter sent the pre-order: it is on the tab
     /// they open, and they are its host.
     /// </summary>
