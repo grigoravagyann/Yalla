@@ -3,6 +3,7 @@ using Yalla.Application.Reservations;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Menus;
 using Yalla.Domain.Occupancy;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -97,11 +98,13 @@ internal static class PreOrderReads
             : [];
         var branchIds = mayHaveOne.Select(v => v.BranchId).Distinct().ToList();
 
+        var preOrdersBit = BranchFeatures.Bit(BranchFeature.PreOrders);
         var accepting = branchIds.Count == 0
             ? []
             : await db.Branches
                 .AsNoTracking()
-                .Where(b => branchIds.Contains(b.Id) && b.AcceptsPreOrders)
+                // The effective answer (docs/branch-features.md): the owner's switch inside what the platform allows.
+                .Where(b => branchIds.Contains(b.Id) && b.AcceptsPreOrders && (b.AllowedFeatureBits & preOrdersBit) != 0)
                 .Select(b => b.Id)
                 .ToListAsync(cancellationToken);
 
