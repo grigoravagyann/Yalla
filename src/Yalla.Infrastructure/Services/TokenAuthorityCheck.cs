@@ -65,19 +65,23 @@ internal sealed partial class TokenAuthorityCheck(
         return access is null ? null : Evaluate(access);
     }
 
-    public async Task<bool> IsDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default)
+    public async Task<StaffDeviceStanding?> GetLiveDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default)
     {
         var key = DeviceKey(deviceId);
 
-        if (cache.TryGetValue(key, out bool cached))
+        if (cache.TryGetValue(key, out StaffDeviceStanding? cached))
         {
             return cached;
         }
 
-        var active = await queries.IsStaffDeviceActiveAsync(deviceId, cancellationToken);
-        cache.Set(key, active, CacheWindow);
+        // A revoked device is cached as null, as it was cached as "not active": the window is the same either way. A
+        // change of the branch's features evicts its devices (PlatformService), as a revocation does - in this process'
+        // cache only: another instance of the API notices within the window, and a read racing the eviction here may put
+        // the old answer back for at most the window too.
+        var standing = await queries.GetLiveStaffDeviceAsync(deviceId, cancellationToken);
+        cache.Set(key, standing, CacheWindow);
 
-        return active;
+        return standing;
     }
 
     public void InvalidateDevice(Guid deviceId) => cache.Remove(DeviceKey(deviceId));

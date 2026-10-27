@@ -1,5 +1,6 @@
 using Yalla.Application.BranchSettings;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -22,7 +23,7 @@ public sealed class BranchReadinessBatchTests(SqlServerFixture fixture)
 
         var ready = await ConsoleTestData.ReadyBranchAsync(db, clock.UtcNow);
         var bare = await TestBranchBuilder.CreateAsync(db);
-        var empty = await ConsoleTestData.AddBranchAsync(db, bare.VenueId, "Nothing yet", SubscriptionTier.Free);
+        var empty = await ConsoleTestData.AddBranchAsync(db, bare.VenueId, "Nothing yet", BranchFeatures.Basic);
 
         // A venue-wide owner counts as staff at every branch of the venue, the empty one included.
         await AuthTestData.SeedOwnerAsync(db, bare.VenueId);

@@ -531,9 +531,10 @@ public class PolicyHandlerTests
             Guid branchId, Guid venueId, CancellationToken cancellationToken = default) =>
             Task.FromResult(branchVenueId == venueId);
 
-        public Task<bool> IsStaffDeviceActiveAsync(
+        public Task<StaffDeviceStanding?> GetLiveStaffDeviceAsync(
             Guid deviceId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(true);
+            Task.FromResult<StaffDeviceStanding?>(
+                new StaffDeviceStanding(StaffDeviceKind.Tablet, Guid.NewGuid(), Domain.Venues.BranchFeatures.FullBits));
 
         public Task<DinerSessionState?> GetDinerSessionStateAsync(
             Guid dinerUserId, CancellationToken cancellationToken = default) =>

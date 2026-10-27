@@ -78,21 +78,21 @@ internal sealed class TabLookups(
         var tab = await tabs.FirstOrDefaultAsync(t => t.Id == tabId, cancellationToken)
                   ?? throw new KeyNotFoundException($"Tab {tabId} was not found.");
 
-        RequirePaid(tab.Branch);
+        RequireTableService(tab.Branch);
 
         return tab;
     }
 
     /// <summary>
-    /// Tabs and ordering are a paid feature, per branch. Checked in the service so it holds for
-    /// every caller; the answer is "not enabled for this branch", not a 403 - the caller is
-    /// allowed to be here, the branch has not paid for what they asked.
+    /// Tabs and ordering are <see cref="BranchFeature.TableService"/>, allowed per branch by the platform. Checked in
+    /// the service so it holds for every caller; the answer is "not enabled for this branch", not a 403 - the caller
+    /// is allowed to be here, the branch does not have what they asked for. Exactly the gate the Paid tier was.
     /// </summary>
-    internal static void RequirePaid(Branch branch)
+    internal static void RequireTableService(Branch branch)
     {
-        if (!branch.IsPaid)
+        if (!branch.Allows(BranchFeature.TableService))
         {
-            throw new FeatureNotEnabledException("Tabs and ordering", branch.Id, branch.SubscriptionTier);
+            throw new FeatureNotEnabledException(BranchFeature.TableService, branch.Id);
         }
     }
 

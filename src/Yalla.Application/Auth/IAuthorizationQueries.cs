@@ -26,6 +26,15 @@ public sealed record TabParticipantAccess(
     bool CanPay);
 
 /// <summary>
+/// A live staff device as every request with its token needs it: what kind it is, where, and which
+/// <see cref="BranchFeature"/>s the platform allows there (<c>Branches.AllowedFeatures</c>, one bit each).
+/// </summary>
+/// <param name="Kind">A branch tablet, or one person's paired phone.</param>
+/// <param name="BranchId">The branch it signs in at.</param>
+/// <param name="AllowedFeatureBits">The branch's allowed features, as stored.</param>
+public sealed record StaffDeviceStanding(StaffDeviceKind Kind, Guid BranchId, int AllowedFeatureBits);
+
+/// <summary>
 /// The reads the authorisation policies do, kept behind an interface so the policy handlers do
 /// not take a <c>DbContext</c>.
 /// </summary>
@@ -83,10 +92,11 @@ public interface IAuthorizationQueries
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Whether an enrolled tablet is still live. Called for every request carrying a device or
-    /// staff session token, which is what makes revocation immediate.
+    /// An enrolled tablet or paired phone while it is live - with its kind and what the platform allows at its branch -
+    /// or null once it is revoked, or when there is no such device. Called for every request carrying a device or staff
+    /// session token, which is what makes revocation, and a blocked feature, immediate.
     /// </summary>
-    Task<bool> IsStaffDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default);
+    Task<StaffDeviceStanding?> GetLiveStaffDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Whether a diner account is active, deleted, and which session generation it is on. Null when

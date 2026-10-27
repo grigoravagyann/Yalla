@@ -682,7 +682,7 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
         var branch = Assert.Single(body.GetProperty("branches").EnumerateArray());
 
         Assert.Equal(
-            ["branchId", "venueId", "name", "slug", "timeZoneId", "isActive", "subscriptionTier", "tableCount"],
+            ["branchId", "venueId", "name", "slug", "timeZoneId", "isActive", "features", "tableCount"],
             branch.EnumerateObject().Select(p => p.Name).ToArray());
 
         Assert.Equal(mine.BranchId, branch.GetProperty("branchId").GetGuid());
@@ -691,7 +691,8 @@ public class VenueAdminEndpointTests(SqlServerFixture fixture)
         Assert.Equal(JsonValueKind.String, branch.GetProperty("slug").ValueKind);
         Assert.Equal("Asia/Yerevan", branch.GetProperty("timeZoneId").GetString());
         Assert.True(branch.GetProperty("isActive").GetBoolean());
-        Assert.Equal((int)SubscriptionTier.Paid, branch.GetProperty("subscriptionTier").GetInt32());
+        // The allowed set, so the console can lock what is not in it.
+        Assert.Equal(Enumerable.Range(1, 10), branch.GetProperty("features").EnumerateArray().Select(f => f.GetInt32()));
         Assert.Equal(2, branch.GetProperty("tableCount").GetInt32());
     }
 

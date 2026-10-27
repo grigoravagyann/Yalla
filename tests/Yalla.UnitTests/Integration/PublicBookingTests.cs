@@ -45,7 +45,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
-        var world = await ArrangeAsync(factory);
+        var world = await ArrangeAsync(factory, bookable: false);
 
         using var anonymous = factory.CreateClient();
         var page = await ReadAsync(anonymous, world.PageUrl);
@@ -176,7 +176,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
-        var world = await ArrangeAsync(factory);
+        var world = await ArrangeAsync(factory, bookable: false);
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
@@ -214,12 +214,11 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
-        var world = await ArrangeAsync(factory);
+        var world = await ArrangeAsync(factory, bookable: false);
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
-        var fromWeb = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.Web));
+        var fromWeb = await Book(diner, factory, world.Branch, ReservationChannel.Web);
 
         Assert.Equal(HttpStatusCode.Conflict, fromWeb.StatusCode);
         Assert.Equal(
@@ -227,8 +226,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
             (await fromWeb.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
 
         // The app is refused too, with its own code (K9).
-        var fromApp = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+        var fromApp = await Book(diner, factory, world.Branch, ReservationChannel.App);
 
         Assert.Equal(HttpStatusCode.Conflict, fromApp.StatusCode);
         Assert.Equal(
@@ -238,15 +236,12 @@ public class PublicBookingTests(SqlServerFixture fixture)
         // Switch the page on, and the web booking goes through.
         await SetWebBookingsAsync(factory, world, accepts: true);
 
-        var allowed = await diner.PostAsJsonAsync(
-            "/api/reservations",
-            NewBooking(factory, world.Branch, ReservationChannel.Web, world.Branch.TableIds[1]));
+        var allowed = await Book(diner, factory, world.Branch, ReservationChannel.Web, world.Branch.TableIds[1]);
 
         Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
 
         // The app still waits for somebody to save the reservation policy, and then books.
-        var stillRefused = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+        var stillRefused = await Book(diner, factory, world.Branch, ReservationChannel.App);
 
         Assert.Equal(HttpStatusCode.Conflict, stillRefused.StatusCode);
 
@@ -255,8 +250,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         // Another diner: the first already holds a table then, and one diner holds one at a time.
         using var another = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
-        var fromAppNow = await another.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+        var fromAppNow = await Book(another, factory, world.Branch, ReservationChannel.App);
 
         Assert.Equal(HttpStatusCode.Created, fromAppNow.StatusCode);
     }
@@ -276,7 +270,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         Skip.If(!fixture.IsAvailable, fixture.SkipReason);
 
         await using var factory = NewFactory();
-        var world = await ArrangeAsync(factory);
+        var world = await ArrangeAsync(factory, bookable: false);
         await SetWebBookingsAsync(factory, world, accepts: true);
 
         var zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Yerevan");
@@ -302,8 +296,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
-        var booked = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.Web, time: "03:00"));
+        var booked = await Book(diner, factory, world.Branch, ReservationChannel.Web, time: "03:00");
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, booked.StatusCode);
         Assert.Equal(
@@ -344,8 +337,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
-        var created = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, ReservationChannel.App));
+        var created = await Book(diner, factory, world.Branch, ReservationChannel.App);
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
@@ -717,7 +709,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         await using var factory = NewFactory()
             .With("PublicWeb:ManageBookingUrlTemplate", "https://yalla.test/booking/{token}");
 
-        var world = await ArrangeAsync(factory);
+        var world = await ArrangeAsync(factory, bookable: false);
         await SetWebBookingsAsync(factory, world, accepts: true);
 
         var web = await BookAsync(factory, world, channel: ReservationChannel.Web);
@@ -759,10 +751,15 @@ public class PublicBookingTests(SqlServerFixture fixture)
 
     private sealed record Booking(Guid Id, string Token, string Code, DateTime StartUtc);
 
-    private async Task<World> ArrangeAsync(YallaApiFactory factory)
+    /// <param name="factory">The host.</param>
+    /// <param name="bookable">
+    /// Online bookings on and the policy saved, as the app's route needs (K9) - false for the tests of a new branch and
+    /// of those gates.
+    /// </param>
+    private async Task<World> ArrangeAsync(YallaApiFactory factory, bool bookable = true)
     {
         await using var db = fixture.CreateContext(factory.Clock);
-        var branch = await AuthTestData.CreateBranchAsync(db);
+        var branch = await AuthTestData.CreateBranchAsync(db, bookable: bookable);
 
         var slugs = await db.Branches.AsNoTracking()
             .Where(b => b.Id == branch.BranchId)
@@ -791,8 +788,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
     {
         using var diner = factory.CreateClientWithToken(await SignInDinerAsync(factory));
 
-        var created = await diner.PostAsJsonAsync(
-            "/api/reservations", NewBooking(factory, world.Branch, channel, tableId));
+        var created = await Book(diner, factory, world.Branch, channel, tableId);
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 
@@ -822,6 +818,30 @@ public class PublicBookingTests(SqlServerFixture fixture)
     {
         await using var db = fixture.CreateContext(factory.Clock);
         await ReviewTestData.SavePolicyAsync(db, world.BranchId, factory.Clock.UtcNow);
+    }
+
+    /// <summary>
+    /// Books as the channel's own client does (2026-10-27): the public page through its route, with neither the branch nor a
+    /// channel in the body; everybody else through the app's.
+    /// </summary>
+    private static Task<HttpResponseMessage> Book(
+        HttpClient diner,
+        YallaApiFactory factory,
+        AuthBranch branch,
+        ReservationChannel channel,
+        Guid? tableId = null,
+        string time = "18:00")
+    {
+        if (channel != ReservationChannel.Web)
+        {
+            return diner.PostAsJsonAsync("/api/reservations", NewBooking(factory, branch, channel, tableId, time));
+        }
+
+        var body = System.Text.Json.JsonSerializer.SerializeToNode(NewBooking(factory, branch, channel, tableId, time))!.AsObject();
+        body.Remove("branchId");
+        body.Remove("channel");
+
+        return diner.PostAsJsonAsync($"/api/public/branches/{branch.BranchId}/reservations", body);
     }
 
     private static object NewBooking(

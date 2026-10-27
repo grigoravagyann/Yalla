@@ -279,7 +279,7 @@ public sealed record ValidationFailedProblem : ProblemShape
 /// </param>
 public sealed record BranchNotReadyContext(Guid BranchId, int IncompleteMenuItemCount);
 
-/// <summary><c>branch-not-ready</c>, 409. Finish the menu, then switch the tier.</summary>
+/// <summary><c>branch-not-ready</c>, 409. Finish the menu, then turn table service on.</summary>
 public sealed record BranchNotReadyProblem : ProblemShape
 {
     public required BranchNotReadyContext Context { get; init; }

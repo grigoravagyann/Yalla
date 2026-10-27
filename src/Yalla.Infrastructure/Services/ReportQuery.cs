@@ -751,9 +751,13 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
         var branch = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == request.BranchId)
-            .Select(b => new { b.Id, b.VenueId, b.TimeZoneId })
+            .Select(b => new { b.Id, b.VenueId, b.TimeZoneId, b.AllowedFeatureBits })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {request.BranchId} was not found.");
+
+        // Reports - the JSON and the CSV alike, every one of them passing here - are a feature the platform allows per
+        // branch (docs/branch-features.md).
+        BranchFeatures.Require(branch.AllowedFeatureBits, BranchFeature.Reports, branch.Id);
 
         if (!request.RollUpVenue)
         {
@@ -770,9 +774,13 @@ internal sealed class ReportQuery(YallaDbContext db, ICurrentActor actor) : IRep
                 "Reporting across a venue's branches", actor.Role, StaffRole.GeneralManager);
         }
 
+        // Only the branches the platform allows reports at: a rollup asked from one that has them does not report on a
+        // sibling that does not.
+        var reportsBit = BranchFeatures.Bit(BranchFeature.Reports);
+
         var siblings = await db.Branches
             .AsNoTracking()
-            .Where(b => b.VenueId == branch.VenueId)
+            .Where(b => b.VenueId == branch.VenueId && (b.AllowedFeatureBits & reportsBit) != 0)
             .Select(b => b.Id)
             .ToListAsync(cancellationToken);
 

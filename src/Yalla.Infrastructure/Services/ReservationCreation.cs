@@ -110,7 +110,7 @@ internal sealed class ReservationCreation(
         // Only creation and moving a booking are gated: cancelling and seating one still work.
         VenueGate.RequireOpenForBusiness(branch);
 
-        ReservationSlotRules.RequireChannelAccepted(command.Channel, branch);
+        ReservationSlotRules.RequireChannelAccepted(command.Channel, branch, viaManageLink: false);
 
         var table = await lookups.LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;

@@ -61,6 +61,13 @@ and 15 to those, column by column, and kept every value an owner chose). `Venue.
 `1 Cafe, 2 Restaurant, 3 Bar`, stored as an int with no check constraint, so a new type is a new
 member rather than a migration.
 
+**`AllowedFeatures`** (int, NOT NULL, 2026-10-27) is the features the platform allows at the branch, one bit per
+`BranchFeature` (`1 << (value - 1)`: Basic, every feature but table service, is 1007; Full is 1023). It replaced
+`SubscriptionTier` (1 Free, 2 Paid): migration `ReplaceSubscriptionTierWithBranchFeatures` wrote Basic for Free and Full
+for Paid, then dropped the tier. No model default - every set, 0 included, is real, so every insert states it. The
+owner's switches (`AcceptsWebBookings`, `AcceptsPreOrders`, `TakeawayEnabled`, `GuestsCanMessage`) are separate columns
+and work inside it. See `docs/platform-admin.md` "Branch features".
+
 **Listing fields**, for the diner app's browse screens, all nullable because "not said" must read
 as unknown rather than as a made-up default: `Cuisine` (free text, 120), `About` (2000),
 `PriceLevel` (1–4), `WebsiteUrl` (absolute http/https) and `AmenityKeys` — a comma-joined subset of

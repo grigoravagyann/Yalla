@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Messaging;
 using Yalla.Application.Notifications;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Notifications;
@@ -35,12 +36,18 @@ internal sealed class VenueMessageHandler(
     {
         var notice = Payload.Read<VenueMessageNotice>(payloadJson);
 
+        // The guest may reply by typing only where the venue lets them and the platform allows guest messages.
+        var messagesBit = BranchFeatures.Bit(BranchFeature.GuestMessages);
+
         var thread = await db.Conversations
             .AsNoTracking()
             .Where(c => c.Id == notice.ConversationId && c.DinerUserId == notice.DinerUserId)
             .Select(c => new
             {
-                GuestsCanWrite = db.Branches.Where(b => b.Id == c.BranchId).Select(b => b.GuestsCanMessage).FirstOrDefault(),
+                GuestsCanWrite = db.Branches
+                    .Where(b => b.Id == c.BranchId)
+                    .Select(b => b.GuestsCanMessage && (b.AllowedFeatureBits & messagesBit) != 0)
+                    .FirstOrDefault(),
             })
             .FirstOrDefaultAsync(cancellationToken);
 

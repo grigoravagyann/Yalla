@@ -72,10 +72,10 @@ public sealed record ReleaseReservationRequest(
 /// </param>
 /// <param name="StayHint">Advisory only. The interval comes from the branch's turn time.</param>
 /// <param name="Channel">
-/// Where the booking was made from, so the reports can count how many arrive from the public page.
-/// Self-reported. Send <c>Web</c> from the browser and <c>App</c> from the diner app; a booking a
-/// waiter takes over the phone is <c>Staff</c>. See <c>docs/reports.md</c>. <c>Web</c> needs the
-/// branch's online bookings on; <c>App</c> also needs its reservation policy saved (K9).
+/// <b>Deprecated and ignored</b> since 2026-10-27: accepted so older clients keep working, and never read. The route
+/// decides the channel - <c>POST /api/reservations</c> is the diner app's (<c>App</c>: app bookings allowed by the
+/// platform, online bookings on and the policy saved, K9), and the public page books through
+/// <c>POST /api/public/branches/{branchId}/reservations</c> (<c>Web</c>). See <c>docs/branch-features.md</c>.
 /// </param>
 /// <param name="Note">
 /// A note to the venue - "window table", "a high chair". Optional; trimmed, blank means none, at
@@ -109,6 +109,10 @@ public sealed record CreateReservationRequest(
     [Required][MaxLength(32)] string GuestPhone,
     [Required] Guid ClientCommandId,
     StayHint? StayHint = null,
+
+    // Deprecated and ignored (2026-10-27): kept so older clients' bodies still bind; the route decides the channel.
+    // [Obsolete] is what marks it deprecated in the OpenAPI document.
+    [property: Obsolete("Ignored: POST /api/reservations books as the app; the public page has its own route.")]
     ReservationChannel Channel = ReservationChannel.Unknown,
 
     // No [MaxLength] here on purpose: the validation filter reports every attribute as bound
@@ -118,6 +122,39 @@ public sealed record CreateReservationRequest(
     // Required only when the table's next booking cuts a full sitting short, and then it must be that
     // instant - which only the service, under the table's lock, can know. So no attribute: the refusal
     // is the service's 422 `reservation-free-by-required`, naming this field.
+    DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
+
+/// <summary>Body of <c>POST /api/public/branches/{branchId}/reservations</c>: the public page's booking.</summary>
+/// <remarks>
+/// <see cref="CreateReservationRequest"/> without the branch, which the route names, and without a channel, which the
+/// route decides: <c>Web</c>. <see cref="Date"/> and <see cref="Time"/> are local to the branch.
+/// </remarks>
+/// <param name="TableId">The table the diner picked off the room photos.</param>
+/// <param name="Date">Local calendar date at the branch, e.g. <c>2026-09-12</c>.</param>
+/// <param name="Time">Local wall-clock start at the branch, e.g. <c>19:30</c>.</param>
+/// <param name="PartySize">How many are coming.</param>
+/// <param name="GuestName">Who to ask for at the door.</param>
+/// <param name="GuestPhone">How to reach them when they are late.</param>
+/// <param name="ClientCommandId">The caller's own id for this booking. <b>Required</b>: a retry answers the first booking.</param>
+/// <param name="StayHint">Advisory only. The interval comes from the branch's turn time.</param>
+/// <param name="Note">
+/// A note to the venue. Optional; trimmed, blank means none, at most 500 characters, refused as
+/// <c>validation-failed</c> naming <c>note</c> with bound <c>max</c>.
+/// </param>
+/// <param name="AcceptsFreeByUtc">
+/// "I'll free the table by 21:25": the table's <c>mustFreeByUtc</c> from availability, once the diner agreed to it -
+/// exactly as on <see cref="CreateReservationRequest"/>.
+/// </param>
+public sealed record CreatePublicReservationRequest(
+    [Required][NotEmpty] Guid TableId,
+    [Required] DateOnly? Date,
+    [Required] TimeOnly? Time,
+    [Range(1, 100)] int PartySize,
+    [Required][MaxLength(200)] string GuestName,
+    [Required][MaxLength(32)] string GuestPhone,
+    [Required] Guid ClientCommandId,
+    StayHint? StayHint = null,
+    string? Note = null,
     DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
 
 /// <summary>Body of <c>POST /api/reservations/{reservationId}/reschedule</c>.</summary>

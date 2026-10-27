@@ -6,6 +6,7 @@ using Yalla.Application.Auth;
 using Yalla.Application.Platform;
 using Yalla.Application.Reservations;
 using Yalla.Application.Reviews;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
@@ -20,6 +21,14 @@ public sealed record ChangePlatformAdminPasswordRequest(
     [Required] string? CurrentPassword,
     [Required] string? NewPassword);
 
+/// <summary>Body of <c>PUT /api/platform/branches/{branchId}/features</c> and <c>PUT /api/platform/venues/{venueId}/features</c>.</summary>
+/// <param name="Features">
+/// The whole set to allow, by number - anything left out is blocked, <c>[]</c> blocks everything: 1 AppBookings,
+/// 2 WebBookings, 3 PreOrders, 4 Takeaway, 5 TableService, 6 GuestMessages, 7 Reviews, 8 StaffPhone, 9 KitchenDisplay,
+/// 10 Reports. Pre-orders need app or web bookings.
+/// </param>
+public sealed record SetBranchFeaturesRequest([Required] IReadOnlyList<BranchFeature>? Features);
+
 /// <summary>
 /// The platform tier: creating and configuring venues through the API instead of by hand in SQL.
 /// </summary>
@@ -30,7 +39,7 @@ public sealed record ChangePlatformAdminPasswordRequest(
 /// transaction as every change.
 /// </para>
 /// <para>
-/// Nothing here bills anybody. The subscription tier is a per-branch flag that gates features.
+/// Nothing here bills anybody. The features a branch may use are allowed per branch (<c>BranchFeature</c>).
 /// </para>
 /// </remarks>
 public static class PlatformEndpoints
@@ -46,7 +55,8 @@ public static class PlatformEndpoints
             .WithSummary("Create a venue with its first branch")
             .WithDescription(
                 "A venue with no branch is useless, so the first branch is created in the same "
-                + "transaction. A failure creates neither. The branch's `subscriptionTier` defaults to Free."
+                + "transaction. A failure creates neither. The branch's `features` default to the Basic preset - "
+                + "every feature but table service (5)."
                 + "\n\n"
                 + "**Missing fields are reported together.** An empty body names `name`, `slug` and "
                 + "`firstBranch` in one 422, each in `context.fields`, rather than making somebody "
@@ -68,10 +78,9 @@ public static class PlatformEndpoints
             .WithName("listVenues")
             .WithSummary("Venues, with search, filters, sorting and paging")
             .WithDescription(
-                "Each row is what the console's venue table shows: the branch, active-table and "
-                + "paid-branch counts; `tierMix` (1 Free, 2 Mixed, 3 Paid - billing is per branch, so a "
-                + "venue is Mixed when only some branches pay) and `branches`, every branch with its own "
-                + "tier and `issues`; `status` (1 Active, 2 Suspended, 3 Inactive, 4 Deleted); "
+                "Each row is what the console's venue table shows: the branch and active-table counts; "
+                + "`branches`, every branch with the `features` the platform allows there and its `issues`; "
+                + "`status` (1 Active, 2 Suspended, 3 Inactive, 4 Deleted); "
                 + "`averageRating` and `reviewCount` over the published reviews of every branch; `openTabCount`; "
                 + "`readinessIssue` (`code`, `count`, `branchName`), the first thing a guest would find missing at an "
                 + "active branch - setup progress, so suspended venues count and switched-off branches never do - "
@@ -80,20 +89,19 @@ public static class PlatformEndpoints
                 + "`search` matches the venue's name and slug and each branch's name and district. "
                 + "`status`: `live` (default: every venue not deleted), `all`, `active`, `suspended`, "
                 + "`inactive` or `deleted`; the older `includeDeleted=true` is `all` when no `status` is "
-                + "sent. `tier`: `free`, `mixed` or `paid`; blank is every tier. `sort`: `name` (default), `rating`, `tables` or "
+                + "sent. `sort`: `name` (default), `rating`, `tables` or "
                 + "`created`; `dir`: `asc` (default) or `desc` - a venue with no rating sorts below every "
                 + "rated one. `page` from 1, `pageSize` 1-200 (default 20).")
             .Produces<PagedResult<VenueSummary>>()
             .ProducesProblemDetails(
-                StatusCodes.Status400BadRequest, "`status`, `tier`, `sort` or `dir` is not a value it takes; `context.field` names it.");
+                StatusCodes.Status400BadRequest, "`status`, `sort` or `dir` is not a value it takes; `context.field` names it.");
 
         group.MapGet("/overview", GetOverviewAsync)
             .WithName("getPlatformOverview")
             .WithSummary("Home: the platform's numbers in one read")
             .WithDescription(
                 "**Aggregates only** - no guest's name, phone or booking code at any depth.\n\n"
-                + "`venues`: venues not deleted, split by `tierMix` (`paid` every branch paid, `mixed` some, "
-                + "`free` none) and by state, with `deleted` counted apart and the branch totals. "
+                + "`venues`: venues not deleted, split by state, with `deleted` counted apart and the branch total. "
                 + "`bookings`: bookings by the day of the visit, on each branch's own calendar, cancelled "
                 + "ones left out - `perDay` is thirty entries, oldest first and today last (the 14-day chart "
                 + "is the last fourteen), `last7Days` against `previous7Days` with `changePercent` (absent "
@@ -211,23 +219,52 @@ public static class PlatformEndpoints
 
         group.MapPatch("/branches/{branchId:guid}", UpdateBranchAsync)
             .WithName("updateBranch")
-            .WithSummary("Name, address, coordinates, timezone, active flag, tier")
+            .WithSummary("Name, address, coordinates, timezone, active flag")
             .WithDescription(
-                "`subscriptionTier` is set here, per branch. Moving a branch to Free switches off "
-                + "tabs and ordering there; the tab endpoints answer `feature-not-enabled`. It is "
-                + "refused while the branch has open tabs, because hiding a live bill from the people "
-                + "who owe it strands real money on a real table.\n\n"
-                + "**Moving a branch to Paid is refused while its menu has unfinished items.** This is "
-                + "where the rule that a dish needs a photo, ingredients, allergens, a portion size and "
-                + "a prep time is actually enforced - at the moment the branch starts taking diners, "
-                + "rather than at the moment somebody types a name and a price. The refusal is "
-                + "`branch-not-ready` and carries `incompleteMenuItemCount`; "
-                + "`GET /api/branches/{branchId}/readiness` lists which items are left.")
+                "Every field optional; only the ones sent change. The features the branch may use are set "
+                + "with `PUT /api/platform/branches/{branchId}/features`. Audited as `branch.update`.")
             .Produces<BranchSummary>()
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(StatusCodes.Status409Conflict, "The venue is deleted.");
+
+        group.MapPut("/branches/{branchId:guid}/features", SetBranchFeaturesAsync)
+            .WithName("setBranchFeatures")
+            .WithSummary("Allow or block the features a branch may use")
+            .WithDescription(FeaturesRules
+                + "Answers the branch as the venue page shows it, `features` in numeric order. A set equal to the "
+                + "current one changes and audits nothing. Audited as `branch.features-change` (`from`, `to`, `added`, "
+                + "`removed`).")
+            .Produces<BranchSummary>()
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`features` missing, a value that is not a feature, or pre-orders without a booking channel.")
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblem<BranchNotReadyProblem>(
                 StatusCodes.Status409Conflict,
-                "Going Paid with an unfinished menu, or going Free with open tabs.");
+                "`branch-not-ready`: table service turned on with an unfinished menu. `conflicting-state` when table "
+                + "service is turned off with tabs open (`context.branchId`, `context.openTabCount`), or, with no "
+                + "`context`, when the venue is deleted.");
+
+        group.MapPut("/venues/{venueId:guid}/features", ApplyVenueFeaturesAsync)
+            .WithName("applyVenueFeatures")
+            .WithSummary("Give every branch of a venue the same features")
+            .WithDescription(FeaturesRules
+                + "Every branch of the venue, switched-off ones included, gets the set **in one transaction**: a "
+                + "refusal at any branch changes none of them, and names the branch. Answers the venue. Each branch "
+                + "that changed is audited as `branch.features-change` (`viaVenue` true), and the call as "
+                + "`venue.features-apply` (`features`, `branchCount`, `changedBranchIds`); when nothing changed, "
+                + "nothing is written.")
+            .Produces<VenueDetail>()
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                "`features` missing, a value that is not a feature, or pre-orders without a booking channel.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such venue.")
+            .ProducesProblem<BranchNotReadyProblem>(
+                StatusCodes.Status409Conflict,
+                "`branch-not-ready`: a branch would turn table service on with an unfinished menu (`context.branchId` "
+                + "names it). `conflicting-state` when a branch would turn table service off with tabs open "
+                + "(`context.branchId` names the first such branch, `context.openTabCount` its tabs), or, with no "
+                + "`context`, when the venue is deleted.");
 
         group.MapGet("/branches/{branchId:guid}/reviews", ListBranchReviewsAsync)
             .WithName("listPlatformBranchReviews")
@@ -486,11 +523,10 @@ public static class PlatformEndpoints
         int pageSize = 20,
         bool includeDeleted = false,
         string? status = null,
-        string? tier = null,
         string? sort = null,
         string? dir = null) =>
         Results.Ok(await service.ListVenuesAsync(
-            new VenueListQuery(search, page, pageSize, includeDeleted, status, tier, sort, dir),
+            new VenueListQuery(search, page, pageSize, includeDeleted, status, sort, dir),
             cancellationToken));
 
     private static async Task<IResult> GetVenueAsync(Guid venueId, IPlatformService service, CancellationToken cancellationToken) =>
@@ -532,6 +568,36 @@ public static class PlatformEndpoints
         IPlatformService service,
         CancellationToken cancellationToken) =>
         Results.Ok(await service.UpdateBranchAsync(branchId, command, cancellationToken));
+
+    private static async Task<IResult> SetBranchFeaturesAsync(
+        Guid branchId,
+        SetBranchFeaturesRequest request,
+        IPlatformService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.SetBranchFeaturesAsync(
+            branchId, new SetBranchFeaturesCommand(request.Features!), cancellationToken));
+
+    private static async Task<IResult> ApplyVenueFeaturesAsync(
+        Guid venueId,
+        SetBranchFeaturesRequest request,
+        IPlatformService service,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await service.ApplyVenueFeaturesAsync(
+            venueId, new SetBranchFeaturesCommand(request.Features!), cancellationToken));
+
+    /// <summary>What both feature routes share in their description.</summary>
+    private const string FeaturesRules =
+        "Body: `{ \"features\": [1, 2, ...] }`, the **whole** set to allow - anything left out is blocked, `[]` blocks "
+        + "everything. 1 AppBookings, 2 WebBookings, 3 PreOrders, 4 Takeaway, 5 TableService, 6 GuestMessages, "
+        + "7 Reviews, 8 StaffPhone, 9 KitchenDisplay, 10 Reports. The presets are the console's: Basic is every feature "
+        + "but 5, Full is all ten.\n\n"
+        + "**The venue's own switches are kept.** Blocking takeaway leaves `takeawayEnabled` as the owner set it, so "
+        + "allowing it again restores it; diners see a feature only when it is allowed *and* switched on.\n\n"
+        + "**Pre-orders (3) need app (1) or web (2) bookings** - 422 on `features` otherwise.\n\n"
+        + "**Table service (5) on needs a finished menu** - `branch-not-ready` with `incompleteMenuItemCount`, the rule "
+        + "going Paid had; `GET /api/branches/{branchId}/readiness` lists what is left. **Off waits for open tabs**: "
+        + "blocking it switches every tab route off there (`feature-not-enabled`), which would strand a live bill.\n\n"
+        + "Work already in flight when a feature is blocked finishes normally. ";
 }
 
 /// <summary>Body of <c>POST /api/platform/booking-blocks/{blockId}/lift</c>.</summary>

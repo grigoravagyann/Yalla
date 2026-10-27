@@ -453,6 +453,39 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
 
     private sealed record SentPush(string Endpoint, byte[] Body, Dictionary<string, string> Headers);
 
+    /// <summary>
+    /// Staff phones blocked by the platform at the branch (docs/branch-features.md): an already-paired, subscribed phone is
+    /// pushed nothing - its subscription is kept, for when the feature is allowed again - and the tablet still hears.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_phone_at_a_branch_the_platform_blocks_staff_phones_at_is_pushed_nothing_and_the_tablet_still_is()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var rig = await Rig.StartAsync(fixture);
+        var managerBrowser = new Browser();
+        var tabletBrowser = new Browser();
+
+        await rig.SubscribeAsync(rig.ManagerPhone, managerBrowser);
+        await rig.SubscribeAsync(rig.Tablet, tabletBrowser);
+
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            var branch = await db.Branches.FirstAsync(b => b.Id == rig.Branch.BranchId);
+            branch.SetAllowedFeatures(
+                [.. Yalla.Domain.Venues.BranchFeatures.Full.Where(f => f != BranchFeature.StaffPhone)], incompleteMenuItemCount: 0);
+            await db.SaveChangesAsync();
+        }
+
+        var tab = await rig.OpenTabAsync();
+        await rig.DispatchAsync($"staff-push:call:{await rig.RaiseCallAsync(tab, ServiceRequestPreset.Water)}");
+
+        Assert.Equal(tabletBrowser.Endpoint, Assert.Single(rig.Push.Sent).Endpoint);
+
+        await using var verify = fixture.CreateContext(rig.Factory.Clock);
+        Assert.True(await verify.StaffPushSubscriptions.AnyAsync(s => s.Endpoint == managerBrowser.Endpoint));
+    }
+
     /// <summary>A push service: records every push, answers what it is told to.</summary>
     private sealed class PushService : HttpMessageHandler
     {

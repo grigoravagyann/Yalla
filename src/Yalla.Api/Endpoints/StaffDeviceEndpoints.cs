@@ -1,4 +1,5 @@
 using Yalla.Api.Authorization;
+using Yalla.Api.Middleware;
 using Yalla.Application.Auth;
 using Yalla.Application.Notifications;
 using Yalla.Application.Staff;
@@ -87,6 +88,7 @@ public static class StaffDeviceEndpoints
                 "`endpoint`, `keys.p256dh` or `keys.auth` is not usable - `context.field` names it.");
 
         device.MapDelete("/push-subscription", DeleteSubscriptionAsync)
+            .AllowWhenSurfaceBlocked()
             .WithName("deleteStaffPushSubscription")
             .WithSummary("Forget this device's Web Push subscription")
             .WithDescription(
@@ -124,6 +126,7 @@ public static class StaffDeviceEndpoints
                 StatusCodes.Status422UnprocessableEntity, "A switch is missing, or `locale` is not hy, ru or en.");
 
         device.MapPost("/unpair", UnpairOwnPhoneAsync)
+            .AllowWhenSurfaceBlocked()
             .WithName("unpairOwnStaffPhone")
             .WithSummary("Unpair this phone - the phone's own \"unpair\"")
             .WithDescription(

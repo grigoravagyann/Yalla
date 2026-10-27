@@ -9,19 +9,57 @@ public enum VenueType
 }
 
 /// <summary>
-/// What a <b>branch</b> pays for. Stored per branch, never per venue: a chain with four locations
-/// is four paying customers. The venue-level view is a rollup.
+/// One feature the platform admin allows or blocks <b>per branch</b>. Replaced the Free/Paid
+/// <c>SubscriptionTier</c> on 2026-10-27.
 /// </summary>
 /// <remarks>
-/// A flag that gates features, nothing more. Billing, invoicing and collection are out of scope.
+/// <para>
+/// Stored per branch, never per venue: a chain with four locations is four customers, each with its
+/// own set. The venue-level "apply to every branch" is a convenience over the branches, not a value
+/// of its own. See <c>Branch.AllowedFeatures</c> and <c>BranchFeatures</c>.
+/// </para>
+/// <para>
+/// Two layers: the admin allows or blocks a feature; an owner setting where one exists
+/// (<c>TakeawayEnabled</c>, <c>AcceptsPreOrders</c>, <c>AcceptsWebBookings</c>, <c>GuestsCanMessage</c>)
+/// works only inside that. Blocking a feature never clears the owner's setting, so allowing it again
+/// restores it.
+/// </para>
+/// <para>
+/// On the wire as the integer. Persisted as one bit each (<c>1 &lt;&lt; (value - 1)</c>) in
+/// <c>Branches.AllowedFeatures</c>, so <b>never renumber a member</b>: the number is the bit.
+/// </para>
 /// </remarks>
-public enum SubscriptionTier
+public enum BranchFeature
 {
-    /// <summary>Floor plan and reservations.</summary>
-    Free = 1,
+    /// <summary>Diner-app bookings: create and reschedule.</summary>
+    AppBookings = 1,
 
-    /// <summary>Adds ordering, tabs, payments and analytics.</summary>
-    Paid = 2,
+    /// <summary>Bookings from the public page, including the <c>/booking/{token}</c> manage link's reschedule.</summary>
+    WebBookings = 2,
+
+    /// <summary>Pre-orders on bookings. Needs <see cref="AppBookings"/> or <see cref="WebBookings"/>.</summary>
+    PreOrders = 3,
+
+    /// <summary>Takeaway orders.</summary>
+    Takeaway = 4,
+
+    /// <summary>Tabs, QR/table ordering, waiter ordering, bill request and tip, payments - what Paid used to gate.</summary>
+    TableService = 5,
+
+    /// <summary>Venue-guest message threads.</summary>
+    GuestMessages = 6,
+
+    /// <summary>Diner reviews: writing them, showing them publicly, and console replies.</summary>
+    Reviews = 7,
+
+    /// <summary>The staff phone PWA: pairing, sign-in and pushes to staff phones.</summary>
+    StaffPhone = 8,
+
+    /// <summary>The kitchen screen and its tickets view.</summary>
+    KitchenDisplay = 9,
+
+    /// <summary>Console reports and CSV export.</summary>
+    Reports = 10,
 }
 
 /// <summary>

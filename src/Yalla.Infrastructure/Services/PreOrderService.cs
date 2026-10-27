@@ -11,6 +11,7 @@ using Yalla.Domain.Audit;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 
@@ -105,7 +106,8 @@ internal sealed class PreOrderService(
     /// In this order, each refusal before anything is written: a replay (answered as the pre-order stands); the booking
     /// still to come (409 <c>reservation-not-changeable</c>); not already with the kitchen (409
     /// <c>pre-order-already-sent</c>); before the lock two hours ahead (409 <c>pre-order-locked</c>); the branch taking
-    /// pre-orders (409 <c>pre-orders-not-accepted</c>); the shape (422, every field named); the dishes (422
+    /// pre-orders - allowed by the platform (409 <c>feature-not-enabled</c>, feature <c>PreOrders</c>) and switched on by the
+    /// venue (409 <c>pre-orders-not-accepted</c>); the shape (422, every field named); the dishes (422
     /// <c>pre-order-items-unavailable</c>, every dish named). The "on your way" question is written with the first
     /// save and not again; the command is recorded in the same save.
     /// </para>
@@ -141,13 +143,17 @@ internal sealed class PreOrderService(
 
         RequireUnlocked(reservation, preOrder, nowUtc);
 
-        var acceptsPreOrders = await db.Branches
+        var branch = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == reservation.BranchId)
-            .Select(b => b.AcceptsPreOrders)
+            .Select(b => new { b.AcceptsPreOrders, b.AllowedFeatureBits })
             .FirstAsync(cancellationToken);
 
-        if (!acceptsPreOrders)
+        // The platform's switch before the owner's (docs/branch-features.md): a pre-order the kitchen already has
+        // never comes here, and clearing one stays open, so only a new save or an edit is refused.
+        BranchFeatures.Require(branch.AllowedFeatureBits, BranchFeature.PreOrders, reservation.BranchId);
+
+        if (!branch.AcceptsPreOrders)
         {
             throw new PreOrdersNotAcceptedException(reservation.BranchId);
         }

@@ -212,7 +212,7 @@ internal sealed class ReservationChanges(
         // Every gate creation applies: a move is a new promise about a slot, so a venue that stopped
         // trading - or stopped taking bookings from where this one came from - does not make it.
         VenueGate.RequireOpenForBusiness(branch);
-        ReservationSlotRules.RequireChannelAccepted(reservation.Channel, branch);
+        ReservationSlotRules.RequireChannelAccepted(reservation.Channel, branch, viaManageLink);
 
         // At the booking's own branch: a move changes the slot, never the venue.
         var table = await lookups.LoadTableAsync(reservation.BranchId, command.TableId, cancellationToken);

@@ -88,8 +88,11 @@ public interface ITokenAuthorityCheck
         Guid participantId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Whether an enrolled tablet is still live. Null-safe: an unknown device is not.</summary>
-    Task<bool> IsDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// An enrolled tablet or paired phone while it is live, with its kind and what the platform allows at its branch.
+    /// Null for a revoked or unknown device.
+    /// </summary>
+    Task<StaffDeviceStanding?> GetLiveDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Forgets what was cached about a tablet, so a revocation takes effect on the next request

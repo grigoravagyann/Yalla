@@ -54,10 +54,21 @@ internal static class AuthTestData
     public static async Task<AuthBranch> CreateBranchAsync(
         YallaDbContext db,
         int tableCount = 2,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool bookable = true)
     {
         var branch = await TestBranchBuilder.CreateAsync(
             db, tableCount: tableCount, cancellationToken: cancellationToken);
+
+        // Bookable from the app, as a live branch is: online bookings on and the policy saved (K9). POST /api/reservations
+        // is the app's route and books under the app's gate since 2026-10-27, whatever channel a test names.
+        // Not bookable: as a branch is created - online bookings off, the policy never saved - for the tests of those gates.
+        if (bookable)
+        {
+            var row = await db.Branches.FirstAsync(b => b.Id == branch.BranchId, cancellationToken);
+            row.SetAcceptsWebBookings(true);
+            row.UpdateReservationPolicy(row.ReservationPolicy, DateTime.UnixEpoch);
+        }
 
         var hasher = new SecretHasher();
         var email = $"manager-{Guid.NewGuid():N}@example.test";
@@ -182,7 +193,7 @@ internal static class AuthTestData
             latitude: 40.19,
             longitude: 44.52,
             timeZoneId: timeZoneId,
-            subscriptionTier: SubscriptionTier.Paid);
+            allowedFeatures: BranchFeatures.Full);
 
         branch.SetActive(isActive);
         db.Branches.Add(branch);

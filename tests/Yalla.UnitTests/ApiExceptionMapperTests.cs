@@ -389,6 +389,22 @@ public class ApiExceptionMapperTests
     /// waiting helps and without it once the thread's own limit is spent).
     /// </summary>
     [Fact]
+    public void Open_tabs_holding_table_service_on_name_the_branch_under_conflicting_state()
+    {
+        var branchId = Guid.CreateVersion7();
+
+        var mapped = ApiExceptionMapper.Map(
+            new Yalla.Domain.Venues.TableServiceHasOpenTabsException(branchId, "Centre", ["3", "7"]));
+
+        Assert.Equal(StatusCodes.Status409Conflict, mapped.Status);
+        Assert.Equal("conflicting-state", mapped.Code);
+        Assert.Equal(branchId, mapped.Context!["branchId"]);
+        Assert.Equal(2, mapped.Context["openTabCount"]);
+        Assert.Equal(2, mapped.Context.Count);
+        Assert.Contains("tables 3, 7", mapped.Message.Replace("table(s)", "tables"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Guest_message_refusals_map_to_their_own_codes()
     {
         var subjectId = Guid.CreateVersion7();

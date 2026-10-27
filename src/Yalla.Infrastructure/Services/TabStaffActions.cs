@@ -52,7 +52,7 @@ internal sealed class TabStaffActions(
                 ?? throw new KeyNotFoundException("No table in service with that id at this branch.");
 
             VenueGate.RequireOpenForBusiness(table.Branch);
-            TabLookups.RequirePaid(table.Branch);
+            TabLookups.RequireTableService(table.Branch);
 
             if (table.Status == TableStatus.OutOfService)
             {

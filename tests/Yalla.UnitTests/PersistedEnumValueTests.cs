@@ -200,14 +200,24 @@ public class PersistedEnumValueTests
     }
 
     [Fact]
-    public void Venue_type_and_tier_values_are_pinned_to_what_is_stored()
+    public void Venue_type_and_branch_feature_values_are_pinned_to_what_is_stored()
     {
         Assert.Equal(1, (int)VenueType.Cafe);
         Assert.Equal(2, (int)VenueType.Restaurant);
         Assert.Equal(3, (int)VenueType.Bar);
 
-        Assert.Equal(1, (int)SubscriptionTier.Free);
-        Assert.Equal(2, (int)SubscriptionTier.Paid);
+        // The number is also the bit in Branches.AllowedFeatures (1 << (value - 1)): renumbering moves a stored set.
+        Assert.Equal(1, (int)BranchFeature.AppBookings);
+        Assert.Equal(2, (int)BranchFeature.WebBookings);
+        Assert.Equal(3, (int)BranchFeature.PreOrders);
+        Assert.Equal(4, (int)BranchFeature.Takeaway);
+        Assert.Equal(5, (int)BranchFeature.TableService);
+        Assert.Equal(6, (int)BranchFeature.GuestMessages);
+        Assert.Equal(7, (int)BranchFeature.Reviews);
+        Assert.Equal(8, (int)BranchFeature.StaffPhone);
+        Assert.Equal(9, (int)BranchFeature.KitchenDisplay);
+        Assert.Equal(10, (int)BranchFeature.Reports);
+        Assert.Equal(10, Enum.GetValues<BranchFeature>().Length);
     }
 
     [Fact]
@@ -343,13 +353,13 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActivityActorKind), nameof(ActivityCategory), nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(DeclineReason),
+            nameof(ActivityActorKind), nameof(ActivityCategory), nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(BranchFeature), nameof(DeclineReason),
             nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
             nameof(ServiceRequestPreset),
             nameof(SettlementMode), nameof(SpiceLevel), nameof(StaffDeviceBrowser), nameof(StaffDeviceKind), nameof(StaffDevicePlatform), nameof(StaffPushKinds), nameof(StaffRole), nameof(StayHint),
-            nameof(SubscriptionTier), nameof(TabAdmission), nameof(TabAdmissionReason), nameof(TabEventType),
+            nameof(TabAdmission), nameof(TabAdmissionReason), nameof(TabEventType),
             nameof(TabOrderStatus), nameof(TabStatus), nameof(TableChangeSignal),
             nameof(TableSessionSource), nameof(TableShareRequestStatus), nameof(TableStatus),
             nameof(TelegramVerificationStatus),

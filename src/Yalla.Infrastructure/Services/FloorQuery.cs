@@ -5,6 +5,7 @@ using Yalla.Application.Reservations;
 using Yalla.Application.Tables;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -75,6 +76,10 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         GuestRecord? RecordOf(Guid? account) =>
             account is { } id && records.TryGetValue(id, out var record) ? record : null;
 
+        // Guest messages blocked by the platform (docs/branch-features.md): the threads stay readable in the inbox, but the
+        // floor neither badges nor reminds about them - nobody may answer.
+        var messagesAllowed = BranchFeatures.Has(row.AllowedFeatureBits, BranchFeature.GuestMessages);
+
         return new BranchFloorState
         {
             MaxSequence = row.MaxSequence,
@@ -82,7 +87,9 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
             BranchName = row.BranchName,
             TimeZoneId = row.TimeZoneId,
             AsOfUtc = atUtc,
-            Messages = new FloorMessages(row.MessagesUnreadTotal, row.MessagesOldestUnansweredUtc),
+            Messages = messagesAllowed
+                ? new FloorMessages(row.MessagesUnreadTotal, row.MessagesOldestUnansweredUtc)
+                : new FloorMessages(0, null),
             Tables = row.Tables
                 .Select(t => new TableFloorState
                 {
@@ -128,8 +135,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                     NextReservationGuestRecord = RecordOf(NextAccount(t)),
                     SittingGuestRecord = RecordOf(t.SittingRecordedAccount),
                     SittingPromisedFreeByUtc = t.SittingPromisedFreeByUtc,
-                    NextReservationUnreadMessages = t.NextReservationUnreadMessages,
-                    SittingUnreadMessages = t.SittingUnreadMessages,
+                    NextReservationUnreadMessages = messagesAllowed ? t.NextReservationUnreadMessages : 0,
+                    SittingUnreadMessages = messagesAllowed ? t.SittingUnreadMessages : 0,
                 })
                 // Ordered here rather than in SQL: the client draws by area then label, and
                 // "7" before "10" needs natural ordering that SQL collation will not give.
@@ -230,6 +237,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
                 MaxSequence = db.TableStateChanges
                     .Where(c => c.BranchId == b.Id)
                     .Max(c => (long?)c.Sequence) ?? 0L,
+
+                AllowedFeatureBits = b.AllowedFeatureBits,
 
                 // The Messages tab's badge and the remind, folded in for the same reason: the tablet badges from the
                 // floor it already polls. Unread is what the guest wrote after the venue last read - words and answers;
@@ -465,6 +474,8 @@ internal sealed class FloorQuery(YallaDbContext db, IClock clock) : IFloorQuery
         public int TurnTimeMinutes { get; init; }
 
         public long MaxSequence { get; init; }
+
+        public int AllowedFeatureBits { get; init; }
 
         public int MessagesUnreadTotal { get; init; }
 

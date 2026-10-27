@@ -47,7 +47,9 @@ internal sealed class TakeawayService(
         var branch = await OpenBranchAsync(branchId, cancellationToken);
         var nowUtc = clock.UtcNow;
 
-        if (!branch.TakeawayEnabled)
+        // Blocked by the platform reads as switched off (docs/branch-features.md): the app hides takeaway rather than
+        // erroring on a screen that asked whether to show it. The owner's switch is untouched underneath.
+        if (!branch.TakeawayEnabled || !branch.Allows(BranchFeature.Takeaway))
         {
             return new TakeawayAvailability(branchId, false, false, branch.TakeawayPrepMinutes, null, null, [], null, false, null, null);
         }
@@ -80,8 +82,9 @@ internal sealed class TakeawayService(
 
     /// <summary>
     /// Places the order. In this order, each refusal before anything is written: a replay (answered as the order stands);
-    /// a proved phone (403 <c>phone-not-verified</c>); the shape (422, every field named); the branch open for business
-    /// and taking takeaway (409 <c>takeaway-not-accepted</c>); open now (409 <c>takeaway-closed</c>); the pickup - ASAP
+    /// a proved phone (403 <c>phone-not-verified</c>); the shape (422, every field named); the branch open for business,
+    /// allowed takeaway by the platform (409 <c>feature-not-enabled</c>, feature <c>Takeaway</c>) and taking it (409
+    /// <c>takeaway-not-accepted</c>); open now (409 <c>takeaway-closed</c>); the pickup - ASAP
     /// while the kitchen is not full (409 <c>takeaway-busy</c>), or a slot on offer (409 <c>takeaway-slot-unavailable</c>);
     /// the dishes (422 <c>takeaway-items-unavailable</c>, every one named).
     /// </summary>
@@ -163,6 +166,10 @@ internal sealed class TakeawayService(
             cancellationToken);
 
         var branch = await OpenBranchAsync(command.BranchId, cancellationToken);
+
+        // The platform's switch before the owner's (docs/branch-features.md). Only placing is gated: an order already
+        // placed is accepted, readied, collected or cancelled as before.
+        branch.RequireAllowed(BranchFeature.Takeaway);
 
         if (!branch.TakeawayEnabled)
         {

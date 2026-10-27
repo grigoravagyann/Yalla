@@ -11,8 +11,8 @@ namespace Yalla.UnitTests.Integration;
 
 /// <summary>
 /// The venue list as the console's table reads it: rating and review count over published reviews,
-/// active tables, open tabs, the first readiness issue, the cover thumbnail, every branch's tier, the
-/// one-word state - and the status and tier filters, the district search and the sorts.
+/// active tables, open tabs, the first readiness issue, the cover thumbnail, every branch's features, the
+/// one-word state - and the status filter, the district search and the sorts.
 /// </summary>
 /// <remarks>
 /// Each test names its venues with a marker of its own and searches for it, so the shared database's
@@ -33,7 +33,7 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         var marker = Marker();
 
         // Branch one: ready but for its cover, four tables of which one is retired, a listing.
-        var main = await TestBranchBuilder.CreateAsync(db, tableCount: 4, subscriptionTier: SubscriptionTier.Paid);
+        var main = await TestBranchBuilder.CreateAsync(db, tableCount: 4, features: BranchFeatures.Full);
         await ConsoleTestData.RenameVenueAsync(db, main.VenueId, $"Cascade {marker}");
         await TestMenuBuilder.CreateAsync(db, main.BranchId);
         await ReviewTestData.SavePolicyAsync(db, main.BranchId, clock.UtcNow);
@@ -45,7 +45,7 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         await db.SaveChangesAsync();
 
         // Branch two: free, with a cover and no menu.
-        var secondId = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zz Arabkir", SubscriptionTier.Free);
+        var secondId = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zz Arabkir", BranchFeatures.Basic);
         var cover = await TestMenuBuilder.AddPhotoAsync(db, secondId);
         (await db.Branches.FirstAsync(b => b.Id == secondId)).SetCoverPhoto(cover);
         await db.SaveChangesAsync();
@@ -76,9 +76,6 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         Assert.Equal(VenueStatus.Active, row.Status);
         Assert.Equal(2, row.BranchCount);
         Assert.Equal(3, row.TableCount);
-        Assert.Equal(1, row.PaidBranchCount);
-        Assert.Equal(TierMix.Mixed, row.TierMix);
-        Assert.Equal(SubscriptionTier.Free, row.SubscriptionTier);
         Assert.Equal(4.0, row.AverageRating);
         Assert.Equal(3, row.ReviewCount);
         Assert.Equal(2, row.OpenTabCount);
@@ -86,14 +83,14 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         Assert.Equal("Armenian", row.Cuisine);
         Assert.Equal(await db.Venues.Where(v => v.Id == main.VenueId).Select(v => v.CreatedAtUtc).FirstAsync(), row.CreatedAtUtc);
 
-        // Every branch with its own tier and what a guest would find missing, active ones first, then
+        // Every branch with its own features and what a guest would find missing, active ones first, then
         // by name. The main branch's checklist is done but for its cover; the second has nothing yet -
         // and a missing tablet or policy is the venue's own work, not something a guest sees.
         Assert.Equal([main.BranchId, secondId], row.Branches.Select(b => b.BranchId));
 
         // Each branch's own district, so the console can search every branch's; absent when it has none.
         Assert.Equal(["Kentron", null], row.Branches.Select(b => b.District));
-        Assert.Equal([SubscriptionTier.Paid, SubscriptionTier.Free], row.Branches.Select(b => b.SubscriptionTier));
+        Assert.Equal([BranchFeatures.Full, BranchFeatures.Basic], row.Branches.Select(b => b.Features));
         Assert.Equal([ReadinessIssueCodes.NoPhoto], row.Branches[0].Issues.Select(i => i.Code));
         Assert.Equal(
             [ReadinessIssueCodes.NoTables, ReadinessIssueCodes.NoMenu, ReadinessIssueCodes.NoHours],
@@ -166,7 +163,7 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
 
         // A finished branch beside a switched-off one that has nothing: nothing to name.
         var ready = await ConsoleTestData.ReadyBranchAsync(db, clock.UtcNow, $"Ready {marker}");
-        var off = await ConsoleTestData.AddBranchAsync(db, ready.VenueId, "Aaa Closed for works", SubscriptionTier.Free, isActive: false);
+        var off = await ConsoleTestData.AddBranchAsync(db, ready.VenueId, "Aaa Closed for works", BranchFeatures.Basic, isActive: false);
 
         var row = Assert.Single((await platform.ListVenuesAsync(new VenueListQuery(Search: $"Ready {marker}"))).Items);
         Assert.Null(row.ReadinessIssue);
@@ -225,7 +222,7 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task The_tier_filter_reads_every_branch_and_the_search_reaches_branch_names_and_districts()
+    public async Task The_search_reaches_branch_names_and_districts()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -235,25 +232,16 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
         var marker = Marker();
 
-        var paid = await Named(db, marker, "Paid", SubscriptionTier.Paid);
-        var free = await Named(db, marker, "Free", SubscriptionTier.Free);
-        var mixed = await Named(db, marker, "Mixed", SubscriptionTier.Paid);
-        await ConsoleTestData.AddBranchAsync(db, mixed.VenueId, "Second", SubscriptionTier.Free);
+        var paid = await Named(db, marker, "Paid", BranchFeatures.Full);
+        var free = await Named(db, marker, "Free", BranchFeatures.Basic);
 
-        async Task<Guid[]> Ids(string tier) =>
-            [.. (await platform.ListVenuesAsync(new VenueListQuery(Search: marker, Tier: tier))).Items.Select(v => v.VenueId)];
-
-        Assert.Equal([paid.VenueId], await Ids("paid"));
-        Assert.Equal([free.VenueId], await Ids("free"));
-        Assert.Equal([mixed.VenueId], await Ids("Mixed"));
-
-        // Blank is every tier - the empty select - not the first value the parameter takes.
-        Assert.Equal([free.VenueId, mixed.VenueId, paid.VenueId], await Ids(""));
-        Assert.Equal([free.VenueId, mixed.VenueId, paid.VenueId], await Ids("  "));
+        Assert.Equal(
+            [free.VenueId, paid.VenueId],
+            (await platform.ListVenuesAsync(new VenueListQuery(Search: marker))).Items.Select(v => v.VenueId));
 
         // The search finds a venue by a branch's name and by a branch's district.
         var branchName = $"Terrace {Marker()}";
-        await ConsoleTestData.AddBranchAsync(db, free.VenueId, branchName, SubscriptionTier.Free);
+        await ConsoleTestData.AddBranchAsync(db, free.VenueId, branchName, BranchFeatures.Basic);
         var district = $"Arabkir{Marker()}";
         (await db.Branches.FirstAsync(b => b.Id == paid.BranchId)).UpdateListing(null, null, null, null, null, district);
         await db.SaveChangesAsync();
@@ -296,7 +284,6 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
 
     [SkippableTheory]
     [InlineData("status", "gone")]
-    [InlineData("tier", "gold")]
     [InlineData("sort", "popularity")]
     [InlineData("dir", "up")]
     public async Task A_filter_or_sort_it_does_not_know_is_refused_naming_the_parameter(string parameter, string value)
@@ -311,7 +298,6 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         var query = parameter switch
         {
             "status" => new VenueListQuery(Status: value),
-            "tier" => new VenueListQuery(Tier: value),
             "sort" => new VenueListQuery(Sort: value),
             _ => new VenueListQuery(Dir: value),
         };
@@ -326,10 +312,10 @@ public sealed class PlatformVenueListTests(SqlServerFixture fixture)
         YallaDbContext db,
         string marker,
         string name,
-        SubscriptionTier tier = SubscriptionTier.Free,
+        IReadOnlyList<BranchFeature>? features = null,
         int tables = 2)
     {
-        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: tables, subscriptionTier: tier);
+        var branch = await TestBranchBuilder.CreateAsync(db, tableCount: tables, features: features ?? BranchFeatures.Basic);
         await ConsoleTestData.RenameVenueAsync(db, branch.VenueId, $"{name} {marker}");
 
         return branch;

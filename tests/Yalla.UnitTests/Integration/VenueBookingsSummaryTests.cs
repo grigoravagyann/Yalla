@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Yalla.Application.Platform;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 
 namespace Yalla.UnitTests.Integration;
 
@@ -29,9 +30,9 @@ public sealed class VenueBookingsSummaryTests(SqlServerFixture fixture)
 
         var main = await TestBranchBuilder.CreateAsync(db, tableCount: 4);
         await ConsoleTestData.RenameVenueAsync(db, main.VenueId, $"Cascade {Guid.NewGuid():N}"[..20]);
-        var secondId = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zz Second", SubscriptionTier.Free);
+        var secondId = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zz Second", BranchFeatures.Basic);
         var second = main with { BranchId = secondId, TableIds = [await AddTableAsync(db, main with { BranchId = secondId })] };
-        var quiet = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zzz Quiet", SubscriptionTier.Free);
+        var quiet = await ConsoleTestData.AddBranchAsync(db, main.VenueId, "Zzz Quiet", BranchFeatures.Basic);
 
         var today = ConsoleTestData.YerevanDate(clock.UtcNow);
 

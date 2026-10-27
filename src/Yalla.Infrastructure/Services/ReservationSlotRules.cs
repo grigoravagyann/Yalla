@@ -22,12 +22,22 @@ internal sealed class ReservationSlotRules(
     /// <summary>
     /// Refuses a booking - or a move of one - from a channel the branch is not taking bookings from.
     /// </summary>
-    internal static void RequireChannelAccepted(ReservationChannel channel, Branch branch)
+    /// <param name="channel">
+    /// The channel as the server decided it: the route's for a new booking (<c>POST /api/reservations</c> is
+    /// <see cref="ReservationChannel.App"/>, the public page's route <see cref="ReservationChannel.Web"/>), the booking's
+    /// stored channel for a move - never one a client named.
+    /// </param>
+    /// <param name="branch">The branch, loaded.</param>
+    /// <param name="viaManageLink">Whether a move came in on the booking's manage link - the public page's route.</param>
+    internal static void RequireChannelAccepted(ReservationChannel channel, Branch branch, bool viaManageLink = false)
     {
+        // The platform's switch first (docs/branch-features.md): a channel the branch is not allowed is
+        // feature-not-enabled whatever the owner chose, so the client shows it locked rather than "switched off".
+        branch.RequireAllowed(FeatureFor(channel, viaManageLink));
+
         // A branch that never agreed to take bookings from its public page does not take them.
-        // Checked here rather than at the endpoint because the public page books through this same
-        // service - there is no separate public booking route to guard - and because a rule that
-        // lives in the service holds for any caller, not only the one that remembered.
+        // Checked here rather than at the endpoint because a rule that lives in the service holds for
+        // any caller, not only the one that remembered.
         RequireWebBookingsAccepted(channel, branch);
 
         // The app channel's gate (K9): bookings switched on AND a reservation policy somebody at the
@@ -42,16 +52,24 @@ internal sealed class ReservationSlotRules(
     }
 
     /// <summary>
+    /// The platform feature a diner's booking or move needs (docs/branch-features.md, "Booking channels"):
+    /// <see cref="BranchFeature.WebBookings"/> on the public page's routes - its booking route, and any booking's manage
+    /// link - and for a booking made there moved from a diner's session; <see cref="BranchFeature.AppBookings"/>
+    /// otherwise: the app's routes, and a booking made before the channel was recorded.
+    /// </summary>
+    internal static BranchFeature FeatureFor(ReservationChannel channel, bool viaManageLink) =>
+        viaManageLink || channel == ReservationChannel.Web ? BranchFeature.WebBookings : BranchFeature.AppBookings;
+
+    /// <summary>
     /// Refuses a booking from the public page at a branch that has not switched web bookings on.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <see cref="ReservationChannel"/> is self-reported, which is worth being plain about: this
-    /// stops the public page offering a booking the venue never agreed to; it does not stop a
-    /// hand-written client claiming to be the app. That is the right trade for what the flag is - a
-    /// venue's stated preference about its own page, not an access control - and making it one
-    /// would mean authenticating the channel, which a page reachable by anybody with a URL cannot
-    /// do.
+    /// Since 2026-10-27 the channel is the route's, not the client's: the public page books through its own route
+    /// (<see cref="ReservationChannel.Web"/>), the app through <c>POST /api/reservations</c>
+    /// (<see cref="ReservationChannel.App"/>). Both take any proved diner's session, so a hand-written client can
+    /// still pick the other route; for the venue's switch that is the right trade - it is a stated preference about
+    /// its own page - and for the platform's it was judged an acceptable risk (docs/branch-features.md).
     /// </para>
     /// <para>
     /// The public page reads <c>acceptsWebBookings</c> and hides its booking UI, so in practice

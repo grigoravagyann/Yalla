@@ -54,12 +54,16 @@ public static class ErrorCodes
 
     /// <summary>
     /// The operation is not legal in the current state - seating a cancelled booking, paying a
-    /// closed tab. HTTP 409.
+    /// closed tab. HTTP 409. Usually with no context; two refusals carry one: a staff order's guest
+    /// (<c>field</c>, <c>participantId</c>, <c>participantStatus</c>) and table service turned off at a
+    /// branch with open tabs (<c>branchId</c>, <c>openTabCount</c>).
     /// </summary>
-    [Problem(409, "The operation is not legal in the current state; a staff order's unorderable guest is named in context.", Title = "Conflicting state")]
-    [ProblemContext("field", typeof(string))]
-    [ProblemContext("participantId", typeof(Guid))]
-    [ProblemContext("participantStatus", typeof(ParticipantStatus))]
+    [Problem(409, "The operation is not legal in the current state; a staff order's unorderable guest, or the branch whose open tabs keep table service on, is named in context.", Title = "Conflicting state")]
+    [ProblemContext("field", typeof(string), Optional = true)]
+    [ProblemContext("participantId", typeof(Guid), Optional = true)]
+    [ProblemContext("participantStatus", typeof(ParticipantStatus), Optional = true)]
+    [ProblemContext("branchId", typeof(Guid), Optional = true)]
+    [ProblemContext("openTabCount", typeof(int), Optional = true)]
     public const string ConflictingState = "conflicting-state";
 
     /// <summary>
@@ -268,14 +272,14 @@ public static class ErrorCodes
     public const string AccountLocked = "account-locked";
 
     /// <summary>
-    /// The branch is on a tier that does not include this feature - tabs on a Free branch. HTTP
-    /// 409, not 403: the caller is allowed here, the branch has not paid for it. <c>context</c>
-    /// carries <c>branchId</c> and <c>currentTier</c>.
+    /// The platform has not allowed this feature at the branch (<c>BranchFeature</c>) - tabs where table service is
+    /// blocked. HTTP 409, not 403: the caller is allowed here, the branch does not have it. <c>context</c> carries
+    /// <c>feature</c> (the <c>BranchFeature</c> number) and <c>branchId</c>. Since 2026-10-27; until then the context
+    /// was a sentence in <c>feature</c> and the branch's <c>currentTier</c>.
     /// </summary>
-    [Problem(409, "The branch's tier does not include this feature.", Title = "Feature not enabled for this branch")]
-    [ProblemContext("feature", typeof(string))]
+    [Problem(409, "The platform has not allowed this feature at the branch.", Title = "Feature not enabled for this branch")]
+    [ProblemContext("feature", typeof(BranchFeature))]
     [ProblemContext("branchId", typeof(Guid))]
-    [ProblemContext("currentTier", typeof(SubscriptionTier))]
     public const string FeatureNotEnabled = "feature-not-enabled";
 
     /// <summary>
@@ -297,23 +301,24 @@ public static class ErrorCodes
     public const string FloorPlanInvalid = "floor-plan-invalid";
 
     /// <summary>
-    /// The branch's menu still has items that are not fit to show a diner, so it cannot be
-    /// switched to Paid. HTTP 409, with <c>incompleteMenuItemCount</c> in <c>context</c>.
+    /// The branch's menu still has items that are not fit to show a diner, so table service cannot be
+    /// turned on there (until 2026-10-27: it cannot be switched to Paid). HTTP 409, with
+    /// <c>incompleteMenuItemCount</c> in <c>context</c>.
     /// </summary>
     /// <remarks>
     /// A conflict rather than a validation failure: nothing in the request is wrong, and nothing
     /// the caller can change in it would help. The fix is to finish the menu, which is what
     /// <c>GET /api/branches/{branchId}/readiness</c> is for.
     /// </remarks>
-    [Problem(409, "The branch's menu has unfinished dishes, so it cannot be switched to Paid.", Title = "Branch is not ready for diners")]
+    [Problem(409, "The branch's menu has unfinished dishes, so table service cannot be turned on.", Title = "Branch is not ready for diners")]
     [ProblemContext("branchId", typeof(Guid))]
     [ProblemContext("incompleteMenuItemCount", typeof(int))]
     public const string BranchNotReady = "branch-not-ready";
 
     /// <summary>
     /// The branch is not open for business: its venue is suspended or deleted, or the branch is
-    /// switched off. HTTP 409. Distinct from <see cref="FeatureNotEnabled"/>, which is about what a
-    /// branch pays for rather than whether it is trading at all.
+    /// switched off. HTTP 409. Distinct from <see cref="FeatureNotEnabled"/>, which is about what the
+    /// platform allows at a branch rather than whether it is trading at all.
     /// </summary>
     [Problem(409, "The branch is not open for business: venue suspended or deleted, or branch switched off.", Title = "Branch not open for business")]
     [ProblemContext("branchId", typeof(Guid))]

@@ -5,22 +5,11 @@ using Yalla.Domain.Enums;
 namespace Yalla.UnitTests;
 
 /// <summary>
-/// The arithmetic the platform console's numbers share: the tier mix, the venue's one-word state,
+/// The arithmetic the platform console's numbers share: the venue's one-word state,
 /// the week-on-week change and the averages, and which bucket a booking status counts in.
 /// </summary>
 public class PlatformRollupsTests
 {
-    [Theory]
-    [InlineData(0, 0, TierMix.Free)]
-    [InlineData(1, 0, TierMix.Free)]
-    [InlineData(3, 0, TierMix.Free)]
-    [InlineData(2, 1, TierMix.Mixed)]
-    [InlineData(4, 3, TierMix.Mixed)]
-    [InlineData(1, 1, TierMix.Paid)]
-    [InlineData(3, 3, TierMix.Paid)]
-    public void A_venue_is_Paid_only_when_every_branch_is_and_Mixed_when_some_are(int branches, int paid, TierMix expected) =>
-        Assert.Equal(expected, PlatformRollups.TierMixOf(branches, paid));
-
     [Theory]
     [InlineData(true, false, false, VenueStatus.Active)]
     [InlineData(false, false, false, VenueStatus.Inactive)]

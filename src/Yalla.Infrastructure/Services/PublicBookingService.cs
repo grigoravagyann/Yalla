@@ -2,7 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Public;
 using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Identity;
 using Yalla.Infrastructure.Persistence;
 
@@ -94,7 +96,8 @@ internal sealed class PublicBookingService(
                 r.GuestConfirmedOnWayAtUtc,
                 r.Branch.AcceptsPreOrders,
                 r.GuestRunningLateMinutes,
-                r.StaffAskedOnMyWayAtUtc))
+                r.StaffAskedOnMyWayAtUtc,
+                r.Branch.AllowedFeatureBits))
             .FirstOrDefaultAsync(cancellationToken);
 
         // Unknown and expired, answered identically. The expiry is recomputed here from the same
@@ -113,7 +116,9 @@ internal sealed class PublicBookingService(
         return Project(row, nowUtc) with
         {
             PreOrder = preOrder,
+            // The effective answer (docs/branch-features.md): the owner's switch inside what the platform allows.
             PreOrderEditableUntilUtc = row.AcceptsPreOrders
+                                       && BranchFeatures.Has(row.AllowedFeatureBits, BranchFeature.PreOrders)
                                        && PreOrderRules.BookingTakesEdits(row.Status)
                                        && row.StartUtc > nowUtc
                 ? PreOrderRules.LockedAtUtc(row.StartUtc)
@@ -218,9 +223,11 @@ internal sealed class PublicBookingService(
         // cancelling and booking again.
         PhoneUnverified: row.PhoneUnverified,
 
-        // Whether "change" would do anything: still to come, and an account with a proved number to land
-        // on. False for a booking made without an account - those are cancelled and booked again.
+        // Whether "change" would do anything: still to come, an account with a proved number to land on,
+        // and web bookings - the link's route - still allowed by the platform (docs/branch-features.md). False
+        // for a booking made without an account - those are cancelled and booked again.
         CanChange: row.AccountCanMove
+                   && BranchFeatures.Has(row.AllowedFeatureBits, BranchFeature.WebBookings)
                    && row.Status is Domain.Enums.ReservationStatus.Confirmed or Domain.Enums.ReservationStatus.PendingApproval
                    && row.StartUtc > nowUtc,
 
@@ -257,5 +264,6 @@ internal sealed class PublicBookingService(
         DateTime? GuestConfirmedOnWayAtUtc,
         bool AcceptsPreOrders,
         int? GuestRunningLateMinutes,
-        DateTime? StaffAskedOnMyWayAtUtc);
+        DateTime? StaffAskedOnMyWayAtUtc,
+        int AllowedFeatureBits);
 }

@@ -3,20 +3,21 @@ using Yalla.Domain.Enums;
 namespace Yalla.Domain.Venues;
 
 /// <summary>
-/// The branch is on a tier that does not include this feature. Not a 403: the caller is allowed
-/// to be here; the branch has not paid for what they asked for.
+/// The platform has not allowed this feature at this branch (<see cref="Branch.AllowedFeatures"/>). Not a 403: the
+/// caller is allowed to be here; the branch does not have what they asked for.
 /// </summary>
-public sealed class FeatureNotEnabledException(string feature, Guid branchId, SubscriptionTier currentTier)
+/// <remarks>
+/// For new actions only. Work already in flight when a feature is blocked - an open tab, a placed takeaway, a sent
+/// pre-order, an existing booking's cancellation - finishes normally.
+/// </remarks>
+public sealed class FeatureNotEnabledException(BranchFeature feature, Guid branchId)
     : DomainStateException(
-        $"{feature} is not enabled for this branch. It is on the {currentTier} tier; "
-        + "upgrade the branch to Paid to turn it on.")
+        $"{feature} is not enabled for this branch. The platform switches it on; ask SHURJ.")
 {
-    /// <summary>What was asked for, e.g. "Tabs and ordering".</summary>
-    public string Feature { get; } = feature;
+    /// <summary>What was asked for.</summary>
+    public BranchFeature Feature { get; } = feature;
 
     public Guid BranchId { get; } = branchId;
-
-    public SubscriptionTier CurrentTier { get; } = currentTier;
 }
 
 /// <summary>
@@ -90,8 +91,8 @@ public sealed class VenueDeletionBlockedException(
 }
 
 /// <summary>
-/// The branch cannot be switched to <see cref="SubscriptionTier.Paid"/> yet: its menu is not
-/// finished.
+/// <see cref="BranchFeature.TableService"/> cannot be turned on at the branch yet: its menu is not
+/// finished. (Until 2026-10-27 this guarded switching the branch to Paid; the rule kept its intent.)
 /// </summary>
 /// <remarks>
 /// <para>
@@ -111,7 +112,7 @@ public sealed class BranchNotReadyForDinersException(Guid branchId, int incomple
     : DomainStateException(
         $"This branch has {incompleteMenuItemCount} menu item(s) that are not ready to show a diner - "
         + "each is missing a photo, a description, ingredients, allergens, a portion size or a prep time. "
-        + "Finish them before putting the branch on Paid; the branch readiness endpoint lists what is left.")
+        + "Finish them before turning table service on; the branch readiness endpoint lists what is left.")
 {
     public Guid BranchId { get; } = branchId;
 
@@ -201,4 +202,21 @@ public sealed class FloorPlanInvalidException(
 
     /// <summary>Labels used more than once in the plan.</summary>
     public IReadOnlyList<string> DuplicateLabels { get; } = duplicateLabels;
+}
+
+/// <summary>
+/// <see cref="BranchFeature.TableService"/> cannot be turned off at the branch while tabs are open or closing there:
+/// blocking it would hide those bills from the people who owe them. 409 <c>conflicting-state</c>, with the branch and how
+/// many tabs, so the platform console can say which branch of a venue held the change up.
+/// </summary>
+public sealed class TableServiceHasOpenTabsException(Guid branchId, string branchName, IReadOnlyList<string> tableLabels)
+    : DomainStateException(
+        $"{branchName} has {tableLabels.Count} open tab(s) on table(s) {string.Join(", ", tableLabels)}. "
+        + "Turning table service off would hide those bills from the people who owe them. "
+        + "Wait until they are settled.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    /// <summary>Tabs open or closing at the branch.</summary>
+    public int OpenTabCount { get; } = tableLabels.Count;
 }

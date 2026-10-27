@@ -74,6 +74,16 @@ internal static partial class ApiExceptionMapper
         // general DomainStateException arm it derives from. The count is the point: "eleven dishes
         // still need a photo" is something a manager can act on this afternoon, and "cannot
         // upgrade" sends them to support.
+        // The slug every state refusal has; the context names the branch that held a features change up.
+        TableServiceHasOpenTabsException e => Refuse(
+            ErrorCodes.ConflictingState,
+            e.Message,
+            context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["openTabCount"] = e.OpenTabCount,
+            }),
+
         BranchNotReadyForDinersException e => Refuse(
             ErrorCodes.BranchNotReady,
             e.Message,
@@ -85,8 +95,8 @@ internal static partial class ApiExceptionMapper
 
         // Both derive from DomainStateException and must stay ABOVE it.
         //
-        // Not a 403. The caller is allowed to be here; the branch has not paid for what they
-        // asked. The code is what the apps branch on to show "ask the venue to enable ordering".
+        // Not a 403. The caller is allowed to be here; the platform has not allowed what they
+        // asked at this branch. The code is what the apps branch on to hide or lock the feature.
         FeatureNotEnabledException e => Refuse(
             ErrorCodes.FeatureNotEnabled,
             e.Message,
@@ -94,7 +104,6 @@ internal static partial class ApiExceptionMapper
             {
                 ["feature"] = e.Feature,
                 ["branchId"] = e.BranchId,
-                ["currentTier"] = e.CurrentTier,
             }),
 
         VenueDeletionBlockedException e => Refuse(

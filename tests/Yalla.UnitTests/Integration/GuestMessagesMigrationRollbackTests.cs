@@ -45,6 +45,9 @@ public sealed class GuestMessagesMigrationRollbackTests(SqlServerFixture fixture
             {
                 await db.GetService<IMigrator>().MigrateAsync(GuestMessagesMigration);
 
+                // The builder writes today's Branches row, so the later features column is put in place.
+                await LaterColumns.AddBranchFeatureColumnsAsync(db);
+
                 branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1)).BranchId;
                 const string paramsJson = "{\"venueName\":\"Cafe\"}";
                 const string payloadJson = "{}";

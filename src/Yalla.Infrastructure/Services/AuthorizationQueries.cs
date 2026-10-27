@@ -54,12 +54,14 @@ internal sealed class AuthorizationQueries(YallaDbContext db) : IAuthorizationQu
             .AsNoTracking()
             .AnyAsync(b => b.Id == branchId && b.VenueId == venueId, cancellationToken);
 
-    public Task<bool> IsStaffDeviceActiveAsync(
+    public Task<StaffDeviceStanding?> GetLiveStaffDeviceAsync(
         Guid deviceId,
         CancellationToken cancellationToken = default) =>
         db.StaffDevices
             .AsNoTracking()
-            .AnyAsync(d => d.Id == deviceId && d.RevokedAtUtc == null, cancellationToken);
+            .Where(d => d.Id == deviceId && d.RevokedAtUtc == null)
+            .Select(d => new StaffDeviceStanding(d.Kind, d.BranchId, d.Branch.AllowedFeatureBits))
+            .FirstOrDefaultAsync(cancellationToken);
 
     public Task<VenueUserSessionState?> GetVenueUserSessionStateAsync(
         Guid staffMemberId,

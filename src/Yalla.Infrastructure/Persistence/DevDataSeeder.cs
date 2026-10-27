@@ -66,17 +66,15 @@ internal sealed class DevDataSeeder(
                 latitude: 40.1830,
                 longitude: 44.5150,
                 timeZoneId: "Asia/Yerevan",
-                subscriptionTier: SubscriptionTier.Paid);
+                allowedFeatures: BranchFeatures.Full);
 
             db.Branches.Add(branch);
             logger.LogInformation("Seeding development branch {Slug}.", BranchSlug);
         }
 
-        // The demo branch exists to exercise tabs and ordering, which are paid features.
-        if (!branch.IsPaid)
-        {
-            branch.SetSubscriptionTier(SubscriptionTier.Paid);
-        }
+        // The demo branch exists to exercise every feature, tabs and ordering included. Its seeded menu is the
+        // seeder's own, so the unfinished-dishes rule (for a person turning table service on) is not asked here.
+        branch.SetAllowedFeatures(BranchFeatures.Full, incompleteMenuItemCount: 0);
 
         var waiter = await EnsureStaffAsync(venue.Id, branch.Id, "Aram Waiter", WaiterPhone, StaffRole.Waiter, cancellationToken);
         var manager = await EnsureStaffAsync(venue.Id, branch.Id, "Nune Manager", ManagerPhone, StaffRole.Manager, cancellationToken);

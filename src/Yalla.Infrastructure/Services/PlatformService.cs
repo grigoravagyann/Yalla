@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Media;
 using Yalla.Application.Platform;
@@ -34,10 +35,17 @@ internal sealed class PlatformService(
     IClock clock,
     ICurrentActor actor,
     IBranchReadinessQuery readiness,
+    ITokenAuthorityCheck authority,
     ILogger<PlatformService> logger) : IPlatformService
 {
-    /// <summary>The audit action for a branch moving between Free and Paid.</summary>
-    public const string TierChangeAuditAction = "branch.tier-change";
+    /// <summary>
+    /// The audit action for a change to the features the platform allows at a branch. Rows written before 2026-10-27
+    /// are <c>branch.tier-change</c> (Free and Paid) and stay in the log as they were.
+    /// </summary>
+    public const string FeaturesChangeAuditAction = "branch.features-change";
+
+    /// <summary>The audit action for one set given to every branch of a venue; each branch that changed has its own row too.</summary>
+    public const string VenueFeaturesApplyAuditAction = "venue.features-apply";
 
     private const string VenueType_ = "Venue";
     private const string BranchType = "Branch";
@@ -93,8 +101,6 @@ internal sealed class PlatformService(
         var pageSize = Math.Clamp(query.PageSize, 1, 200);
 
         var status = Pick(query.Status, query.IncludeDeleted ? VenueListFilters.All : VenueListFilters.Live, VenueListFilters.Statuses, "status");
-        // Blank is "every tier", as an empty select sends it - not the first value Pick falls back to.
-        var tier = string.IsNullOrWhiteSpace(query.Tier) ? null : Pick(query.Tier, null, VenueListFilters.Tiers, "tier");
         var sort = Pick(query.Sort, VenueListFilters.SortName, VenueListFilters.Sorts, "sort");
         var descending = Pick(query.Dir, VenueListFilters.Ascending, VenueListFilters.Directions, "dir") == VenueListFilters.Descending;
 
@@ -108,16 +114,6 @@ internal sealed class PlatformService(
             VenueListFilters.Inactive => venues.Where(v => v.DeletedAtUtc == null && v.SuspendedAtUtc == null && !v.IsActive),
             VenueListFilters.Deleted => venues.Where(v => v.DeletedAtUtc != null),
             _ => venues.Where(v => v.DeletedAtUtc == null),
-        };
-
-        venues = tier switch
-        {
-            VenueListFilters.Free => venues.Where(v => !v.Branches.Any(b => b.SubscriptionTier == SubscriptionTier.Paid)),
-            VenueListFilters.Paid => venues.Where(v => v.Branches.Any() && v.Branches.All(b => b.SubscriptionTier == SubscriptionTier.Paid)),
-            VenueListFilters.Mixed => venues.Where(v =>
-                v.Branches.Any(b => b.SubscriptionTier == SubscriptionTier.Paid)
-                && v.Branches.Any(b => b.SubscriptionTier != SubscriptionTier.Paid)),
-            _ => venues,
         };
 
         if (!string.IsNullOrWhiteSpace(query.Search))
@@ -401,42 +397,6 @@ internal sealed class PlatformService(
 
         var before = BranchSnapshot(branch);
 
-        // Downgrading switches the tab endpoints off for this branch - including the reads and the
-        // settlement of tabs that are already open. Doing that to a table mid-meal strands a real
-        // bill nobody can see or pay, so it waits, exactly as deleting a venue does.
-        if (command.SubscriptionTier is SubscriptionTier.Free && branch.IsPaid)
-        {
-            var openTabs = await db.Tabs
-                .AsNoTracking()
-                .Where(t => t.BranchId == branch.Id && (t.Status == TabStatus.Open || t.Status == TabStatus.Closing))
-                .OrderBy(t => t.DiningTable.Label)
-                .Select(t => t.DiningTable.Label)
-                .ToListAsync(cancellationToken);
-
-            if (openTabs.Count > 0)
-            {
-                throw new DomainStateException(
-                    $"This branch has {openTabs.Count} open tab(s) on table(s) {string.Join(", ", openTabs)}. "
-                    + "Moving it to Free would hide those bills from the people who owe them. "
-                    + "Wait until they are settled.");
-            }
-        }
-
-        // Going live is where the menu rule is enforced. Prompt 6 required a photo, ingredients,
-        // allergens, a portion size and a prep time on create, for a good reason - the fields are
-        // what stop a diner having to ask a waiter - but it made an eighty-dish menu unenterable.
-        // The requirement did not go away; it moved here, to the moment the branch starts taking
-        // diners, which is the moment it actually matters. See docs/menu-completeness.md.
-        if (command.SubscriptionTier is SubscriptionTier.Paid && !branch.IsPaid)
-        {
-            var incomplete = await readiness.IncompleteMenuItemIdsAsync(branch.Id, cancellationToken);
-
-            if (incomplete.Count > 0)
-            {
-                throw new BranchNotReadyForDinersException(branch.Id, incomplete.Count);
-            }
-        }
-
         if (command.Name is { } name)
         {
             branch.Rename(name);
@@ -461,47 +421,189 @@ internal sealed class PlatformService(
             branch.SetActive(active);
         }
 
-        if (command.SubscriptionTier is { } tier)
+        // A request that changed nothing at all still leaves the update row it always has. Features are not changed
+        // here: they have their own route and their own entry (SetBranchFeaturesAsync).
+        await AuditAsync("branch.update", BranchTarget(branch), new
         {
-            branch.SetSubscriptionTier(tier);
-        }
-
-        var after = BranchSnapshot(branch);
-        var tierChanged = before.SubscriptionTier != after.SubscriptionTier;
-
-        // A tier change is its own entry, because it is the one change the platform is asked about -
-        // "when did Luna Cafe start paying" - and the feed says it in a sentence of its own. Anything
-        // else the same request changed is the ordinary update beside it; a request that changed
-        // nothing at all still leaves the update row it always has.
-        if (tierChanged)
-        {
-            await AuditAsync(TierChangeAuditAction, BranchTarget(branch), new
-            {
-                venueId = branch.VenueId,
-                from = before.SubscriptionTier,
-                to = after.SubscriptionTier,
-            }, cancellationToken);
-        }
-
-        if (!tierChanged || before with { SubscriptionTier = after.SubscriptionTier } != after)
-        {
-            await AuditAsync("branch.update", BranchTarget(branch), new
-            {
-                before,
-                after,
-            }, cancellationToken);
-        }
+            before,
+            after = BranchSnapshot(branch),
+        }, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
 
-        if (tierChanged)
+        return await GetBranchAsync(branch.Id, cancellationToken);
+    }
+
+    public async Task<BranchSummary> SetBranchFeaturesAsync(
+        Guid branchId,
+        SetBranchFeaturesCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        RequirePlatformAdmin("Set branch features");
+        ArgumentNullException.ThrowIfNull(command);
+
+        var bits = BranchFeatures.Validate(command.Features);
+
+        var branch = await db.Branches
+            .Include(b => b.Venue)
+            .FirstOrDefaultAsync(b => b.Id == branchId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
+
+        if (branch.Venue.IsDeleted)
         {
-            logger.LogWarning(
-                "Platform admin {StaffMemberId} moved branch {BranchId} from {From} to {To}.",
-                actor.StaffMemberId, branch.Id, before.SubscriptionTier, branch.SubscriptionTier);
+            throw new DomainStateException(
+                $"Venue '{branch.Venue.Name}' has been deleted, so its branches can no longer be changed.");
+        }
+
+        if (await ChangeFeaturesAsync(branch, bits, viaVenue: false, cancellationToken))
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            await ForgetDevicesAsync([branch.Id], cancellationToken);
         }
 
         return await GetBranchAsync(branch.Id, cancellationToken);
+    }
+
+    public async Task<VenueDetail> ApplyVenueFeaturesAsync(
+        Guid venueId,
+        SetBranchFeaturesCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        RequirePlatformAdmin("Apply features to every branch");
+        ArgumentNullException.ThrowIfNull(command);
+
+        var bits = BranchFeatures.Validate(command.Features);
+        var venue = await LoadVenueAsync(venueId, cancellationToken);
+
+        if (venue.IsDeleted)
+        {
+            throw new DomainStateException(
+                $"Venue '{venue.Name}' has been deleted, so its branches can no longer be changed.");
+        }
+
+        var branches = await db.Branches
+            .Where(b => b.VenueId == venue.Id)
+            .OrderBy(b => b.Name)
+            .ThenBy(b => b.Id)
+            .ToListAsync(cancellationToken);
+
+        // Every branch or none: a refusal at the third branch throws before the one SaveChanges, so the first two are
+        // not left half-applied, and it names the branch it is about.
+        var changed = new List<Guid>();
+
+        foreach (var branch in branches)
+        {
+            if (await ChangeFeaturesAsync(branch, bits, viaVenue: true, cancellationToken))
+            {
+                changed.Add(branch.Id);
+            }
+        }
+
+        if (changed.Count > 0)
+        {
+            await AuditAsync(VenueFeaturesApplyAuditAction, VenueTarget(venue), new
+            {
+                features = BranchFeatures.FromBits(bits),
+                branchCount = branches.Count,
+                changedBranchIds = changed,
+            }, cancellationToken);
+
+            await db.SaveChangesAsync(cancellationToken);
+            await ForgetDevicesAsync(changed, cancellationToken);
+        }
+
+        return await GetVenueAsync(venue.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Drops what the token check cached about the branches' live devices, so a staff phone or kitchen session the
+    /// change blocks is answered <c>feature-not-enabled</c> on its next call rather than once the cache lapses - the way
+    /// revoking a device is (docs/branch-features.md).
+    /// </summary>
+    /// <remarks>
+    /// The cache is per process: on this instance the next call is refused (bar a read racing the eviction), on any
+    /// other within <c>TokenAuthorityCheck.CacheWindow</c> (5 s).
+    /// </remarks>
+    private async Task ForgetDevicesAsync(IReadOnlyCollection<Guid> branchIds, CancellationToken cancellationToken)
+    {
+        var devices = await db.StaffDevices
+            .AsNoTracking()
+            .Where(d => branchIds.Contains(d.BranchId) && d.RevokedAtUtc == null)
+            .Select(d => d.Id)
+            .ToListAsync(cancellationToken);
+
+        foreach (var device in devices)
+        {
+            authority.InvalidateDevice(device);
+        }
+    }
+
+    /// <summary>
+    /// Moves one tracked branch to <paramref name="bits"/> and stages its audit row; the caller saves. False, with
+    /// nothing staged, when the set is the one it has.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Table service off waits for the open tabs.</b> Blocking it switches the tab endpoints off at the branch,
+    /// reads and settlement included, exactly as moving to Free did - and doing that to a table mid-meal strands a real
+    /// bill nobody can see or pay. So it is refused while any tab is open or closing, as deleting a venue is.
+    /// </para>
+    /// <para>
+    /// <b>Table service on needs a finished menu.</b> Prompt 6 required a photo, ingredients, allergens, a portion
+    /// size and a prep time on create, which made an eighty-dish menu unenterable; the requirement moved to the moment
+    /// the branch starts taking diners' orders - going Paid until 2026-10-27, turning table service on now. See
+    /// docs/menu-completeness.md. The count is read only when this call turns it on.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> ChangeFeaturesAsync(Branch branch, int bits, bool viaVenue, CancellationToken cancellationToken)
+    {
+        if (bits == branch.AllowedFeatureBits)
+        {
+            return false;
+        }
+
+        if (branch.WouldTurnOff(bits, BranchFeature.TableService))
+        {
+            var openTabs = await db.Tabs
+                .AsNoTracking()
+                .Where(t => t.BranchId == branch.Id && (t.Status == TabStatus.Open || t.Status == TabStatus.Closing))
+                .OrderBy(t => t.DiningTable.Label)
+                .Select(t => t.DiningTable.Label)
+                .ToListAsync(cancellationToken);
+
+            if (openTabs.Count > 0)
+            {
+                throw new TableServiceHasOpenTabsException(branch.Id, branch.Name, openTabs);
+            }
+        }
+
+        var incomplete = branch.WouldTurnOn(bits, BranchFeature.TableService)
+            ? (await readiness.IncompleteMenuItemIdsAsync(branch.Id, cancellationToken)).Count
+            : 0;
+
+        var before = branch.AllowedFeatures;
+
+        branch.SetAllowedFeatures(BranchFeatures.FromBits(bits), incomplete);
+
+        var after = branch.AllowedFeatures;
+
+        // Its own entry, because it is the one change the platform is asked about - "when did Luna Cafe get table
+        // service" - and the feed says it in a sentence of its own.
+        await AuditAsync(FeaturesChangeAuditAction, BranchTarget(branch), new
+        {
+            venueId = branch.VenueId,
+            from = before,
+            to = after,
+            added = after.Except(before).ToList(),
+            removed = before.Except(after).ToList(),
+            viaVenue,
+        }, cancellationToken);
+
+        logger.LogWarning(
+            "Platform admin {StaffMemberId} changed the features of branch {BranchId} from [{From}] to [{To}].",
+            actor.StaffMemberId, branch.Id, string.Join(", ", before), string.Join(", ", after));
+
+        return true;
     }
 
     // ---------------------------------------------------------------- the list's rows
@@ -532,7 +634,6 @@ internal sealed class PlatformService(
                 DeletedAtUtc = v.DeletedAtUtc,
                 CreatedAtUtc = v.CreatedAtUtc,
                 BranchCount = v.Branches.Count,
-                PaidBranchCount = v.Branches.Count(b => b.SubscriptionTier == SubscriptionTier.Paid),
                 TableCount = activeTables.Count(t => t.Branch.VenueId == v.Id),
                 ReviewCount = published.Count(r => r.Branch.VenueId == v.Id),
                 RatingSum = published.Where(r => r.Branch.VenueId == v.Id).Sum(r => (long?)r.Rating) ?? 0L,
@@ -555,7 +656,7 @@ internal sealed class PlatformService(
                     BranchId = b.Id,
                     VenueId = b.VenueId,
                     Name = b.Name,
-                    SubscriptionTier = b.SubscriptionTier,
+                    FeatureBits = b.AllowedFeatureBits,
                     IsActive = b.IsActive,
                     District = b.District,
                     Cuisine = b.Cuisine,
@@ -594,10 +695,10 @@ internal sealed class PlatformService(
         var isSuspended = row.SuspendedAtUtc is not null;
 
         var tiers = branches
-            .Select(b => new BranchTierView(
+            .Select(b => new VenueBranchView(
                 b.BranchId,
                 b.Name,
-                b.SubscriptionTier,
+                BranchFeatures.FromBits(b.FeatureBits),
                 b.IsActive,
                 isDeleted || !b.IsActive ? [] : IssuesOf(b, checklists),
                 b.District))
@@ -618,10 +719,7 @@ internal sealed class PlatformService(
             row.DeletedAtUtc,
             row.BranchCount,
             row.TableCount,
-            row.PaidBranchCount,
-            row.BranchCount > 0 && row.PaidBranchCount == row.BranchCount ? SubscriptionTier.Paid : SubscriptionTier.Free,
             PlatformRollups.StatusOf(row.IsActive, isSuspended, isDeleted),
-            PlatformRollups.TierMixOf(row.BranchCount, row.PaidBranchCount),
             tiers,
             BranchBadgeRules.AverageRating(row.ReviewCount, row.RatingSum),
             row.ReviewCount,
@@ -702,8 +800,6 @@ internal sealed class PlatformService(
 
         public int BranchCount { get; init; }
 
-        public int PaidBranchCount { get; init; }
-
         public int TableCount { get; init; }
 
         public int ReviewCount { get; init; }
@@ -721,7 +817,7 @@ internal sealed class PlatformService(
 
         public string Name { get; init; } = null!;
 
-        public SubscriptionTier SubscriptionTier { get; init; }
+        public int FeatureBits { get; init; }
 
         public bool IsActive { get; init; }
 
@@ -804,10 +900,10 @@ internal sealed class PlatformService(
         command.Latitude,
         command.Longitude,
         command.TimeZoneId,
-        subscriptionTier: command.SubscriptionTier);
+        allowedFeatures: command.Features);
 
     private static BranchSnapshotShape BranchSnapshot(Branch b) => new(
-        b.Name, b.Slug, b.Address, b.Latitude, b.Longitude, b.TimeZoneId, b.IsActive, b.SubscriptionTier);
+        b.Name, b.Slug, b.Address, b.Latitude, b.Longitude, b.TimeZoneId, b.IsActive, b.AllowedFeatures);
 
     private sealed record BranchSnapshotShape(
         string Name,
@@ -817,7 +913,7 @@ internal sealed class PlatformService(
         double Longitude,
         string TimeZoneId,
         bool IsActive,
-        SubscriptionTier SubscriptionTier);
+        IReadOnlyList<BranchFeature> Features);
 
     /// <summary>One branch with its counts. Active tables only; tabs open or closing.</summary>
     private Expression<Func<Branch, BranchSummary>> BranchProjection
@@ -836,7 +932,7 @@ internal sealed class PlatformService(
                 b.Longitude,
                 b.TimeZoneId,
                 b.IsActive,
-                b.SubscriptionTier,
+                BranchFeatures.FromBits(b.AllowedFeatureBits),
                 b.DiningTables.Count(t => t.IsActive),
                 openTabs.Count(t => t.BranchId == b.Id),
                 b.District);

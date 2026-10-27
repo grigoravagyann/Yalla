@@ -11,7 +11,7 @@ namespace Yalla.Domain.Venues;
 /// The branch is the operational and commercial unit. A chain with four locations is four paying
 /// customers, so every table, booking, tab and payment carries a <c>BranchId</c> from day one
 /// rather than being retrofitted when the first multi-branch customer arrives - and the
-/// <see cref="SubscriptionTier"/> lives here for the same reason.
+/// features the platform allows (<see cref="AllowedFeatureBits"/>) live here for the same reason.
 /// </remarks>
 public sealed class Branch : Entity
 {
@@ -291,14 +291,78 @@ public sealed class Branch : Entity
     public void SetCoverPhoto(Guid? photoId) => CoverPhotoId = photoId;
 
     /// <summary>
-    /// What this branch pays for. <see cref="Enums.SubscriptionTier.Free"/> gets the floor plan and
-    /// reservations; <see cref="Enums.SubscriptionTier.Paid"/> adds tabs, ordering and payments.
-    /// A flag that gates features - billing is out of scope.
+    /// Which <see cref="BranchFeature"/>s the platform admin allows here, one bit each - see
+    /// <see cref="BranchFeatures"/> for why bits, and for the arithmetic. Replaced the Free/Paid tier on 2026-10-27:
+    /// Free became <see cref="BranchFeatures.Basic"/>, Paid <see cref="BranchFeatures.Full"/>.
     /// </summary>
-    public SubscriptionTier SubscriptionTier { get; private set; }
+    /// <remarks>
+    /// The admin's layer only. The owner's own switches (<see cref="TakeawayEnabled"/>, <see cref="AcceptsPreOrders"/>,
+    /// <see cref="AcceptsWebBookings"/>, <see cref="GuestsCanMessage"/>) are kept apart and work inside it; blocking a
+    /// feature never touches them, so allowing it again restores what the owner had. <see cref="EffectiveFeatures"/>
+    /// combines the two for diners.
+    /// </remarks>
+    public int AllowedFeatureBits { get; private set; } = BranchFeatures.BasicBits;
 
-    /// <summary>Whether tabs, ordering and payments are switched on here.</summary>
-    public bool IsPaid => SubscriptionTier == SubscriptionTier.Paid;
+    /// <summary>The allowed set, in numeric order.</summary>
+    public IReadOnlyList<BranchFeature> AllowedFeatures => BranchFeatures.FromBits(AllowedFeatureBits);
+
+    /// <summary>Whether the platform allows <paramref name="feature"/> here.</summary>
+    public bool Allows(BranchFeature feature) => BranchFeatures.Has(AllowedFeatureBits, feature);
+
+    /// <summary>Refuses a new action that needs <paramref name="feature"/> where the platform has not allowed it.</summary>
+    /// <exception cref="FeatureNotEnabledException">The feature is blocked here.</exception>
+    public void RequireAllowed(BranchFeature feature) => BranchFeatures.Require(AllowedFeatureBits, feature, Id);
+
+    /// <summary>What a diner sees as on: allowed, and switched on by the owner wherever the owner has a switch.</summary>
+    public IReadOnlyList<BranchFeature> EffectiveFeatures => BranchFeatures.Effective(AllowedFeatureBits, Switches);
+
+    /// <summary>The owner's switches that narrow an allowed feature.</summary>
+    public BranchFeatures.OwnerSwitches Switches => new(
+        AcceptsWebBookings,
+        ReservationPolicyReviewedAtUtc is not null,
+        AcceptsPreOrders,
+        TakeawayEnabled,
+        GuestsCanMessage);
+
+    /// <summary>
+    /// Replaces the allowed set. The platform admin's call; the owner's own switches are left exactly as they are.
+    /// </summary>
+    /// <param name="features">The whole set to allow; anything left out is blocked. Repeats are harmless.</param>
+    /// <param name="incompleteMenuItemCount">
+    /// How many of the branch's menu items are not fit to show a diner. Read only when this call turns
+    /// <see cref="BranchFeature.TableService"/> on (<see cref="WouldTurnOn"/>) - pass 0 otherwise. Turning it on is
+    /// where the rule that every dish needs a photo, ingredients, allergens, a portion size and a prep time is enforced:
+    /// the moment the branch starts taking diners' orders, the moment going Paid used to be.
+    /// </param>
+    /// <returns>Whether the set changed.</returns>
+    /// <exception cref="FieldValidationException">An undefined value, or pre-orders with no booking channel.</exception>
+    /// <exception cref="BranchNotReadyForDinersException">Turning table service on with unfinished dishes.</exception>
+    public bool SetAllowedFeatures(IEnumerable<BranchFeature> features, int incompleteMenuItemCount)
+    {
+        var bits = BranchFeatures.Validate(features);
+
+        if (bits == AllowedFeatureBits)
+        {
+            return false;
+        }
+
+        if (WouldTurnOn(bits, BranchFeature.TableService) && incompleteMenuItemCount > 0)
+        {
+            throw new BranchNotReadyForDinersException(Id, incompleteMenuItemCount);
+        }
+
+        AllowedFeatureBits = bits;
+
+        return true;
+    }
+
+    /// <summary>Whether moving to <paramref name="bits"/> allows <paramref name="feature"/> where it is blocked now.</summary>
+    public bool WouldTurnOn(int bits, BranchFeature feature) =>
+        !Allows(feature) && BranchFeatures.Has(bits, feature);
+
+    /// <summary>Whether moving to <paramref name="bits"/> blocks <paramref name="feature"/> where it is allowed now.</summary>
+    public bool WouldTurnOff(int bits, BranchFeature feature) =>
+        Allows(feature) && !BranchFeatures.Has(bits, feature);
 
     /// <summary>Owned value: persisted as extra columns on this row, never as its own table.</summary>
     public ReservationPolicy ReservationPolicy { get; private set; } = null!;
@@ -339,7 +403,7 @@ public sealed class Branch : Entity
         double longitude,
         string timeZoneId,
         ReservationPolicy? reservationPolicy = null,
-        SubscriptionTier subscriptionTier = SubscriptionTier.Free)
+        IEnumerable<BranchFeature>? allowedFeatures = null)
         : base(Guid.CreateVersion7())
     {
         ArgumentNullException.ThrowIfNull(venue);
@@ -352,16 +416,14 @@ public sealed class Branch : Entity
         Longitude = InRange(longitude, -180d, 180d, nameof(longitude));
         TimeZoneId = NormaliseTimeZoneId(timeZoneId);
         ReservationPolicy = reservationPolicy ?? ReservationPolicy.DefaultFor(venue.Type);
-        SubscriptionTier = Guard.Defined(subscriptionTier, nameof(subscriptionTier));
+        // A new branch has no menu yet, so table service is not refused here for unfinished dishes: there are none.
+        AllowedFeatureBits = allowedFeatures is null ? BranchFeatures.BasicBits : BranchFeatures.Validate(allowedFeatures);
         IsActive = true;
     }
 
     public void Rename(string name) => Name = Guard.NotBlank(name, nameof(name), FieldLengths.Name);
 
     public void SetActive(bool isActive) => IsActive = isActive;
-
-    public void SetSubscriptionTier(SubscriptionTier tier) =>
-        SubscriptionTier = Guard.Defined(tier, nameof(tier));
 
     /// <summary>Moves the branch: a new address and coordinates together, since one without the other is wrong.</summary>
     public void Relocate(string address, double latitude, double longitude)

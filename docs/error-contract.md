@@ -346,6 +346,24 @@ Reading them without the role is 403 `forbidden`.
 The shape refusals are ordinary 422 `validation-failed` naming their fields: `lines`, `lines[i].quantity`, `note`,
 `pickup`, `pickup.at`, `readyAt`, `reason`, `method`, `prepMinutes`, `lastOrderMinutes`, `maxInProgress`, `minutes`.
 
+### Branch features: `feature-not-enabled`
+
+2026-10-27, [platform-admin.md](platform-admin.md) "Branch features". The Free/Paid tier is gone; the platform
+allows or blocks ten `BranchFeature`s per branch.
+
+| Code | Status | `context` | When |
+|---|---|---|---|
+| `feature-not-enabled` | 409 | `feature` (the `BranchFeature` number), `branchId` | a new action on a feature the platform has not allowed at the branch |
+| `branch-not-ready` | 409 | `branchId`, `incompleteMenuItemCount` | `PUT /api/platform/{branches,venues}/{id}/features` turning table service (5) on with unfinished dishes |
+
+**The slug and the status did not change; the context did.** Before 2026-10-27 `feature` was a sentence ("Tabs and
+ordering") and the context carried the branch's `currentTier`; now `feature` is the number and there is no tier. Every
+feature answers it for its new actions - what each one refuses, and the work that runs on, is in
+[branch-features.md](branch-features.md); a blocked staff phone or kitchen session gets it on every authorised call. The features routes refuse a set as an ordinary 422 `validation-failed` on
+`features` (missing, a number that is not a feature, or pre-orders without app or web bookings), and turning table
+service off while tabs are open as a 409 `conflicting-state` whose `context` names the branch (`branchId`) and how many
+tabs hold it (`openTabCount`), the tables in `detail` - on the venue route, the first branch that refused.
+
 ### Which status, and why
 
 **422, collecting every violation** — the rule §2 already states. A refusal that can report all the
@@ -386,11 +404,11 @@ refusing a missing token answers a bare 401 with no body.
 | `booking-table-occupied` | 409 | Booked table still occupied | The booked table still has another party's sitting open; staff must free it. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
 | `booking-too-early` | 409 | Too early for this booking | The booking's table is not being held for the party yet; context says from when. | `reservationId` uuid, `status` ReservationStatus, `startUtc` date-time, `endUtc` date-time, `earliestUtc` date-time, `tableLabel` string (nullable) |
 | `bookings-not-accepted` | 409 | Bookings not accepted | A booking from the diner app at a branch that is not taking app bookings. | `branchId` uuid |
-| `branch-not-ready` | 409 | Branch is not ready for diners | The branch's menu has unfinished dishes, so it cannot be switched to Paid. | `branchId` uuid, `incompleteMenuItemCount` int32 |
+| `branch-not-ready` | 409 | Branch is not ready for diners | The branch's menu has unfinished dishes, so table service cannot be turned on. | `branchId` uuid, `incompleteMenuItemCount` int32 |
 | `branch-unavailable` | 409 | Branch not open for business | The branch is not open for business: venue suspended or deleted, or branch switched off. | `branchId` uuid, `reason` string |
 | `client-command-id-in-use` | 409 | Command id already used | The clientCommandId already belongs to another caller's command; start again with a fresh one. | - |
 | `concurrent-update` | 409 | Concurrent update | Someone else changed the row first: re-read and retry. | `currentVersion` string |
-| `conflicting-state` | 409 | Conflicting state | The operation is not legal in the current state; a staff order's unorderable guest is named in context. | `field` string, `participantId` uuid, `participantStatus` ParticipantStatus |
+| `conflicting-state` | 409 | Conflicting state | The operation is not legal in the current state; a staff order's unorderable guest, or the branch whose open tabs keep table service on, is named in context. | `field` string (optional), `participantId` uuid (optional), `participantStatus` ParticipantStatus (optional), `branchId` uuid (optional), `openTabCount` int32 (optional) |
 | `conversation-closed` | 409 | Conversation closed | Writing to a guest-message thread that has closed. | `subjectKind` string, `subjectId` uuid, `closedAtUtc` date-time |
 | `credentials-invalid` | 401 | Credentials invalid | An admin-panel email and password did not match an account. | - |
 | `device-revoked` | 401 | Device revoked | The tablet or device is no longer enrolled; ask a manager to enrol it again. | - |
@@ -398,7 +416,7 @@ refusing a missing token answers a bare 401 with no body.
 | `enrolment-code-expired` | 401 | Enrolment code expired | The tablet enrolment code has expired; ask a manager for a new one. | - |
 | `enrolment-code-invalid` | 401 | Enrolment code invalid | The tablet enrolment code is not valid. | - |
 | `extensions-not-offered` | 409 | Hold extensions not offered | The branch offers no hold extensions. | `reservationId` uuid, `startUtc` date-time |
-| `feature-not-enabled` | 409 | Feature not enabled for this branch | The branch's tier does not include this feature. | `feature` string, `branchId` uuid, `currentTier` SubscriptionTier |
+| `feature-not-enabled` | 409 | Feature not enabled for this branch | The platform has not allowed this feature at the branch. | `feature` BranchFeature, `branchId` uuid |
 | `floor-plan-changed` | 409 | Floor plan changed | The floor plan was saved by somebody else since the editor loaded it. | `currentVersion` string |
 | `floor-plan-invalid` | 422 | Floor plan invalid | The floor plan cannot be applied; every reason is listed. | `errors` string[], `duplicateLabels` string[] |
 | `forbidden` | 403 | Forbidden | The caller is not allowed to do this. | `operation` string (optional), `requiredRole` StaffRole (optional), `requirement` string (optional), `subject` string (optional) |

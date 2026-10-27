@@ -624,12 +624,13 @@ pins that the two reads agree for every status and flag.
 - **Absent, not null.** A redacted member is not on the wire, for the projection's reason (section 4):
   absent beside a hidden total reads as "not shown to you", where a null or a zero could be drawn as
   free.
-- **What a poll costs.** One statement for the reader's row and the branch's tier, the page, and the
+- **What a poll costs.** One statement for the reader's row and whether the branch has table service, the page, and the
   stream's high-water mark. Only a restricted reader with something on the page pays for the tab
   read on top (`TabEventReadPathTests` counts them), and that snapshot is read **after** the events,
   so every line and adjustment an event names is on it and a reader's own order placed a moment ago
   is never mistaken for someone else's.
-- **The tier is checked first.** A branch below Paid answers every page the way the tab read does -
+- **Table service is checked first.** A branch where the platform has not allowed table service
+  (`BranchFeature` 5; the Paid tier until 2026-10-27) answers every page the way the tab read does -
   409 `feature-not-enabled` - whether or not there is anything on it. An empty poll used to pass
   where a full one was refused.
 

@@ -440,20 +440,34 @@ public class PublicBookingRescheduleEndpointTests(SqlServerFixture fixture)
         Guid tableId,
         ReservationChannel channel = ReservationChannel.Unknown)
     {
-        var created = await diner.PostAsJsonAsync(
-            "/api/reservations",
-            new
-            {
-                branchId = branch.BranchId,
-                tableId,
-                date = Iso(date),
-                time,
-                partySize = 2,
-                guestName = "Ani Link",
-                guestPhone = "+37411223366",
-                clientCommandId = Guid.CreateVersion7(),
-                channel,
-            });
+        // The public page books through its own route (channel Web); the app's route books as the app.
+        var created = channel == ReservationChannel.Web
+            ? await diner.PostAsJsonAsync(
+                $"/api/public/branches/{branch.BranchId}/reservations",
+                new
+                {
+                    tableId,
+                    date = Iso(date),
+                    time,
+                    partySize = 2,
+                    guestName = "Ani Link",
+                    guestPhone = "+37411223366",
+                    clientCommandId = Guid.CreateVersion7(),
+                })
+            : await diner.PostAsJsonAsync(
+                "/api/reservations",
+                new
+                {
+                    branchId = branch.BranchId,
+                    tableId,
+                    date = Iso(date),
+                    time,
+                    partySize = 2,
+                    guestName = "Ani Link",
+                    guestPhone = "+37411223366",
+                    clientCommandId = Guid.CreateVersion7(),
+                    channel,
+                });
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
 

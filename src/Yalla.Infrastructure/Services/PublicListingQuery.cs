@@ -130,12 +130,6 @@ internal sealed class PublicListingQuery(
                 b.WebsiteUrl,
                 b.PhoneE164,
                 b.AmenityKeys,
-                b.AcceptsWebBookings,
-
-                // K9: the app books only where bookings are switched on AND somebody at the venue has
-                // saved the reservation policy, rather than the defaults a new branch ships with.
-                AcceptsAppBookings = b.AcceptsWebBookings && b.ReservationPolicyReviewedAtUtc != null,
-                b.TakeawayEnabled,
                 b.TakeawayPrepMinutes,
             })
             .FirstAsync(cancellationToken);
@@ -154,13 +148,24 @@ internal sealed class PublicListingQuery(
             .AsNoTracking()
             .CountAsync(t => t.BranchId == branchId && t.IsActive, cancellationToken);
 
-        var recent = await ReviewsAsync(branchId, skip: 0, take: RecentReviewCount, cancellationToken);
+        // Reviews blocked by the platform are hidden, not refused (docs/branch-features.md): no recent reviews, no
+        // rating, no counts - the rows stay and show again when the platform allows reviews again.
+        var reviewsShown = BranchFeatures.Has(row.FeatureBits, BranchFeature.Reviews);
+
+        var recent = reviewsShown
+            ? await ReviewsAsync(branchId, skip: 0, take: RecentReviewCount, cancellationToken)
+            : [];
         var rooms = await RoomsAsync(branchId, cancellationToken);
         var stats = await StatsAsync(cancellationToken);
 
         // The aggregate live, not from the cached stats: recentReviews above is live, and the two
         // side by side must agree - this is the screen a diner comes back to right after reviewing.
-        var summary = await ReviewSummaryAsync(branchId, cancellationToken);
+        var summary = reviewsShown ? await ReviewSummaryAsync(branchId, cancellationToken) : NoReviews;
+
+        // The effective set, read live with the row: allowed by the platform and switched on by the venue. The
+        // booleans below are the same answers, kept for the screens that read them (K9 included: the app books only
+        // where bookings are switched on AND somebody at the venue has saved the reservation policy).
+        var features = row.EffectiveFeatures;
 
         return new PublicBranchDetail(
             ToListing(row, stats, latitude, longitude, (summary.Count, summary.Sum)),
@@ -172,12 +177,12 @@ internal sealed class PublicListingQuery(
             await OpeningCalendars.UpcomingAsync(db, branchId, row.TimeZoneId, clock.UtcNow, cancellationToken),
             gallery,
             tableCount,
-            extra.AcceptsWebBookings,
-            extra.AcceptsAppBookings,
+            features.Contains(BranchFeature.WebBookings),
+            features.Contains(BranchFeature.AppBookings),
             recent,
             summary.RatingCounts,
             rooms,
-            new PublicTakeawayInfo(extra.TakeawayEnabled, extra.TakeawayPrepMinutes),
+            new PublicTakeawayInfo(features.Contains(BranchFeature.Takeaway), extra.TakeawayPrepMinutes),
             clock.UtcNow);
     }
 
@@ -197,8 +202,11 @@ internal sealed class PublicListingQuery(
 
         await RequirePublishedAsync(branchId, cancellationToken);
 
+        // Reviews blocked by the platform: an empty page with no rating, not an error (docs/branch-features.md).
+        var reviewsShown = await BranchFeatureGate.AllowsAsync(db, branchId, BranchFeature.Reviews, cancellationToken);
+
         // Live, not the cached aggregate: this is the screen somebody opens right after reviewing.
-        var summary = await ReviewSummaryAsync(branchId, cancellationToken);
+        var summary = reviewsShown ? await ReviewSummaryAsync(branchId, cancellationToken) : NoReviews;
 
         return new PublicReviewPage(
             branchId,
@@ -207,7 +215,9 @@ internal sealed class PublicListingQuery(
             summary.RatingCounts,
             page,
             ReviewPageSize,
-            await ReviewsAsync(branchId, (page - 1) * ReviewPageSize, ReviewPageSize, cancellationToken));
+            reviewsShown
+                ? await ReviewsAsync(branchId, (page - 1) * ReviewPageSize, ReviewPageSize, cancellationToken)
+                : []);
     }
 
     public async Task<PublicBranchRooms> GetRoomsAsync(Guid branchId, CancellationToken cancellationToken = default)
@@ -267,6 +277,12 @@ internal sealed class PublicListingQuery(
             CoverFullPath = b.CoverPhoto!.FullPath,
             CoverWidth = b.CoverPhoto!.Width,
             CoverHeight = b.CoverPhoto!.Height,
+            FeatureBits = b.AllowedFeatureBits,
+            AcceptsWebBookings = b.AcceptsWebBookings,
+            ReservationPolicyReviewed = b.ReservationPolicyReviewedAtUtc != null,
+            AcceptsPreOrders = b.AcceptsPreOrders,
+            TakeawayEnabled = b.TakeawayEnabled,
+            GuestsCanMessage = b.GuestsCanMessage,
         });
 
     private async Task<List<EstateRow>> EstateAsync(CancellationToken cancellationToken) =>
@@ -350,6 +366,10 @@ internal sealed class PublicListingQuery(
     /// <summary>A branch's shown reviews: how many, their stars added up, and how many of each star, one first.</summary>
     private sealed record ReviewSummary(int Count, long Sum, IReadOnlyList<int> RatingCounts);
 
+    /// <summary>What a branch that shows no reviews sums to: nothing, with a zero for every star.</summary>
+    private static readonly ReviewSummary NoReviews =
+        new(0, 0L, new int[BranchReview.MaxRating - BranchReview.MinRating + 1]);
+
     /// <param name="row">The branch.</param>
     /// <param name="stats">The cached live numbers.</param>
     /// <param name="latitude">The caller's position, for distance.</param>
@@ -365,7 +385,11 @@ internal sealed class PublicListingQuery(
         double? longitude,
         (int Count, long Sum)? liveReviews = null)
     {
-        var (count, sum) = liveReviews ?? stats.Reviews.GetValueOrDefault(row.BranchId);
+        // Reviews blocked by the platform count as none: no rating, no count, and no badge earned by them
+        // (docs/branch-features.md). "Popular" by sittings alone still shows.
+        var (count, sum) = !BranchFeatures.Has(row.FeatureBits, BranchFeature.Reviews)
+            ? (0, 0L)
+            : liveReviews ?? stats.Reviews.GetValueOrDefault(row.BranchId);
         var rating = BranchBadgeRules.AverageRating(count, sum);
 
         return new PublicBranchListing(
@@ -396,6 +420,7 @@ internal sealed class PublicListingQuery(
                 count,
                 rating),
             Cover(row),
+            row.EffectiveFeatures,
             row.District);
     }
 
@@ -655,5 +680,24 @@ internal sealed class PublicListingQuery(
         public int? CoverWidth { get; init; }
 
         public int? CoverHeight { get; init; }
+
+        /// <summary>What the platform allows, one bit per feature.</summary>
+        public int FeatureBits { get; init; }
+
+        public bool AcceptsWebBookings { get; init; }
+
+        public bool ReservationPolicyReviewed { get; init; }
+
+        public bool AcceptsPreOrders { get; init; }
+
+        public bool TakeawayEnabled { get; init; }
+
+        public bool GuestsCanMessage { get; init; }
+
+        /// <summary>What a diner sees as on: allowed, and switched on by the venue where it has a switch.</summary>
+        public IReadOnlyList<BranchFeature> EffectiveFeatures => BranchFeatures.Effective(
+            FeatureBits,
+            new BranchFeatures.OwnerSwitches(
+                AcceptsWebBookings, ReservationPolicyReviewed, AcceptsPreOrders, TakeawayEnabled, GuestsCanMessage));
     }
 }

@@ -52,9 +52,9 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
         var second = await service.AddBranchAsync(venueId, Branch("second"));
         await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.create");
 
-        // A tier change is its own entry - the one the console's activity feed says in a sentence.
-        await service.UpdateBranchAsync(second.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
-        await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.tier-change");
+        // A features change is its own entry - the one the console's activity feed says in a sentence.
+        await service.SetBranchFeaturesAsync(second.BranchId, new SetBranchFeaturesCommand(BranchFeatures.Full));
+        await AssertAuditAsync(db, admin.StaffMemberId, second.BranchId, "branch.features-change");
 
         await service.DeleteVenueAsync(venueId);
         await AssertAuditAsync(db, admin.StaffMemberId, venueId, "venue.delete");
@@ -195,7 +195,7 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task The_venue_list_searches_pages_and_rolls_up_the_tier()
+    public async Task The_venue_list_searches_pages_and_carries_each_branchs_features()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
@@ -206,20 +206,27 @@ public sealed class PlatformServiceTests(SqlServerFixture fixture)
         var marker = Guid.NewGuid().ToString("N")[..8];
 
         var venue = await service.CreateVenueAsync(new CreateVenueCommand($"Rollup {marker}", VenueType.Cafe, $"rollup-{marker}", Branch("a")));
-        var paid = await service.AddBranchAsync(venue.Venue.VenueId, Branch("b") with { SubscriptionTier = SubscriptionTier.Paid });
+        var paid = await service.AddBranchAsync(venue.Venue.VenueId, Branch("b") with { Features = BranchFeatures.Full });
 
         var page = await service.ListVenuesAsync(new VenueListQuery(Search: marker, Page: 1, PageSize: 10));
 
         var row = Assert.Single(page.Items);
         Assert.Equal(2, row.BranchCount);
-        Assert.Equal(1, row.PaidBranchCount);
-        Assert.Equal(SubscriptionTier.Free, row.SubscriptionTier); // not every branch is paid
+        Assert.Equal(BranchFeatures.Basic, row.Branches.Single(b => b.BranchId == venue.Branches[0].BranchId).Features);
+        Assert.Equal(BranchFeatures.Full, row.Branches.Single(b => b.BranchId == paid.BranchId).Features);
 
-        await service.UpdateBranchAsync(venue.Branches[0].BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
+        // Apply to every branch: the one that already had the set is not touched or audited.
+        var after = await service.ApplyVenueFeaturesAsync(venue.Venue.VenueId, new SetBranchFeaturesCommand(BranchFeatures.Full));
+        Assert.All(after.Branches, b => Assert.Equal(BranchFeatures.Full, b.Features));
 
-        var after = await service.GetVenueAsync(venue.Venue.VenueId);
-        Assert.Equal(SubscriptionTier.Paid, after.Venue.SubscriptionTier);
-        Assert.Equal(SubscriptionTier.Paid, after.Branches.Single(b => b.BranchId == paid.BranchId).SubscriptionTier);
+        await using var verify = fixture.CreateContext(clock);
+        Assert.Equal(
+            ["branch.create"],
+            await verify.PlatformAuditLogs.AsNoTracking().Where(l => l.TargetId == paid.BranchId).Select(l => l.Action).ToListAsync());
+        Assert.Equal(
+            1,
+            await verify.PlatformAuditLogs.AsNoTracking()
+                .CountAsync(l => l.TargetId == venue.Branches[0].BranchId && l.Action == "branch.features-change"));
     }
 
     // ------------------------------------------------------------ helpers

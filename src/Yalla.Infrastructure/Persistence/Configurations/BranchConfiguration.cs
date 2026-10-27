@@ -48,15 +48,19 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
         builder.Property(b => b.IsActive)
             .IsRequired();
 
-        // Per branch, never per venue: a chain with four locations is four paying customers.
+        // Per branch, never per venue: a chain with four locations is four customers. One bit per BranchFeature - see
+        // BranchFeatures for why a column of bits rather than a table of rows.
         //
-        // The database default exists for the rows that predate the column. The sentinel is 0,
-        // which is not a defined tier and which the entity never holds, so every insert writes the
-        // tier explicitly and the default is used when, and only when, nothing was set.
-        builder.Property(b => b.SubscriptionTier)
-            .IsRequired()
-            .HasDefaultValue(Yalla.Domain.Enums.SubscriptionTier.Free)
-            .HasSentinel((Yalla.Domain.Enums.SubscriptionTier)0);
+        // No model default and no sentinel, deliberately: every bit pattern is a real set, 0 included (the admin blocked
+        // everything), so an insert must always write the value. The migration from the tier gave every existing row
+        // Basic (Free) or Full (Paid).
+        builder.Property(b => b.AllowedFeatureBits)
+            .HasColumnName("AllowedFeatures")
+            .IsRequired();
+
+        builder.Ignore(b => b.AllowedFeatures);
+        builder.Ignore(b => b.EffectiveFeatures);
+        builder.Ignore(b => b.Switches);
 
         // Configured explicitly so the navigation uses CoverPhotoId rather than EF inventing a
         // shadow foreign key beside it. Restrict, like every other photo reference: a picture a
@@ -73,8 +77,8 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
 
         // False for every existing row, which is the whole point of the flag - see Branch. The
         // database default covers the rows that predate the column; bool has no spare sentinel, so
-        // unlike SubscriptionTier this cannot distinguish "not set" from "set to false", and does
-        // not need to: false is the answer in both cases.
+        // this cannot distinguish "not set" from "set to false", and does not need to: false is the
+        // answer in both cases.
         builder.Property(b => b.AcceptsWebBookings)
             .IsRequired()
             .HasDefaultValue(false);
@@ -123,8 +127,6 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             .HasSentinel(Domain.Messages.ConversationRules.DefaultRemindAfterMinutes);
 
         builder.Ignore(b => b.MessageTemplates);
-
-        builder.Ignore(b => b.IsPaid);
 
         // The diner app's listing fields. All optional: a venue is usable before anybody writes a
         // cuisine line, and "not said" must read as unknown rather than as a made-up default.

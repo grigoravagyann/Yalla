@@ -38,9 +38,11 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         clock.Advance(TimeSpan.FromSeconds(1));
         await platform.UpdateVenueAsync(venueId, new UpdateVenueCommand(Name: $"Luna Cafe {marker}"));
         clock.Advance(TimeSpan.FromSeconds(1));
-        await platform.UpdateBranchAsync(branchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
+        await platform.SetBranchFeaturesAsync(branchId, new SetBranchFeaturesCommand(BranchFeatures.Full));
         clock.Advance(TimeSpan.FromSeconds(1));
-        await platform.UpdateBranchAsync(branchId, new UpdateBranchCommand(Name: "Kaskad", SubscriptionTier: SubscriptionTier.Free));
+        await platform.UpdateBranchAsync(branchId, new UpdateBranchCommand(Name: "Kaskad"));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await platform.SetBranchFeaturesAsync(branchId, new SetBranchFeaturesCommand(BranchFeatures.Basic));
         clock.Advance(TimeSpan.FromSeconds(1));
         await platform.UpdateBranchAsync(branchId, new UpdateBranchCommand(Name: "Kaskad Terrace"));
         clock.Advance(TimeSpan.FromSeconds(1));
@@ -70,8 +72,9 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         [
             ["branch.create", "venue.create"],
             ["venue.update"],
-            ["branch.tier-change"],
-            ["branch.tier-change", "branch.update"],
+            ["branch.features-change"],
+            ["branch.update"],
+            ["branch.features-change"],
             ["branch.update"],
             ["branch.create"],
             ["venue.suspend"],
@@ -105,33 +108,42 @@ public sealed class PlatformActivityTests(SqlServerFixture fixture)
         Assert.Equal("Branch arabkir", Row("branch.create", 1).TargetDisplay);
         Assert.Equal(second.BranchId, Row("branch.create", 1).TargetId);
 
-        // A tier change says from and to; a request that changes the tier and the name writes both
-        // entries, and one that changes only the name writes only the update.
-        using (var tier = JsonDocument.Parse(Row("branch.tier-change").ChangesJson))
+        // A features change says from, to, what was added and what removed, as feature numbers.
+        using (var change = JsonDocument.Parse(Row("branch.features-change").ChangesJson))
         {
-            Assert.Equal((int)SubscriptionTier.Free, tier.RootElement.GetProperty("from").GetInt32());
-            Assert.Equal((int)SubscriptionTier.Paid, tier.RootElement.GetProperty("to").GetInt32());
-            Assert.Equal(branchId, Row("branch.tier-change").TargetId);
+            int[] Ints(string name) => [.. change.RootElement.GetProperty(name).EnumerateArray().Select(e => e.GetInt32())];
+
+            Assert.Equal(BranchFeatures.Basic.Select(f => (int)f), Ints("from"));
+            Assert.Equal(Enumerable.Range(1, 10), Ints("to"));
+            Assert.Equal([(int)BranchFeature.TableService], Ints("added"));
+            Assert.Empty(Ints("removed"));
+            Assert.False(change.RootElement.GetProperty("viaVenue").GetBoolean());
+            Assert.Equal(venueId, change.RootElement.GetProperty("venueId").GetGuid());
+            Assert.Equal(branchId, Row("branch.features-change").TargetId);
         }
 
-        Assert.Equal("Kaskad", Row("branch.tier-change", 1).TargetDisplay);
+        Assert.Equal("Kaskad", Row("branch.features-change", 1).TargetDisplay);
         Assert.Equal("Kaskad", Row("branch.update").TargetDisplay);
         Assert.Equal("Kaskad Terrace", Row("branch.update", 1).TargetDisplay);
     }
 
     [SkippableFact]
-    public async Task A_change_that_does_not_move_the_tier_writes_no_tier_entry()
+    public async Task Setting_the_features_a_branch_already_has_writes_nothing()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
 
         var clock = new TestClock(TestNow.UtcNow);
         await using var db = fixture.CreateContext(clock);
         var admin = await AuthTestData.CreatePlatformAdminAsync(db);
-        var branch = await TestBranchBuilder.CreateAsync(db, subscriptionTier: SubscriptionTier.Paid);
+        var branch = await TestBranchBuilder.CreateAsync(db, features: BranchFeatures.Full);
         var platform = fixture.CreatePlatformService(db, clock, TestActor.PlatformAdmin(admin.StaffMemberId));
 
-        // Already paid: asking for Paid again is not a tier change.
-        await platform.UpdateBranchAsync(branch.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid));
+        // Already Full: asking for the same set again, in another order and with a repeat, is not a change.
+        var answered = await platform.SetBranchFeaturesAsync(
+            branch.BranchId, new SetBranchFeaturesCommand([.. BranchFeatures.Full.Reverse(), BranchFeature.Reports]));
+        Assert.Equal(BranchFeatures.Full, answered.Features);
+
+        await platform.UpdateBranchAsync(branch.BranchId, new UpdateBranchCommand(Name: "Renamed"));
 
         await using var verify = fixture.CreateContext(clock);
         var actions = await verify.PlatformAuditLogs.AsNoTracking()

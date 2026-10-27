@@ -177,9 +177,15 @@ public sealed class VenueLifecycleTests(SqlServerFixture fixture)
         await Assert.ThrowsAsync<DomainStateException>(
             () => service.UpdateVenueAsync(branch.VenueId, new UpdateVenueCommand(IsActive: true)));
 
-        // Its branches are closed records too - a deleted venue must not be quietly upgraded to Paid.
+        // Its branches are closed records too - a deleted venue must not quietly gain or lose features.
         await Assert.ThrowsAsync<DomainStateException>(
-            () => service.UpdateBranchAsync(branch.BranchId, new UpdateBranchCommand(SubscriptionTier: SubscriptionTier.Paid)));
+            () => service.UpdateBranchAsync(branch.BranchId, new UpdateBranchCommand(Name: "Phoenix")));
+
+        await Assert.ThrowsAsync<DomainStateException>(
+            () => service.SetBranchFeaturesAsync(branch.BranchId, new SetBranchFeaturesCommand(BranchFeatures.Basic)));
+
+        await Assert.ThrowsAsync<DomainStateException>(
+            () => service.ApplyVenueFeaturesAsync(branch.VenueId, new SetBranchFeaturesCommand(BranchFeatures.Basic)));
 
         await Assert.ThrowsAsync<DomainStateException>(
             () => service.AddBranchAsync(branch.VenueId, new CreateBranchCommand(
@@ -192,7 +198,7 @@ public sealed class VenueLifecycleTests(SqlServerFixture fixture)
         Assert.NotNull(venue.DeletedAtUtc);
 
         var unchanged = await verify.Branches.AsNoTracking().FirstAsync(b => b.Id == branch.BranchId);
-        Assert.Equal(SubscriptionTier.Paid, unchanged.SubscriptionTier); // the builder's default, not a new write
+        Assert.Equal(BranchFeatures.Full, unchanged.AllowedFeatures); // the builder's default, not a new write
         Assert.Equal(1, await verify.Branches.CountAsync(b => b.VenueId == branch.VenueId));
     }
 

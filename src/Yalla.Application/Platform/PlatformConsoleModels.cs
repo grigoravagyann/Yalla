@@ -21,33 +21,12 @@ public enum VenueStatus
     Deleted = 4,
 }
 
-/// <summary>How a venue's branches are spread over the tiers. Derived; never stored.</summary>
-public enum TierMix
-{
-    /// <summary>No branch is paid - including a venue that has no branch.</summary>
-    Free = 1,
-
-    /// <summary>Some branches are paid and some are not.</summary>
-    Mixed = 2,
-
-    /// <summary>Every branch is paid.</summary>
-    Paid = 3,
-}
-
 /// <summary>
 /// The small arithmetic the platform's read models share, kept apart from the queries so it can be
 /// tested without a database and so every screen rounds the same way.
 /// </summary>
 public static class PlatformRollups
 {
-    /// <summary>Free when no branch is paid, Paid when every branch is, Mixed otherwise.</summary>
-    public static TierMix TierMixOf(int branchCount, int paidBranchCount) =>
-        paidBranchCount <= 0
-            ? TierMix.Free
-            : paidBranchCount >= branchCount
-                ? TierMix.Paid
-                : TierMix.Mixed;
-
     /// <summary>Deleted outranks suspended, which outranks switched off.</summary>
     public static VenueStatus StatusOf(bool isActive, bool isSuspended, bool isDeleted) =>
         isDeleted
@@ -185,30 +164,21 @@ public sealed record PlatformOverview(
     OverviewOutbox Outbox);
 
 /// <summary>
-/// Venue counts. Everything but <paramref name="Deleted"/> counts venues that are not deleted; the tier
-/// split is per venue, from its branches' tiers (<see cref="TierMix"/>).
+/// Venue counts. Everything but <paramref name="Deleted"/> counts venues that are not deleted.
 /// </summary>
-/// <param name="Total">Venues not deleted: <paramref name="Paid"/> + <paramref name="Mixed"/> + <paramref name="Free"/>.</param>
-/// <param name="Paid">Every branch paid.</param>
-/// <param name="Mixed">Some branches paid.</param>
-/// <param name="Free">No branch paid, or no branch.</param>
+/// <param name="Total">Venues not deleted.</param>
 /// <param name="Active">Active (see <see cref="VenueStatus"/>).</param>
 /// <param name="Suspended">Suspended.</param>
 /// <param name="Inactive">Switched off.</param>
 /// <param name="Deleted">Soft-deleted - outside every other number here.</param>
 /// <param name="Branches">Branches of the venues in <paramref name="Total"/>.</param>
-/// <param name="PaidBranches">How many of those are paid.</param>
 public sealed record OverviewVenueCounts(
     int Total,
-    int Paid,
-    int Mixed,
-    int Free,
     int Active,
     int Suspended,
     int Inactive,
     int Deleted,
-    int Branches,
-    int PaidBranches);
+    int Branches);
 
 /// <summary>
 /// Bookings by the day of the visit. A booking counts on the branch's own local date; cancelled ones
@@ -273,9 +243,7 @@ public sealed record RecentVenue(
     string Slug,
     VenueType Type,
     VenueStatus Status,
-    TierMix TierMix,
     int BranchCount,
-    int PaidBranchCount,
     DateTime CreatedAtUtc);
 
 /// <summary>The outbox's counts.</summary>
@@ -377,7 +345,8 @@ public sealed record ActivityFeed(IReadOnlyList<ActivityEntry> Items);
 /// <param name="Action">
 /// The stable slug - <c>venue.create</c>, <c>venue.update</c>, <c>venue.suspend</c>,
 /// <c>venue.reactivate</c>, <c>venue.delete</c>, <c>branch.create</c>, <c>branch.update</c>,
-/// <c>branch.tier-change</c>, <c>branch.relocate</c>, <c>staff.create</c>, <c>staff.sign-in-issued</c>,
+/// <c>branch.features-change</c> (and, before 2026-10-27, <c>branch.tier-change</c>), <c>venue.features-apply</c>,
+/// <c>branch.relocate</c>, <c>staff.create</c>, <c>staff.sign-in-issued</c>,
 /// <c>staff.phone-pairing-issued</c>, <c>staff.phone-unpaired</c>,
 /// <c>venue.restore</c>, <c>review.hide</c>, <c>review.unhide</c>, <c>review.dismiss-reports</c>,
 /// <c>review.restore-reports</c>, <c>review.remove-reply</c> (the platform taking a venue's reply down - a

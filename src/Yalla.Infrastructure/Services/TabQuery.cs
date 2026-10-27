@@ -30,6 +30,9 @@ namespace Yalla.Infrastructure.Services;
 /// </remarks>
 internal sealed class TabQuery(YallaDbContext db) : ITabQuery
 {
+    /// <summary>Table service's bit in <c>Branches.AllowedFeatures</c>, asked in SQL beside the read.</summary>
+    private static readonly int TableServiceBit = Yalla.Domain.Venues.BranchFeatures.Bit(BranchFeature.TableService);
+
     public async Task<TabView?> GetForParticipantAsync(
         Guid tabId,
         Guid participantId,
@@ -62,7 +65,7 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             {
                 t.Id,
                 t.BranchId,
-                Tier = t.Branch.SubscriptionTier,
+                TableService = (t.Branch.AllowedFeatureBits & TableServiceBit) != 0,
 
                 // Named on the tab so the phone need not make a second, public read to put the venue
                 // and branch at the top of the bill.
@@ -112,10 +115,10 @@ internal sealed class TabQuery(YallaDbContext db) : ITabQuery
             return null;
         }
 
-        // A free branch has no tabs to read. Same answer the service gives on write.
-        if (tab.Tier != SubscriptionTier.Paid)
+        // A branch without table service has no tabs to read. Same answer the service gives on write.
+        if (!tab.TableService)
         {
-            throw new Yalla.Domain.Venues.FeatureNotEnabledException("Tabs and ordering", tab.BranchId, tab.Tier);
+            throw new Yalla.Domain.Venues.FeatureNotEnabledException(BranchFeature.TableService, tab.BranchId);
         }
 
         // Removed participants included: a line they placed still names them, and the projection
