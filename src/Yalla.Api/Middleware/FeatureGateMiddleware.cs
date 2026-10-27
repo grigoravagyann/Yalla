@@ -16,7 +16,9 @@ namespace Yalla.Api.Middleware;
 /// feature's own answer to show the surface locked rather than signed out.
 /// </para>
 /// <para>
-/// Anonymous routes run as they would for anybody: signing out still works from a blocked phone.
+/// Anonymous routes run as they would for anybody: signing out still works from a blocked phone. So do the routes marked
+/// <see cref="FeatureGateExtensions.AllowWhenSurfaceBlocked{TBuilder}"/> - the ones by which a device removes itself
+/// (unpairing the phone, dropping its push subscription): a blocked surface may always leave.
 /// </para>
 /// </remarks>
 internal sealed class FeatureGateMiddleware(RequestDelegate next)
@@ -26,12 +28,37 @@ internal sealed class FeatureGateMiddleware(RequestDelegate next)
 
     public Task InvokeAsync(HttpContext context)
     {
+        var endpoint = context.GetEndpoint();
+
         if (context.Items[BlockedItem] is FeatureNotEnabledException blocked
-            && context.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is null)
+            && endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is null
+            && endpoint?.Metadata.GetMetadata<AllowWhenSurfaceBlocked>() is null)
         {
             throw blocked;
         }
 
         return next(context);
     }
+}
+
+/// <summary>Endpoint metadata: the route stays open to a staff surface the platform has blocked.</summary>
+internal sealed class AllowWhenSurfaceBlocked
+{
+    public static readonly AllowWhenSurfaceBlocked Instance = new();
+
+    private AllowWhenSurfaceBlocked()
+    {
+    }
+}
+
+/// <summary>Marks the routes <see cref="FeatureGateMiddleware"/> lets through.</summary>
+internal static class FeatureGateExtensions
+{
+    /// <summary>
+    /// Lets a blocked staff phone or kitchen session through to this route. Only for a device removing itself - never
+    /// for a route that reads or does the floor's work.
+    /// </summary>
+    public static TBuilder AllowWhenSurfaceBlocked<TBuilder>(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder =>
+        builder.WithMetadata(Middleware.AllowWhenSurfaceBlocked.Instance);
 }

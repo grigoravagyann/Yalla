@@ -67,11 +67,18 @@ public sealed partial class BranchFeatureEnforcementTests
         await AssertRefusedAsync(
             await StaffPhoneTests.PairAsync(anonymous, unused, "9182"), BranchFeature.StaffPhone, branch.BranchId);
 
-        // The tablet carries on, and the phone can still sign out.
+        // The tablet carries on.
         await OkAsync(await tablet.GetAsync($"/api/branches/{branch.BranchId}/tables/floor"));
+
+        // And the phone may always leave: drop its push subscription, unpair itself, sign out.
+        Assert.Equal(HttpStatusCode.NoContent, (await phone.DeleteAsync("/api/staff/device/push-subscription")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await phone.PostAsync("/api/staff/device/unpair", null)).StatusCode);
         Assert.Equal(
             HttpStatusCode.NoContent,
             (await phone.PostAsJsonAsync("/api/auth/staff/sign-out", new { renewalToken })).StatusCode);
+
+        await using var verify = fixture.CreateContext(factory.Clock);
+        Assert.NotNull((await verify.StaffDevices.FindAsync(paired.GetProperty("device").GetProperty("deviceId").GetGuid()))!.RevokedAtUtc);
     }
 
     /// <summary>
