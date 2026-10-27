@@ -6,6 +6,7 @@ using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Takeaway;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -85,8 +86,16 @@ internal static class GuestThreads
         /// <summary>The number the booking or order holds - the venue's to call.</summary>
         public required string GuestPhone { get; init; }
 
+        /// <summary>
+        /// Whether the platform allows <see cref="BranchFeature.GuestMessages"/> at the subject's branch. When it does not, the
+        /// thread stays readable and nobody writes in it (docs/branch-features.md).
+        /// </summary>
+        public required bool MessagesAllowed { get; init; }
+
+        /// <summary>The guest may type: the venue's setting, inside what the platform allows.</summary>
         public required bool GuestsCanWrite { get; init; }
 
+        /// <summary>Waiters may write: the venue's setting, inside what the platform allows.</summary>
         public required bool WaitersCanWrite { get; init; }
 
         /// <summary>When the thread closes, or closed; null while a takeaway order is still moving.</summary>
@@ -179,6 +188,7 @@ internal static class GuestThreads
                 r.Branch.TimeZoneId,
                 r.Branch.GuestsCanMessage,
                 r.Branch.WaitersCanMessage,
+                r.Branch.AllowedFeatureBits,
                 r.DinerUserId,
                 r.GuestName,
                 r.GuestPhone,
@@ -213,8 +223,9 @@ internal static class GuestThreads
                 DinerUserId = r.DinerUserId,
                 GuestName = r.GuestName,
                 GuestPhone = r.GuestPhone,
-                GuestsCanWrite = r.GuestsCanMessage,
-                WaitersCanWrite = r.WaitersCanMessage,
+                MessagesAllowed = BranchFeatures.Has(r.AllowedFeatureBits, BranchFeature.GuestMessages),
+                GuestsCanWrite = r.GuestsCanMessage && BranchFeatures.Has(r.AllowedFeatureBits, BranchFeature.GuestMessages),
+                WaitersCanWrite = r.WaitersCanMessage && BranchFeatures.Has(r.AllowedFeatureBits, BranchFeature.GuestMessages),
                 ClosesAtUtc = ConversationRules.ReservationClosesAtUtc(
                     r.Status, r.EndUtc, r.Status == ReservationStatus.Completed ? r.CompletedAtUtc ?? r.CancelledAtUtc : r.CancelledAtUtc),
                 ReservationStatus = r.Status,
@@ -254,6 +265,7 @@ internal static class GuestThreads
                         b.TimeZoneId,
                         b.GuestsCanMessage,
                         b.WaitersCanMessage,
+                        b.AllowedFeatureBits,
                     })
                     .First(),
                 o.DinerUserId,
@@ -284,8 +296,9 @@ internal static class GuestThreads
                 DinerUserId = o.DinerUserId,
                 GuestName = o.GuestName,
                 GuestPhone = o.GuestPhone,
-                GuestsCanWrite = o.Branch.GuestsCanMessage,
-                WaitersCanWrite = o.Branch.WaitersCanMessage,
+                MessagesAllowed = BranchFeatures.Has(o.Branch.AllowedFeatureBits, BranchFeature.GuestMessages),
+                GuestsCanWrite = o.Branch.GuestsCanMessage && BranchFeatures.Has(o.Branch.AllowedFeatureBits, BranchFeature.GuestMessages),
+                WaitersCanWrite = o.Branch.WaitersCanMessage && BranchFeatures.Has(o.Branch.AllowedFeatureBits, BranchFeature.GuestMessages),
                 ClosesAtUtc = ConversationRules.TakeawayClosesAtUtc(o.Status, o.EndedAtUtc),
                 TakeawayStatus = o.Status,
                 TakeawayCode = o.Code,

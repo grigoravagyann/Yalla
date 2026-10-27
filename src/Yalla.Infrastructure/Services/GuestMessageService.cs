@@ -9,6 +9,7 @@ using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Takeaway;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -53,7 +54,8 @@ internal sealed class GuestMessageService(
 
     /// <summary>
     /// The guest writes. In this order, each refusal before anything is written: the text (422 <c>validation-failed</c>
-    /// naming <c>text</c>); their own booking or order (404); a replay (answered as the message stands); the thread open
+    /// naming <c>text</c>); their own booking or order (404); a replay (answered as the message stands); the platform
+    /// allowing guest messages (409 <c>feature-not-enabled</c>, feature <c>GuestMessages</c>); the thread open
     /// (409 <c>conversation-closed</c>); the venue taking typed messages (403 <c>guests-cannot-write</c>); the pace (429
     /// <c>messages-too-fast</c>).
     /// </summary>
@@ -84,6 +86,9 @@ internal sealed class GuestMessageService(
         }
 
         var nowUtc = clock.UtcNow;
+
+        // The platform's switch first (docs/branch-features.md): the thread stays readable, nobody writes in it.
+        RequireMessagesAllowed(facts);
         RequireOpen(facts, nowUtc);
 
         if (!facts.GuestsCanWrite)
@@ -536,7 +541,8 @@ internal sealed class GuestMessageService(
     /// Somebody at the venue writes, and the guest is told (push <c>message.to-guest</c>, feed <c>venue-message</c>) and the
     /// History says who answered - by the message's <see cref="VenueMessageWritten"/> handlers, in this save. In this
     /// order: the text (422); the subject (404); floor staff at its branch (403); a platform admin reads only and the
-    /// kitchen never writes (403 <c>forbidden</c>); a waiter where the venue keeps messages to managers (403
+    /// kitchen never writes (403 <c>forbidden</c>); the platform allowing guest messages (409 <c>feature-not-enabled</c>,
+    /// feature <c>GuestMessages</c>); a waiter where the venue keeps messages to managers (403
     /// <c>waiters-cannot-write</c>); a replay (answered as the message stands, nobody told twice); the thread open (409
     /// <c>conversation-closed</c>).
     /// </summary>
@@ -556,6 +562,9 @@ internal sealed class GuestMessageService(
         {
             throw new StaffPermissionException(Operation, role, StaffRole.Waiter);
         }
+
+        // The platform's switch before the venue's own (docs/branch-features.md): managers included.
+        RequireMessagesAllowed(facts);
 
         if (role == StaffRole.Waiter && !facts.WaitersCanWrite)
         {
@@ -626,6 +635,16 @@ internal sealed class GuestMessageService(
         await ThreadOf(subject)
             .Where(c => c.VenueLastReadUtc == null || c.VenueLastReadUtc < mark)
             .ExecuteUpdateAsync(set => set.SetProperty(c => c.VenueLastReadUtc, (DateTime?)mark), cancellationToken);
+    }
+
+    /// <summary>Refuses a new message at a branch the platform has not allowed guest messages at.</summary>
+    /// <exception cref="FeatureNotEnabledException">409 <c>feature-not-enabled</c>, feature <c>GuestMessages</c>.</exception>
+    private static void RequireMessagesAllowed(GuestThreads.Subject facts)
+    {
+        if (!facts.MessagesAllowed)
+        {
+            throw new FeatureNotEnabledException(BranchFeature.GuestMessages, facts.BranchId);
+        }
     }
 
     /// <summary>The subject's thread, as a query - none while nobody has written.</summary>

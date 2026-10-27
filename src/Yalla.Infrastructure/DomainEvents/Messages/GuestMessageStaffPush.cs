@@ -2,6 +2,7 @@ using Yalla.Application.Abstractions;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Messages;
 using Yalla.Infrastructure.Persistence;
+using Yalla.Infrastructure.Services;
 
 namespace Yalla.Infrastructure.DomainEvents.Messages;
 
@@ -21,16 +22,24 @@ internal sealed class GuestMessageStaffPush(YallaDbContext db, IClock clock) :
     IDomainEventHandler<GuestAnswered>
 {
     public Task HandleAsync(GuestMessageWritten domainEvent, CancellationToken cancellationToken) =>
-        StageAsync(domainEvent.Message.Id);
+        StageAsync(domainEvent.Thread.BranchId, domainEvent.Message.Id, cancellationToken);
 
     public Task HandleAsync(GuestAnswered domainEvent, CancellationToken cancellationToken) =>
-        StageAsync(domainEvent.Answer.Id);
+        StageAsync(domainEvent.Thread.BranchId, domainEvent.Answer.Id, cancellationToken);
 
-    private Task StageAsync(Guid messageId)
+    /// <remarks>
+    /// Not at a branch the platform has not allowed guest messages at (<c>docs/branch-features.md</c>): the floor's
+    /// Messages tab is locked there, so nothing buzzes about a thread nobody may answer - a guest's answer to "are you
+    /// coming?" included, which the floor still sees on the booking's tile.
+    /// </remarks>
+    private async Task StageAsync(Guid branchId, Guid messageId, CancellationToken cancellationToken)
     {
+        if (!await BranchFeatureGate.AllowsAsync(db, branchId, BranchFeature.GuestMessages, cancellationToken))
+        {
+            return;
+        }
+
         StaffPushSignals.StageOne(
             db, StaffPushKinds.GuestMessages, messageId, $"{StaffPushSignals.KeyPrefix}message:{messageId}", clock.UtcNow);
-
-        return Task.CompletedTask;
     }
 }
