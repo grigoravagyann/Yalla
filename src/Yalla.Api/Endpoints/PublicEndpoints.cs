@@ -33,8 +33,10 @@ namespace Yalla.Api.Endpoints;
 /// reached by anybody with a URL that is meant to be public.
 /// </para>
 /// <para>
-/// <b>Booking reuses the existing flow</b> - request a code, verify, create a reservation - with no
-/// endpoint of its own. It already works for an anonymous caller who verifies a phone. See
+/// <b>Booking reuses the existing flow</b> - request a code, verify, create a reservation - and since 2026-10-27 books
+/// through a route of its own, <c>POST /api/public/branches/{branchId}/reservations</c> (mapped with the reservations,
+/// since it needs the diner's session this anonymous group cannot require), so the platform can allow web and app
+/// bookings apart (<c>docs/branch-features.md</c>). See
 /// <c>docs/reports.md</c> for the consequence that needs a commercial decision: somebody who books
 /// here has no app, so no reminder reaches them.
 /// </para>

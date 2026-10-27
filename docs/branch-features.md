@@ -19,8 +19,8 @@ must skip a blocked feature ask in the handler.
 
 | # | Feature | Refused (new actions) | Hidden or switched off (reads) | Runs on (in flight) |
 |---|---|---|---|---|
-| 1 | `AppBookings` | A booking or a move by a diner's session (`POST /api/reservations`, `POST /api/reservations/{id}/reschedule`), whatever `channel` it names - see "Booking channels" below. | `acceptsAppBookings` and `acceptsWebBookings` both false (the effective set drops both). | Existing bookings: cancelling, seating, no-show, reminders, "on your way?". The manage link still moves a booking (that route is web bookings'). |
-| 2 | `WebBookings` | The same diner-session booking and move, and the move by the public page's manage link (`/api/public/bookings/{token}/reschedule`). | Both booleans false; the manage link's `canChange` false. | The manage link's read and cancel; everything above. |
+| 1 | `AppBookings` | A booking on the app's route (`POST /api/reservations`, whatever `channel` the body names), and a move from a diner's session (`POST /api/reservations/{id}/reschedule`) of a booking not made on the web. | `acceptsAppBookings` false. | Existing bookings: cancelling, seating, no-show, reminders, "on your way?"; any booking's manage link still moves it (that is web bookings' route). |
+| 2 | `WebBookings` | A booking on the public page's route (`POST /api/public/branches/{branchId}/reservations`); a move by any booking's manage link (`/api/public/bookings/{token}/reschedule`); a move from a diner's session of a booking made on the web. | `acceptsWebBookings` false; the manage link's `canChange` false. | The manage link's read and cancel; everything above. |
 | 3 | `PreOrders` | A guest's save and edit of a pre-order, from the app and the manage link (`PreOrderService.ReplaceCoreAsync`). | `preOrderEditableUntilUtc` null on the diner's booking and the manage link; `policy.acceptsPreOrders` false on the page. | Clearing a pre-order (a guest is never stuck with one). The floor's rail: listing, send to the kitchen, "not coming", and the held ticket on to the tab. "On your way?" at 45 minutes for a waiting pre-order. |
 | 4 | `Takeaway` | Placing an order (`TakeawayService.PlaceAsync`). | `GET /api/diner/branches/{id}/takeaway` answers `enabled: false` (not an error); `takeaway.enabled` false on the listing and the page. | Orders already placed: the guest's cancel, the floor's accept / decline / ready / collect / no-show, the five-minute expiry sweep, the guest's pushes, the staff push, the 2 h / 15 min "I'm coming" asks. |
 | 5 | `TableService` | Every tab open, join, read and mutation - exactly where the Paid tier was checked (`TabLookups`, `TabQuery`, `TabBillingQuery`). | | An open tab blocks the switch itself: the platform cannot turn table service off while one is open or closing. |
@@ -32,26 +32,26 @@ must skip a blocked feature ask in the handler.
 
 ## Booking channels
 
-The platform's two booking switches are decided by the **route a request came in on, never by the `channel` it
-names** - that field is self-reported, and the switches replaced the paid tier, so a client must not be able to name
-its way past one (`ReservationSlotRules.RequireChannelAllowed`).
+The two booking switches are independent, and decided by **the route a request came in on - never by the `channel` a
+body names** (`ReservationSlotRules.RequireChannelAccepted`, `FeatureFor`). The server sets the channel it stores:
 
-- **The public page's manage link** (`/api/public/bookings/{token}/reschedule`) is the page's alone: it needs
-  `WebBookings`.
-- **A diner's session** books through `POST /api/reservations` and moves through
-  `POST /api/reservations/{id}/reschedule`. The diner app and the public page both book there, with the same diner
-  token and nothing else the server holds to tell them apart (no claim, no separate route; an `Origin` header would
-  only tell a browser, and a native client can send one). So it needs **both** `AppBookings` and `WebBookings`, and
-  the refusal names `AppBookings` when that is blocked, else `WebBookings`. The effective set on the listing and the
-  public page follows: with either blocked, neither `acceptsAppBookings` nor `acceptsWebBookings` is true.
+| Route | Channel stored | Platform switch | The venue's own gate |
+|---|---|---|---|
+| `POST /api/reservations` (`createReservation`, the diner app) | `App` - the body's `channel` is deprecated and ignored | `AppBookings` | online bookings on **and** the policy saved (K9), `bookings-not-accepted` |
+| `POST /api/public/branches/{branchId}/reservations` (`createPublicReservation`, the public page) | `Web` | `WebBookings` | online bookings on, `web-bookings-not-accepted` |
+| `POST /api/reservations/{id}/reschedule` (a diner's session) | unchanged | the booking's own channel: `WebBookings` for one made on the web, `AppBookings` for any other (the app's, and those made before the channel was recorded) | the booking's channel's, as above |
+| `POST /api/public/bookings/{token}/reschedule` (the manage link) | unchanged | `WebBookings`, whichever channel made the booking - the link is the page | the booking's channel's |
+| cancel, from the session or the link | - | none | none |
 
-`channel` itself is unchanged on the wire and still read for what it always was: the reports' split, and the owner's
-own switches - `AcceptsWebBookings` for `Web`, and K9 (switched on and the policy saved) for `App`. Those are the
-venue's preference about its own page, not an access control.
+A move goes by the booking's channel, not the session's route, because both routes take any proved diner's session:
+the page's booking moved from the app is still the page's booking, and blocking web bookings should keep it where it
+is. The manage link is the one move that is always the page.
 
-Blocking only one of the two therefore stops new diner bookings altogether, and differs from blocking both only in the
-manage link's moves. Splitting them for real needs the public page to book through a route of its own - a contract
-change for later.
+Both create routes take the same diner session, so a diner who hand-crafts a call to the other route can still book
+there. That was judged an acceptable risk: the caller is a diner, not the venue whose features are being sold.
+
+**Older clients.** `channel` is still accepted on `POST /api/reservations` and ignored: a page still posting there with
+`channel: Web` books as the app (needing app bookings and K9) until it moves to `createPublicReservation`.
 
 ## Staff phones and kitchen sessions: why a middleware
 

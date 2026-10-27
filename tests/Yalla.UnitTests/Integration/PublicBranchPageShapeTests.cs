@@ -36,7 +36,7 @@ public class PublicBranchPageShapeTests(SqlServerFixture fixture, ITestOutputHel
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            branch = await AuthTestData.CreateBranchAsync(db);
+            branch = await AuthTestData.CreateBranchAsync(db, bookable: false);
             await TestMenuBuilder.CreateAsync(db, branch.BranchId);
 
             // A published number and bookings switched on, so the optional half is populated

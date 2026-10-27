@@ -227,7 +227,7 @@ internal sealed class PublicBookingService(
         // and web bookings - the link's route - still allowed by the platform (docs/branch-features.md). False
         // for a booking made without an account - those are cancelled and booked again.
         CanChange: row.AccountCanMove
-                   && ReservationSlotRules.ChannelAllowed(row.AllowedFeatureBits, viaManageLink: true)
+                   && BranchFeatures.Has(row.AllowedFeatureBits, BranchFeature.WebBookings)
                    && row.Status is Domain.Enums.ReservationStatus.Confirmed or Domain.Enums.ReservationStatus.PendingApproval
                    && row.StartUtc > nowUtc,
 

@@ -11,8 +11,9 @@ namespace Yalla.UnitTests.Integration;
 /// venue saved the reservation policy - and the details screen and the branch page say so.
 /// </summary>
 /// <remarks>
-/// A branch ships with a default policy nobody at the venue chose. The web channel's rule - the switch
-/// - is unchanged, and the channels that are not the app are not gated at all.
+/// A branch ships with a default policy nobody at the venue chose. The web channel's rule - the switch - is unchanged.
+/// Since 2026-10-27 the route is the channel: <c>POST /api/reservations</c> is the app's whatever a body names, and the
+/// page books through <c>POST /api/public/branches/{id}/reservations</c>.
 /// </remarks>
 [Collection(SqlServerCollection.Name)]
 public sealed class AppBookingGateTests(SqlServerFixture fixture)
@@ -27,7 +28,7 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
         string pageUrl;
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 3);
+            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 3, bookable: false);
 
             // Switched on, and the policy never saved.
             var row = await db.Branches.Include(b => b.Venue).FirstAsync(b => b.Id == branch.BranchId);
@@ -54,18 +55,23 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
 
         Assert.Equal(branch.BranchId, fromApp.GetProperty("context").GetProperty("branchId").GetGuid());
 
-        // The page books as it did.
+        // The page books through its own route, as it did - the policy is not its gate.
         Assert.Equal(
             HttpStatusCode.Created,
-            (await diner.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[0], ReservationChannel.Web))).StatusCode);
+            (await diner.PostAsJsonAsync(
+                $"/api/public/branches/{branch.BranchId}/reservations", PageBooking(factory, branch, branch.TableIds[0]))).StatusCode);
 
-        // A client that does not say where it booked from is not the app, and is not gated. (Another
-        // diner each time from here: one diner holds one table at a branch at a time.)
+        // The app's route is the app whatever a body names (2026-10-27): naming the page, or nothing, does not get round
+        // K9. (Another diner: one diner holds one table at a branch at a time.)
         using var second = factory.CreateClientWithToken((await ReviewIntegrityTests.SignInDinerAsync(factory)).AccessToken);
 
-        Assert.Equal(
-            HttpStatusCode.Created,
-            (await second.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[1], ReservationChannel.Unknown))).StatusCode);
+        foreach (var named in new[] { ReservationChannel.Web, ReservationChannel.Unknown })
+        {
+            await ReviewIntegrityTests.AssertProblemAsync(
+                await second.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[1], named)),
+                HttpStatusCode.Conflict,
+                "bookings-not-accepted");
+        }
 
         // Somebody saves the policy.
         await using (var db = fixture.CreateContext(factory.Clock))
@@ -94,7 +100,7 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
         AuthBranch branch;
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            branch = await AuthTestData.CreateBranchAsync(db);
+            branch = await AuthTestData.CreateBranchAsync(db, bookable: false);
 
             // The policy saved, and online bookings off.
             await ReviewTestData.SavePolicyAsync(db, branch.BranchId, factory.Clock.UtcNow, acceptsOnlineBookings: false);
@@ -112,13 +118,26 @@ public sealed class AppBookingGateTests(SqlServerFixture fixture)
             "bookings-not-accepted");
 
         await ReviewIntegrityTests.AssertProblemAsync(
-            await diner.PostAsJsonAsync("/api/reservations", ReviewTestData.Booking(factory, branch, branch.TableIds[0], ReservationChannel.Web)),
+            await diner.PostAsJsonAsync(
+                $"/api/public/branches/{branch.BranchId}/reservations", PageBooking(factory, branch, branch.TableIds[0])),
             HttpStatusCode.Conflict,
             "web-bookings-not-accepted");
 
         await using var verify = fixture.CreateContext(factory.Clock);
         Assert.False(await verify.Reservations.AnyAsync(r => r.BranchId == branch.BranchId));
     }
+
+    /// <summary>A body for the public page's own route: two days out at 18:00, party of two, no branch, no channel.</summary>
+    private static object PageBooking(YallaApiFactory factory, AuthBranch branch, Guid tableId) => new
+    {
+        tableId,
+        date = BookingPerNumberTests.LocalDate(factory, 2),
+        time = "18:00",
+        partySize = 2,
+        guestName = "Ani Test",
+        guestPhone = "+37499000999",
+        clientCommandId = Guid.CreateVersion7(),
+    };
 
     private YallaApiFactory NewFactory() => new YallaApiFactory().WithDatabase(fixture.ConnectionString);
 }

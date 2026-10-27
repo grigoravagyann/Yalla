@@ -3,6 +3,7 @@ using Yalla.Api.ApplicationExtensions;
 using Yalla.Api.Authorization;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
+using Yalla.Domain.Enums;
 
 namespace Yalla.Api.Endpoints;
 
@@ -293,7 +294,11 @@ public static class ReservationEndpoints
             .WithName("createReservation")
             .WithSummary("Book a table")
             .WithDescription(
-                "Idempotent on `clientCommandId`: a retry returns the original booking and creates "
+                "**The diner app's booking route.** It books on the `App` channel whatever the body says: `channel` is "
+                + "deprecated and ignored (the public page books through `createPublicReservation`). So it needs app "
+                + "bookings allowed by the platform (`409 feature-not-enabled`, `context.feature` 1) and, the venue's own "
+                + "gate, online bookings switched on with the reservation policy saved (`409 bookings-not-accepted`).\n\n"
+                + "Idempotent on `clientCommandId`: a retry returns the original booking and creates "
                 + "nothing, answering 200 rather than 201. Lands as `Confirmed`, or "
                 + "`PendingApproval` (`awaitingApprovalBecause` says why) when the booking is at **short "
                 + "notice** - for the branch's today, or starting under six hours from now - the branch "
@@ -333,6 +338,40 @@ public static class ReservationEndpoints
                 + " `reservation-overlaps-own`: the diner already has a booking then, here or too close to it at "
                 + "another venue - `context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel`, "
                 + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already.")
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
+            .ProducesProblem<LockTimeoutProblem>(
+                StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
+        // The public page's own booking route: the same diner session and body, the channel decided here (Web) rather
+        // than named by the client - so the platform's app and web switches can be told apart (docs/branch-features.md).
+        // Under /api/public for where it is used, but not in that group: the group is anonymous, and AllowAnonymous
+        // anywhere in an endpoint's metadata wins over the policy.
+        app.MapPost("/api/public/branches/{branchId:guid}/reservations", CreatePublicAsync)
+            .WithTags(EndpointConventions.DinerTag)
+            .RequireAuthorization(YallaPolicies.VerifiedDiner)
+            .AddEndpointFilter<ClientCommandIdFilter>()
+            .WithName("createPublicReservation")
+            .WithSummary("Book a table from the public page")
+            .WithDescription(
+                "**The public page's booking route** (yalla.am/{venue}/{branch}): `createReservation`'s rules, body and "
+                + "answer, with the branch in the path and no `channel` - it books on the `Web` channel. So it needs web "
+                + "bookings allowed by the platform (`409 feature-not-enabled`, `context.feature` 2) and the venue's "
+                + "online bookings switched on (`409 web-bookings-not-accepted`); the reservation policy need not have "
+                + "been saved, as the app's must. The diner is the one the code flow signed in (a proved number, as for "
+                + "`createReservation`).\n\n"
+                + "Idempotent on `clientCommandId`: a retry returns the original booking, 200 rather than 201. Everything "
+                + "else - the statuses, short notice, the guest before, the limits and every refusal - is "
+                + "`createReservation`'s.")
+            .Produces<ReservationView>(StatusCodes.Status201Created)
+            .Produces<ReservationView>(StatusCodes.Status200OK)
+            .ProducesProblem<BookingBlockedProblem>(
+                StatusCodes.Status403Forbidden,
+                PhoneNotVerifiedDescription + " `booking-blocked-no-shows`: blocked until `context.blockedUntilUtc`.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
+            .ProducesProblem<PhoneHasActiveBookingProblem>(
+                StatusCodes.Status409Conflict,
+                "`feature-not-enabled` (web bookings blocked by the platform), `web-bookings-not-accepted`, and every "
+                + "conflict `createReservation` answers.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
@@ -731,13 +770,44 @@ public static class ReservationEndpoints
                 request.GuestPhone,
                 request.ClientCommandId,
                 request.StayHint,
-                request.Channel,
+
+                // The app's route, so the app's channel - never the one the body names (deprecated, ignored).
+                ReservationChannel.App,
                 request.Note,
                 request.AcceptsFreeByUtc),
             cancellationToken);
 
         // A replay is answered 200, not 201: the second request created nothing, and telling a
         // client it did is how a retry ends up looking like a second booking in its own logs.
+        return view.WasReplay
+            ? Results.Ok(view)
+            : Results.Created($"/api/reservations/{view.Id}", view);
+    }
+
+    private static async Task<IResult> CreatePublicAsync(
+        Guid branchId,
+        CreatePublicReservationRequest request,
+        IReservationService reservations,
+        CancellationToken cancellationToken)
+    {
+        var view = await reservations.CreateAsync(
+            new CreateReservationCommand(
+                branchId,
+                request.TableId,
+
+                // The filter has already refused a null by the time this runs.
+                request.Date!.Value,
+                request.Time!.Value,
+                request.PartySize,
+                request.GuestName,
+                request.GuestPhone,
+                request.ClientCommandId,
+                request.StayHint,
+                ReservationChannel.Web,
+                request.Note,
+                request.AcceptsFreeByUtc),
+            cancellationToken);
+
         return view.WasReplay
             ? Results.Ok(view)
             : Results.Created($"/api/reservations/{view.Id}", view);

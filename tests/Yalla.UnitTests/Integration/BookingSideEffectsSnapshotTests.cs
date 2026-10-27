@@ -198,7 +198,11 @@ public sealed class BookingSideEffectsSnapshotTests(SqlServerFixture fixture)
 
             async Task<Guid> BookAsync(string name, string guest, int days, string time, int table, ReservationChannel channel, int partySize = 2)
             {
-                var created = await CreatedAsync(clients[guest], Booking(main, factory, guest, signedIn[guest].Phone, days, time, table, channel, partySize));
+                // The public page books through its own route since 2026-10-27; the app's route records App whatever a body
+                // names (docs/branch-features.md), so a Staff channel is no longer anybody's to claim from a diner session.
+                var created = channel == ReservationChannel.Web
+                    ? await PageCreatedAsync(clients[guest], main, Booking(main, factory, guest, signedIn[guest].Phone, days, time, table, channel, partySize))
+                    : await CreatedAsync(clients[guest], Booking(main, factory, guest, signedIn[guest].Phone, days, time, table, channel, partySize));
                 bookings[name] = created;
 
                 return created.GetProperty("id").GetGuid();
@@ -503,6 +507,20 @@ public sealed class BookingSideEffectsSnapshotTests(SqlServerFixture fixture)
     }
 
     private static Guid Id(JsonElement created) => created.GetProperty("id").GetGuid();
+
+    /// <summary>A booking from the public page's own route: the app's body without the branch and the channel.</summary>
+    private static async Task<JsonElement> PageCreatedAsync(HttpClient diner, AuthBranch branch, object appBody)
+    {
+        var body = JsonSerializer.SerializeToNode(appBody)!.AsObject();
+        body.Remove("branchId");
+        body.Remove("channel");
+
+        var response = await diner.PostAsJsonAsync($"/api/public/branches/{branch.BranchId}/reservations", body);
+        var text = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.Created, $"Expected 201, got {(int)response.StatusCode}: {text}");
+
+        return JsonDocument.Parse(text).RootElement.Clone();
+    }
 
     private static object Booking(
         AuthBranch branch,
