@@ -116,6 +116,12 @@ public sealed class WrittenOffTabTests(SqlServerFixture fixture)
         Assert.Equal(HttpStatusCode.Conflict, (await MoveAsync(waiter, ready, TabOrderStatus.Served)).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await MoveAsync(manager, cooking, TabOrderStatus.Voided)).StatusCode);
 
+        // A phone still holding the tab's token (the receipt grace) puts no new call on the rail.
+        var late = await host.PostAsJsonAsync($"/api/tabs/{tabId}/service-requests", new { preset = ServiceRequestPreset.Water });
+        Assert.Equal(HttpStatusCode.Conflict, late.StatusCode);
+        Assert.DoesNotContain(tabId, (await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/service-requests"))
+            .EnumerateArray().Select(c => c.GetProperty("tabId").GetGuid()));
+
         // Every tablet following the stream hears it: one same-status row on the table, naming the tab and the manager.
         var page = await ReadAsync(waiter, $"/api/branches/{branch.BranchId}/tables/changes?afterSequence={streamFrom}&limit=500");
         var signalled = page.GetProperty("changes").EnumerateArray()
