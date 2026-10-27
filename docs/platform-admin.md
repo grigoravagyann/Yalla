@@ -138,8 +138,8 @@ Both are refused for a deleted venue. Audited as `branch.features-change` per br
 **When a feature is blocked**, new actions answer **409 `feature-not-enabled`** with `context.feature`
 (the number) and `context.branchId` - not a 403, the caller may be there; the branch does not have it.
 Work in flight finishes: an open tab, a placed takeaway, a sent pre-order, an existing booking's
-cancellation. **Today only table service is enforced** - on every tab open, join, read and mutation,
-exactly where Paid was checked; the other nine are exposed but not yet gated (phase 2).
+cancellation. All ten are enforced; what each refuses, hides and lets run on is in
+[branch-features.md](branch-features.md).
 
 **Where clients read it**: `features` (allowed) on `BranchSummary`, the venue list's `branches[]`, the
 console's `GET /api/venues/{id}/manage` branches (locked, not hidden), the staff session

@@ -357,9 +357,9 @@ allows or blocks ten `BranchFeature`s per branch.
 | `branch-not-ready` | 409 | `branchId`, `incompleteMenuItemCount` | `PUT /api/platform/{branches,venues}/{id}/features` turning table service (5) on with unfinished dishes |
 
 **The slug and the status did not change; the context did.** Before 2026-10-27 `feature` was a sentence ("Tabs and
-ordering") and the context carried the branch's `currentTier`; now `feature` is the number and there is no tier. Today
-only table service (5) answers it - every tab route where Paid used to be checked; the other nine features are
-exposed on the DTOs and gated in phase 2. The features routes refuse a set as an ordinary 422 `validation-failed` on
+ordering") and the context carried the branch's `currentTier`; now `feature` is the number and there is no tier. Every
+feature answers it for its new actions - what each one refuses, and the work that runs on, is in
+[branch-features.md](branch-features.md); a blocked staff phone or kitchen session gets it on every authorised call. The features routes refuse a set as an ordinary 422 `validation-failed` on
 `features` (missing, a number that is not a feature, or pre-orders without app or web bookings), and turning table
 service off while tabs are open as a 409 with no `context`, naming the tables in `detail`.
 
