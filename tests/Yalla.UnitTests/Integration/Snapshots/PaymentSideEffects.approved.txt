@@ -35,7 +35,7 @@
 {"actorId":"staff:manager","actorType":2,"atUtc":"T+2820s","createdAtUtc":"T+2820s","payloadJson":{"reason":"walked out","writtenOffAmd":6450,"byStaffId":"staff:manager"},"sequence":4,"tab":null,"tabId":"tab:2","type":20}
 
 ## TableStateChanges (1)
-{"actorId":"staff:manager","actorType":2,"atUtc":"T+2820s","branch":null,"branchId":"branch","clientCommandId":"<guid>","createdAtUtc":"T+2820s","diningTable":null,"diningTableId":"table:2","fromStatus":4,"reason":"tab written off","reservationId":null,"sequence":1,"signal":9,"tabId":"tab:2","tableSessionId":"sitting:2","toStatus":4}
+{"actorId":"staff:manager","actorType":2,"atUtc":"T+2820s","branch":null,"branchId":"branch","clientCommandId":"<guid>","createdAtUtc":"T+2820s","diningTable":null,"diningTableId":"table:2","fromStatus":4,"reason":"tab written off","reservationId":null,"signal":9,"tabId":"tab:2","tableSessionId":"sitting:2","toStatus":4}
 
 ## Tabs (2)
 {"acceptsNewParticipants":false,"admission":2,"admissionDecidedAtUtc":"T+0s","admissionDecidedByStaffId":null,"admittedBecause":3,"branch":null,"branchId":"branch","clientCommandId":"<guid>","closedAtUtc":"T+1260s","createdAtUtc":"T+0s","diningTable":null,"diningTableId":"table:1","hideTotalFromGuests":false,"hostParticipantId":"participant:host1","isActive":false,"isAdmitted":true,"openedAtUtc":"T+0s","paidAmd":12540,"remainingAmd":0,"serviceChargeAmd":1140,"serviceChargePercentSnapshot":10.00,"settlementMode":3,"settlementModeLockedAtUtc":"T+1200s","status":3,"subtotalAmd":11400,"tableSession":null,"tableSessionId":"sitting:1","totalAmd":12540}
