@@ -97,7 +97,6 @@ internal sealed class PublicBookingService(
                 r.Branch.AcceptsPreOrders,
                 r.GuestRunningLateMinutes,
                 r.StaffAskedOnMyWayAtUtc,
-                r.Channel,
                 r.Branch.AllowedFeatureBits))
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -225,10 +224,10 @@ internal sealed class PublicBookingService(
         PhoneUnverified: row.PhoneUnverified,
 
         // Whether "change" would do anything: still to come, an account with a proved number to land on,
-        // and the booking's channel still allowed by the platform (docs/branch-features.md). False for a
-        // booking made without an account - those are cancelled and booked again.
+        // and web bookings - the link's route - still allowed by the platform (docs/branch-features.md). False
+        // for a booking made without an account - those are cancelled and booked again.
         CanChange: row.AccountCanMove
-                   && ReservationSlotRules.ChannelAllowed(row.Channel, row.AllowedFeatureBits)
+                   && ReservationSlotRules.ChannelAllowed(row.AllowedFeatureBits, viaManageLink: true)
                    && row.Status is Domain.Enums.ReservationStatus.Confirmed or Domain.Enums.ReservationStatus.PendingApproval
                    && row.StartUtc > nowUtc,
 
@@ -266,6 +265,5 @@ internal sealed class PublicBookingService(
         bool AcceptsPreOrders,
         int? GuestRunningLateMinutes,
         DateTime? StaffAskedOnMyWayAtUtc,
-        ReservationChannel Channel,
         int AllowedFeatureBits);
 }

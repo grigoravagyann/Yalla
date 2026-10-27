@@ -81,16 +81,20 @@ public static class BranchFeatures
     /// <param name="allowedBits">The branch's <c>AllowedFeatureBits</c>.</param>
     /// <param name="switches">The owner's switches.</param>
     /// <returns>
-    /// <see cref="BranchFeature.AppBookings"/> when allowed, bookings switched on and the reservation policy saved by
-    /// somebody (K9); <see cref="BranchFeature.WebBookings"/> when allowed and bookings switched on;
+    /// <see cref="BranchFeature.AppBookings"/> when both booking features are allowed, bookings switched on and the
+    /// reservation policy saved by somebody (K9); <see cref="BranchFeature.WebBookings"/> when both booking features are
+    /// allowed and bookings switched on;
     /// <see cref="BranchFeature.PreOrders"/> when allowed and accepted;
     /// <see cref="BranchFeature.Takeaway"/> when allowed and enabled; <see cref="BranchFeature.GuestMessages"/> when
     /// allowed and guests may write; every other feature when allowed.
     /// </returns>
     public static IReadOnlyList<BranchFeature> Effective(int allowedBits, OwnerSwitches switches)
     {
-        var app = Has(allowedBits, BranchFeature.AppBookings) && switches.AcceptsWebBookings && switches.ReservationPolicyReviewed;
-        var web = Has(allowedBits, BranchFeature.WebBookings) && switches.AcceptsWebBookings;
+        // A diner's booking needs both booking features allowed: the app and the page book through one route the server
+        // cannot tell apart, so neither books while either is blocked (docs/branch-features.md, "Booking channels").
+        var diners = Has(allowedBits, BranchFeature.AppBookings) && Has(allowedBits, BranchFeature.WebBookings);
+        var app = diners && switches.AcceptsWebBookings && switches.ReservationPolicyReviewed;
+        var web = diners && switches.AcceptsWebBookings;
 
         return [.. All.Where(f => Has(allowedBits, f) && f switch
         {

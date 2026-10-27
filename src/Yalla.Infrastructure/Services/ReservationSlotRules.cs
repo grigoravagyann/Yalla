@@ -22,11 +22,15 @@ internal sealed class ReservationSlotRules(
     /// <summary>
     /// Refuses a booking - or a move of one - from a channel the branch is not taking bookings from.
     /// </summary>
-    internal static void RequireChannelAccepted(ReservationChannel channel, Branch branch)
+    /// <param name="channel">The channel the client named: the owner's switches read it (a venue preference, below).</param>
+    /// <param name="branch">The branch, loaded.</param>
+    /// <param name="viaManageLink">Whether the request came in on the booking's manage link rather than a diner's session.</param>
+    internal static void RequireChannelAccepted(ReservationChannel channel, Branch branch, bool viaManageLink)
     {
         // The platform's switch first (docs/branch-features.md): a channel the branch is not allowed is
         // feature-not-enabled whatever the owner chose, so the client shows it locked rather than "switched off".
-        RequireChannelAllowed(channel, branch);
+        // Decided by the route, never by the channel the client names - see RequireChannelAllowed.
+        RequireChannelAllowed(branch, viaManageLink);
 
         // A branch that never agreed to take bookings from its public page does not take them.
         // Checked here rather than at the endpoint because the public page books through this same
@@ -46,47 +50,41 @@ internal sealed class ReservationSlotRules(
     }
 
     /// <summary>
-    /// Refuses a diner's booking - or a move of one - over a channel the platform has not allowed at the branch:
-    /// <see cref="BranchFeature.AppBookings"/> for <see cref="ReservationChannel.App"/>,
-    /// <see cref="BranchFeature.WebBookings"/> for <see cref="ReservationChannel.Web"/> (the public page and its
-    /// manage link).
+    /// Refuses a diner's booking - or a move of one - that the platform has not allowed at the branch, by the route it
+    /// came in on: <see cref="BranchFeature.WebBookings"/> for the public page's manage link; <b>both</b>
+    /// <see cref="BranchFeature.AppBookings"/> and <see cref="BranchFeature.WebBookings"/> for a diner's session.
     /// </summary>
     /// <remarks>
-    /// Both callers are a diner's: creation and the move from the app or the link. The channel is self-reported, so a
-    /// client that sends <see cref="ReservationChannel.Unknown"/> or <see cref="ReservationChannel.Staff"/> - or a
-    /// booking made before the column existed - needs at least one of the two diner channels allowed: otherwise
-    /// leaving the field out would book at a branch the platform allows no diner bookings at. Refused as
-    /// <see cref="BranchFeature.AppBookings"/> then.
+    /// <para>
+    /// <b>Why not the <c>channel</c> the request names.</b> It is self-reported, and the platform's switches replaced
+    /// the paid tier: a client that could name its way past one would decide what the venue pays for. The owner's own
+    /// switches still read it (<see cref="RequireWebBookingsAccepted"/>, K9) - those are the venue's preference about
+    /// its own page, not an access control.
+    /// </para>
+    /// <para>
+    /// <b>Why both for a diner's session.</b> The diner app and the public page book through the same
+    /// <c>POST /api/reservations</c> with the same diner token, and the app moves through
+    /// <c>POST /api/reservations/{id}/reschedule</c>, which the page's session could call as well: nothing the server
+    /// holds tells the two apart. So a booking or move there needs whichever of the two it could be. The manage link
+    /// (<c>/api/public/bookings/{token}/reschedule</c>) is the public page's alone, and needs web bookings only. The
+    /// refusal names <see cref="BranchFeature.AppBookings"/> when that is blocked, else
+    /// <see cref="BranchFeature.WebBookings"/>.
+    /// </para>
     /// </remarks>
-    internal static void RequireChannelAllowed(ReservationChannel channel, Branch branch)
+    internal static void RequireChannelAllowed(Branch branch, bool viaManageLink)
     {
-        switch (channel)
+        if (!viaManageLink)
         {
-            case ReservationChannel.App:
-                branch.RequireAllowed(BranchFeature.AppBookings);
-                break;
-
-            case ReservationChannel.Web:
-                branch.RequireAllowed(BranchFeature.WebBookings);
-                break;
-
-            default:
-                if (!branch.Allows(BranchFeature.WebBookings))
-                {
-                    branch.RequireAllowed(BranchFeature.AppBookings);
-                }
-
-                break;
+            branch.RequireAllowed(BranchFeature.AppBookings);
         }
+
+        branch.RequireAllowed(BranchFeature.WebBookings);
     }
 
-    /// <summary>Whether a diner may book or move over <paramref name="channel"/> as the platform allows: <see cref="RequireChannelAllowed"/>'s answer.</summary>
-    internal static bool ChannelAllowed(ReservationChannel channel, int allowedBits) => channel switch
-    {
-        ReservationChannel.App => BranchFeatures.Has(allowedBits, BranchFeature.AppBookings),
-        ReservationChannel.Web => BranchFeatures.Has(allowedBits, BranchFeature.WebBookings),
-        _ => BranchFeatures.Has(allowedBits, BranchFeature.AppBookings) || BranchFeatures.Has(allowedBits, BranchFeature.WebBookings),
-    };
+    /// <summary>Whether the platform allows a diner's booking or move by this route: <see cref="RequireChannelAllowed"/>'s answer.</summary>
+    internal static bool ChannelAllowed(int allowedBits, bool viaManageLink) =>
+        (viaManageLink || BranchFeatures.Has(allowedBits, BranchFeature.AppBookings))
+        && BranchFeatures.Has(allowedBits, BranchFeature.WebBookings);
 
     /// <summary>
     /// Refuses a booking from the public page at a branch that has not switched web bookings on.

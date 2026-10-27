@@ -127,6 +127,25 @@ public class BranchFeaturesTests
     }
 
     [Fact]
+    public void Either_booking_feature_blocked_takes_both_off_the_effective_set()
+    {
+        // The app and the page book through one route the server cannot tell apart, so a diner books only with both.
+        var switches = new BranchFeatures.OwnerSwitches(
+            AcceptsWebBookings: true, ReservationPolicyReviewed: true, AcceptsPreOrders: false, TakeawayEnabled: false, GuestsCanMessage: false);
+
+        Assert.Contains(BranchFeature.AppBookings, BranchFeatures.Effective(BranchFeatures.FullBits, switches));
+        Assert.Contains(BranchFeature.WebBookings, BranchFeatures.Effective(BranchFeatures.FullBits, switches));
+
+        foreach (var blocked in new[] { BranchFeature.AppBookings, BranchFeature.WebBookings })
+        {
+            var effective = BranchFeatures.Effective(BranchFeatures.FullBits & ~BranchFeatures.Bit(blocked), switches);
+
+            Assert.DoesNotContain(BranchFeature.AppBookings, effective);
+            Assert.DoesNotContain(BranchFeature.WebBookings, effective);
+        }
+    }
+
+    [Fact]
     public void Feature_not_enabled_carries_the_feature_and_the_branch()
     {
         var branchId = Guid.CreateVersion7();
