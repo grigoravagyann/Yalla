@@ -128,7 +128,13 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
             $"/api/platform/branches/{branch.BranchId}/features", new { features = BranchFeatures.Basic });
 
         Assert.Equal(HttpStatusCode.Conflict, strand.StatusCode);
-        Assert.Contains("open tab", (await strand.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("detail").GetString()!);
+        var stranded = await strand.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("open tab", stranded.GetProperty("detail").GetString()!);
+
+        // The slug every state refusal has, with the branch and its open tabs, so the console can name which held it up.
+        Assert.Equal("conflicting-state", stranded.GetProperty("code").GetString());
+        Assert.Equal(branch.BranchId, stranded.GetProperty("context").GetProperty("branchId").GetGuid());
+        Assert.Equal(1, stranded.GetProperty("context").GetProperty("openTabCount").GetInt32());
 
         // The refusal changed nothing: the tab is still readable and the branch still has table service.
         Assert.Equal(HttpStatusCode.OK, (await diner.GetAsync($"/api/tabs/{tabId}")).StatusCode);

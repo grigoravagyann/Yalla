@@ -241,8 +241,9 @@ public static class PlatformEndpoints
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
             .ProducesProblem<BranchNotReadyProblem>(
                 StatusCodes.Status409Conflict,
-                "`branch-not-ready`: table service turned on with an unfinished menu. Also returned, with no "
-                + "`context`, when table service is turned off with tabs open, or the venue is deleted.");
+                "`branch-not-ready`: table service turned on with an unfinished menu. `conflicting-state` when table "
+                + "service is turned off with tabs open (`context.branchId`, `context.openTabCount`), or, with no "
+                + "`context`, when the venue is deleted.");
 
         group.MapPut("/venues/{venueId:guid}/features", ApplyVenueFeaturesAsync)
             .WithName("applyVenueFeatures")
@@ -261,8 +262,9 @@ public static class PlatformEndpoints
             .ProducesProblem<BranchNotReadyProblem>(
                 StatusCodes.Status409Conflict,
                 "`branch-not-ready`: a branch would turn table service on with an unfinished menu (`context.branchId` "
-                + "names it). Also returned, with no `context`, when a branch would turn table service off with tabs "
-                + "open, or the venue is deleted.");
+                + "names it). `conflicting-state` when a branch would turn table service off with tabs open "
+                + "(`context.branchId` names the first such branch, `context.openTabCount` its tabs), or, with no "
+                + "`context`, when the venue is deleted.");
 
         group.MapGet("/branches/{branchId:guid}/reviews", ListBranchReviewsAsync)
             .WithName("listPlatformBranchReviews")

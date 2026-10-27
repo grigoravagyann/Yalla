@@ -54,12 +54,16 @@ public static class ErrorCodes
 
     /// <summary>
     /// The operation is not legal in the current state - seating a cancelled booking, paying a
-    /// closed tab. HTTP 409.
+    /// closed tab. HTTP 409. Usually with no context; two refusals carry one: a staff order's guest
+    /// (<c>field</c>, <c>participantId</c>, <c>participantStatus</c>) and table service turned off at a
+    /// branch with open tabs (<c>branchId</c>, <c>openTabCount</c>).
     /// </summary>
-    [Problem(409, "The operation is not legal in the current state; a staff order's unorderable guest is named in context.", Title = "Conflicting state")]
-    [ProblemContext("field", typeof(string))]
-    [ProblemContext("participantId", typeof(Guid))]
-    [ProblemContext("participantStatus", typeof(ParticipantStatus))]
+    [Problem(409, "The operation is not legal in the current state; a staff order's unorderable guest, or the branch whose open tabs keep table service on, is named in context.", Title = "Conflicting state")]
+    [ProblemContext("field", typeof(string), Optional = true)]
+    [ProblemContext("participantId", typeof(Guid), Optional = true)]
+    [ProblemContext("participantStatus", typeof(ParticipantStatus), Optional = true)]
+    [ProblemContext("branchId", typeof(Guid), Optional = true)]
+    [ProblemContext("openTabCount", typeof(int), Optional = true)]
     public const string ConflictingState = "conflicting-state";
 
     /// <summary>

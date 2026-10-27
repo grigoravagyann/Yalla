@@ -74,6 +74,16 @@ internal static partial class ApiExceptionMapper
         // general DomainStateException arm it derives from. The count is the point: "eleven dishes
         // still need a photo" is something a manager can act on this afternoon, and "cannot
         // upgrade" sends them to support.
+        // The slug every state refusal has; the context names the branch that held a features change up.
+        TableServiceHasOpenTabsException e => Refuse(
+            ErrorCodes.ConflictingState,
+            e.Message,
+            context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["openTabCount"] = e.OpenTabCount,
+            }),
+
         BranchNotReadyForDinersException e => Refuse(
             ErrorCodes.BranchNotReady,
             e.Message,

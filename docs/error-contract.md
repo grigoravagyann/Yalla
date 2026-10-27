@@ -361,7 +361,8 @@ ordering") and the context carried the branch's `currentTier`; now `feature` is 
 feature answers it for its new actions - what each one refuses, and the work that runs on, is in
 [branch-features.md](branch-features.md); a blocked staff phone or kitchen session gets it on every authorised call. The features routes refuse a set as an ordinary 422 `validation-failed` on
 `features` (missing, a number that is not a feature, or pre-orders without app or web bookings), and turning table
-service off while tabs are open as a 409 with no `context`, naming the tables in `detail`.
+service off while tabs are open as a 409 `conflicting-state` whose `context` names the branch (`branchId`) and how many
+tabs hold it (`openTabCount`), the tables in `detail` - on the venue route, the first branch that refused.
 
 ### Which status, and why
 
@@ -407,7 +408,7 @@ refusing a missing token answers a bare 401 with no body.
 | `branch-unavailable` | 409 | Branch not open for business | The branch is not open for business: venue suspended or deleted, or branch switched off. | `branchId` uuid, `reason` string |
 | `client-command-id-in-use` | 409 | Command id already used | The clientCommandId already belongs to another caller's command; start again with a fresh one. | - |
 | `concurrent-update` | 409 | Concurrent update | Someone else changed the row first: re-read and retry. | `currentVersion` string |
-| `conflicting-state` | 409 | Conflicting state | The operation is not legal in the current state; a staff order's unorderable guest is named in context. | `field` string, `participantId` uuid, `participantStatus` ParticipantStatus |
+| `conflicting-state` | 409 | Conflicting state | The operation is not legal in the current state; a staff order's unorderable guest, or the branch whose open tabs keep table service on, is named in context. | `field` string (optional), `participantId` uuid (optional), `participantStatus` ParticipantStatus (optional), `branchId` uuid (optional), `openTabCount` int32 (optional) |
 | `conversation-closed` | 409 | Conversation closed | Writing to a guest-message thread that has closed. | `subjectKind` string, `subjectId` uuid, `closedAtUtc` date-time |
 | `credentials-invalid` | 401 | Credentials invalid | An admin-panel email and password did not match an account. | - |
 | `device-revoked` | 401 | Device revoked | The tablet or device is no longer enrolled; ask a manager to enrol it again. | - |

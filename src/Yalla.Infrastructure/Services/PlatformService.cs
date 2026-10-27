@@ -573,10 +573,7 @@ internal sealed class PlatformService(
 
             if (openTabs.Count > 0)
             {
-                throw new DomainStateException(
-                    $"{branch.Name} has {openTabs.Count} open tab(s) on table(s) {string.Join(", ", openTabs)}. "
-                    + "Turning table service off would hide those bills from the people who owe them. "
-                    + "Wait until they are settled.");
+                throw new TableServiceHasOpenTabsException(branch.Id, branch.Name, openTabs);
             }
         }
 

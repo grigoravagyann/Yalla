@@ -203,3 +203,20 @@ public sealed class FloorPlanInvalidException(
     /// <summary>Labels used more than once in the plan.</summary>
     public IReadOnlyList<string> DuplicateLabels { get; } = duplicateLabels;
 }
+
+/// <summary>
+/// <see cref="BranchFeature.TableService"/> cannot be turned off at the branch while tabs are open or closing there:
+/// blocking it would hide those bills from the people who owe them. 409 <c>conflicting-state</c>, with the branch and how
+/// many tabs, so the platform console can say which branch of a venue held the change up.
+/// </summary>
+public sealed class TableServiceHasOpenTabsException(Guid branchId, string branchName, IReadOnlyList<string> tableLabels)
+    : DomainStateException(
+        $"{branchName} has {tableLabels.Count} open tab(s) on table(s) {string.Join(", ", tableLabels)}. "
+        + "Turning table service off would hide those bills from the people who owe them. "
+        + "Wait until they are settled.")
+{
+    public Guid BranchId { get; } = branchId;
+
+    /// <summary>Tabs open or closing at the branch.</summary>
+    public int OpenTabCount { get; } = tableLabels.Count;
+}
