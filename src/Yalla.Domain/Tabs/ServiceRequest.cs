@@ -314,10 +314,32 @@ public sealed class ServiceRequest : Entity
     /// table is not a waiter's response time, and nobody is left on the closed tab to hear it answered.
     /// </remarks>
     /// <returns>True when this call was open and is now answered.</returns>
-    public bool AnswerForTurnedAwayTab(DateTime answeredAtUtc, Guid staffId) => Answer(answeredAtUtc, staffId);
+    public bool AnswerForTurnedAwayTab(DateTime answeredAtUtc, Guid staffId) => Answer(answeredAtUtc, staffId, claim: true);
 
-    /// <summary>Records the answer - and the claim, when nobody had it - on an open call. False on one that is not.</summary>
-    private bool Answer(DateTime acknowledgedAtUtc, Guid staffId)
+    /// <summary>
+    /// The party left without paying and a manager wrote the tab off: its open calls are answered by that manager at
+    /// that moment, so the rail drops them - the "bill, please" of a table that walked out among them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Answered, not deleted: the record still says the table asked and when. <b>Not a claim</b>, unlike every other
+    /// answer: nobody walked over, so the call is no waiter's response time in Staff → Results - a claim made before the
+    /// write-off stays as it was. A request already answered or replaced is left alone.
+    /// </para>
+    /// <para>
+    /// Raises nothing. What happened is the tab being written off, and that is told once, by the tab
+    /// (<c>TabWrittenOff</c>: the History's <c>payment.unpaid</c>, the stream's <c>TabAbandoned</c>, the floor's signal 9);
+    /// nobody is left on the tab to hear its calls answered.
+    /// </para>
+    /// </remarks>
+    /// <returns>True when this call was open and is now answered.</returns>
+    public bool AnswerForWrittenOffTab(DateTime answeredAtUtc, Guid staffId) => Answer(answeredAtUtc, staffId, claim: false);
+
+    /// <summary>
+    /// Records the answer on an open call - and, when <paramref name="claim"/>, the claim when nobody had it. False on a
+    /// call that is not open.
+    /// </summary>
+    private bool Answer(DateTime acknowledgedAtUtc, Guid staffId, bool claim = true)
     {
         if (!IsOpen)
         {
@@ -327,9 +349,12 @@ public sealed class ServiceRequest : Entity
         AcknowledgedAtUtc = Guard.NotLocalTime(acknowledgedAtUtc, nameof(acknowledgedAtUtc));
         AcknowledgedByStaffId = Guard.NotEmpty(staffId, nameof(staffId));
 
-        // Answered without anybody claiming it first: whoever answered had it.
-        ClaimedAtUtc ??= AcknowledgedAtUtc;
-        ClaimedByStaffId ??= AcknowledgedByStaffId;
+        if (claim)
+        {
+            // Answered without anybody claiming it first: whoever answered had it.
+            ClaimedAtUtc ??= AcknowledgedAtUtc;
+            ClaimedByStaffId ??= AcknowledgedByStaffId;
+        }
 
         return true;
     }

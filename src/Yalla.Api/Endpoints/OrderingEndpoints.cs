@@ -285,7 +285,8 @@ public static class OrderingEndpoints
             .WithDescription(
                 "Open orders for the branch, oldest first, with the table label, the lines and their "
                 + "kitchen notes. Omit `status` for everything still outstanding - New, InKitchen and "
-                + "Ready - which is what a kitchen screen shows.\n\n"
+                + "Ready - which is what a kitchen screen shows. A written-off tab's orders are not listed "
+                + "(`abandonTab`): the party has gone, so nothing on it is sent, cooked or carried.\n\n"
                 + "`placedByName` is who sent each ticket: the waiter's name as the PIN roster shows it, "
                 + "read as they are now (renamed or no longer active, it is still theirs). **Absent** when "
                 + "a diner ordered from their own phone - say it came from the app. Nothing else of the "
@@ -317,8 +318,9 @@ public static class OrderingEndpoints
                 "Not kitchen or floor staff at the order's branch, or this role may not make that move.")
             .ProducesProblemDetails(
                 StatusCodes.Status409Conflict,
-                "The rail does not allow that transition (`conflicting-state`), or `line-already-paid`: voiding an "
-                + "order on a tab that has been paid against would be a refund.");
+                "The rail does not allow that transition (`conflicting-state`), or the order's tab was written off "
+                + "(`conflicting-state`: it is off the queue and does not move - read the queue again), or "
+                + "`line-already-paid`: voiding an order on a tab that has been paid against would be a refund.");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -359,6 +361,10 @@ public static class OrderingEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
                 NotOnTabDescription + " Or `billScope` 1 WholeBill from somebody the table total is hidden from.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`tab-awaiting-admission`: the bill (preset 3) from a tab no waiter has let in yet; or "
+                + "`conflicting-state`: the tab was written off (`abandonTab`) - nobody is at the table.")
             .ProducesProblem<ValidationFailedProblem>(
                 StatusCodes.Status422UnprocessableEntity,
                 "`billScope` or `tipPercent` refused - on a preset other than 3, a tip with no scope, "
@@ -465,7 +471,12 @@ public static class OrderingEndpoints
             .WithSummary("Manager: write off an outstanding balance")
             .WithDescription(
                 "The diners left without paying and the venue is accepting the loss. Kept for "
-                + "reporting rather than deleted - a venue's write-offs are a number it needs.")
+                + "reporting rather than deleted - a venue's write-offs are a number it needs.\n\n"
+                + "Nothing of the tab stays live on the floor: its open calls (the bill request included) are "
+                + "answered by this manager and leave `getOpenServiceRequests`; its orders leave the queue "
+                + "(`getBranchOrders`) at the place on the rail they had reached - none is voided, the amount "
+                + "written off is the bill as it stood - and no longer move. The branch's change stream carries "
+                + "a `signal` 9 row naming the tab, so every tablet re-reads its calls and queue at once.")
             .Produces<TabTotalsSnapshot>()
             .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Requires the Manager role.");
     }

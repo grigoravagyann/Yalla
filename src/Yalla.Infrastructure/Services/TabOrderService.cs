@@ -548,6 +548,16 @@ internal sealed class TabOrderService(
         await branchGuard.RequireAsync(
             staffId, order.Tab.BranchId, "Acting on this tab", "tab", cancellationToken);
         RequireKitchenDisplay(order.Tab.Branch);
+
+        // The party left without paying and a manager wrote the tab off: its orders left the queue, and nothing on it
+        // moves again - no send, no "ready" pushed to a guest who has gone, no serve, and no void, which would change a
+        // bill already written off. A tablet still showing the ticket reads the queue again.
+        if (order.Tab.Status == TabStatus.Abandoned)
+        {
+            throw new DomainStateException(
+                "This order's tab was written off: it is off the kitchen's queue and does not move. Read the queue again.");
+        }
+
         RequireKitchenMayMake(order.Status, next);
 
         var from = order.Status;
@@ -743,6 +753,12 @@ internal sealed class TabOrderService(
             .Include(o => o.Lines)
             .ThenInclude(l => l.Shares)
             .Where(o => o.Tab.BranchId == branchId)
+
+            // Not a written-off tab's: the party left without paying, so nothing on it is sent, cooked or carried. The
+            // orders keep the place on the rail they had reached - nothing is voided off a bill already written off -
+            // and the tab's status takes them off the queue, as it ends them in the diner's own list (DinerOrderQuery).
+            // A settled tab's stay: a party that has paid usually sits on, and its food is still to come.
+            .Where(o => o.Tab.Status != TabStatus.Abandoned)
             .Where(o => status == null
                 ? o.Status != TabOrderStatus.Served && o.Status != TabOrderStatus.Voided
                 : o.Status == status)

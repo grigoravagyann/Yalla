@@ -117,6 +117,42 @@ public sealed class ServiceRequestEventTests
         Assert.Equal(Aram, call.AcknowledgedByStaffId);
     }
 
+    [Fact]
+    public void A_call_answered_by_writing_its_tab_off_is_answered_but_not_claimed_and_raises_nothing()
+    {
+        var call = NewCall(ServiceRequestPreset.TheBill);
+
+        Assert.True(call.AnswerForWrittenOffTab(Now.AddMinutes(20), Lilit));
+
+        Assert.Equal(Now.AddMinutes(20), call.AcknowledgedAtUtc);
+        Assert.Equal(Lilit, call.AcknowledgedByStaffId);
+
+        // Nobody walked over: not a response time.
+        Assert.Null(call.ClaimedAtUtc);
+        Assert.Null(call.ClaimedByStaffId);
+        Assert.Null(call.SupersededAtUtc);
+        Assert.False(call.IsOpen);
+        Assert.Empty(call.DequeueEvents());
+
+        Assert.False(call.AnswerForWrittenOffTab(Now.AddMinutes(21), Aram));
+        Assert.Equal(Lilit, call.AcknowledgedByStaffId);
+    }
+
+    [Fact]
+    public void A_claimed_call_answered_by_writing_its_tab_off_keeps_the_claim_it_had()
+    {
+        var call = NewCall(ServiceRequestPreset.Water);
+        Assert.True(call.Claim(Now.AddMinutes(1), Aram));
+        call.DequeueEvents();
+
+        Assert.True(call.AnswerForWrittenOffTab(Now.AddMinutes(20), Lilit));
+
+        Assert.Equal(Now.AddMinutes(1), call.ClaimedAtUtc);
+        Assert.Equal(Aram, call.ClaimedByStaffId);
+        Assert.Equal(Lilit, call.AcknowledgedByStaffId);
+        Assert.Empty(call.DequeueEvents());
+    }
+
     private static ServiceRequest NewCall(ServiceRequestPreset preset, BillQuote? bill = null) =>
         new(Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), preset, Now, bill: bill);
 }

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Ordering;
 using Yalla.Application.Tabs;
+using Yalla.Domain;
 using Yalla.Domain.Billing;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
@@ -72,6 +73,14 @@ internal sealed class ServiceRequestService(
         if (!TabPermissions.MayReadTab(participant.Status))
         {
             throw new TabPermissionException("Calling a waiter", "somebody still on this tab");
+        }
+
+        // A tab written off is one whose party left without paying: its calls were answered with it (WrittenOffTabCalls),
+        // and a phone still holding its token within the receipt grace does not put a new one on the floor's rail. A
+        // settled tab may still call: a party that has paid usually sits on.
+        if (tab.Status == TabStatus.Abandoned)
+        {
+            throw new DomainStateException("This tab was written off: there is nobody at the table to bring anything to.");
         }
 
         // A tab still waiting for a waiter may call one - that is how it gets let in - but there is no bill

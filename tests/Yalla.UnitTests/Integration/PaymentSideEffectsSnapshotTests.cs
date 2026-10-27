@@ -339,7 +339,8 @@ public sealed class PaymentSideEffectsSnapshotTests(SqlServerFixture fixture)
         Section(text, "OutboxMessages", outbox, Normalised, sorted: true);
         Section(text, "DinerNotifications", feed, Normalised, sorted: false, drop: "sequence");
         Section(text, "TabEvents", stream, Normalised, sorted: false);
-        Section(text, "TableStateChanges", changes, Normalised, sorted: true);
+        // The stream's sequence is the database's identity, shared by every branch in the run: not the writer's.
+        Section(text, "TableStateChanges", changes, Normalised, sorted: true, drop: "sequence");
         Section(text, "Tabs", tabRows, Normalised, sorted: true);
         Section(text, "TableSessions", sittings, Normalised, sorted: true);
         Section(text, "TabOrders", orders, Normalised, sorted: true);

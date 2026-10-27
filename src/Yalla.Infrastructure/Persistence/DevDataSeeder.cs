@@ -58,6 +58,11 @@ internal sealed class DevDataSeeder(
 
         if (branch is null)
         {
+            // The demo branch exists to exercise every feature, tabs and ordering included, so it is created with all
+            // of them. Only when it is created: on every later start it keeps the switches it has, so a platform admin
+            // who turned one off (to try what the floor and the apps do without it) still finds it off after a restart.
+            // Its seeded menu is the seeder's own, so the unfinished-dishes rule (for a person turning table service on)
+            // is not asked here.
             branch = new Branch(
                 venue,
                 name: "Yerevan Centre",
@@ -71,10 +76,6 @@ internal sealed class DevDataSeeder(
             db.Branches.Add(branch);
             logger.LogInformation("Seeding development branch {Slug}.", BranchSlug);
         }
-
-        // The demo branch exists to exercise every feature, tabs and ordering included. Its seeded menu is the
-        // seeder's own, so the unfinished-dishes rule (for a person turning table service on) is not asked here.
-        branch.SetAllowedFeatures(BranchFeatures.Full, incompleteMenuItemCount: 0);
 
         var waiter = await EnsureStaffAsync(venue.Id, branch.Id, "Aram Waiter", WaiterPhone, StaffRole.Waiter, cancellationToken);
         var manager = await EnsureStaffAsync(venue.Id, branch.Id, "Nune Manager", ManagerPhone, StaffRole.Manager, cancellationToken);

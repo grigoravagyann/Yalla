@@ -194,4 +194,13 @@ public enum TableChangeSignal
     /// (<c>GET /api/branches/{id}/takeaway-orders</c>) and the kitchen's queue.
     /// </summary>
     TakeawayChanged = 8,
+
+    /// <summary>
+    /// A tab at this table was written off - the party left without paying and a manager took the loss
+    /// (<c>POST /api/tabs/{tabId}/abandon</c>, 2026-10-27). A same-status row naming the tab (<c>TabId</c>), in the
+    /// table's status as it stands - writing a tab off moves no table. Its open calls were answered and its orders left
+    /// the kitchen's queue: re-read the calls (<c>GET /api/branches/{id}/service-requests</c>), the queue
+    /// (<c>GET /api/branches/{id}/orders</c>) and the floor; do not fold its status.
+    /// </summary>
+    TabWrittenOff = 9,
 }

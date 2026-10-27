@@ -78,7 +78,9 @@ public static class TableStateEndpoints
                 + "date. `hasMore` is set when the page hit its cap; call again with the last "
                 + "sequence you received. "
                 + "A `signal` 8 entry (takeaway) is about the counter, not a table: `diningTableId` and "
-                + "`tableLabel` are null and both statuses are Free - re-read the takeaway counter, never fold it.")
+                + "`tableLabel` are null and both statuses are Free - re-read the takeaway counter, never fold it. "
+                + "A `signal` 9 entry is a tab written off (`tabId`), in the table's status as it stands: re-read the "
+                + "calls, the order queue and the floor, never fold it.")
             .Produces<BranchChangePage>()
             .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.");
 

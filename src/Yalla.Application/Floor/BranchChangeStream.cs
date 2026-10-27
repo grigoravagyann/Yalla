@@ -26,8 +26,10 @@ namespace Yalla.Application.Floor;
 /// awaiting-admission list; 4 a booking the platform cancelled for a no-show block and 5 any other booking event -
 /// re-read the floor; 6 a booking's pre-order changed - re-read the pre-order rail; 7 the table was handed to another
 /// waiter - re-read the floor; 8 a takeaway order was placed, accepted, declined, cancelled, marked ready, collected or
-/// marked not collected - re-read the takeaway counter and the kitchen's queue (no table, both statuses Free). Absent on
-/// every ordinary change. A same-status row (4 to 8) is never folded.
+/// marked not collected - re-read the takeaway counter and the kitchen's queue (no table, both statuses Free); 9 a tab
+/// was written off - its calls were answered and its orders left the queue: re-read the calls, the kitchen's queue and
+/// the floor (the table's status as it stands, both sides). Absent on every ordinary change. A same-status row (4 to 9)
+/// is never folded.
 /// </param>
 public sealed record BranchChange(
     long Sequence,

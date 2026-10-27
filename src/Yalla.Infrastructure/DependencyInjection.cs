@@ -331,6 +331,10 @@ public static class DependencyInjection
         services.AddScoped<IDomainEventHandler<TabAdjustmentReversed>>(sp => sp.GetRequiredService<PaymentStream>());
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentActivity>());
         services.AddScoped<IDomainEventHandler<TabWrittenOff>>(sp => sp.GetRequiredService<PaymentStream>());
+        // A written-off tab leaves nothing live on the floor: its open calls answered, then signal 9 on the change stream
+        // (its orders leave the kitchen's queue by the tab's status - TabOrderService).
+        services.AddScoped<IDomainEventHandler<TabWrittenOff>, WrittenOffTabCalls>();
+        services.AddScoped<IDomainEventHandler<TabWrittenOff>, WrittenOffTabFloorSignal>();
         // Takeaway orders: placed (accepted on placing at an automatic branch), accepted, declined, cancelled, ready,
         // collected, not collected. The History's line, the branch's change stream (signal 8), then the guest's push and
         // feed entry, then the floor's push.
