@@ -75,7 +75,9 @@ internal sealed partial class TokenAuthorityCheck(
         }
 
         // A revoked device is cached as null, as it was cached as "not active": the window is the same either way. A
-        // feature the platform blocks at the branch is noticed within the window too - nobody evicts on that.
+        // change of the branch's features evicts its devices (PlatformService), as a revocation does - in this process'
+        // cache only: another instance of the API notices within the window, and a read racing the eviction here may put
+        // the old answer back for at most the window too.
         var standing = await queries.GetLiveStaffDeviceAsync(deviceId, cancellationToken);
         cache.Set(key, standing, CacheWindow);
 

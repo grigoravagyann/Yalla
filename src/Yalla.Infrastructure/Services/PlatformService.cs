@@ -518,8 +518,12 @@ internal sealed class PlatformService(
     /// <summary>
     /// Drops what the token check cached about the branches' live devices, so a staff phone or kitchen session the
     /// change blocks is answered <c>feature-not-enabled</c> on its next call rather than once the cache lapses - the way
-    /// revoking a device is immediate (docs/branch-features.md).
+    /// revoking a device is (docs/branch-features.md).
     /// </summary>
+    /// <remarks>
+    /// The cache is per process: on this instance the next call is refused (bar a read racing the eviction), on any
+    /// other within <c>TokenAuthorityCheck.CacheWindow</c> (5 s).
+    /// </remarks>
     private async Task ForgetDevicesAsync(IReadOnlyCollection<Guid> branchIds, CancellationToken cancellationToken)
     {
         var devices = await db.StaffDevices

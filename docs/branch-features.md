@@ -19,17 +19,39 @@ must skip a blocked feature ask in the handler.
 
 | # | Feature | Refused (new actions) | Hidden or switched off (reads) | Runs on (in flight) |
 |---|---|---|---|---|
-| 1 | `AppBookings` | Creating a booking with `channel` App, and moving one made from the app (`ReservationSlotRules.RequireChannelAllowed`, from `ReservationCreation` and `ReservationChanges`). | `acceptsAppBookings` false on the listing and the page (phase 1). | Existing bookings: cancelling, seating, no-show, reminders, "on your way?". |
-| 2 | `WebBookings` | Creating with `channel` Web, and moving a web booking - from the page or from its `/booking/{token}` manage link. | `acceptsWebBookings` false; the manage link's `canChange` false. | The manage link's read and cancel; everything above. |
-| 1+2 | either | A booking that names no channel (`Unknown`, or `Staff` on the diner route) needs at least one of the two; refused as `AppBookings` when neither is allowed - leaving the field out must not book where the platform allows no diner bookings. | | |
+| 1 | `AppBookings` | A booking or a move by a diner's session (`POST /api/reservations`, `POST /api/reservations/{id}/reschedule`), whatever `channel` it names - see "Booking channels" below. | `acceptsAppBookings` and `acceptsWebBookings` both false (the effective set drops both). | Existing bookings: cancelling, seating, no-show, reminders, "on your way?". The manage link still moves a booking (that route is web bookings'). |
+| 2 | `WebBookings` | The same diner-session booking and move, and the move by the public page's manage link (`/api/public/bookings/{token}/reschedule`). | Both booleans false; the manage link's `canChange` false. | The manage link's read and cancel; everything above. |
 | 3 | `PreOrders` | A guest's save and edit of a pre-order, from the app and the manage link (`PreOrderService.ReplaceCoreAsync`). | `preOrderEditableUntilUtc` null on the diner's booking and the manage link; `policy.acceptsPreOrders` false on the page. | Clearing a pre-order (a guest is never stuck with one). The floor's rail: listing, send to the kitchen, "not coming", and the held ticket on to the tab. "On your way?" at 45 minutes for a waiting pre-order. |
 | 4 | `Takeaway` | Placing an order (`TakeawayService.PlaceAsync`). | `GET /api/diner/branches/{id}/takeaway` answers `enabled: false` (not an error); `takeaway.enabled` false on the listing and the page. | Orders already placed: the guest's cancel, the floor's accept / decline / ready / collect / no-show, the five-minute expiry sweep, the guest's pushes, the staff push, the 2 h / 15 min "I'm coming" asks. |
 | 5 | `TableService` | Every tab open, join, read and mutation - exactly where the Paid tier was checked (`TabLookups`, `TabQuery`, `TabBillingQuery`). | | An open tab blocks the switch itself: the platform cannot turn table service off while one is open or closing. |
-| 6 | `GuestMessages` | A typed message from the guest, and from anybody at the venue - managers included (`GuestMessageService`). | `guestsCanWrite` / `canWrite` false on both sides of a thread; the floor's Messages badge, its "oldest unanswered" remind and the tiles' unread counts read 0; the guest's venue-message push offers no typed reply. | Threads stay readable - the guest's, the tablet's inbox and the console's history. The booking's "Ask: are you coming?" and the guest's answers (on my way, running late) still go in the booking's thread. No `guestMessages` staff push is staged for a guest's message or answer (`GuestMessageStaffPush`), and one staged before the block is dropped at send time. |
+| 6 | `GuestMessages` | A typed message from the guest, and from anybody at the venue - managers included (`GuestMessageService`). | `guestsCanWrite` false for the guest, `canWrite` false for everybody at the venue (managers included), and the inbox's `waitersCanWrite` false; the floor's Messages badge, its "oldest unanswered" remind and the tiles' unread counts read 0; the guest's venue-message push offers no typed reply. | Threads stay readable - the guest's, the tablet's inbox and the console's history. The booking's "Ask: are you coming?" and the guest's answers (on my way, running late) still go in the booking's thread. No `guestMessages` staff push is staged for a guest's message or answer (`GuestMessageStaffPush`), and one staged before the block is dropped at send time. |
 | 7 | `Reviews` | Writing and revising a review, reporting one (`BranchReviewService`), and the venue's reply (`ReviewModerationService.ReplyForVenueAsync`). | The public and diner reads show none: no recent reviews, an empty review page, `reviewCount` 0, no `rating`, and no badge earned by reviews (`popular` by sittings still shows). The diner's own `GET .../review` is 404, as if never written. | The rows. Taking a reply down, hiding or showing a review, and the platform's moderation. The console's review list. |
-| 8 | `StaffPhone` | Creating a pairing code; previewing or redeeming one (a code issued before the block included); PIN sign-in and renewal on a phone; **every authorised call** from a paired phone, with its session or its device token (`FeatureGateMiddleware`). | | Signing out (an anonymous route). The phone's push subscription is kept but nothing is pushed to it (`StaffPushHandler`); the branch's tablets are pushed as before. |
+| 8 | `StaffPhone` | Creating a pairing code; previewing or redeeming one (a code issued before the block included); PIN sign-in and renewal on a phone; **every authorised call** from a paired phone, with its session or its device token (`FeatureGateMiddleware`). | | Signing out, unpairing itself and dropping its push subscription. The phone's push subscription is kept but nothing is pushed to it (`StaffPushHandler`); the branch's tablets are pushed as before. |
 | 9 | `KitchenDisplay` | A Kitchen-role PIN sign-in and renewal; every authorised call from a kitchen session (`FeatureGateMiddleware`); the Kitchen role's reads of `GET /api/branches/{id}/orders` and moves on `POST /api/orders/{id}/status` (`TabOrderService`). | | **The two routes are the floor's too** - waiters read the queue, serve and void through them - so only the Kitchen role is refused. Waiters and managers finish the tickets the kitchen had: ready, served, voided. |
 | 10 | `Reports` | `GET /api/branches/{id}/reports/{occupancy,reservations,revenue,menu,staff}`, the JSON and `format=csv` alike (`ReportQuery.ResolveAsync`). | A venue rollup (`rollUpVenue=true`) asked at a branch that has reports leaves out the siblings that do not. | The History (`activity.csv`) and Staff → Results (`staff-performance.csv`) are not reports here and stay open. |
+
+## Booking channels
+
+The platform's two booking switches are decided by the **route a request came in on, never by the `channel` it
+names** - that field is self-reported, and the switches replaced the paid tier, so a client must not be able to name
+its way past one (`ReservationSlotRules.RequireChannelAllowed`).
+
+- **The public page's manage link** (`/api/public/bookings/{token}/reschedule`) is the page's alone: it needs
+  `WebBookings`.
+- **A diner's session** books through `POST /api/reservations` and moves through
+  `POST /api/reservations/{id}/reschedule`. The diner app and the public page both book there, with the same diner
+  token and nothing else the server holds to tell them apart (no claim, no separate route; an `Origin` header would
+  only tell a browser, and a native client can send one). So it needs **both** `AppBookings` and `WebBookings`, and
+  the refusal names `AppBookings` when that is blocked, else `WebBookings`. The effective set on the listing and the
+  public page follows: with either blocked, neither `acceptsAppBookings` nor `acceptsWebBookings` is true.
+
+`channel` itself is unchanged on the wire and still read for what it always was: the reports' split, and the owner's
+own switches - `AcceptsWebBookings` for `Web`, and K9 (switched on and the policy saved) for `App`. Those are the
+venue's preference about its own page, not an access control.
+
+Blocking only one of the two therefore stops new diner bookings altogether, and differs from blocking both only in the
+manage link's moves. Splitting them for real needs the public page to book through a route of its own - a contract
+change for later.
 
 ## Staff phones and kitchen sessions: why a middleware
 
@@ -38,11 +60,14 @@ The token check that already runs on every staff request (`RejectRevokedDevicesA
 `ITokenAuthorityCheck.GetLiveDeviceAsync` → `StaffDeviceStanding`, kind + branch + allowed bits) decides it, and
 `Middleware/FeatureGateMiddleware` - after authentication, before the policies - throws the refusal, so it is the
 same 409 problem every other refusal is. A bearer handler can only fail a token into a 401, which the apps would read
-as "signed out". Anonymous routes run as for anybody.
+as "signed out". Anonymous routes run as for anybody, and so do the routes by which a device removes itself
+(`DELETE /api/staff/device/push-subscription`, `POST /api/staff/device/unpair`, marked `AllowWhenSurfaceBlocked()`):
+a blocked surface may always leave.
 
 The device read is cached for `TokenAuthorityCheck.CacheWindow` (5 s). A platform change of a branch's features
-(`PUT /api/platform/{branches,venues}/{id}/features`) evicts its devices, so the next call is refused at once, as a
-revocation is.
+(`PUT /api/platform/{branches,venues}/{id}/features`) evicts its devices from the cache of the instance that served
+the change, as a revocation does: there the next call is refused (bar a read racing the eviction, which can keep the old
+answer for one window). The cache is per process, so with several API instances the others notice within 5 s.
 
 ## Effects and the domain-event rules
 
