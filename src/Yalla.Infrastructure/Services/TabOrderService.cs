@@ -9,6 +9,7 @@ using Yalla.Domain.Enums;
 using Yalla.Domain.Menus;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Tabs;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 
 namespace Yalla.Infrastructure.Services;
@@ -546,6 +547,7 @@ internal sealed class TabOrderService(
 
         await branchGuard.RequireAsync(
             staffId, order.Tab.BranchId, "Acting on this tab", "tab", cancellationToken);
+        RequireKitchenDisplay(order.Tab.Branch);
         RequireKitchenMayMake(order.Status, next);
 
         var from = order.Status;
@@ -614,6 +616,11 @@ internal sealed class TabOrderService(
 
         await branchGuard.RequireAsync(staffId, preOrder.BranchId, "Acting on this tab", "tab", cancellationToken);
 
+        if (actor.Role == StaffRole.Kitchen)
+        {
+            await BranchFeatureGate.RequireAsync(db, preOrder.BranchId, BranchFeature.KitchenDisplay, cancellationToken);
+        }
+
         if (!preOrder.IsHeld)
         {
             // The party sat between the read above and this one: it is an order on their tab now. Read again.
@@ -681,6 +688,19 @@ internal sealed class TabOrderService(
     }
 
     /// <summary>
+    /// The kitchen display is a feature the platform allows per branch (<c>docs/branch-features.md</c>). The queue and the
+    /// rail are the floor's too - a waiter reads the queue, serves and voids through them - so only the Kitchen role is
+    /// refused where it is blocked; everybody else carries on, and finishes the tickets the kitchen had.
+    /// </summary>
+    private void RequireKitchenDisplay(Branch branch)
+    {
+        if (actor.Role == StaffRole.Kitchen)
+        {
+            branch.RequireAllowed(BranchFeature.KitchenDisplay);
+        }
+    }
+
+    /// <summary>
     /// The Kitchen role cooks and nothing else.
     /// </summary>
     /// <remarks>
@@ -710,6 +730,11 @@ internal sealed class TabOrderService(
         var staffId = RequireStaff("Read the order queue");
         await branchGuard.RequireAsync(
             staffId, branchId, "Acting on this tab", "tab", cancellationToken);
+
+        if (actor.Role == StaffRole.Kitchen)
+        {
+            await BranchFeatureGate.RequireAsync(db, branchId, BranchFeature.KitchenDisplay, cancellationToken);
+        }
 
         var nowUtc = clock.UtcNow;
 

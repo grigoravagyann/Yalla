@@ -207,6 +207,9 @@ internal sealed class StaffAuthService(
             throw PinRejected();
         }
 
+        // Before the PIN is checked, so a refusal never counts toward a lockout (docs/branch-features.md).
+        await RequireSurfaceAllowedAsync(device, staff.Role, cancellationToken);
+
         await VerifyPinAsync(staff, pin, device.Id, nowUtc, cancellationToken);
 
         var (session, renewalToken) = await OpenSessionAsync(staff, device, nowUtc, cancellationToken);
@@ -293,6 +296,32 @@ internal sealed class StaffAuthService(
         device.Touch(nowUtc);
 
         return (session, renewalToken);
+    }
+
+    /// <summary>
+    /// Refuses a session the platform has not allowed at the device's branch (<c>docs/branch-features.md</c>): any on a
+    /// paired phone without <see cref="BranchFeature.StaffPhone"/>, and the kitchen's - the kitchen display - without
+    /// <see cref="BranchFeature.KitchenDisplay"/>. Waiters, managers and the rest on a tablet are not gated here.
+    /// </summary>
+    /// <exception cref="FeatureNotEnabledException">409 <c>feature-not-enabled</c>.</exception>
+    private async Task RequireSurfaceAllowedAsync(StaffDevice device, StaffRole role, CancellationToken cancellationToken)
+    {
+        if (device.Kind != StaffDeviceKind.Phone && role != StaffRole.Kitchen)
+        {
+            return;
+        }
+
+        var bits = await BranchFeatureGate.BitsAsync(db, device.BranchId, cancellationToken);
+
+        if (device.Kind == StaffDeviceKind.Phone)
+        {
+            BranchFeatures.Require(bits, BranchFeature.StaffPhone, device.BranchId);
+        }
+
+        if (role == StaffRole.Kitchen)
+        {
+            BranchFeatures.Require(bits, BranchFeature.KitchenDisplay, device.BranchId);
+        }
     }
 
     /// <summary>Mints the session token for a session that has been saved.</summary>
@@ -382,6 +411,10 @@ internal sealed class StaffAuthService(
             throw new AuthenticationFailedException(
                 "account-inactive", "This account is no longer active.");
         }
+
+        // A phone, or the kitchen screen, the platform has blocked since this session began: it is not renewed, so the
+        // last access token is the session's last. The session is left as it is - allowed again, it renews.
+        await RequireSurfaceAllowedAsync(session.StaffDevice, session.StaffMember.Role, cancellationToken);
 
         var successor = Secrets.NewOpaqueToken();
         session.Renew(Secrets.Hash(successor), nowUtc);
@@ -706,9 +739,12 @@ internal sealed class StaffAuthService(
 
         var branch = await db.Branches
             .Where(b => b.Id == branchId)
-            .Select(b => new { b.Id, b.VenueId })
+            .Select(b => new { b.Id, b.VenueId, b.AllowedFeatureBits })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Branch {branchId} does not exist.");
+
+        // Staff phones are a feature the platform allows per branch (docs/branch-features.md).
+        BranchFeatures.Require(branch.AllowedFeatureBits, BranchFeature.StaffPhone, branch.Id);
 
         // The caller's stored row, not the token: a manager demoted since their token was minted must not keep a
         // manager's reach - the rule every staff admin action follows.
@@ -808,6 +844,9 @@ internal sealed class StaffAuthService(
     {
         var pairing = await FindPairingCodeAsync(code, clock.UtcNow, cancellationToken);
 
+        // A code issued before the platform blocked staff phones here is good for nothing now.
+        await BranchFeatureGate.RequireAsync(db, pairing.BranchId, BranchFeature.StaffPhone, cancellationToken);
+
         var person = await db.StaffMembers
             .AsNoTracking()
             .Where(s => s.Id == pairing.ForStaffMemberId)
@@ -837,6 +876,9 @@ internal sealed class StaffAuthService(
     {
         var nowUtc = clock.UtcNow;
         var pairing = await FindPairingCodeAsync(code, nowUtc, cancellationToken);
+
+        // Before the PIN is checked: a code issued before the platform blocked staff phones here pairs nothing.
+        await BranchFeatureGate.RequireAsync(db, pairing.BranchId, BranchFeature.StaffPhone, cancellationToken);
 
         var staff = await db.StaffMembers
             .Where(s => s.Id == pairing.ForStaffMemberId)

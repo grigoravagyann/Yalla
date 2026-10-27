@@ -65,19 +65,21 @@ internal sealed partial class TokenAuthorityCheck(
         return access is null ? null : Evaluate(access);
     }
 
-    public async Task<bool> IsDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default)
+    public async Task<StaffDeviceStanding?> GetLiveDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default)
     {
         var key = DeviceKey(deviceId);
 
-        if (cache.TryGetValue(key, out bool cached))
+        if (cache.TryGetValue(key, out StaffDeviceStanding? cached))
         {
             return cached;
         }
 
-        var active = await queries.IsStaffDeviceActiveAsync(deviceId, cancellationToken);
-        cache.Set(key, active, CacheWindow);
+        // A revoked device is cached as null, as it was cached as "not active": the window is the same either way. A
+        // feature the platform blocks at the branch is noticed within the window too - nobody evicts on that.
+        var standing = await queries.GetLiveStaffDeviceAsync(deviceId, cancellationToken);
+        cache.Set(key, standing, CacheWindow);
 
-        return active;
+        return standing;
     }
 
     public void InvalidateDevice(Guid deviceId) => cache.Remove(DeviceKey(deviceId));

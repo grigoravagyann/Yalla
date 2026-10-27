@@ -126,7 +126,7 @@ public class VenueUserSessionGenerationTests
             Guid branchId, Guid venueId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<bool> IsStaffDeviceActiveAsync(Guid deviceId, CancellationToken cancellationToken = default) =>
+        public Task<StaffDeviceStanding?> GetLiveStaffDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
 }

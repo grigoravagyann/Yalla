@@ -149,6 +149,10 @@ app.UseYallaCors();
 app.UseRouting();
 
 app.UseAuthentication();
+
+// A staff phone or kitchen session the platform has blocked at its branch is answered 409 feature-not-enabled on
+// every authorised route (docs/branch-features.md) - after authentication, which decides it, and before the policies.
+app.UseMiddleware<FeatureGateMiddleware>();
 app.UseAuthorization();
 
 // After authentication, so the limiter can partition by the signed-in caller rather than only by

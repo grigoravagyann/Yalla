@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
+using Yalla.Application.Auth;
 using Yalla.Application.BranchSettings;
 using Yalla.Application.Media;
 using Yalla.Application.Platform;
@@ -34,6 +35,7 @@ internal sealed class PlatformService(
     IClock clock,
     ICurrentActor actor,
     IBranchReadinessQuery readiness,
+    ITokenAuthorityCheck authority,
     ILogger<PlatformService> logger) : IPlatformService
 {
     /// <summary>
@@ -456,6 +458,7 @@ internal sealed class PlatformService(
         if (await ChangeFeaturesAsync(branch, bits, viaVenue: false, cancellationToken))
         {
             await db.SaveChangesAsync(cancellationToken);
+            await ForgetDevicesAsync([branch.Id], cancellationToken);
         }
 
         return await GetBranchAsync(branch.Id, cancellationToken);
@@ -506,9 +509,29 @@ internal sealed class PlatformService(
             }, cancellationToken);
 
             await db.SaveChangesAsync(cancellationToken);
+            await ForgetDevicesAsync(changed, cancellationToken);
         }
 
         return await GetVenueAsync(venue.Id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Drops what the token check cached about the branches' live devices, so a staff phone or kitchen session the
+    /// change blocks is answered <c>feature-not-enabled</c> on its next call rather than once the cache lapses - the way
+    /// revoking a device is immediate (docs/branch-features.md).
+    /// </summary>
+    private async Task ForgetDevicesAsync(IReadOnlyCollection<Guid> branchIds, CancellationToken cancellationToken)
+    {
+        var devices = await db.StaffDevices
+            .AsNoTracking()
+            .Where(d => branchIds.Contains(d.BranchId) && d.RevokedAtUtc == null)
+            .Select(d => d.Id)
+            .ToListAsync(cancellationToken);
+
+        foreach (var device in devices)
+        {
+            authority.InvalidateDevice(device);
+        }
     }
 
     /// <summary>

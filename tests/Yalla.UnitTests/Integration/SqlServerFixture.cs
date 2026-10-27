@@ -300,7 +300,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     /// <summary>The platform tier over one context, acting as the given caller - normally a platform admin.</summary>
     internal PlatformService CreatePlatformService(YallaDbContext db, IClock clock, ICurrentActor actor) =>
-        new(db, clock, actor, CreateReadinessQuery(db), NullLogger<PlatformService>.Instance);
+        new(db, clock, actor, CreateReadinessQuery(db), CreateTokenAuthority(db, clock), NullLogger<PlatformService>.Instance);
 
     /// <summary>
     /// The platform console's read models over one context - Home, a venue's bookings, the activity

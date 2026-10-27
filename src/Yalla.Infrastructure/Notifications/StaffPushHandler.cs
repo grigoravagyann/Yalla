@@ -9,6 +9,7 @@ using Yalla.Domain.Identity;
 using Yalla.Domain.Messages;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Takeaway;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Persistence;
 using Yalla.Infrastructure.Services;
 
@@ -21,7 +22,7 @@ namespace Yalla.Infrastructure.Notifications;
 /// <remarks>
 /// <para>
 /// <b>Who.</b> The branch's live devices with a push subscription whose switches include the kind. A phone also needs
-/// its person still able to sign in there (active, of the venue, at the branch or venue-wide, not kitchen) and - when
+/// the platform to allow <c>StaffPhone</c> at the branch, and its person still able to sign in there (active, of the venue, at the branch or venue-wide, not kitchen) and - when
 /// their "only during my shift" is on, the default for a waiter - on a shift at the branch now. A tablet has no person
 /// and no shift; it is pushed whenever it is subscribed and wants the kind.
 /// </para>
@@ -188,7 +189,14 @@ internal sealed class StaffPushHandler(
             })
             .ToListAsync(cancellationToken);
 
-        var wanting = candidates.Where(c => ((c.PushKinds ?? StaffPushKinds.Defaults) & kind) == kind).ToList();
+        // Staff phones stop being pushed the moment the platform blocks them at the branch (docs/branch-features.md); the
+        // branch's tablets carry on.
+        var phonesAllowed = await BranchFeatureGate.AllowsAsync(db, subject.BranchId, BranchFeature.StaffPhone, cancellationToken);
+
+        var wanting = candidates
+            .Where(c => ((c.PushKinds ?? StaffPushKinds.Defaults) & kind) == kind)
+            .Where(c => phonesAllowed || c.Kind != StaffDeviceKind.Phone)
+            .ToList();
 
         if (wanting.Count == 0)
         {
@@ -350,11 +358,18 @@ internal static class StaffPushSubjects
             return null;
         }
 
-        var timeZoneId = await db.Branches
+        var branch = await db.Branches
             .Where(b => b.Id == message.BranchId)
-            .Select(b => b.TimeZoneId)
+            .Select(b => new { b.TimeZoneId, b.AllowedFeatureBits })
             .FirstAsync(cancellationToken);
 
+        // Guest messages blocked by the platform since it was staged: nobody may answer it now (docs/branch-features.md).
+        if (!BranchFeatures.Has(branch.AllowedFeatureBits, BranchFeature.GuestMessages))
+        {
+            return null;
+        }
+
+        var timeZoneId = branch.TimeZoneId;
         Func<string?, string> subject;
 
         if (message.ReservationId is { } reservationId)

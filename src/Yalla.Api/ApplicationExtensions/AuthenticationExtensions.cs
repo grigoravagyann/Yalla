@@ -4,8 +4,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
+using Yalla.Api.Middleware;
 using Yalla.Application.Auth;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Identity;
 
 namespace Yalla.Api.ApplicationExtensions;
@@ -228,10 +230,43 @@ public static class AuthenticationExtensions
             return;
         }
 
-        if (!await authority.IsDeviceActiveAsync(deviceId.Value, context.HttpContext.RequestAborted))
+        var device = await authority.GetLiveDeviceAsync(deviceId.Value, context.HttpContext.RequestAborted);
+
+        if (device is null)
         {
             context.Fail("This tablet is no longer enrolled.");
+            return;
         }
+
+        // A surface the platform has blocked at the branch since the token was minted - a paired phone without
+        // StaffPhone, a kitchen session without KitchenDisplay (docs/branch-features.md). Not a failed sign-in: the
+        // token is good, the feature is off, and the answer is 409 feature-not-enabled, which only the pipeline after
+        // routing can write - so it is left for FeatureGateMiddleware.
+        if (BlockedSurface(device, principalType == PrincipalType.StaffSession ? context.Principal?.StaffRole() : null)
+            is { } blocked)
+        {
+            context.HttpContext.Items[FeatureGateMiddleware.BlockedItem] =
+                new FeatureNotEnabledException(blocked, device.BranchId);
+        }
+    }
+
+    /// <summary>
+    /// The feature a staff token's surface needs and the platform has blocked at its branch, or null: a phone needs
+    /// <see cref="BranchFeature.StaffPhone"/>; a session of the Kitchen role, <see cref="BranchFeature.KitchenDisplay"/>.
+    /// </summary>
+    internal static BranchFeature? BlockedSurface(StaffDeviceStanding device, StaffRole? sessionRole)
+    {
+        if (device.Kind == StaffDeviceKind.Phone && !BranchFeatures.Has(device.AllowedFeatureBits, BranchFeature.StaffPhone))
+        {
+            return BranchFeature.StaffPhone;
+        }
+
+        if (sessionRole == StaffRole.Kitchen && !BranchFeatures.Has(device.AllowedFeatureBits, BranchFeature.KitchenDisplay))
+        {
+            return BranchFeature.KitchenDisplay;
+        }
+
+        return null;
     }
 
     private static IServiceCollection AddYallaAuthorization(this IServiceCollection services)
