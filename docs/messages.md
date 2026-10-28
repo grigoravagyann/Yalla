@@ -2,7 +2,7 @@
 
 A venue and a guest write short text messages to each other inside **one booking** or **one takeaway order**. There is
 no general chat and no thread without a subject. The venue's "Ask: are you coming?" is a message in the thread, and the
-guest's answer buttons write theirs. Added 2026-10-23 (the "SHURJ Նամակներ" design).
+guest's answer buttons write theirs. Added 2026-10-23 (the "Time to Eat Նամակներ" design).
 
 Domain: `Domain/Messages` (`Conversation`, `ConversationMessage`, `ConversationRules`). Service:
 `Infrastructure/Services/GuestMessageService.cs`, with `GuestThreads.cs` for what the booking and pre-order services

@@ -146,7 +146,7 @@ public sealed class WebPushCryptoTests
         Assert.NotNull(options.Problem());
         Assert.NotNull(new WebPushOptions { PublicKey = options.PublicKey }.Problem());
         Assert.NotNull(new WebPushOptions { PublicKey = options.PublicKey, PrivateKey = Base64Url.Encode(a.D!) }.Problem());
-        Assert.Null(new WebPushOptions { Subject = "https://shurj.am", PublicKey = options.PublicKey, PrivateKey = Base64Url.Encode(a.D!) }.Problem());
+        Assert.Null(new WebPushOptions { Subject = "https://timetoeat.am", PublicKey = options.PublicKey, PrivateKey = Base64Url.Encode(a.D!) }.Problem());
         Assert.Null(new WebPushOptions().Problem());
     }
 
