@@ -97,6 +97,34 @@ internal sealed class ReservationReads(
         // the list never shows a booking its reader would be refused permission to decide.
         await branchGuard.RequireAtBranchAsync(branchId, "List a branch's bookings", cancellationToken);
 
+        return await ListWhereAsync(branchId, r => r.BranchId == branchId && r.Status == status, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ReservationView>> ListWithoutTableAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default)
+    {
+        // The floor's read, so the floor's guard: a waiter or above at this branch, who seats these.
+        await lookups.RequireStaffForBranchAsync(branchId, "List the bookings with no table yet", cancellationToken);
+
+        var nowUtc = clock.UtcNow;
+
+        return await ListWhereAsync(
+            branchId,
+            r => r.BranchId == branchId
+                 && r.BookedWithoutTable
+                 && r.DiningTableId == null
+                 && r.Status == ReservationStatus.Confirmed
+                 && r.EndUtc > nowUtc,
+            cancellationToken);
+    }
+
+    /// <summary>The branch's bookings matching <paramref name="where"/>, as the console's list builds them.</summary>
+    private async Task<IReadOnlyList<ReservationView>> ListWhereAsync(
+        Guid branchId,
+        System.Linq.Expressions.Expression<Func<Reservation, bool>> where,
+        CancellationToken cancellationToken)
+    {
         var policy = await db.Branches
             .AsNoTracking()
             .Where(b => b.Id == branchId)
@@ -106,7 +134,7 @@ internal sealed class ReservationReads(
 
         var rows = await db.Reservations
             .AsNoTracking()
-            .Where(r => r.BranchId == branchId && r.Status == status)
+            .Where(where)
             .OrderBy(r => r.LocalDate)
             .ThenBy(r => r.LocalStartTime)
             .ThenBy(r => r.Id)

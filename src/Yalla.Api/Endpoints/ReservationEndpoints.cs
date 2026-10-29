@@ -156,7 +156,26 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
                 "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
+
+        floor.MapGet("/reservations/without-table", ListWithoutTableAsync)
+            .WithName("listBookingsWithoutTable")
+            .WithSummary("The bookings made by time only that nobody has seated yet")
+            .WithDescription(
+                "What the staff tablet polls at a branch that books by time only (`bookingMode` 2): its confirmed "
+                + "bookings with no table yet that have not ended, soonest first, each with the guest's wish in "
+                + "`note`. At most 200; no paging. Seat one with `POST /tables/{tableId}/seat-reservation` on the "
+                + "table the waiter chooses - the booking has that table from then on. Waiter or above at the branch.")
+            .Produces<IReadOnlyList<ReservationView>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
     }
+
+    private static async Task<IResult> ListWithoutTableAsync(
+        Guid branchId,
+        IReservationService reservations,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await reservations.ListWithoutTableAsync(branchId, cancellationToken));
 
     private static async Task<IResult> ListAwaitingApprovalAsync(
         Guid branchId,

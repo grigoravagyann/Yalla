@@ -87,6 +87,47 @@ public sealed class TimeOnlyBookingTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
+    public async Task A_waiter_sees_the_bookings_with_no_table_yet_and_can_release_one()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        AuthBranch branch;
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 1);
+            var row = await db.Branches.FirstAsync(b => b.Id == branch.BranchId);
+            row.UpdateReservationPolicy(TimeOnly(guestsAtOnce: 20), factory.Clock.UtcNow);
+            await db.SaveChangesAsync();
+        }
+
+        var date = DateOnly.FromDateTime(factory.Clock.UtcNow.AddHours(4)).AddDays(2);
+        using var diner = await DinerAsync(factory);
+        var made = await (await diner.PostAsJsonAsync("/api/reservations", Body(branch, date, "19:00", 3)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var reservationId = made.GetProperty("id").GetGuid();
+
+        // The floor's own read, open to a waiter: the booking, with the guest's wish.
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        var listed = await waiter.GetFromJsonAsync<JsonElement>($"/api/branches/{branch.BranchId}/reservations/without-table");
+        var row1 = Assert.Single(listed.EnumerateArray());
+        Assert.Equal(reservationId, row1.GetProperty("id").GetGuid());
+        Assert.Equal("By the window, please", row1.GetProperty("note").GetString());
+
+        // Released by the venue with no table to free.
+        var released = await waiter.PostAsJsonAsync(
+            $"/api/reservations/{reservationId}/release",
+            new { outcome = 2, clientCommandId = Guid.CreateVersion7(), reason = "They called to cancel" });
+        Assert.Equal(HttpStatusCode.OK, released.StatusCode);
+        var result = await released.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(result.GetProperty("tableFreed").GetBoolean());
+        Assert.False(result.TryGetProperty("tableId", out var tableId) && tableId.ValueKind != JsonValueKind.Null);
+
+        Assert.Empty((await waiter.GetFromJsonAsync<JsonElement>(
+            $"/api/branches/{branch.BranchId}/reservations/without-table")).EnumerateArray());
+    }
+
+    [SkippableFact]
     public async Task A_branch_that_books_by_time_only_takes_guests_with_no_table_on_a_photo()
     {
         Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);

@@ -103,10 +103,13 @@ internal sealed class ReservationRelease(
         var reservation = await lookups.LoadReservationAsync(command.ReservationId, cancellationToken);
         var staffId = await lookups.RequireStaffForBranchAsync(reservation.BranchId, "Release a booking", cancellationToken);
 
-        var table = await db.DiningTables
-            .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == reservation.DiningTableId, cancellationToken)
-            ?? throw new KeyNotFoundException($"Table {reservation.DiningTableId} was not found.");
+        // None for a booking made by time only that nobody seated: released all the same, with no table to free.
+        var table = reservation.DiningTableId is null
+            ? null
+            : await db.DiningTables
+                  .AsNoTracking()
+                  .FirstOrDefaultAsync(t => t.Id == reservation.DiningTableId, cancellationToken)
+              ?? throw new KeyNotFoundException($"Table {reservation.DiningTableId} was not found.");
 
         // Already let go. A tablet replaying its queue must not count a second no-show against a
         // diner, and the answer it gets is the one the first attempt got.
@@ -126,8 +129,8 @@ internal sealed class ReservationRelease(
                 : null;
 
             return await BuildReleaseAsync(
-                reservation, OutcomeOf(reservation.Status), tableFreed: false, table.Id, table.Label,
-                table.Status, wasReplay: true, cancellationToken, blockedByThis);
+                reservation, OutcomeOf(reservation.Status), tableFreed: false, table?.Id, table?.Label,
+                table?.Status, wasReplay: true, cancellationToken, blockedByThis);
         }
 
         var nowUtc = clock.UtcNow;
@@ -144,7 +147,7 @@ internal sealed class ReservationRelease(
         IReadOnlyList<Reservation> cancelledByBlock = [];
         DateTime? blockedUntilUtc = null;
 
-        await using (var locked = await LockForNoShowAsync(reservation, table.Label, guest, cancellationToken))
+        await using (var locked = await LockForNoShowAsync(reservation, table?.Label ?? string.Empty, guest, cancellationToken))
         {
             if (command.Outcome == ReleaseOutcome.NoShow)
             {
@@ -192,9 +195,9 @@ internal sealed class ReservationRelease(
         // sitting at is left exactly as it is: the booking is released either way, but a floor plan
         // that shows an occupied table as free costs more than a stale hold does.
         var freed = false;
-        var tableStatus = table.Status;
+        var tableStatus = table?.Status;
 
-        if (table.Status == TableStatus.Held
+        if (table is { Status: TableStatus.Held }
             && await NoShowBlocks.HoldIsForAsync(db, table.Id, reservation.Id, cancellationToken))
         {
             // ReleaseHold, not FreeTable: the machine has no Held-to-Free transition, because
@@ -211,11 +214,11 @@ internal sealed class ReservationRelease(
 
         logger.LogInformation(
             "Booking {Code} released as {Outcome} by staff {StaffId}. Table {TableLabel} {TableAction}.",
-            reservation.Code, command.Outcome, staffId, table.Label,
+            reservation.Code, command.Outcome, staffId, table?.Label ?? "(none yet)",
             freed ? "was freed" : $"was left {tableStatus}");
 
         return await BuildReleaseAsync(
-            reservation, command.Outcome, freed, table.Id, table.Label, tableStatus,
+            reservation, command.Outcome, freed, table?.Id, table?.Label, tableStatus,
             wasReplay: false, cancellationToken, blockedUntilUtc);
     }
 
@@ -255,11 +258,13 @@ internal sealed class ReservationRelease(
             throw new NoShowUndoWindowClosedException(undoableUntilUtc);
         }
 
-        var table = await db.DiningTables
-            .AsNoTracking()
-            .Where(t => t.Id == reservation.DiningTableId)
-            .Select(t => t.Label)
-            .FirstAsync(cancellationToken);
+        var table = reservation.DiningTableId is null
+            ? string.Empty
+            : await db.DiningTables
+                .AsNoTracking()
+                .Where(t => t.Id == reservation.DiningTableId)
+                .Select(t => t.Label)
+                .FirstAsync(cancellationToken);
 
         var guest = reservation.PhoneUnverified ? null : reservation.DinerUserId;
 
@@ -353,9 +358,9 @@ internal sealed class ReservationRelease(
         Reservation reservation,
         ReleaseOutcome outcome,
         bool tableFreed,
-        Guid tableId,
-        string tableLabel,
-        TableStatus tableStatus,
+        Guid? tableId,
+        string? tableLabel,
+        TableStatus? tableStatus,
         bool wasReplay,
         CancellationToken cancellationToken,
         DateTime? guestBlockedUntilUtc = null)

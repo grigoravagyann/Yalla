@@ -30,6 +30,8 @@ The booking is `bookedWithoutTable: true` with no `tableId` / `tableLabel` until
 or waits for approval by the same policy rules as any booking. It cannot be moved (cancel and book again) and
 takes no pre-order: a pre-order's ticket waits at a table.
 
+The floor lists the ones not yet seated at `GET /api/branches/{id}/reservations/without-table` (waiter or above), and releasing one (`/release`) works with no table to free.
+
 `GET /api/branches/{id}/availability/slots` answers such a branch in guests: each slot's `guestsLeft`, and
 `isAvailable` when the party fits (`unavailableReason` 16 `TimeFull` when not). Its public detail and page carry
 `bookingMode` so a client knows which flow to show.
