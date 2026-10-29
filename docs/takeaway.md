@@ -2,7 +2,7 @@
 
 A guest orders from a place's menu in the app, says when they will come, and picks the food up at the counter. They
 pay there - cash or card at the venue's own terminal; **nothing is charged in the app**. The floor tablet accepts the
-order and hands it over, the kitchen cooks it from its own screen, the console sets it up. Added 2026-10-22 (the "SHURJ
+order and hands it over, the kitchen cooks it from its own screen, the console sets it up. Added 2026-10-22 (the "Time to Eat
 Takeaway" design).
 
 Domain: `Domain/Takeaway` (`TakeawayOrder`, `TakeawayRules`). Service: `Infrastructure/Services/TakeawayService.cs`,
