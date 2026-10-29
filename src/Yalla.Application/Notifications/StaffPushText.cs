@@ -24,15 +24,29 @@ public static class StaffPushText
 
     /// <summary>"Booking to approve" - table, time, party and guest.</summary>
     public static (string Title, string Body) Approval(
-        string locale, string tableLabel, DateOnly date, TimeOnly at, int partySize, string guestName) =>
+        string locale, string? tableLabel, DateOnly date, TimeOnly at, int partySize, string guestName) =>
         NotificationText.Normalise(locale) switch
         {
             "ru" => ("Бронь ждёт подтверждения",
-                     $"Столик {tableLabel} · {Day(date)} {Time(at)} · {partySize} чел. · {guestName}"),
+                     $"{TablePart("ru", tableLabel)} · {Day(date)} {Time(at)} · {partySize} чел. · {guestName}"),
             "en" => ("Booking to approve",
-                     $"Table {tableLabel} · {Day(date)} {Time(at)} · {partySize} {(partySize == 1 ? "guest" : "guests")} · {guestName}"),
+                     $"{TablePart("en", tableLabel)} · {Day(date)} {Time(at)} · {partySize} {(partySize == 1 ? "guest" : "guests")} · {guestName}"),
             _ => ("Ամրագրում՝ հաստատման",
-                  $"Սեղան {tableLabel} · {Day(date)} {Time(at)} · {partySize} հոգի · {guestName}"),
+                  $"{TablePart("hy", tableLabel)} · {Day(date)} {Time(at)} · {partySize} հոգի · {guestName}"),
+        };
+
+    /// <summary>
+    /// "Table 6", or - for a booking made by time only that nobody has seated - that it has no table yet.
+    /// </summary>
+    private static string TablePart(string locale, string? tableLabel) =>
+        (locale, string.IsNullOrWhiteSpace(tableLabel)) switch
+        {
+            ("ru", true) => "Без столика",
+            ("ru", false) => $"Столик {tableLabel}",
+            ("en", true) => "No table yet",
+            ("en", false) => $"Table {tableLabel}",
+            (_, true) => "Առանց սեղանի",
+            _ => $"Սեղան {tableLabel}",
         };
 
     /// <summary>A guest wrote: who and about what, then the words.</summary>
@@ -66,12 +80,12 @@ public static class StaffPushText
         };
 
     /// <summary>The thread's subject for a booking: "Table 6 · Ani M. · 19:30".</summary>
-    public static string BookingSubject(string locale, string tableLabel, string guestName, TimeOnly at) =>
+    public static string BookingSubject(string locale, string? tableLabel, string guestName, TimeOnly at) =>
         NotificationText.Normalise(locale) switch
         {
-            "ru" => $"Столик {tableLabel} · {guestName} · {Time(at)}",
-            "en" => $"Table {tableLabel} · {guestName} · {Time(at)}",
-            _ => $"Սեղան {tableLabel} · {guestName} · {Time(at)}",
+            "ru" => $"{TablePart("ru", tableLabel)} · {guestName} · {Time(at)}",
+            "en" => $"{TablePart("en", tableLabel)} · {guestName} · {Time(at)}",
+            _ => $"{TablePart("hy", tableLabel)} · {guestName} · {Time(at)}",
         };
 
     /// <summary>A table is calling: the bill, or a waiter for something.</summary>

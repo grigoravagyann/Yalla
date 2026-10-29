@@ -731,7 +731,8 @@ public sealed class BranchOverviewTests(SqlServerFixture fixture)
 
         var booking = Required(nameof(OverviewBooking));
         Assert.Superset(
-            new HashSet<string> { "id", "status", "localDate", "tableId", "tableStatus", "guestName", "channel", "changeRequested" },
+            // No table on a booking made by time only until a waiter seats it (2026-10-29).
+            new HashSet<string> { "id", "status", "localDate", "guestName", "channel", "changeRequested" },
             booking);
 
         // Gone: a declined booking is never listed, and a kept slot's leftover reason is not a decline.

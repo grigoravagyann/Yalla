@@ -54,6 +54,10 @@ namespace Yalla.Application.BranchSettings;
 /// Active tables a diner can book: bookable and pinned on a room photo, which is what the booking
 /// rules offer.
 /// </param>
+/// <param name="BooksByTimeOnly">
+/// The branch books by time only, with how many guests it takes at once set: its table line is satisfied without a
+/// table a diner can book, because diners pick only a time.
+/// </param>
 /// <param name="TakingGuests">
 /// Every <b>required</b> line satisfied - a bookable table, opening hours, staff and a device - so
 /// diners see the branch. Without it the branch is not listed, searched, shown or bookable
@@ -104,6 +108,7 @@ public sealed record BranchReadinessView(
     bool DeviceEnrolled,
     int DeviceCount,
     int BookableTableCount,
+    bool BooksByTimeOnly,
     bool TakingGuests,
     IReadOnlyList<string> MissingForGuests,
     bool AcceptsWebBookings,

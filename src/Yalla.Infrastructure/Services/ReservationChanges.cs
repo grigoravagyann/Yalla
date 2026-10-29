@@ -214,6 +214,14 @@ internal sealed class ReservationChanges(
         VenueGate.RequireOpenForBusiness(branch);
         ReservationSlotRules.RequireChannelAccepted(reservation.Channel, branch, viaManageLink);
 
+        // A booking made by time only is moved by cancelling it and booking the new time (2026-10-29):
+        // its move would be judged against the branch's guests at once, not a table's evening.
+        if (reservation.BookedWithoutTable)
+        {
+            throw new Yalla.Domain.DomainStateException(
+                $"Booking {reservation.Code} was made by time only and cannot be moved; cancel it and book the new time.");
+        }
+
         // At the booking's own branch: a move changes the slot, never the venue.
         var table = await lookups.LoadTableAsync(reservation.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
@@ -557,7 +565,7 @@ internal sealed class ReservationChanges(
     /// </remarks>
     private sealed record RescheduleRecord(
         Guid ReservationId,
-        Guid TableId,
+        Guid? TableId,
         DateTime StartUtc,
         int PartySize,
         ReservationStatus Status)

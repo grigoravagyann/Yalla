@@ -183,6 +183,13 @@ internal sealed class BranchConfiguration : EntityConfiguration<Branch>
             // every write states the value.
             policy.Property(p => p.AutoConfirmGuestsWithGoodRecord)
                 .IsRequired();
+
+            // Booking by time only (2026-10-29). Every branch before it chose tables: the migration gives the rows
+            // already there ChooseTable, and every write states the value.
+            policy.Property(p => p.BookingMode)
+                .IsRequired();
+
+            policy.Property(p => p.GuestsAtOnce);
         });
 
         builder.Navigation(b => b.ReservationPolicy)

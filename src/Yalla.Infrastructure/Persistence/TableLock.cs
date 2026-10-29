@@ -133,7 +133,26 @@ internal sealed class TableLock(
     /// <exception cref="TableLockTimeoutException">
     /// Another writer held the lock for longer than the wait allows. Nothing was changed.
     /// </exception>
-    public async Task<TableLockScope> AcquireAsync(
+    public Task<TableLockScope> AcquireAsync(
+        Guid tableId,
+        string? tableLabel,
+        CancellationToken cancellationToken) =>
+        AcquireRowAsync("SELECT Id FROM DiningTables WITH (UPDLOCK, HOLDLOCK) WHERE Id = @id", tableId, tableLabel, cancellationToken);
+
+    /// <summary>
+    /// The same lock on the branch's own row, for the bookings made by time only (BookingMode.TimeOnly):
+    /// they have no table to lock, and what has to be judged one at a time is the branch's guests at once.
+    /// Times out as <see cref="TableLockTimeoutException"/> naming the branch, which every caller already
+    /// answers as a retryable 503.
+    /// </summary>
+    public Task<TableLockScope> AcquireBranchAsync(Guid branchId, CancellationToken cancellationToken) =>
+        AcquireRowAsync("SELECT Id FROM Branches WITH (UPDLOCK, HOLDLOCK) WHERE Id = @id", branchId, BranchLabel, cancellationToken);
+
+    /// <summary>What a timeout on the branch's lock is called, where a table's would be its label.</summary>
+    internal const string BranchLabel = "this branch's bookings";
+
+    private async Task<TableLockScope> AcquireRowAsync(
+        string lockSql,
         Guid tableId,
         string? tableLabel,
         CancellationToken cancellationToken)
@@ -154,10 +173,7 @@ internal sealed class TableLock(
             await db.Database.ExecuteSqlRawAsync($"SET LOCK_TIMEOUT {timeoutMs};", cancellationToken);
 #pragma warning restore EF1002
 
-            await db.Database.ExecuteSqlRawAsync(
-                "SELECT Id FROM DiningTables WITH (UPDLOCK, HOLDLOCK) WHERE Id = @tableId",
-                [new SqlParameter("@tableId", tableId)],
-                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(lockSql, [new SqlParameter("@id", tableId)], cancellationToken);
 
             return scope;
         }

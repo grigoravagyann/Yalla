@@ -69,16 +69,20 @@ internal sealed class ReservationRelease(
         await reservations.SaveAsync(cancellationToken);
 
         // Onto the branch change sequence, so the waiter watching that table sees it. Held to Held -
-        // nothing about the table changed, but something happened at it.
-        await tableState.RecordHoldExtendedAsync(
-            new TableStateCommand(
-                reservation.BranchId,
-                reservation.DiningTableId,
-                command.ClientCommandId,
-                $"the diner extended their hold by {minutes} minutes"),
-            reservation.Id,
-            reservation.HoldExpiresAtUtc!.Value,
-            cancellationToken);
+        // nothing about the table changed, but something happened at it. A booking by time only nobody
+        // seated has no table to tell.
+        if (reservation.DiningTableId is { } tableId)
+        {
+            await tableState.RecordHoldExtendedAsync(
+                new TableStateCommand(
+                    reservation.BranchId,
+                    tableId,
+                    command.ClientCommandId,
+                    $"the diner extended their hold by {minutes} minutes"),
+                reservation.Id,
+                reservation.HoldExpiresAtUtc!.Value,
+                cancellationToken);
+        }
 
         logger.LogInformation(
             "Booking {Code} extended its hold to {HoldExpiresAtUtc} ({Minutes} minutes).",
@@ -296,7 +300,8 @@ internal sealed class ReservationRelease(
     {
         try
         {
-            return await reservations.LockForNoShowAsync(reservation.DiningTableId, tableLabel, account, cancellationToken);
+            return await reservations.LockForNoShowAsync(
+                reservation.DiningTableId, reservation.BranchId, tableLabel, account, cancellationToken);
         }
         catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
         {

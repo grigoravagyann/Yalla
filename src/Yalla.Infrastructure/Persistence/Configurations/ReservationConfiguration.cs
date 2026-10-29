@@ -71,10 +71,21 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
             .HasForeignKey(r => r.BranchId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Optional since booking by time only (2026-10-29): such a booking has no table until staff seat it.
         builder.HasOne(r => r.DiningTable)
             .WithMany()
             .HasForeignKey(r => r.DiningTableId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Property(r => r.BookedWithoutTable)
+            .IsRequired();
+
+        // The room's guests at once: a branch's bookings by time only around a sitting, read under its lock and by
+        // every day-slots read of such a branch.
+        builder.HasIndex(r => new { r.BranchId, r.StartUtc, r.EndUtc })
+            .HasFilter("[BookedWithoutTable] = 1")
+            .HasDatabaseName("IX_Reservations_TimeOnly_BranchId_StartUtc_EndUtc");
 
         // The overlap index. Every "is this table free between X and Y?" check - which runs on
         // every booking attempt and every availability screen - reads exactly this.

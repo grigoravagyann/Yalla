@@ -34,7 +34,7 @@ internal sealed class ReservationReads(
                                      && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
-                TableLabel = r.DiningTable.Label,
+                TableLabel = r.DiningTable!.Label,
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
@@ -118,7 +118,7 @@ internal sealed class ReservationReads(
                                      && !db.DinerUsers.Any(d => d.Id == r.DinerUserId && d.PhoneVerifiedAtUtc != null),
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
-                TableLabel = r.DiningTable.Label,
+                TableLabel = r.DiningTable!.Label,
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
@@ -196,7 +196,7 @@ internal sealed class ReservationReads(
                 BranchName = r.Branch.Name,
                 TimeZoneId = r.Branch.TimeZoneId,
                 Policy = r.Branch.ReservationPolicy,
-                TableLabel = r.DiningTable.Label,
+                TableLabel = r.DiningTable!.Label,
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
 
@@ -324,7 +324,7 @@ internal sealed class ReservationReads(
         /// <summary>The owned policy, for the deadline and for the reason of a row from before the column.</summary>
         public ReservationPolicy Policy { get; init; } = null!;
 
-        public string TableLabel { get; init; } = null!;
+        public string? TableLabel { get; init; }
 
         public Guid? RoomId { get; init; }
 

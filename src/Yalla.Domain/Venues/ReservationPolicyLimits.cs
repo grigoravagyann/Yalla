@@ -1,3 +1,5 @@
+using Yalla.Domain.Enums;
+
 namespace Yalla.Domain.Venues;
 
 /// <summary>
@@ -48,6 +50,12 @@ public static class ReservationPolicyLimits
     /// <summary>A party of one still needs staff approval to be a meaningful threshold.</summary>
     public const int MinApprovalRequiredAbovePartySize = 1;
 
+    /// <summary>Booking by time only: at least one guest at a time, and no more than a large hall.</summary>
+    public const int MinGuestsAtOnce = 1;
+
+    /// <inheritdoc cref="MinGuestsAtOnce"/>
+    public const int MaxGuestsAtOnce = 2000;
+
     /// <summary>
     /// The wire names of the policy's fields, as the OpenAPI schema spells them.
     /// </summary>
@@ -71,6 +79,38 @@ public static class ReservationPolicyLimits
         public const string MaxSeatOverhang = "maxSeatOverhang";
         public const string ApprovalRequiredAbovePartySize = "approvalRequiredAbovePartySize";
         public const string WalkInHoldbackMinutes = "walkInHoldbackMinutes";
+        public const string BookingMode = "bookingMode";
+        public const string GuestsAtOnce = "guestsAtOnce";
+    }
+
+    /// <summary>
+    /// The booking mode and its capacity: an unknown mode, or booking by time only without a
+    /// number of guests at once in bounds. Thrown as one <see cref="FieldValidationException"/>.
+    /// </summary>
+    public static void ValidateBookingMode(BookingMode bookingMode, int? guestsAtOnce)
+    {
+        var violations = new List<FieldViolation>();
+
+        if (!Enum.IsDefined(bookingMode))
+        {
+            violations.Add(new FieldViolation(Fields.BookingMode, $"Unknown booking mode {(int)bookingMode}.", Value: (int)bookingMode));
+        }
+        else if (bookingMode == BookingMode.TimeOnly
+                 && guestsAtOnce is not (>= MinGuestsAtOnce and <= MaxGuestsAtOnce))
+        {
+            violations.Add(new FieldViolation(
+                Fields.GuestsAtOnce,
+                $"Booking by time only needs how many guests the branch takes at once, {MinGuestsAtOnce} to {MaxGuestsAtOnce}.",
+                FieldBounds.Range,
+                Min: MinGuestsAtOnce,
+                Max: MaxGuestsAtOnce,
+                Value: guestsAtOnce));
+        }
+
+        if (violations.Count > 0)
+        {
+            throw new FieldValidationException(violations);
+        }
     }
 
     /// <summary>

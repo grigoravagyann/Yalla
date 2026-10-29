@@ -237,6 +237,16 @@ internal static partial class ApiExceptionMapper
                 ["sentAtUtc"] = e.SentAtUtc,
             }),
 
+        TimeFullException e => Refuse(
+            ErrorCodes.TimeFull,
+            e.Message,
+            context: new Dictionary<string, object?>
+            {
+                ["branchId"] = e.BranchId,
+                ["partySize"] = e.PartySize,
+                ["guestsLeft"] = e.GuestsLeft,
+            }),
+
         PreOrdersNotAcceptedException e => Refuse(
             ErrorCodes.PreOrdersNotAccepted,
             e.Message,

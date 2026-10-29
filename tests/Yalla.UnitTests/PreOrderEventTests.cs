@@ -46,7 +46,7 @@ public class PreOrderEventTests
         var preOrder = Saved(out var reservation);
         preOrder.DequeueEvents();
 
-        var sitting = TableSession.SeatReservation(reservation.BranchId, reservation.DiningTableId, reservation.Id, 2, StartUtc.AddMinutes(-10));
+        var sitting = TableSession.SeatReservation(reservation.BranchId, reservation.DiningTableId!.Value, reservation.Id, 2, StartUtc.AddMinutes(-10));
         var tabId = Guid.CreateVersion7();
         sitting.AttachTab(tabId);
 

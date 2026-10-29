@@ -59,7 +59,12 @@ public sealed record ReleaseReservationRequest(
 /// the booking lands an hour out with nothing in the request to show it.
 /// </remarks>
 /// <param name="BranchId">The branch being booked.</param>
-/// <param name="TableId">The table the diner picked off the floor plan.</param>
+/// <param name="TableId">
+/// The table the diner picked off the room photos. Required at a branch where diners choose a table, refused as
+/// <c>validation-failed</c> naming <c>tableId</c> without one; left out at a branch that books by time only
+/// (<c>bookingMode</c> 2), where the venue chooses the table when the party arrives and naming one is refused the
+/// same way.
+/// </param>
 /// <param name="Date">Local calendar date at the branch, e.g. <c>2026-09-12</c>.</param>
 /// <param name="Time">Local wall-clock start at the branch, e.g. <c>19:30</c>.</param>
 /// <param name="PartySize">How many are coming.</param>
@@ -93,7 +98,7 @@ public sealed record CreateReservationRequest(
     // was not found" - a sentinel quoted at a diner, about a branch nobody asked for. The wire
     // contract is unchanged; only the refusal is.
     [Required][NotEmpty] Guid BranchId,
-    [Required][NotEmpty] Guid TableId,
+    [NotEmpty] Guid? TableId,
 
     // Nullable, unlike the two above, because there is no spare value to test for. A missing
     // DateOnly binds 0001-01-01 and a missing TimeOnly binds midnight - and midnight is a booking
@@ -129,7 +134,10 @@ public sealed record CreateReservationRequest(
 /// <see cref="CreateReservationRequest"/> without the branch, which the route names, and without a channel, which the
 /// route decides: <c>Web</c>. <see cref="Date"/> and <see cref="Time"/> are local to the branch.
 /// </remarks>
-/// <param name="TableId">The table the diner picked off the room photos.</param>
+/// <param name="TableId">
+/// The table the diner picked off the room photos; left out at a branch that books by time only - exactly as on
+/// <see cref="CreateReservationRequest"/>.
+/// </param>
 /// <param name="Date">Local calendar date at the branch, e.g. <c>2026-09-12</c>.</param>
 /// <param name="Time">Local wall-clock start at the branch, e.g. <c>19:30</c>.</param>
 /// <param name="PartySize">How many are coming.</param>
@@ -146,7 +154,7 @@ public sealed record CreateReservationRequest(
 /// exactly as on <see cref="CreateReservationRequest"/>.
 /// </param>
 public sealed record CreatePublicReservationRequest(
-    [Required][NotEmpty] Guid TableId,
+    [NotEmpty] Guid? TableId,
     [Required] DateOnly? Date,
     [Required] TimeOnly? Time,
     [Range(1, 100)] int PartySize,

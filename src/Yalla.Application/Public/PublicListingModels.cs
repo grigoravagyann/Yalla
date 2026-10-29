@@ -102,6 +102,7 @@ public sealed record PublicBranchListing(
 /// and the info card. Whether it is open for takeaway right now is <c>GET /api/diner/branches/{branchId}/takeaway</c>.
 /// </param>
 /// <param name="AsOfUtc">When the live half was read.</param>
+/// <param name="BookingMode">Whether a diner picks a table on the room photos (1) or only a time and how many (2).</param>
 public sealed record PublicBranchDetail(
     PublicBranchListing Listing,
     string? About,
@@ -118,7 +119,8 @@ public sealed record PublicBranchDetail(
     IReadOnlyList<int> RatingCounts,
     IReadOnlyList<PublicRoom> Rooms,
     PublicTakeawayInfo Takeaway,
-    DateTime AsOfUtc);
+    DateTime AsOfUtc,
+    BookingMode BookingMode = BookingMode.ChooseTable);
 
 /// <summary>A place's takeaway, as the place page shows it.</summary>
 /// <param name="Enabled">The venue takes takeaway orders from the app: allowed by the platform and switched on by the venue.</param>

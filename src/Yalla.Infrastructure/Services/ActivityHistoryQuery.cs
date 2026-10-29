@@ -422,7 +422,7 @@ internal sealed class ActivityHistoryQuery(YallaDbContext db, IClock clock, Staf
                             r.LocalDate,
                             r.LocalStartTime,
                             r.Status,
-                            r.DiningTable.Label,
+                            r.DiningTable!.Label,
                             TabId = db.TableSessions.Where(s => s.ReservationId == r.Id).Select(s => s.TabId).FirstOrDefault(),
                         })
                         .FirstOrDefaultAsync(cancellationToken)

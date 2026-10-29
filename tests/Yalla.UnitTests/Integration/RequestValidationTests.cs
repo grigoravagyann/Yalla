@@ -440,7 +440,9 @@ public class RequestValidationTests(SqlServerFixture fixture)
             .Select(f => f.GetProperty("field").GetString())
             .ToList();
 
-        foreach (var expected in new[] { "branchId", "tableId", "date", "time" })
+        // Not tableId: a branch that books by time only takes none, so it is the service's to ask for, once the
+        // body is complete (A_booking_missing_one_field_names_that_field).
+        foreach (var expected in new[] { "branchId", "date", "time" })
         {
             Assert.Contains(expected, fields);
         }

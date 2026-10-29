@@ -14,7 +14,8 @@ namespace Yalla.Infrastructure.Services;
 /// <para>
 /// Two halves. <b>Published</b> is what it always was - the branch is switched on and its venue is
 /// active, not suspended, not deleted. <b>Taking guests</b> is the readiness checklist's required
-/// lines: a table a diner can book (active, bookable, pinned on a room photo), opening hours, a
+/// lines: a table a diner can book (active, bookable, pinned on a room photo) - or, at a branch that
+/// books by time only, how many guests it takes at once - opening hours, a
 /// device at the branch that will see the booking arrive (an enrolled tablet or a paired staff
 /// phone) and somebody on the staff to sign in on it.
 /// </para>
@@ -43,7 +44,8 @@ internal static class DinerVisibility
                     && b.Venue.IsActive
                     && b.Venue.SuspendedAtUtc == null
                     && b.Venue.DeletedAtUtc == null
-                    && db.DiningTables.Any(t => t.BranchId == b.Id && t.IsActive && t.IsBookable && t.PhotoId != null)
+                    && ((b.ReservationPolicy.BookingMode == BookingMode.TimeOnly && b.ReservationPolicy.GuestsAtOnce > 0)
+                        || db.DiningTables.Any(t => t.BranchId == b.Id && t.IsActive && t.IsBookable && t.PhotoId != null))
                     && db.OpeningHours.Any(h => h.BranchId == b.Id)
                     && db.StaffDevices.Any(d => d.BranchId == b.Id && d.RevokedAtUtc == null)
                     && db.StaffMembers.Any(s => s.IsActive

@@ -32,10 +32,11 @@ internal sealed class FloorPlanTables(YallaDbContext db, IClock clock)
 
         var upcoming = await db.Reservations
             .AsNoTracking()
-            .Where(r => tableIds.Contains(r.DiningTableId)
+            .Where(r => r.DiningTableId != null
+                        && tableIds.Contains(r.DiningTableId.Value)
                         && (r.Status == ReservationStatus.Confirmed || r.Status == ReservationStatus.PendingApproval)
                         && r.EndUtc > nowUtc)
-            .Select(r => new { r.Code, r.DiningTable.Label })
+            .Select(r => new { r.Code, r.DiningTable!.Label })
             .ToListAsync(cancellationToken);
 
         if (upcoming.Count == 0)
@@ -63,7 +64,9 @@ internal sealed class FloorPlanTables(YallaDbContext db, IClock clock)
     /// </remarks>
     public async Task<HashSet<Guid>> TablesWithHistoryAsync(IReadOnlyList<Guid> tableIds, CancellationToken cancellationToken)
     {
-        var reserved = db.Reservations.Where(r => tableIds.Contains(r.DiningTableId)).Select(r => r.DiningTableId);
+        var reserved = db.Reservations
+            .Where(r => r.DiningTableId != null && tableIds.Contains(r.DiningTableId.Value))
+            .Select(r => r.DiningTableId!.Value);
         var seated = db.TableSessions.Where(s => tableIds.Contains(s.DiningTableId)).Select(s => s.DiningTableId);
         var billed = db.Tabs.Where(t => tableIds.Contains(t.DiningTableId)).Select(t => t.DiningTableId);
         var audited = db.TableStateChanges

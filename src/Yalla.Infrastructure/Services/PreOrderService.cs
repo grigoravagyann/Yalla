@@ -158,6 +158,13 @@ internal sealed class PreOrderService(
             throw new PreOrdersNotAcceptedException(reservation.BranchId);
         }
 
+        // A pre-order's ticket is held for a table and goes onto that table's tab when the party sits down, and
+        // a booking made by time only has no table until then: it takes no pre-order (2026-10-29).
+        if (reservation.BookedWithoutTable)
+        {
+            throw new PreOrdersNotAcceptedException(reservation.BranchId);
+        }
+
         var violations = PreOrderRules.Check([.. lines.Select(l => (l.Quantity, l.Note))], note);
 
         if (violations.Count > 0)
@@ -548,7 +555,7 @@ internal sealed class PreOrderService(
 
                 db.ChangeTracker.Clear();
 
-                return new SendOutcome.Again(reservation.DiningTableId, moved);
+                return new SendOutcome.Again(reservation.DiningTableId!.Value, moved);
             }
 
             var preOrder = await db.PreOrders
@@ -892,7 +899,7 @@ internal sealed class PreOrderService(
         var booking = await db.Reservations
             .AsNoTracking()
             .Where(r => r.Id == reservationId)
-            .Select(r => new BookingFacts(r.BranchId, r.DiningTableId, r.DiningTable.Label))
+            .Select(r => new BookingFacts(r.BranchId, r.DiningTableId!.Value, r.DiningTable!.Label))
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException($"Booking {reservationId} was not found.");
 
@@ -930,13 +937,14 @@ internal sealed class PreOrderService(
         var rows = await preOrders
             .AsNoTracking()
             .OrderBy(p => p.Reservation.StartUtc)
-            .ThenBy(p => p.Reservation.DiningTable.Label)
+            .ThenBy(p => p.Reservation.DiningTable!.Label)
             .Select(p => new CardRow
             {
                 ReservationId = p.ReservationId,
                 Code = p.Reservation.Code,
-                TableId = p.Reservation.DiningTableId,
-                TableLabel = p.Reservation.DiningTable.Label,
+                // Pre-orders are only on bookings with a table (ReplaceCoreAsync).
+                TableId = p.Reservation.DiningTableId!.Value,
+                TableLabel = p.Reservation.DiningTable!.Label,
                 RoomName = p.Reservation.DiningTable.FloorArea == null ? null : p.Reservation.DiningTable.FloorArea.Name,
                 StartUtc = p.Reservation.StartUtc,
                 LocalDate = p.Reservation.LocalDate,

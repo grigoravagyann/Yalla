@@ -337,7 +337,9 @@ public static class ReservationEndpoints
                 "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
                 + " `reservation-overlaps-own`: the diner already has a booking then, here or too close to it at "
                 + "another venue - `context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel`, "
-                + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already.")
+                + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already. "
+                + "`time-full`: at a branch that books by time only (`bookingMode` 2, no `tableId`), no room for that "
+                + "many then - `context.guestsLeft` says how many it could still take.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);

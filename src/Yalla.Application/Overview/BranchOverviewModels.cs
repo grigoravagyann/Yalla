@@ -171,7 +171,10 @@ public sealed record OverviewLoadHour(int Hour, int People, int PendingPeople);
 /// <param name="LocalStartTime">The start on the branch's clock.</param>
 /// <param name="PartySize">How many.</param>
 /// <param name="GuestName">Whose.</param>
-/// <param name="TableId">The table - what <c>seat-reservation</c> and <c>free</c> are addressed by.</param>
+/// <param name="TableId">
+/// The table - what <c>seat-reservation</c> and <c>free</c> are addressed by. Absent, with the label and
+/// status, for a booking made by time only that nobody has seated yet: staff choose its table then.
+/// </param>
 /// <param name="TableLabel">The table's label.</param>
 /// <param name="TableStatus">The table's state now.</param>
 /// <param name="RoomName">The room the table is in, when it is in one.</param>
@@ -201,9 +204,9 @@ public sealed record OverviewBooking(
     TimeOnly LocalStartTime,
     int PartySize,
     string GuestName,
-    Guid TableId,
-    string TableLabel,
-    TableStatus TableStatus,
+    Guid? TableId,
+    string? TableLabel,
+    TableStatus? TableStatus,
     string? RoomName,
     ReservationChannel Channel,
     bool ChangeRequested,

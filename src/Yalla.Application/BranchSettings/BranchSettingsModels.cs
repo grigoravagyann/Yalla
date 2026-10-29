@@ -62,7 +62,9 @@ public sealed record ReservationPolicyView(
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes,
     bool UnverifiedScansNeedAdmission,
-    bool AutoConfirmGuestsWithGoodRecord)
+    bool AutoConfirmGuestsWithGoodRecord,
+    BookingMode BookingMode,
+    int? GuestsAtOnce)
 {
     public static ReservationPolicyView From(ReservationPolicy p) => new(
         p.TurnTimeMinutes,
@@ -80,7 +82,9 @@ public sealed record ReservationPolicyView(
         p.ApprovalRequiredAbovePartySize,
         p.WalkInHoldbackMinutes,
         p.UnverifiedScansNeedAdmission,
-        p.AutoConfirmGuestsWithGoodRecord);
+        p.AutoConfirmGuestsWithGoodRecord,
+        p.BookingMode,
+        p.GuestsAtOnce);
 }
 
 /// <summary>Every field of the policy, as written. The whole form is replaced at once.</summary>
@@ -111,7 +115,9 @@ public sealed record ReservationPolicyCommand(
     int? ApprovalRequiredAbovePartySize,
     int WalkInHoldbackMinutes = 30,
     bool? UnverifiedScansNeedAdmission = null,
-    bool? AutoConfirmGuestsWithGoodRecord = null)
+    bool? AutoConfirmGuestsWithGoodRecord = null,
+    BookingMode? BookingMode = null,
+    int? GuestsAtOnce = null)
 {
     /// <summary>
     /// Builds the policy, applying the editing bounds first.
@@ -131,6 +137,12 @@ public sealed record ReservationPolicyCommand(
     {
         var unverifiedScansNeedAdmission = UnverifiedScansNeedAdmission ?? current?.UnverifiedScansNeedAdmission ?? true;
         var autoConfirmGoodRecord = AutoConfirmGuestsWithGoodRecord ?? current?.AutoConfirmGuestsWithGoodRecord ?? false;
+
+        // A client from before the mode existed sends neither, and keeps what the branch has. One that
+        // sends the mode sends its capacity with it: a null then means none.
+        var bookingMode = BookingMode ?? current?.BookingMode ?? Domain.Enums.BookingMode.ChooseTable;
+        var guestsAtOnce = BookingMode is null ? current?.GuestsAtOnce : GuestsAtOnce;
+        ReservationPolicyLimits.ValidateBookingMode(bookingMode, guestsAtOnce);
 
         ReservationPolicyLimits.Validate(
             TurnTimeMinutes,
@@ -162,7 +174,9 @@ public sealed record ReservationPolicyCommand(
             ApprovalRequiredAbovePartySize,
             WalkInHoldbackMinutes,
             unverifiedScansNeedAdmission: unverifiedScansNeedAdmission,
-            autoConfirmGuestsWithGoodRecord: autoConfirmGoodRecord);
+            autoConfirmGuestsWithGoodRecord: autoConfirmGoodRecord,
+            bookingMode: bookingMode,
+            guestsAtOnce: guestsAtOnce);
     }
 }
 

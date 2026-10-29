@@ -204,3 +204,20 @@ public enum TableChangeSignal
     /// </summary>
     TabWrittenOff = 9,
 }
+
+/// <summary>
+/// How a diner books at a branch (2026-10-29). On the wire as the integer; never renumber.
+/// </summary>
+public enum BookingMode
+{
+    /// <summary>The diner picks a table on a room photo. Every branch's mode before this choice existed.</summary>
+    ChooseTable = 1,
+
+    /// <summary>
+    /// The diner picks only a time and how many people, and may add a wish. No room photo or table
+    /// numbers are needed; the branch takes at most
+    /// <see cref="Venues.ReservationPolicy.GuestsAtOnce"/> booked guests at the same time, and staff
+    /// choose the table when the party arrives.
+    /// </summary>
+    TimeOnly = 2,
+}

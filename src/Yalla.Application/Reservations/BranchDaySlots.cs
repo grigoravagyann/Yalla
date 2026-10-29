@@ -113,6 +113,12 @@ public sealed record DaySlot
     public required int FreeTableCount { get; init; }
 
     /// <summary>
+    /// At a branch that books by time only: how many more guests fit at the busiest moment of this time's
+    /// sitting. Absent at a branch where diners choose a table, which answers in tables instead.
+    /// </summary>
+    public int? GuestsLeft { get; init; }
+
+    /// <summary>
     /// Why nothing is free, when nothing is. <c>LeadTimeTooShort</c> or <c>OutsideBookingWindow</c>
     /// when the time itself is refused; otherwise the tables' reason - when tables that fit the party
     /// are taken, the commonest of <c>TableAlreadyBooked</c>, <c>TableCurrentlyOccupied</c>,

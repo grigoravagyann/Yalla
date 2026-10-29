@@ -115,29 +115,7 @@ internal sealed class ReservationSlotRules(
         BookedInterval proposed,
         DateTime nowUtc)
     {
-        var localToday = zone.LocalDateAt(nowUtc);
-
-        var timing = ReservationRules.CheckTiming(
-            proposed.StartUtc, nowUtc, localDate, localToday, policy);
-
-        switch (timing)
-        {
-            case ReservationRejectionReason.LeadTimeTooShort:
-                throw new LeadTimeTooShortException(
-                    proposed.StartUtc, nowUtc.AddMinutes(policy.MinLeadMinutes), policy.MinLeadMinutes);
-
-            case ReservationRejectionReason.OutsideBookingWindow:
-                throw new OutsideBookingWindowException(
-                    localDate, localToday.AddDays(policy.BookingWindowDays), policy.BookingWindowDays);
-        }
-
-        var localStart = localDate.ToDateTime(localTime);
-        var localEnd = zone.ToLocal(proposed.EndUtc);
-
-        if (ReservationRules.CheckOpeningHours(hours, localStart, localEnd) is not null)
-        {
-            throw new OutsideOpeningHoursException(localDate, localTime, TimeOnly.FromDateTime(localEnd));
-        }
+        ValidateTime(localDate, localTime, hours, policy, zone, proposed, nowUtc);
 
         // A table with no pin on one of its room's photos is not offered to diners - availability
         // leaves it out - so a booking that names one anyway is refused as not bookable, the same
@@ -161,6 +139,44 @@ internal sealed class ReservationSlotRules(
             case ReservationRejectionReason.SeatOverhangExceeded:
                 throw new SeatOverhangExceededException(
                     table.Id, table.Label, partySize, table.Seats, policy.MaxSeatOverhang!.Value);
+        }
+    }
+
+    /// <summary>
+    /// The rules about the slot alone - lead time, booking window, opening hours - which a booking made by
+    /// time only meets with no table to judge. <see cref="Validate"/> is this and the table's rules.
+    /// </summary>
+    internal static void ValidateTime(
+        DateOnly localDate,
+        TimeOnly localTime,
+        OpeningCalendar hours,
+        ReservationPolicy policy,
+        BranchZone zone,
+        BookedInterval proposed,
+        DateTime nowUtc)
+    {
+        var localToday = zone.LocalDateAt(nowUtc);
+
+        var timing = ReservationRules.CheckTiming(
+            proposed.StartUtc, nowUtc, localDate, localToday, policy);
+
+        switch (timing)
+        {
+            case ReservationRejectionReason.LeadTimeTooShort:
+                throw new LeadTimeTooShortException(
+                    proposed.StartUtc, nowUtc.AddMinutes(policy.MinLeadMinutes), policy.MinLeadMinutes);
+
+            case ReservationRejectionReason.OutsideBookingWindow:
+                throw new OutsideBookingWindowException(
+                    localDate, localToday.AddDays(policy.BookingWindowDays), policy.BookingWindowDays);
+        }
+
+        var localStart = localDate.ToDateTime(localTime);
+        var localEnd = zone.ToLocal(proposed.EndUtc);
+
+        if (ReservationRules.CheckOpeningHours(hours, localStart, localEnd) is not null)
+        {
+            throw new OutsideOpeningHoursException(localDate, localTime, TimeOnly.FromDateTime(localEnd));
         }
     }
 

@@ -218,6 +218,11 @@ public class PersistedEnumValueTests
         Assert.Equal(9, (int)BranchFeature.KitchenDisplay);
         Assert.Equal(10, (int)BranchFeature.Reports);
         Assert.Equal(10, Enum.GetValues<BranchFeature>().Length);
+
+        // Stored in Branches.ReservationPolicy_BookingMode; the migration gave every existing branch 1.
+        Assert.Equal(1, (int)BookingMode.ChooseTable);
+        Assert.Equal(2, (int)BookingMode.TimeOnly);
+        Assert.Equal(2, Enum.GetValues<BookingMode>().Length);
     }
 
     [Fact]
@@ -353,7 +358,7 @@ public class PersistedEnumValueTests
 
         string[] covered =
         [
-            nameof(ActivityActorKind), nameof(ActivityCategory), nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(BranchFeature), nameof(DeclineReason),
+            nameof(ActivityActorKind), nameof(ActivityCategory), nameof(ActorType), nameof(AdjustmentKind), nameof(ApprovalTrigger), nameof(BillScope), nameof(BookingMode), nameof(BranchFeature), nameof(DeclineReason),
             nameof(DerivedTableState), nameof(ParticipantRole),
             nameof(ParticipantStatus), nameof(PaymentMethod), nameof(PaymentStatus), nameof(PrincipalType),
             nameof(RefreshTokenSubject), nameof(ReservationChannel), nameof(ReservationStatus),
