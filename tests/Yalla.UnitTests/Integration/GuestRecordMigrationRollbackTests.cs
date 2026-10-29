@@ -45,7 +45,7 @@ public sealed class GuestRecordMigrationRollbackTests(SqlServerFixture fixture)
 
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1)).BranchId;
+                branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1, enrolTablet: false)).BranchId;
                 const string paramsJson = "{\"cancelledCount\":\"2\"}";
 
                 await db.Database.ExecuteSqlAsync(

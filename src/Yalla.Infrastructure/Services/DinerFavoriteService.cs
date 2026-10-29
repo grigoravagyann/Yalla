@@ -210,13 +210,8 @@ internal sealed class DinerFavoriteService(
         ]);
     }
 
-    private IQueryable<Branch> Published() =>
-        db.Branches
-            .AsNoTracking()
-            .Where(b => b.IsActive
-                        && b.Venue.IsActive
-                        && b.Venue.SuspendedAtUtc == null
-                        && b.Venue.DeletedAtUtc == null);
+    // Published and taking guests: see DinerVisibility.
+    private IQueryable<Branch> Published() => DinerVisibility.Branches(db);
 
     private Guid RequireDiner() =>
         actor.DinerUserId ?? throw new UnauthorizedAccessException("Only a signed-in diner keeps favourites.");

@@ -64,7 +64,7 @@ public sealed class PlatformActivityMigrationTests(SqlServerFixture fixture)
 
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                branch = await TestBranchBuilder.CreateAsync(db);
+                branch = await TestBranchBuilder.CreateAsync(db, enrolTablet: false);
                 admin = await AuthTestData.CreatePlatformAdminAsync(db);
                 dinerId = await ReviewTestData.SeedDinerAsync(db, "Anahit Authorsurname", at);
                 reviewId = await ReviewTestData.SeedReviewAsync(db, branch.BranchId, dinerId, 1, "Rude.", at);

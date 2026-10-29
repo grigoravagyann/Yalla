@@ -229,13 +229,8 @@ internal sealed class PublicListingQuery(
 
     // ------------------------------------------------------------ the pieces
 
-    private IQueryable<Branch> Published() =>
-        db.Branches
-            .AsNoTracking()
-            .Where(b => b.IsActive
-                        && b.Venue.IsActive
-                        && b.Venue.SuspendedAtUtc == null
-                        && b.Venue.DeletedAtUtc == null);
+    // Published and taking guests: see DinerVisibility.
+    private IQueryable<Branch> Published() => DinerVisibility.Branches(db);
 
     /// <summary>The reviews the public may see: every one that moderation has not taken down.</summary>
     private IQueryable<BranchReview> PublishedReviews() =>

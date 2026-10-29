@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Yalla.Application.Abstractions;
 using Yalla.Domain.Enums;
 using Yalla.Domain.Staff;
 using Yalla.Domain.Venues;
@@ -32,7 +33,8 @@ internal sealed class DevDataSeeder(
     YallaDbContext db,
     DevSeedRegistry registry,
     DevListingSeeder listing,
-    ILogger<DevDataSeeder> logger)
+    ILogger<DevDataSeeder> logger,
+    IClock clock)
 {
     private const string VenueSlug = "yalla-demo";
     private const string BranchSlug = "yerevan-centre";
@@ -74,6 +76,13 @@ internal sealed class DevDataSeeder(
                 allowedFeatures: BranchFeatures.Full);
 
             db.Branches.Add(branch);
+
+            // A tablet row, so the fresh demo branch is taking guests (DinerVisibility) and the diner
+            // app, the e2e specs and the contract suite find it. Only on creation, like the switches:
+            // a developer who revokes it sees the branch drop out of the diner app, which is the rule
+            // working. It has no credential; a real tablet enrols beside it with a code.
+            db.StaffDevices.Add(new Yalla.Domain.Identity.StaffDevice(
+                venue.Id, branch.Id, "Seeded tablet", "dev-seeded-tablet", clock.UtcNow));
             logger.LogInformation("Seeding development branch {Slug}.", BranchSlug);
         }
 

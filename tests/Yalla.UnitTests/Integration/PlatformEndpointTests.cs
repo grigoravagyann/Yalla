@@ -589,6 +589,15 @@ public class PlatformEndpointTests(SqlServerFixture fixture)
 
         var cafe = await CreateAsync("Espresso", (int)VenueType.Cafe);
 
+        // A venue made through the platform has no tables, hours or tablet yet; diners see it once it has.
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            foreach (var created in new[] { bar, converted, cafe })
+            {
+                await TestBranchBuilder.TakeGuestsAsync(db, created.GetProperty("branches")[0].GetProperty("branchId").GetGuid());
+            }
+        }
+
         // The diner's Bars tile: category=3 is the two bars and not the cafe, and category=1 the reverse.
         using var anyone = factory.CreateClient();
 

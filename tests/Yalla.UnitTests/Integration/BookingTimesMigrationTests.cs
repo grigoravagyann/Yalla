@@ -57,10 +57,10 @@ public sealed class BookingTimesMigrationTests(SqlServerFixture fixture)
                 // entities write the schema before it as they are.
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                untouched = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(30, 15));
-                edited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(45, 20));
-                leadEdited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(60, 15));
-                bufferEdited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(30, 0));
+                untouched = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(30, 15), enrolTablet: false);
+                edited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(45, 20), enrolTablet: false);
+                leadEdited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(60, 15), enrolTablet: false);
+                bufferEdited = await TestBranchBuilder.CreateAsync(db, tableCount: 1, policy: Policy(30, 0), enrolTablet: false);
 
                 await db.GetService<IMigrator>().MigrateAsync(BookingTimesMigration);
             }

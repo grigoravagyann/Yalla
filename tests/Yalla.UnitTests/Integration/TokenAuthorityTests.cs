@@ -160,7 +160,7 @@ public class TokenAuthorityTests(SqlServerFixture fixture)
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            branch = await AuthTestData.CreateBranchAsync(db);
+            branch = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
         }
 
         var deviceToken = await StaffAuthTests.EnrolDeviceAsync(factory, branch);
@@ -195,7 +195,7 @@ public class TokenAuthorityTests(SqlServerFixture fixture)
     private async Task<(AuthBranch Branch, string QrToken)> ArrangeAsync(YallaApiFactory factory)
     {
         await using var db = fixture.CreateContext(factory.Clock);
-        var branch = await AuthTestData.CreateBranchAsync(db);
+        var branch = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
 
         var qr = await db.DiningTables.AsNoTracking()
             .Where(t => t.Id == branch.FirstTableId)

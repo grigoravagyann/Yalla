@@ -53,7 +53,7 @@ public sealed class UnverifiedGuestsMigrationRollbackTests(SqlServerFixture fixt
 
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
+                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1, enrolTablet: false);
                 var tableId = branch.TableIds[0];
 
                 var session = TableSession.SeatWalkIn(branch.BranchId, tableId, 2, now, branch.WaiterId);

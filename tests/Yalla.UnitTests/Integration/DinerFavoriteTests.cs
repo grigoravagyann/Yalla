@@ -26,7 +26,7 @@ public sealed class DinerFavoriteTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             home = await AuthTestData.CreateBranchAsync(db);
-            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1);
+            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1, takingGuests: true);
         }
 
         Assert.Equal(HttpStatusCode.NoContent, (await HeartAsync(diner, home.BranchId)).StatusCode);
@@ -85,9 +85,9 @@ public sealed class DinerFavoriteTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             home = await AuthTestData.CreateBranchAsync(db);
-            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1);
-            closed = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", isActive: false, tableCount: 1);
-            later = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1);
+            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1, takingGuests: true);
+            closed = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", isActive: false, tableCount: 1, takingGuests: true);
+            later = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1, takingGuests: true);
         }
 
         Assert.Equal(HttpStatusCode.NoContent, (await HeartAsync(diner, home.BranchId)).StatusCode);
@@ -183,7 +183,7 @@ public sealed class DinerFavoriteTests(SqlServerFixture fixture)
         await using (var db = fixture.CreateContext(factory.Clock))
         {
             home = await AuthTestData.CreateBranchAsync(db);
-            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1);
+            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1, takingGuests: true);
 
             // 499 hearts for places that are no longer found: they count, and the list leaves them out.
             db.DinerFavorites.AddRange(

@@ -55,10 +55,11 @@ internal static class AuthTestData
         YallaDbContext db,
         int tableCount = 2,
         CancellationToken cancellationToken = default,
-        bool bookable = true)
+        bool bookable = true,
+        bool enrolTablet = true)
     {
         var branch = await TestBranchBuilder.CreateAsync(
-            db, tableCount: tableCount, cancellationToken: cancellationToken);
+            db, tableCount: tableCount, enrolTablet: enrolTablet, cancellationToken: cancellationToken);
 
         // Bookable from the app, as a live branch is: online bookings on and the policy saved (K9). POST /api/reservations
         // is the app's route and books under the app's gate since 2026-10-27, whatever channel a test names.
@@ -180,7 +181,8 @@ internal static class AuthTestData
         string? name = null,
         bool isActive = true,
         int tableCount = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool takingGuests = false)
     {
         var venue = await db.Venues.FirstAsync(v => v.Id == venueId, cancellationToken);
         var unique = Guid.NewGuid().ToString("N")[..12];
@@ -204,6 +206,12 @@ internal static class AuthTestData
         }
 
         await db.SaveChangesAsync(cancellationToken);
+
+        // Seen by diners: a pinned table, hours, staff and a tablet of its own (DinerVisibility).
+        if (takingGuests)
+        {
+            await TestBranchBuilder.TakeGuestsAsync(db, branch.Id, cancellationToken);
+        }
 
         return branch.Id;
     }

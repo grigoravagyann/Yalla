@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Yalla.Domain.Enums;
+using Yalla.Domain.Identity;
 using Yalla.Domain.Media;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Staff;
@@ -53,6 +54,7 @@ internal static class TestBranchBuilder
         IReadOnlyList<BranchFeature>? features = null,
         bool pinTables = true,
         bool roomPhoto = true,
+        bool enrolTablet = true,
         CancellationToken cancellationToken = default)
     {
         var unique = Guid.NewGuid().ToString("N")[..12];
@@ -119,6 +121,15 @@ internal static class TestBranchBuilder
 
         db.DiningTables.AddRange(tables);
 
+        // A tablet on the counter, because a branch with no device to see a booking arrive is not
+        // taking guests (DinerVisibility) and most tests book. A test about that rule, or one that
+        // counts the branch's devices, asks for enrolTablet: false.
+        if (enrolTablet)
+        {
+            db.StaffDevices.Add(new StaffDevice(
+                venue.Id, branch.Id, "Counter", $"{SeededTabletPrefix}{unique}", DateTime.UtcNow));
+        }
+
         await db.SaveChangesAsync(cancellationToken);
 
         return new TestBranch(
@@ -179,6 +190,58 @@ internal static class TestBranchBuilder
             unique + unique,
             new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
     }
+
+    /// <summary>
+    /// Fills in whatever a branch made some other way lacks of the required checklist lines, so
+    /// diners see it (DinerVisibility): a pinned bookable table on a room photo, opening hours every
+    /// day, somebody on its staff and a tablet. For branches a test built by hand or through the
+    /// platform API; one from <see cref="CreateAsync"/> already has all four.
+    /// </summary>
+    public static async Task TakeGuestsAsync(YallaDbContext db, Guid branchId, CancellationToken cancellationToken = default)
+    {
+        var branch = await db.Branches.FirstAsync(b => b.Id == branchId, cancellationToken);
+
+        if (!await db.DiningTables.AnyAsync(
+                t => t.BranchId == branchId && t.IsActive && t.IsBookable && t.PhotoId != null, cancellationToken))
+        {
+            var area = new FloorArea(branchId, "Room", 0);
+            var photo = RoomPhoto(branchId);
+            db.FloorAreas.Add(area);
+            db.Photos.Add(photo);
+            db.FloorAreaPhotos.Add(new FloorAreaPhoto(area.Id, photo.Id, 0));
+
+            var table = new DiningTable(branchId, label: $"G{Guid.NewGuid():N}"[..8], seats: 4, floorAreaId: area.Id);
+            table.PlaceOnPhoto(photo.Id, 0.5, 0.5);
+            db.DiningTables.Add(table);
+        }
+
+        if (!await db.OpeningHours.AnyAsync(h => h.BranchId == branchId, cancellationToken))
+        {
+            foreach (var day in Enum.GetValues<DayOfWeek>())
+            {
+                db.OpeningHours.Add(new OpeningHours(branchId, day, new TimeOnly(10, 0), new TimeOnly(23, 0), false));
+            }
+        }
+
+        if (!await db.StaffMembers.AnyAsync(
+                s => s.IsActive && s.VenueId == branch.VenueId && (s.BranchId == null || s.BranchId == branchId),
+                cancellationToken))
+        {
+            var unique = Guid.NewGuid().ToString("N")[..7];
+            db.StaffMembers.Add(new StaffMember(branch.VenueId, "Test Waiter", $"+3743{unique}", StaffRole.Waiter, "hash", branchId));
+        }
+
+        if (!await db.StaffDevices.AnyAsync(d => d.BranchId == branchId && d.RevokedAtUtc == null, cancellationToken))
+        {
+            db.StaffDevices.Add(new StaffDevice(
+                branch.VenueId, branchId, "Counter", $"{SeededTabletPrefix}{Guid.NewGuid():N}", DateTime.UtcNow));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>The client id prefix of the tablets this builder enrols, so a test can tell them from its own.</summary>
+    public const string SeededTabletPrefix = "test-tablet-";
 
     /// <summary>Spreads pins across the photo so no two sit on top of each other.</summary>
     private static double PinX(int index) => Math.Round(0.05 + ((index % 10) * 0.09), 2);

@@ -39,6 +39,12 @@ public class PublicVenueBranchCountTests(SqlServerFixture fixture)
             db.Branches.Add(closed);
 
             await db.SaveChangesAsync();
+
+            // Both set up to take guests, so what the chooser counts is the switch alone.
+            foreach (var extra in await db.Branches.Where(b => b.VenueId == venueId && b.Id != first.BranchId).Select(b => b.Id).ToListAsync())
+            {
+                await TestBranchBuilder.TakeGuestsAsync(db, extra);
+            }
         }
 
         using var anonymous = factory.CreateClient();

@@ -353,7 +353,8 @@ public sealed class DevListingSeedTests(SqlServerFixture fixture) : IDisposable
             db,
             new DevSeedRegistry(),
             new DevListingSeeder(db, clock, Storage(), NullLogger<DevListingSeeder>.Instance),
-            NullLogger<DevDataSeeder>.Instance);
+            NullLogger<DevDataSeeder>.Instance,
+            clock);
 
         await seeder.SeedAsync();
     }
