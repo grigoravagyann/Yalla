@@ -48,7 +48,7 @@ public sealed class StaleDeclineReasonMigrationTests(SqlServerFixture fixture)
                 // The builder writes today's Branches row, so the later features column is put in place.
                 await LaterColumns.AddBranchFeatureColumnsAsync(db);
 
-                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
+                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1, enrolTablet: false);
 
                 // (status, decline reason, approved at, cancellation text, cancelled because)
                 var seeds = new Dictionary<string, (ReservationStatus Status, DeclineReason Reason, bool Approved, string? Text, int? Because)>

@@ -101,7 +101,10 @@ internal sealed class PublicVenueQuery(
                 v.Name,
                 v.Type,
                 Branches = v.Branches.Where(b => live.Contains(b.Id)).ToList(),
-            }),
+            })
+
+            // A venue none of whose branches is taking guests has nothing to show a diner.
+            .Where(v => v.Branches.Count > 0),
         ];
 
         var branchIds = venues.SelectMany(v => v.Branches).Select(b => b.Id).ToList();
@@ -323,11 +326,8 @@ internal sealed class PublicVenueQuery(
     {
         var live = await db.Branches
             .AsNoTracking()
-            .Where(b => b.Id == branchId
-                        && b.IsActive
-                        && b.Venue.IsActive
-                        && b.Venue.SuspendedAtUtc == null
-                        && b.Venue.DeletedAtUtc == null)
+            .Where(b => b.Id == branchId)
+            .Where(DinerVisibility.Visible(db))
             .Select(b => new
             {
                 b.PhoneE164,
@@ -389,12 +389,7 @@ internal sealed class PublicVenueQuery(
             {
                 entry.AbsoluteExpirationRelativeToNow = LiveFor;
 
-                var ids = await db.Branches
-                    .AsNoTracking()
-                    .Where(b => b.IsActive
-                                && b.Venue.IsActive
-                                && b.Venue.SuspendedAtUtc == null
-                                && b.Venue.DeletedAtUtc == null)
+                var ids = await DinerVisibility.Branches(db)
                     .Select(b => b.Id)
                     .ToListAsync(cancellationToken);
 

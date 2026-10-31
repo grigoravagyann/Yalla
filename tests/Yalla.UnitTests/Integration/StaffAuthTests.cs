@@ -321,7 +321,7 @@ public class StaffAuthTests(SqlServerFixture fixture)
     {
         await using var db = fixture.CreateContext(factory.Clock);
 
-        return await AuthTestData.CreateBranchAsync(db);
+        return await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
     }
 
     /// <summary>Signs the manager in to the admin panel and returns their access token.</summary>

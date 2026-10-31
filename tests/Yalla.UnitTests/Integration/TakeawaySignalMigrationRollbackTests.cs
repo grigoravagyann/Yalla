@@ -46,7 +46,7 @@ public sealed class TakeawaySignalMigrationRollbackTests(SqlServerFixture fixtur
                 // The builder writes today's Branches row, so the later features column is put in place.
                 await LaterColumns.AddBranchFeatureColumnsAsync(db);
 
-                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1);
+                var branch = await TestBranchBuilder.CreateAsync(db, tableCount: 1, enrolTablet: false);
                 branchId = branch.BranchId;
                 tableId = branch.TableIds[0];
 

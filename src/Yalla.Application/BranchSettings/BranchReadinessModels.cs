@@ -20,9 +20,9 @@ namespace Yalla.Application.BranchSettings;
 /// </remarks>
 /// <param name="BranchId">The branch this is about.</param>
 /// <param name="IsReadyForDiners">
-/// Every line below satisfied. This is exactly what going Paid requires on the menu side, plus the
-/// rest of the checklist - the tier switch itself only enforces the menu, because a venue may want
-/// its tabs enabled before it has finished enrolling tablets.
+/// Every line of the checklist satisfied. Advice: it hides nothing. Whether diners see the branch is
+/// <paramref name="TakingGuests"/>, the required lines only; table service separately waits for the
+/// menu's dishes to be finished.
 /// </param>
 /// <param name="FloorPlanDrawn">At least one active table exists at the branch.</param>
 /// <param name="TableCount">How many active tables there are.</param>
@@ -50,6 +50,21 @@ namespace Yalla.Application.BranchSettings;
 /// <param name="StaffCount">How many.</param>
 /// <param name="DeviceEnrolled">At least one tablet is enrolled and not revoked.</param>
 /// <param name="DeviceCount">How many.</param>
+/// <param name="BookableTableCount">
+/// Active tables a diner can book: bookable and pinned on a room photo, which is what the booking
+/// rules offer.
+/// </param>
+/// <param name="TakingGuests">
+/// Every <b>required</b> line satisfied - a bookable table, opening hours, staff and a device - so
+/// diners see the branch. Without it the branch is not listed, searched, shown or bookable
+/// (<c>DinerVisibility</c>). <paramref name="IsReadyForDiners"/> is the whole checklist and blocks
+/// nothing on its own.
+/// </param>
+/// <param name="MissingForGuests">
+/// The required lines still missing, as <see cref="ReadinessIssueCodes"/>, in checklist order:
+/// <c>no-tables</c> or <c>no-bookable-table</c>, <c>no-hours</c>, <c>no-staff</c>, <c>no-device</c>.
+/// Empty exactly when <paramref name="TakingGuests"/>.
+/// </param>
 /// <param name="AcceptsWebBookings">
 /// Whether the branch takes bookings from its public page.
 /// <b>Reported, and deliberately not a blocker.</b> A venue that does not want bookings from
@@ -88,6 +103,9 @@ public sealed record BranchReadinessView(
     int StaffCount,
     bool DeviceEnrolled,
     int DeviceCount,
+    int BookableTableCount,
+    bool TakingGuests,
+    IReadOnlyList<string> MissingForGuests,
     bool AcceptsWebBookings,
     IReadOnlyList<string> Blockers,
     IReadOnlyList<ReadinessIssue> Issues);
@@ -116,6 +134,13 @@ public static class ReadinessIssueCodes
 {
     /// <summary>No active table at the branch.</summary>
     public const string NoTables = "no-tables";
+
+    /// <summary>
+    /// Tables exist but none a diner can book (bookable and pinned on a room photo). Only in
+    /// <see cref="BranchReadinessView.MissingForGuests"/>: the checklist's own table lines are
+    /// <see cref="NoTables"/> and <see cref="TablesUnlabelled"/>.
+    /// </summary>
+    public const string NoBookableTable = "no-bookable-table";
 
     /// <summary>Some active table has no label.</summary>
     public const string TablesUnlabelled = "tables-unlabelled";

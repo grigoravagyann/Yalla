@@ -138,6 +138,9 @@ public sealed class ReservationOwnOverlapTests(SqlServerFixture fixture)
         // The sibling is another branch of here's venue.
         await db.Database.ExecuteSqlAsync($"UPDATE dbo.Branches SET VenueId = {here.VenueId} WHERE Id = {sibling.BranchId}");
 
+        // Its staff move with it, or it has nobody of its own venue on the floor and is not taking guests.
+        await db.Database.ExecuteSqlAsync($"UPDATE dbo.StaffMembers SET VenueId = {here.VenueId} WHERE BranchId = {sibling.BranchId}");
+
         // Somebody else has here's table 1 at 14:00, so Bella's 13:00 there is cut to 13:55.
         await fixture.CreateReservationService(db, clock, TestActor.Diner())
             .CreateAsync(Booking(here, here.TableIds[0], new TimeOnly(14, 0)));

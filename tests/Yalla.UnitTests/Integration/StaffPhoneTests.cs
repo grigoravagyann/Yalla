@@ -570,6 +570,6 @@ public sealed class StaffPhoneTests(SqlServerFixture fixture)
     {
         await using YallaDbContext db = fixture.CreateContext(factory.Clock);
 
-        return await AuthTestData.CreateBranchAsync(db);
+        return await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
     }
 }

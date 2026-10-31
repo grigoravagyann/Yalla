@@ -120,7 +120,7 @@ public sealed class DinerAccountLockRaceTests(SqlServerFixture fixture) : IDispo
         await using (var db = fixture.CreateContext(clock))
         {
             home = await AuthTestData.CreateBranchAsync(db);
-            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1);
+            sibling = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan", tableCount: 1, takingGuests: true);
             dinerUserId = await ReviewTestData.SeedDinerAsync(db, "Ani Twophones", clock.UtcNow);
 
             db.DinerFavorites.AddRange(

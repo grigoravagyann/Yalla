@@ -200,12 +200,9 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
             // Diner browsing. A suspended or deleted venue does not exist here - it keeps every
             // row and stays visible to its owner through the admin surface, but a diner must not
-            // be able to find it or book it.
-            .Where(b => b.Id == branchId
-                        && b.IsActive
-                        && b.Venue.IsActive
-                        && b.Venue.SuspendedAtUtc == null
-                        && b.Venue.DeletedAtUtc == null)
+            // be able to find it or book it - and nor does a branch not taking guests yet.
+            .Where(b => b.Id == branchId)
+            .Where(DinerVisibility.Visible(db))
             .Select(b => new AvailabilityRow
             {
                 BranchId = b.Id,

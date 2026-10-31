@@ -663,6 +663,7 @@ internal sealed class TakeawayService(
                      ?? throw new KeyNotFoundException($"Branch {branchId} was not found.");
 
         VenueGate.RequireOpenForBusiness(branch);
+        await DinerVisibility.RequireTakingGuestsAsync(db, branch.Id, cancellationToken);
 
         return branch;
     }

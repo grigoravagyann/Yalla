@@ -60,7 +60,7 @@ public sealed class RoomsWithPhotosMigrationTests(SqlServerFixture fixture)
 
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
+                branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false, enrolTablet: false);
                 cover = await TestMenuBuilder.AddPhotoAsync(db, branch.BranchId);
 
                 var area = await db.FloorAreas.Where(a => a.BranchId == branch.BranchId).Select(a => a.Id).SingleAsync();

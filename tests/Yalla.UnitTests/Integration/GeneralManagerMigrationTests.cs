@@ -63,7 +63,7 @@ public sealed class GeneralManagerMigrationTests(SqlServerFixture fixture)
                 // is what the old code wrote for "manages every branch".
                 await LaterColumns.AddPreOrderColumnsAsync(db);
 
-                branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false);
+                branch = await TestBranchBuilder.CreateAsync(db, tableCount: 0, roomPhoto: false, enrolTablet: false);
 
                 var venueWide = new StaffMember(branch.VenueId, "Venue-Wide Manager", "+37455500100", StaffRole.Owner, "hash");
                 db.StaffMembers.Add(venueWide);

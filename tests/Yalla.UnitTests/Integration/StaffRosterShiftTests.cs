@@ -516,7 +516,7 @@ public sealed class StaffRosterShiftTests(SqlServerFixture fixture)
     private async Task<AuthBranch> BranchAsync(YallaApiFactory factory, string? timeZoneId = null)
     {
         await using var db = fixture.CreateContext(factory.Clock);
-        var branch = await AuthTestData.CreateBranchAsync(db);
+        var branch = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
 
         if (timeZoneId is not null)
         {

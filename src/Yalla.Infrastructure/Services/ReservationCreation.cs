@@ -112,6 +112,10 @@ internal sealed class ReservationCreation(
 
         ReservationSlotRules.RequireChannelAccepted(command.Channel, branch, viaManageLink: false);
 
+        // And one that has not finished its required setup - no tablet to see the booking arrive,
+        // say - is not taking guests at all (DinerVisibility).
+        await DinerVisibility.RequireTakingGuestsAsync(db, branch.Id, cancellationToken);
+
         var table = await lookups.LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         var policy = branch.ReservationPolicy;
         var zone = BranchZone.For(branch.TimeZoneId);

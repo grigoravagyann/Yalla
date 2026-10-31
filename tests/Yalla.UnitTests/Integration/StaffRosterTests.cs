@@ -156,7 +156,7 @@ public class StaffRosterTests(SqlServerFixture fixture)
 
         await using (var db = fixture.CreateContext(factory.Clock))
         {
-            home = await AuthTestData.CreateBranchAsync(db);
+            home = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
             siblingBranchId = await AuthTestData.AddBranchAsync(db, home.VenueId, "Asia/Yerevan");
             generalManager = await AuthTestData.SeedGeneralManagerAsync(db, home.VenueId, pin: "2580");
         }
@@ -223,8 +223,8 @@ public class StaffRosterTests(SqlServerFixture fixture)
     {
         await using var db = fixture.CreateContext(factory.Clock);
 
-        var branch = await AuthTestData.CreateBranchAsync(db);
-        var otherVenue = await AuthTestData.CreateBranchAsync(db);
+        var branch = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
+        var otherVenue = await AuthTestData.CreateBranchAsync(db, enrolTablet: false);
         var siblingBranchId = await AuthTestData.AddBranchAsync(db, branch.VenueId, "Asia/Yerevan");
 
         var venueWide = Staff(db, branch.VenueId, "Anna Venue-Wide", null);

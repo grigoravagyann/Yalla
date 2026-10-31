@@ -76,9 +76,9 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         var tables = (await db.DiningTables
                 .AsNoTracking()
                 .Where(t => found.Contains(t.BranchId) && t.IsActive)
-                .Select(t => new { t.BranchId, t.Label })
+                .Select(t => new { t.BranchId, t.Label, Bookable = t.IsBookable && t.PhotoId != null })
                 .ToListAsync(cancellationToken))
-            .ToLookup(t => t.BranchId, t => t.Label);
+            .ToLookup(t => t.BranchId, t => new TableLine(t.Label, t.Bookable));
 
         var categoryCounts = await db.MenuCategories
             .AsNoTracking()
@@ -152,6 +152,9 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         return views;
     }
 
+    /// <summary>A table as the checklist counts it: its label, and whether a diner can book it.</summary>
+    private readonly record struct TableLine(string Label, bool Bookable);
+
     /// <summary>
     /// The checklist from its counts. One place writes both the sentences and the codes, line for
     /// line, so <see cref="BranchReadinessView.Blockers"/> and <see cref="BranchReadinessView.Issues"/>
@@ -159,7 +162,7 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
     /// </summary>
     private static BranchReadinessView Compose(
         Guid branchId,
-        List<string> tables,
+        List<TableLine> tables,
         int categoryCount,
         int itemCount,
         List<Guid> incomplete,
@@ -170,7 +173,8 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         bool acceptsWebBookings)
     {
         var floorPlanDrawn = tables.Count > 0;
-        var tablesLabelled = floorPlanDrawn && tables.TrueForAll(label => !string.IsNullOrWhiteSpace(label));
+        var tablesLabelled = floorPlanDrawn && tables.TrueForAll(t => !string.IsNullOrWhiteSpace(t.Label));
+        var bookableTableCount = tables.Count(t => t.Bookable);
         var categoriesPresent = categoryCount > 0;
         var menuComplete = categoriesPresent && itemCount > 0 && incomplete.Count == 0;
         var hoursSet = openDays > 0;
@@ -231,7 +235,35 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
 
         if (!deviceEnrolled)
         {
-            Block("No tablet has been enrolled at this branch.", ReadinessIssueCodes.NoDevice);
+            Block("No tablet or staff phone is connected at this branch.", ReadinessIssueCodes.NoDevice);
+        }
+
+        // The lines without which diners do not see the branch at all, in checklist order. The
+        // same four DinerVisibility filters every diner surface by; the rest above are advice.
+        var missingForGuests = new List<string>();
+
+        if (!floorPlanDrawn)
+        {
+            missingForGuests.Add(ReadinessIssueCodes.NoTables);
+        }
+        else if (bookableTableCount == 0)
+        {
+            missingForGuests.Add(ReadinessIssueCodes.NoBookableTable);
+        }
+
+        if (!hoursSet)
+        {
+            missingForGuests.Add(ReadinessIssueCodes.NoHours);
+        }
+
+        if (!staffEnrolled)
+        {
+            missingForGuests.Add(ReadinessIssueCodes.NoStaff);
+        }
+
+        if (!deviceEnrolled)
+        {
+            missingForGuests.Add(ReadinessIssueCodes.NoDevice);
         }
 
         return new BranchReadinessView(
@@ -253,6 +285,9 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
             StaffCount: staffCount,
             DeviceEnrolled: deviceEnrolled,
             DeviceCount: deviceCount,
+            BookableTableCount: bookableTableCount,
+            TakingGuests: missingForGuests.Count == 0,
+            MissingForGuests: missingForGuests,
 
             // Reported, never a blocker - see BranchReadinessView. It is deliberately absent from
             // the blockers list above, and adding it there would stop every venue that does not

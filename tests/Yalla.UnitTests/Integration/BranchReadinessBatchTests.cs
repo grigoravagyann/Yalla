@@ -22,7 +22,7 @@ public sealed class BranchReadinessBatchTests(SqlServerFixture fixture)
         var readiness = SqlServerFixture.CreateReadinessQuery(db);
 
         var ready = await ConsoleTestData.ReadyBranchAsync(db, clock.UtcNow);
-        var bare = await TestBranchBuilder.CreateAsync(db);
+        var bare = await TestBranchBuilder.CreateAsync(db, enrolTablet: false);
         var empty = await ConsoleTestData.AddBranchAsync(db, bare.VenueId, "Nothing yet", BranchFeatures.Basic);
 
         // A venue-wide owner counts as staff at every branch of the venue, the empty one included.
@@ -39,8 +39,11 @@ public sealed class BranchReadinessBatchTests(SqlServerFixture fixture)
             var one = await readiness.GetAsync(id);
             var batched = views[id];
 
-            Assert.Equal(one with { IncompleteMenuItemIds = [], Blockers = [], Issues = [] }, batched with { IncompleteMenuItemIds = [], Blockers = [], Issues = [] });
+            Assert.Equal(
+                one with { IncompleteMenuItemIds = [], Blockers = [], Issues = [], MissingForGuests = [] },
+                batched with { IncompleteMenuItemIds = [], Blockers = [], Issues = [], MissingForGuests = [] });
             Assert.Equal(one.IncompleteMenuItemIds, batched.IncompleteMenuItemIds);
+            Assert.Equal(one.MissingForGuests, batched.MissingForGuests);
             Assert.Equal(one.Blockers, batched.Blockers);
             Assert.Equal(one.Issues, batched.Issues);
             Assert.Equal(batched.Blockers.Count, batched.Issues.Count);

@@ -46,7 +46,7 @@ public sealed class PreOrderMigrationRollbackTests(SqlServerFixture fixture)
                 // columns, so they are put in place for the fixture to find.
                 await LaterColumns.AddTakeawayColumnsAsync(db);
 
-                branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1)).BranchId;
+                branchId = (await TestBranchBuilder.CreateAsync(db, tableCount: 1, enrolTablet: false)).BranchId;
                 await TestMenuBuilder.CreateAsync(db, branchId);
                 const string paramsJson = "{\"venueName\":\"Cafe\"}";
                 const string payloadJson = "{}";
