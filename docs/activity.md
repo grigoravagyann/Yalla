@@ -109,7 +109,7 @@ summary also carries `localDate`, `localTime`, `partySize`, `status` and `tableI
 
 | Code | Actor | Subject | Summary / notes |
 | --- | --- | --- | --- |
-| `booking.created` | guest | reservation | `extra.channel`, `extra.trigger` |
+| `booking.created` | guest; staff when taken by hand (2026-10-31, on their device) | reservation | `extra.channel`, `extra.trigger`; `extra.takenByStaffId` for a staff-taken booking |
 | `booking.moved` | guest | reservation | `extra.viaManageLink`; `before`/`after` the slot |
 | `booking.cancelled` | guest | reservation | `extra.late`, `extra.viaManageLink`; `reason` |
 | `booking.approved` | staff | reservation | `extra.trigger`, `extra.decisionSeconds` |
@@ -120,6 +120,7 @@ summary also carries `localDate`, `localTime`, `partySize`, `status` and `tableI
 | `booking.no-show-undone` | staff | reservation | `reason` |
 | `booking.hold-extended` | guest | reservation | `extra.minutes`, `extra.holdExpiresAtUtc` |
 | `booking.guest-answered` | guest (staff for not-coming) | reservation | `extra.answer` `coming`, `late` (+`minutes`), `not-coming`, `table-request` (+`accepted`) |
+| `booking.guest-coming` | staff | reservation | the guest told the staff member they are coming, recorded for them (2026-10-31): `extra.answer` `coming`, `extra.recordedByStaff` true, `extra.recordedByStaffId` |
 | `table.seated` | staff / guest | table-session | `tableId`, `partySize`, `source` `walk-in`, `scan`, `held` |
 | `table.freed` | staff | table-session | `tabId`, `reservationId`, `outstandingAmd` |
 | `table.held`, `table.hold-released`, `table.out-of-service`, `table.back-in-service` | staff | table | `reason` |
@@ -258,6 +259,10 @@ Read live off the operational tables, as the reports are - a fixed number of sta
 - **Calls** - claims in the window; seconds from the call to the claim. **Messages** - venue messages in the window
   that answered a waiting guest text; seconds from the guest's first unanswered text to the reply.
 - **Approvals, declines** - from the History (the booking does not record who decided it), so they reach back a year.
+- **Bookings taken, came, no-show** (2026-10-31) - off the bookings themselves (`TakenByStaffId`, indexed with the start):
+  the person's staff-taken bookings whose **start** falls in the window, whatever became of them; of those, the parties
+  that sat down (`Seated` or `Completed`) and the no-shows that stand (a withdrawn no-show is confirmed again, so it
+  counts as taken and not as missed). The totals are the same counts over everybody.
 - **Medians** are of whole seconds: the middle value of an odd count; of an even count, the mean of the middle two,
   rounded half away from zero. A totals median is over every claim or reply, never a median of medians.
 
@@ -267,7 +272,9 @@ Read live off the operational tables, as the reports are - a fixed number of sta
 waiter's sales.
 
 A person's page adds a **daily series** (a week ending on `to` at least) and **recent lists** - `orders`, `messages`,
-`bookings`, `cash`, `calls` - which are History entries, keyset-paged, with `seconds` where the action measures it.
+`bookings`, `cash`, `calls` - which are History entries, keyset-paged, with `seconds` where the action measures it. The
+`bookings` list is approved, declined, seated, no-show and, since 2026-10-31, `booking.created` - the person's own
+taken-by-hand lines (a guest's booking has no staff member on it, so none of those appear).
 
 **My results in one read** (2026-10-26). `getMyResults` (`GET /api/staff/me/results`) is the staff phone's My results
 for a period in one request - it took one `getMyPerformance` per list before (orders, messages, bookings and calls:

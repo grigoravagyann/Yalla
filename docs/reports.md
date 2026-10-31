@@ -86,6 +86,10 @@ Two details worth knowing when reading it:
 - **The device check is live, not stored at booking time.** Somebody who installs the app a week
   later stops being counted as unreachable — which is the behaviour change the number exists to
   detect.
+- **`Channel` `Staff` is the server's, not a client's** (2026-10-31): a booking the floor takes by hand through
+  `POST /api/branches/{branchId}/reservations/staff` is stored as `Staff` with its taker, is never counted here as a web
+  booking without an app, and is gated by neither booking switch - see
+  [reservations.md](reservations.md#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31).
 
 ## 4. The venue console's Reports screen
 

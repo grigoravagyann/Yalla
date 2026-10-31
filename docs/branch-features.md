@@ -42,6 +42,7 @@ body names** (`ReservationSlotRules.RequireChannelAccepted`, `FeatureFor`). The 
 | `POST /api/reservations/{id}/reschedule` (a diner's session) | unchanged | the booking's own channel: `WebBookings` for one made on the web, `AppBookings` for any other (the app's, and those made before the channel was recorded) | the booking's channel's, as above |
 | `POST /api/public/bookings/{token}/reschedule` (the manage link) | unchanged | `WebBookings`, whichever channel made the booking - the link is the page | the booking's channel's |
 | cancel, from the session or the link | - | none | none |
+| `POST /api/branches/{branchId}/reservations/staff` (`createStaffReservation`, the floor books for a guest by hand, 2026-10-31) | `Staff` | **none** - not a diner's channel | **none** - the venue's own choice; only `VenueGate` (open for business) holds. See [reservations.md](reservations.md#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31) |
 
 A move goes by the booking's channel, not the session's route, because both routes take any proved diner's session:
 the page's booking moved from the app is still the page's booking, and blocking web bookings should keep it where it
