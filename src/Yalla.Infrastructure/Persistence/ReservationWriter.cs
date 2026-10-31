@@ -184,7 +184,9 @@ internal sealed class ReservationWriter(
 
             db.Reservations.Add(reservation);
 
-            if (await SaveWithFreshCodeAsync(reservation, booker, cancellationToken) is { } winner)
+            if (await SaveWithFreshCodeAsync(
+                    reservation, () => FindReplayAsync(reservation.ClientCommandId, booker.DinerUserId, cancellationToken), cancellationToken)
+                is { } winner)
             {
                 return InsertOutcome.Replayed(winner);
             }
@@ -241,19 +243,7 @@ internal sealed class ReservationWriter(
 
             await RefuseOverlapWithOwnAsync(booker, branchId, sitting, excludingReservationId: Guid.Empty, cancellationToken);
 
-            // The room, read inside the lock: every booking by time only that holds a place during this sitting.
-            var holding = await db.Reservations
-                .AsNoTracking()
-                .Where(r => r.BranchId == branchId
-                            && r.BookedWithoutTable
-                            && GuestsAtOnce.Holding.Contains(r.Status)
-                            && r.StartUtc < sitting.EndUtc
-                            && r.EndUtc > sitting.StartUtc)
-                .Select(r => new { r.StartUtc, r.EndUtc, r.PartySize })
-                .ToListAsync(cancellationToken);
-
-            var left = GuestsAtOnce.LeftWithin(
-                holding.Select(r => (new BookedInterval(r.StartUtc, r.EndUtc), r.PartySize)), sitting, guestsAtOnce);
+            var left = await GuestsLeftUnderLockAsync(branchId, sitting, guestsAtOnce, cancellationToken);
 
             if (partySize > left)
             {
@@ -266,7 +256,9 @@ internal sealed class ReservationWriter(
 
             db.Reservations.Add(reservation);
 
-            if (await SaveWithFreshCodeAsync(reservation, booker, cancellationToken) is { } winner)
+            if (await SaveWithFreshCodeAsync(
+                    reservation, () => FindReplayAsync(reservation.ClientCommandId, booker.DinerUserId, cancellationToken), cancellationToken)
+                is { } winner)
             {
                 return new InsertWithoutTableOutcome(winner, null, null);
             }
@@ -279,6 +271,184 @@ internal sealed class ReservationWriter(
         {
             DetachStaged();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Inserts a booking a member of staff takes by hand (2026-10-31) under the table's lock: the staff replay, the table
+    /// still in service, the table's evening - and nothing of a diner's. No account's lock, no block, no overlap with the
+    /// guest's own bookings and no limit per number: there is no account and the number is the venue's to call. No time
+    /// to leave by to accept: when a full sitting runs into the next booking the staged booking takes that time
+    /// (<see cref="TableSequencingVerdict.MustFreeByUtc"/>). And no question to the guest before: a table the diner's read
+    /// could only ask for, the floor - which has judged the room - books outright.
+    /// </summary>
+    /// <returns>What happened. Only <see cref="InsertOutcome.Booking"/> set means a row was written.</returns>
+    /// <exception cref="TableLockTimeoutException">The lock could not be had in time. Nothing was written.</exception>
+    public async Task<InsertOutcome> InsertByStaffUnderTableLockAsync(
+        Guid clientCommandId,
+        Guid branchId,
+        DiningTable table,
+        DateTime startUtc,
+        ReservationPolicy policy,
+        Func<TableSequencingVerdict, CancellationToken, Task<Reservation>> stageAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(stageAsync);
+
+        try
+        {
+            await using var locked = await tableLock.AcquireAsync(table.Id, table.Label, cancellationToken);
+
+            // Replay first, as for a diner's booking: a retry that waited here while the original committed is answered
+            // as the booking, not refused by it.
+            if (await FindStaffReplayAsync(clientCommandId, branchId, cancellationToken) is { } original)
+            {
+                return InsertOutcome.Replayed(original);
+            }
+
+            await ReadTableInServiceUnderLockAsync(table, cancellationToken);
+
+            var (verdict, sitting) = await TableEvening.JudgeAsync(
+                db, table.Id, startUtc, policy, excludingReservationId: Guid.Empty, cancellationToken);
+
+            if (Refusal(verdict, sitting) is { } refused)
+            {
+                return refused.Clash is { } clash ? InsertOutcome.Conflicted(clash) : InsertOutcome.OccupiedBy(refused.Sitting!);
+            }
+
+            var reservation = await stageAsync(verdict, cancellationToken);
+
+            db.Reservations.Add(reservation);
+
+            if (await SaveWithFreshCodeAsync(
+                    reservation, () => FindStaffReplayAsync(clientCommandId, branchId, cancellationToken), cancellationToken)
+                is { } winner)
+            {
+                return InsertOutcome.Replayed(winner);
+            }
+
+            await locked.CommitAsync(cancellationToken);
+
+            return InsertOutcome.Inserted(reservation);
+        }
+        catch
+        {
+            DetachStaged();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Inserts a booking a member of staff takes by hand at a branch that books by time only, under the branch's lock:
+    /// the staff replay and the room's guests at once, nothing of a diner's (see <see cref="InsertByStaffUnderTableLockAsync"/>).
+    /// </summary>
+    public async Task<InsertWithoutTableOutcome> InsertByStaffWithoutTableAsync(
+        Guid clientCommandId,
+        Guid branchId,
+        BookedInterval sitting,
+        int partySize,
+        int guestsAtOnce,
+        Func<CancellationToken, Task<Reservation>> stageAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stageAsync);
+
+        try
+        {
+            await using var locked = await tableLock.AcquireBranchAsync(branchId, cancellationToken);
+
+            if (await FindStaffReplayAsync(clientCommandId, branchId, cancellationToken) is { } original)
+            {
+                return new InsertWithoutTableOutcome(original, null, null);
+            }
+
+            var left = await GuestsLeftUnderLockAsync(branchId, sitting, guestsAtOnce, cancellationToken);
+
+            if (partySize > left)
+            {
+                return new InsertWithoutTableOutcome(null, null, left);
+            }
+
+            var reservation = await stageAsync(cancellationToken);
+
+            db.Reservations.Add(reservation);
+
+            if (await SaveWithFreshCodeAsync(
+                    reservation, () => FindStaffReplayAsync(clientCommandId, branchId, cancellationToken), cancellationToken)
+                is { } winner)
+            {
+                return new InsertWithoutTableOutcome(winner, null, null);
+            }
+
+            await locked.CommitAsync(cancellationToken);
+
+            return new InsertWithoutTableOutcome(null, reservation, null);
+        }
+        catch
+        {
+            DetachStaged();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The room, read inside the branch's lock: how many guests are left at the busiest moment of the sitting, given
+    /// every booking by time only that holds a place during it.
+    /// </summary>
+    private async Task<int> GuestsLeftUnderLockAsync(
+        Guid branchId, BookedInterval sitting, int guestsAtOnce, CancellationToken cancellationToken)
+    {
+        var holding = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId
+                        && r.BookedWithoutTable
+                        && GuestsAtOnce.Holding.Contains(r.Status)
+                        && r.StartUtc < sitting.EndUtc
+                        && r.EndUtc > sitting.StartUtc)
+            .Select(r => new { r.StartUtc, r.EndUtc, r.PartySize })
+            .ToListAsync(cancellationToken);
+
+        return GuestsAtOnce.LeftWithin(
+            holding.Select(r => (new BookedInterval(r.StartUtc, r.EndUtc), r.PartySize)), sitting, guestsAtOnce);
+    }
+
+    /// <summary>
+    /// The booking a staff command already created at this branch, if it has one: the same id from the floor is a
+    /// retry; the same id on a diner's booking, or at another branch, is a collision and discloses nothing.
+    /// </summary>
+    public Task<Reservation?> FindStaffReplayAsync(Guid clientCommandId, Guid branchId, CancellationToken cancellationToken) =>
+        db.Reservations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                r => r.ClientCommandId == clientCommandId
+                     && r.BranchId == branchId
+                     && r.Channel == ReservationChannel.Staff
+                     && r.TakenByStaffId != null,
+                cancellationToken);
+
+    /// <summary>
+    /// Refuses, inside the lock, a table that is gone or went out of service while a staff booking was being validated
+    /// - the staff half of <see cref="ReadTableStatusUnderLockAsync"/>: whether the table takes bookings from the app
+    /// does not matter to the floor.
+    /// </summary>
+    private async Task ReadTableInServiceUnderLockAsync(DiningTable table, CancellationToken cancellationToken)
+    {
+        var current = await db.DiningTables
+            .AsNoTracking()
+            .Where(t => t.Id == table.Id)
+            .Select(t => new { t.Status, t.IsActive })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (current is null || !current.IsActive)
+        {
+            throw new KeyNotFoundException($"Table {table.Id} was not found.");
+        }
+
+        if (current.Status == TableStatus.OutOfService)
+        {
+            throw new TableOutOfServiceException(table.Id, table.Label);
         }
     }
 
@@ -788,10 +958,16 @@ internal sealed class ReservationWriter(
     /// Saves the booking, re-rolling the door code if it collides, and answering a lost
     /// idempotency race with the booking that won.
     /// </summary>
+    /// <param name="reservation">The booking staged.</param>
+    /// <param name="findReplayAsync">
+    /// The caller's own replay lookup - scoped to the diner, or to the floor at the branch - asked when the command id
+    /// collides, so the row that won is handed back only to whom it belongs.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation.</param>
     /// <returns>The winning booking when this was a racing replay, otherwise null.</returns>
     private async Task<Reservation?> SaveWithFreshCodeAsync(
         Reservation reservation,
-        BookerKey booker,
+        Func<Task<Reservation?>> findReplayAsync,
         CancellationToken cancellationToken)
     {
         for (var attempt = 1; ; attempt++)
@@ -813,8 +989,7 @@ internal sealed class ReservationWriter(
                 // Scoped to the caller. The index is unique across every diner, so the row that
                 // won may not be theirs at all - and handing it back would answer a stranger with
                 // somebody else's door code, guest name and telephone number.
-                var winner = await FindReplayAsync(
-                    reservation.ClientCommandId, booker.DinerUserId, cancellationToken);
+                var winner = await findReplayAsync();
 
                 if (winner is null)
                 {

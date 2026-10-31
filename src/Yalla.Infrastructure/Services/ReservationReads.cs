@@ -38,6 +38,7 @@ internal sealed class ReservationReads(
                 RoomId = r.DiningTable.FloorAreaId,
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
+                TakenByName = db.StaffMembers.Where(s => s.Id == r.TakenByStaffId).Select(s => s.FullName).FirstOrDefault(),
 
                 // A later guest asking for this booking's table, while the question is open and theirs
                 // to answer - beside the booking, in the same statement.
@@ -151,6 +152,9 @@ internal sealed class ReservationReads(
                 RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
                 CancellationDeadlineMinutes = r.Branch.ReservationPolicy.CancellationDeadlineMinutes,
 
+                // Who took it by hand, for the console's and the floor's "Ընդունեց՝ {name}".
+                TakenByName = db.StaffMembers.Where(s => s.Id == r.TakenByStaffId).Select(s => s.FullName).FirstOrDefault(),
+
                 // Beside each row in the same statement, so the console can tell a booking only the guest
                 // before can answer from one the floor decides - both count down two hours.
                 AwaitsEarlierGuestAnswer = db.TableShareRequests.Any(q => q.LaterReservationId == r.Id
@@ -175,7 +179,8 @@ internal sealed class ReservationReads(
                 wasReplay: false,
                 trigger: ReservationViews.PendingTriggerFor(r.Reservation, policy),
                 awaitsEarlierGuestAnswer: r.AwaitsEarlierGuestAnswer,
-                phoneUnverifiedNow: r.PhoneUnverifiedNow) with
+                phoneUnverifiedNow: r.PhoneUnverifiedNow,
+                takenByName: r.TakenByName) with
             {
                 GuestRecord = ReservationViews.RecordOf(records, r.Reservation, r.PhoneUnverifiedNow ?? false, today),
             })

@@ -40,14 +40,20 @@ internal sealed class ReservationActivity(YallaDbContext db, IActivityLog activi
     {
         var reservation = domainEvent.Reservation;
 
+        // Taken by hand from the floor (2026-10-31): the staff member's line, on their device, as the log reads the
+        // request - "ամրագրում ընդունեց". Otherwise the guest's, from the app or the page.
+        object extra = reservation.TakenByStaffId is { } taker
+            ? new { channel = (int)reservation.Channel, trigger = (int?)reservation.ApprovalTrigger, takenByStaffId = taker }
+            : new { channel = (int)reservation.Channel, trigger = (int?)reservation.ApprovalTrigger };
+
         return BookingActivity.RecordAsync(
             activity,
             db,
             reservation,
             ActivityActions.BookingCreated,
             cancellationToken,
-            extra: new { channel = (int)reservation.Channel, trigger = (int?)reservation.ApprovalTrigger },
-            byGuest: true);
+            extra: extra,
+            byGuest: reservation.TakenByStaffId is null);
     }
 
     public Task HandleAsync(ReservationApproved domainEvent, CancellationToken cancellationToken)

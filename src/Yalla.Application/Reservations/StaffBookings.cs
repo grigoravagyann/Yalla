@@ -176,6 +176,16 @@ public sealed record BookingToCall(
     string TakenByName,
     bool IsMine);
 
+/// <summary>When the taker of a staff booking is told to call the guest, and the floor's to-call list starts showing it.</summary>
+public static class BookingToCallRules
+{
+    /// <summary>Thirty minutes before the start - when every booking is asked "are you on your way?" too.</summary>
+    public const int MinutesBefore = 30;
+
+    /// <summary>When the taker is to be told: the start less <see cref="MinutesBefore"/>.</summary>
+    public static DateTime CallAtUtc(DateTime startUtc) => startUtc.AddMinutes(-MinutesBefore);
+}
+
 /// <summary>
 /// Bookings a member of staff takes for a guest, and the follow-up that is theirs: the sheet's day slots, the booking,
 /// the list of guests to call before their time, and the guest's "coming" recorded over the phone.

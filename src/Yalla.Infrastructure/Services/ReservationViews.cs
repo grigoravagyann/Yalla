@@ -90,6 +90,11 @@ internal sealed class ReservationViews(
                                       && await db.DinerUsers.AnyAsync(
                                           d => d.Id == account && d.PhoneVerifiedAtUtc != null, cancellationToken));
 
+        // Taken by hand from the floor: the taker's name now, for "Ընդունեց՝ {name}" on the cards.
+        var takenByName = reservation.TakenByStaffId is { } taker
+            ? await db.StaffMembers.AsNoTracking().Where(s => s.Id == taker).Select(s => s.FullName).FirstOrDefaultAsync(cancellationToken)
+            : null;
+
         var view = BuildView(
             reservation,
             branch.Name,
@@ -101,7 +106,8 @@ internal sealed class ReservationViews(
             manageToken,
             incoming,
             awaitsEarlierGuestAnswer,
-            phoneUnverifiedNow);
+            phoneUnverifiedNow,
+            takenByName);
 
         // Until when the guest may pre-order, on the guest's own answers only.
         return await PreOrderReads.AttachAsync(db, view, clock.UtcNow, cancellationToken, forGuest: actor.Type == ActorType.Diner);
@@ -118,7 +124,8 @@ internal sealed class ReservationViews(
             trigger: null,
             incoming: row.Incoming,
             awaitsEarlierGuestAnswer: row.AwaitsEarlierGuestAnswer,
-            phoneUnverifiedNow: row.PhoneUnverifiedNow);
+            phoneUnverifiedNow: row.PhoneUnverifiedNow,
+            takenByName: row.TakenByName);
 
     internal static ReservationView BuildView(
         Reservation reservation,
@@ -363,6 +370,9 @@ internal sealed class ReservationViews(
         /// work it out, and the stored flag stands.
         /// </summary>
         public bool? PhoneUnverifiedNow { get; init; }
+
+        /// <summary>The name of the member of staff who took the booking by hand, or null.</summary>
+        public string? TakenByName { get; init; }
     }
 
     /// <summary>A later guest's open request for a booking's table, as the read finds it.</summary>
