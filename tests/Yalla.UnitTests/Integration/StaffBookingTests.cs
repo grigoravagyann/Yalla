@@ -281,6 +281,69 @@ public sealed class StaffBookingTests(SqlServerFixture fixture)
         Assert.Equal(made.GetProperty("takenByName").GetString(), unseated.GetProperty("takenByName").GetString());
     }
 
+    /// <summary>
+    /// The taker's results count the bookings they took whose start falls in the window, and what became of each: one
+    /// party sat down, one never came - until the no-show is withdrawn. The branch's totals say the same, and the
+    /// recent bookings list carries the taker's own `booking.created` lines.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_takers_results_count_the_bookings_they_took_and_what_became_of_them()
+    {
+        Skip.IfNot(fixture.IsAvailable, fixture.SkipReason);
+
+        await using var factory = NewFactory();
+        var today = Today(factory);
+        AuthBranch branch;
+
+        await using (var db = fixture.CreateContext(factory.Clock))
+        {
+            branch = await AuthTestData.CreateBranchAsync(db, tableCount: 2);
+        }
+
+        using var waiter = factory.CreateClientWithToken(await StaffAuthTests.SignInWaiterAsync(factory, branch));
+        using var manager = factory.CreateClientWithToken(await StaffAuthTests.SignInManagerAsync(factory, branch));
+        var b = $"/api/branches/{branch.BranchId}";
+
+        var came = (await CreatedAsync(await waiter.PostAsJsonAsync($"{b}/reservations/staff", Body(branch.TableIds[0], today, "17:00", 2)))).GetProperty("id").GetGuid();
+        var missed = (await CreatedAsync(await waiter.PostAsJsonAsync($"{b}/reservations/staff", Body(branch.TableIds[1], today, "19:00", 2)))).GetProperty("id").GetGuid();
+
+        var before = await ReadAsync(waiter, "/api/staff/me/results");
+        Assert.Equal(2, before.GetProperty("kpis").GetProperty("bookingsTaken").GetInt32());
+        Assert.Equal(0, before.GetProperty("kpis").GetProperty("bookingsCame").GetInt32());
+        Assert.Equal(0, before.GetProperty("kpis").GetProperty("bookingsNoShow").GetInt32());
+        Assert.Equal(
+            2,
+            before.GetProperty("recent").GetProperty("bookings").GetProperty("items").EnumerateArray()
+                .Count(i => i.GetProperty("action").GetString() == ActivityActions.BookingCreated));
+
+        factory.Clock.UtcNow = At(today, "17:05");
+        await OkAsync(await waiter.PostAsJsonAsync(
+            $"{b}/tables/{branch.TableIds[0]}/seat-reservation", new { reservationId = came, clientCommandId = Guid.CreateVersion7() }));
+
+        factory.Clock.UtcNow = At(today, "19:20");
+        await OkAsync(await waiter.PostAsJsonAsync($"/api/reservations/{missed}/no-show", new { clientCommandId = Guid.CreateVersion7() }));
+
+        var after = await ReadAsync(waiter, "/api/staff/me/results");
+        Assert.Equal(2, after.GetProperty("kpis").GetProperty("bookingsTaken").GetInt32());
+        Assert.Equal(1, after.GetProperty("kpis").GetProperty("bookingsCame").GetInt32());
+        Assert.Equal(1, after.GetProperty("kpis").GetProperty("bookingsNoShow").GetInt32());
+
+        var team = await ReadAsync(manager, $"{b}/staff-performance");
+        Assert.Equal(2, team.GetProperty("totals").GetProperty("bookingsTaken").GetInt32());
+        Assert.Equal(1, team.GetProperty("totals").GetProperty("bookingsCame").GetInt32());
+        Assert.Equal(1, team.GetProperty("totals").GetProperty("bookingsNoShow").GetInt32());
+        var row = team.GetProperty("staff").EnumerateArray().Single(s => s.GetProperty("staffMemberId").GetGuid() == branch.WaiterId);
+        Assert.Equal(2, row.GetProperty("bookingsTaken").GetInt32());
+
+        // Withdrawn: they were at the bar after all - the no-show no longer counts.
+        await OkAsync(await manager.PostAsJsonAsync(
+            $"/api/reservations/{missed}/undo-no-show", new { clientCommandId = Guid.CreateVersion7(), reason = "At the bar" }));
+
+        var undone = await ReadAsync(waiter, "/api/staff/me/results");
+        Assert.Equal(2, undone.GetProperty("kpis").GetProperty("bookingsTaken").GetInt32());
+        Assert.Equal(0, undone.GetProperty("kpis").GetProperty("bookingsNoShow").GetInt32());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static object Body(Guid? tableId, DateOnly date, string time, int partySize) => new

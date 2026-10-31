@@ -444,11 +444,13 @@ public static class DependencyInjection
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingToCallStaffPush>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.EndedBookingPreOrder>();
 
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.BookingToCallStaffPush>(services);
 
         Add<Yalla.Domain.Occupancy.TableShareAsked, Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>(services);
 

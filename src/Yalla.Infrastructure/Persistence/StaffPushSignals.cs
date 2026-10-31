@@ -7,12 +7,15 @@ using Yalla.Domain.Messaging;
 namespace Yalla.Infrastructure.Persistence;
 
 /// <summary>What a <c>staff.push</c> outbox message carries: the kind, the thing it is about, and when.</summary>
-/// <param name="Kind">One of the five <see cref="StaffPushKinds"/>.</param>
+/// <param name="Kind">One of the six <see cref="StaffPushKinds"/>.</param>
 /// <param name="SubjectId">
-/// The booking (approvals), the guest's message (guestMessages), the service request (tableCalls), the takeaway order
-/// (takeaway) or the tab order (kitchenReady).
+/// The booking (approvals, bookingToCall), the guest's message (guestMessages), the service request (tableCalls), the
+/// takeaway order (takeaway) or the tab order (kitchenReady).
 /// </param>
-/// <param name="OccurredAtUtc">When it happened. Older than <c>WebPush:TtlSeconds</c> at send time, it is dropped.</param>
+/// <param name="OccurredAtUtc">
+/// When it happened - or, for a push scheduled ahead (<see cref="StaffPushSignals.StageOne(YallaDbContext, StaffPushKinds, Guid, string, DateTime, DateTime)"/>),
+/// when it is due. Older than <c>WebPush:TtlSeconds</c> at send time, it is dropped.
+/// </param>
 internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, DateTime OccurredAtUtc);
 
 /// <summary>
@@ -21,7 +24,8 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// <remarks>
 /// <para>
 /// <b>Told, not detected.</b> Every kind is staged by the domain-event handler of the event the floor is told about,
-/// through <see cref="StageOne"/>, in the same save and transaction as its cause or not at all. Until 2026-10-25
+/// through <see cref="StageOne(YallaDbContext, StaffPushKinds, Guid, string, DateTime)"/>, in the same save and transaction
+/// as its cause or not at all - or, for one due later, its overload with the due time. Until 2026-10-25
 /// <b>approvals</b> was still detected here from the change tracker on every save (<c>Stage</c>); it is the bookings'
 /// <c>ApprovalStaffPush</c> now, and nothing is detected.
 /// </para>
@@ -47,6 +51,9 @@ internal sealed record StaffPushNotice(StaffPushKinds Kind, Guid SubjectId, Date
 /// (<c>TakeawayStaffPush</c>).</item>
 /// <item><b>kitchenReady</b> - a tab order moved to <c>Ready</c>. Staged by the <c>TabOrderMoved</c> domain-event
 /// handler (<c>KitchenReadyStaffPush</c>): see <c>docs/domain-events.md</c>.</item>
+/// <item><b>bookingToCall</b> - a booking a member of staff took by hand starts in thirty minutes: call the guest. Staged
+/// by the <c>ReservationMade</c> domain-event handler (<c>BookingToCallStaffPush</c>) when the booking is made, for
+/// thirty minutes before its start (the <c>StageOne</c> overload with a due time), key <c>staff-push:to-call:{id}</c>.</item>
 /// </list>
 /// </remarks>
 internal static class StaffPushSignals
@@ -61,7 +68,16 @@ internal static class StaffPushSignals
     /// detecting it. The key carries a fresh id after the subject when the event can happen again (<see cref="Again"/>).
     /// </summary>
     public static void StageOne(YallaDbContext db, StaffPushKinds kind, Guid subjectId, string key, DateTime nowUtc) =>
-        StageAll(db, [(kind, subjectId, key)], nowUtc);
+        StageAll(db, [(kind, subjectId, key)], nowUtc, nowUtc);
+
+    /// <summary>
+    /// Stages one staff push due at <paramref name="scheduledForUtc"/> rather than now - the outbox holds it until then,
+    /// and the handler judges whether it is still true when its turn comes. The notice is stamped with the due time, so
+    /// the handler's "too old to send" rule reads the wait as the outbox's, not as a push that went stale.
+    /// </summary>
+    public static void StageOne(
+        YallaDbContext db, StaffPushKinds kind, Guid subjectId, string key, DateTime nowUtc, DateTime scheduledForUtc) =>
+        StageAll(db, [(kind, subjectId, key)], nowUtc, scheduledForUtc);
 
     /// <summary>
     /// A fresh id for the key of an event that can happen to the same thing more than once - a booking sent back for
@@ -70,7 +86,11 @@ internal static class StaffPushSignals
     /// </summary>
     public static string Again() => Guid.CreateVersion7().ToString("N");
 
-    private static void StageAll(YallaDbContext db, List<(StaffPushKinds Kind, Guid SubjectId, string Key)> events, DateTime nowUtc)
+    private static void StageAll(
+        YallaDbContext db,
+        List<(StaffPushKinds Kind, Guid SubjectId, string Key)> events,
+        DateTime nowUtc,
+        DateTime scheduledForUtc)
     {
         // Already staged in this save - a save that is retried runs this again, and the key is unique.
         var staged = db.ChangeTracker.Entries<OutboxMessage>()
@@ -87,8 +107,8 @@ internal static class StaffPushSignals
 
             db.OutboxMessages.Add(new OutboxMessage(
                 OutboxMessageTypes.StaffPush,
-                JsonSerializer.Serialize(new StaffPushNotice(kind, subjectId, nowUtc), Json),
-                nowUtc,
+                JsonSerializer.Serialize(new StaffPushNotice(kind, subjectId, scheduledForUtc), Json),
+                scheduledForUtc,
                 key,
                 nowUtc));
         }

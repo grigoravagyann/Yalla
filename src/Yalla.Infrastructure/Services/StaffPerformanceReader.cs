@@ -476,6 +476,33 @@ internal sealed class StaffPerformanceReader(
             }
         }
 
+        // Bookings taken by hand (2026-10-31), by the booking's own start in the window: what became of each is on the
+        // row - came (seated or completed), never came (a no-show that stands: one withdrawn is confirmed again).
+        var taken = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId
+                        && r.TakenByStaffId != null
+                        && r.StartUtc >= fromUtc
+                        && r.StartUtc < toUtc)
+            .GroupBy(r => new { StaffId = r.TakenByStaffId!.Value, r.Status })
+            .Select(g => new { g.Key.StaffId, g.Key.Status, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        foreach (var group in taken)
+        {
+            var tally = Of(group.StaffId);
+            tally.BookingsTaken += group.Count;
+
+            if (group.Status is ReservationStatus.Seated or ReservationStatus.Completed)
+            {
+                tally.BookingsCame += group.Count;
+            }
+            else if (group.Status == ReservationStatus.NoShow)
+            {
+                tally.BookingsNoShow += group.Count;
+            }
+        }
+
         // Who to list: everybody with anything in the window, and the branch's own waiters and managers with nothing.
         var ids = tallies.Keys.ToList();
 
@@ -518,7 +545,10 @@ internal sealed class StaffPerformanceReader(
             adjustments.Count(a => a.Kind != AdjustmentKind.Comp),
             adjustments.Count(a => a.Kind == AdjustmentKind.Comp),
             adjustmentsAmd,
-            voids.Sum(v => v.Count));
+            voids.Sum(v => v.Count),
+            taken.Sum(t => t.Count),
+            taken.Where(t => t.Status is ReservationStatus.Seated or ReservationStatus.Completed).Sum(t => t.Count),
+            taken.Where(t => t.Status == ReservationStatus.NoShow).Sum(t => t.Count));
 
         return new StaffPerformanceReport(branchId, from, to, rows, totals);
     }
@@ -690,6 +720,12 @@ internal sealed class StaffPerformanceReader(
 
         public int Voids { get; set; }
 
+        public int BookingsTaken { get; set; }
+
+        public int BookingsCame { get; set; }
+
+        public int BookingsNoShow { get; set; }
+
         public StaffPerformanceRow ToRow(Guid id, string name, StaffRole role, bool isActive) =>
             new(
                 id,
@@ -712,6 +748,9 @@ internal sealed class StaffPerformanceReader(
                 Discounts,
                 Comps,
                 AdjustmentsAmd,
-                Voids);
+                Voids,
+                BookingsTaken,
+                BookingsCame,
+                BookingsNoShow);
     }
 }

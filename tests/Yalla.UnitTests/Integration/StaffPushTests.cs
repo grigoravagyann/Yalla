@@ -404,6 +404,89 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
         await rig.DispatchAsync($"staff-push:approval:{pending.Id}:");
     }
 
+    /// <summary>
+    /// A booking the waiter takes by hand (2026-10-31) stages its push when it is made, for thirty minutes before its
+    /// start: the taker's phone is told to call the guest, a colleague's phone is not, the tablet is. One made inside its
+    /// last half hour stages nothing - the card is already on the floor - and once the guest has said they are coming the
+    /// push is dropped unsent.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_staff_booking_tells_its_taker_to_call_the_guest_half_an_hour_before()
+    {
+        Skip.If(!fixture.IsAvailable, fixture.SkipReason);
+
+        await using var rig = await Rig.StartAsync(fixture, startAtYerevan: new TimeOnly(15, 0));
+        var waiterBrowser = new Browser();
+        var managerBrowser = new Browser();
+        var tabletBrowser = new Browser();
+
+        await rig.SubscribeAsync(rig.WaiterPhone, waiterBrowser);
+        await rig.SubscribeAsync(rig.ManagerPhone, managerBrowser);
+        await rig.SubscribeAsync(rig.Tablet, tabletBrowser);
+
+        // On by default, and a client from before the switch leaves it on.
+        Assert.True((await rig.GetSettingsAsync(rig.WaiterPhone)).GetProperty("bookingToCall").GetBoolean());
+        await rig.WaiterPhone.PutAsJsonAsync("/api/staff/device/notification-preferences", Switches(onlyDuringShift: false));
+        Assert.True((await rig.GetSettingsAsync(rig.WaiterPhone)).GetProperty("bookingToCall").GetBoolean());
+
+        var zone = BranchZone.For("Asia/Yerevan");
+        var today = zone.LocalDateAt(rig.Factory.Clock.UtcNow);
+        var b = $"/api/branches/{rig.Branch.BranchId}";
+
+        // The waiter, on the tablet, books for a guest two hours ahead - and for one who is already on the way.
+        var later = await (await rig.Tablet.PostAsJsonAsync($"{b}/reservations/staff", StaffBooking(rig.Branch.TableIds[0], today, "17:00")))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var soon = await (await rig.Tablet.PostAsJsonAsync($"{b}/reservations/staff", StaffBooking(rig.Branch.TableIds[1], today, "15:15")))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var laterId = later.GetProperty("id").GetGuid();
+        var soonId = soon.GetProperty("id").GetGuid();
+
+        await using (var db = fixture.CreateContext(rig.Factory.Clock))
+        {
+            var staged = await db.OutboxMessages.AsNoTracking()
+                .Where(m => m.Type == OutboxMessageTypes.StaffPush && m.IdempotencyKey.StartsWith("staff-push:to-call:"))
+                .ToListAsync();
+
+            var row = Assert.Single(staged, m => m.IdempotencyKey == $"staff-push:to-call:{laterId}");
+            Assert.Equal(zone.ToUtc(today, new TimeOnly(16, 30)), row.ScheduledForUtc);
+            Assert.DoesNotContain(staged, m => m.IdempotencyKey.Contains(soonId.ToString()));
+        }
+
+        // Half an hour before: the taker's phone and the tablet, in Armenian; the manager's phone is quiet.
+        rig.Factory.Clock.UtcNow = zone.ToUtc(today, new TimeOnly(16, 30));
+        await rig.DispatchAsync($"staff-push:to-call:{laterId}");
+
+        var toWaiter = Assert.Single(rig.Push.Sent, p => p.Endpoint == waiterBrowser.Endpoint);
+        Assert.Single(rig.Push.Sent, p => p.Endpoint == tabletBrowser.Endpoint);
+        Assert.DoesNotContain(rig.Push.Sent, p => p.Endpoint == managerBrowser.Endpoint);
+
+        var payload = waiterBrowser.Open(toWaiter.Body);
+        Assert.Equal("Զանգեք հյուրին · Արամ Հ.", payload.GetProperty("title").GetString());
+        Assert.Equal("17:00 · 2 հոգի · Սեղան 1", payload.GetProperty("body").GetString());
+        Assert.Equal("bookingToCall", payload.GetProperty("kind").GetString());
+        Assert.Equal($"/staff/floor?toCall={laterId}", payload.GetProperty("url").GetString());
+        Assert.Equal($"to-call:{laterId}", payload.GetProperty("tag").GetString());
+
+        // The guest said they are coming: a push whose turn comes after that buzzes nobody.
+        var coming = await rig.Tablet.PostAsJsonAsync($"/api/reservations/{laterId}/guest-coming", new { clientCommandId = Guid.CreateVersion7() });
+        Assert.Equal(HttpStatusCode.OK, coming.StatusCode);
+
+        rig.Push.Sent.Clear();
+        await rig.DispatchAsync($"staff-push:to-call:{laterId}");
+        Assert.Empty(rig.Push.Sent);
+    }
+
+    private static object StaffBooking(Guid tableId, DateOnly date, string time) => new
+    {
+        tableId,
+        date = date.ToString("yyyy-MM-dd"),
+        time,
+        partySize = 2,
+        guestName = "Արամ Հ.",
+        guestPhone = "+37491000111",
+        clientCommandId = Guid.CreateVersion7(),
+    };
+
     // ------------------------------------------------------------------ the rig
 
     private static object Switches(
@@ -538,7 +621,12 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
 
         public HttpClient Tablet { get; private set; } = null!;
 
-        public static async Task<Rig> StartAsync(SqlServerFixture fixture)
+        /// <param name="fixture">The database.</param>
+        /// <param name="startAtYerevan">
+        /// Pins the host's clock to this wall-clock time at the branch today, for a test whose bookings must fall inside
+        /// the opening hours - before any token is minted, so every token is valid.
+        /// </param>
+        public static async Task<Rig> StartAsync(SqlServerFixture fixture, TimeOnly? startAtYerevan = null)
         {
             var push = new PushService();
             var factory = new YallaApiFactory()
@@ -550,6 +638,11 @@ public sealed class StaffPushTests(SqlServerFixture fixture)
                 .WithServices(services => services
                     .AddHttpClient(StaffPushSender.HttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => push));
+
+            if (startAtYerevan is { } at)
+            {
+                factory = factory.StartingAtYerevan(at);
+            }
 
             var rig = new Rig(fixture, factory, push);
 

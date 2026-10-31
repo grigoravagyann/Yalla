@@ -191,7 +191,7 @@ public sealed record PersonPerformance(
 /// </summary>
 /// <param name="Orders">Orders sent, pre-orders sent, voids, discounts, comps, bills closed in cash.</param>
 /// <param name="Messages">Replies and "are you coming?".</param>
-/// <param name="Bookings">Approved, declined, seated, no-show.</param>
+/// <param name="Bookings">Approved, declined, seated, no-show, taken by hand.</param>
 /// <param name="Cash">Cash at tables and at the takeaway counter.</param>
 /// <param name="Calls">Calls claimed.</param>
 public sealed record RecentLists(
@@ -287,6 +287,9 @@ public static class StaffPerformanceRules
         [
             ActivityActions.BookingApproved, ActivityActions.BookingDeclined, ActivityActions.BookingSeated,
             ActivityActions.BookingNoShow,
+
+            // Taken by hand (2026-10-31): the taker's own line; a guest's booking has no staff member on it.
+            ActivityActions.BookingCreated,
         ],
         RecentList.Cash => [ActivityActions.PaymentCash, ActivityActions.TakeawayCollected],
         RecentList.Calls => [ActivityActions.TableCallClaimed],

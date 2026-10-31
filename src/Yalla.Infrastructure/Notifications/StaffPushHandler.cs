@@ -156,6 +156,7 @@ internal sealed class StaffPushHandler(
         StaffPushKinds.TableCalls => "tableCalls",
         StaffPushKinds.Takeaway => "takeaway",
         StaffPushKinds.KitchenReady => "kitchenReady",
+        StaffPushKinds.BookingToCall => "bookingToCall",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "A staff push is one kind."),
     };
 
@@ -274,7 +275,7 @@ internal sealed record StaffPushSubject(
     Guid? OwnerStaffMemberId,
     Func<string?, (string Title, string Body)> Render);
 
-/// <summary>The five kinds of staff push, each read fresh - and dropped when no longer true.</summary>
+/// <summary>The six kinds of staff push, each read fresh - and dropped when no longer true.</summary>
 internal static class StaffPushSubjects
 {
     public static Task<StaffPushSubject?> ResolveAsync(
@@ -288,8 +289,66 @@ internal static class StaffPushSubjects
         StaffPushKinds.TableCalls => TableCallAsync(db, notice.SubjectId, cancellationToken),
         StaffPushKinds.Takeaway => TakeawayAsync(db, notice.SubjectId, cancellationToken),
         StaffPushKinds.KitchenReady => KitchenReadyAsync(db, notice.SubjectId, cancellationToken),
+        StaffPushKinds.BookingToCall => BookingToCallAsync(db, notice.SubjectId, nowUtc, cancellationToken),
         _ => Task.FromResult<StaffPushSubject?>(null),
     };
+
+    /// <summary>
+    /// A staff-taken booking whose guest is still to be called (2026-10-31) - the to-call list's own rule: confirmed,
+    /// the guest not yet said to be coming, its grace (or extended hold) not yet run out. The taker is the owner, so the
+    /// push reaches their phone and the branch's tablets, never a colleague's phone.
+    /// </summary>
+    private static async Task<StaffPushSubject?> BookingToCallAsync(
+        YallaDbContext db, Guid reservationId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        var booking = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.Id == reservationId
+                        && r.Status == ReservationStatus.Confirmed
+                        && r.TakenByStaffId != null
+                        && r.GuestConfirmedOnWayAtUtc == null)
+            .Select(r => new
+            {
+                r.BranchId,
+                r.Branch.TimeZoneId,
+                Grace = r.Branch.ReservationPolicy.GraceMinutes,
+                r.StartUtc,
+                r.HoldExpiresAtUtc,
+                Table = r.DiningTable == null ? null : r.DiningTable.Label,
+                r.LocalStartTime,
+                r.PartySize,
+                r.GuestName,
+                Owner = r.TakenByStaffId!.Value,
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (booking is null)
+        {
+            return null;
+        }
+
+        // Past the start and its grace with nobody there, the question is the no-show's, not a call's.
+        var untilUtc = booking.StartUtc.AddMinutes(booking.Grace);
+
+        if (booking.HoldExpiresAtUtc is { } hold && hold > untilUtc)
+        {
+            untilUtc = hold;
+        }
+
+        if (nowUtc >= untilUtc)
+        {
+            return null;
+        }
+
+        return new StaffPushSubject(
+            booking.BranchId,
+            booking.TimeZoneId,
+            $"/staff/floor?toCall={reservationId}",
+            $"to-call:{reservationId}",
+            booking.Owner,
+            locale => StaffPushText.BookingToCall(
+                locale ?? string.Empty, booking.GuestName, booking.LocalStartTime, booking.PartySize, booking.Table));
+    }
 
     /// <summary>
     /// A booking the floor can still answer - the awaiting list's own rule: waiting, not started, inside its answer

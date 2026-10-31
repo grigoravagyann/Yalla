@@ -137,6 +137,7 @@ internal sealed class StaffPushService(
         kinds |= preferences.TableCalls ? StaffPushKinds.TableCalls : StaffPushKinds.None;
         kinds |= preferences.Takeaway ? StaffPushKinds.Takeaway : StaffPushKinds.None;
         kinds |= preferences.KitchenReady ? StaffPushKinds.KitchenReady : StaffPushKinds.None;
+        kinds |= preferences.BookingToCall ? StaffPushKinds.BookingToCall : StaffPushKinds.None;
 
         device.SetPushPreferences(kinds, preferences.OnlyDuringShift);
 
@@ -207,6 +208,7 @@ internal sealed class StaffPushService(
             onlyDuringShift,
             device.Locale,
             subscribed,
-            device.PushKinds is null);
+            device.PushKinds is null,
+            kinds.HasFlag(StaffPushKinds.BookingToCall));
     }
 }
