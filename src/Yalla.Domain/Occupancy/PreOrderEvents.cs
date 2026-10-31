@@ -71,10 +71,17 @@ public sealed record PreOrderArrivedOnTab(PreOrder PreOrder, TabOrder Order, boo
 /// <param name="OccurredAtUtc">When.</param>
 public sealed record PreOrderSettingsSaved(Branch Branch, DateTime OccurredAtUtc) : IDomainEvent;
 
-/// <summary>The guest said they are on their way - from the app or the link.</summary>
+/// <summary>
+/// The guest said they are on their way - from the app or the link, or over the phone to a member of staff who recorded
+/// it for them (2026-10-31).
+/// </summary>
 /// <param name="Reservation">The booking, its answer recorded.</param>
 /// <param name="OccurredAtUtc">When.</param>
-public sealed record GuestOnTheirWay(Reservation Reservation, DateTime OccurredAtUtc) : IDomainEvent;
+/// <param name="RecordedByStaffId">
+/// The member of staff who recorded the answer for the guest, or null when the guest answered for themselves - what the
+/// History attributes the line to.
+/// </param>
+public sealed record GuestOnTheirWay(Reservation Reservation, DateTime OccurredAtUtc, Guid? RecordedByStaffId = null) : IDomainEvent;
 
 /// <summary>The guest said they are running late by <paramref name="Minutes"/>.</summary>
 /// <param name="Reservation">The booking, its answer recorded.</param>

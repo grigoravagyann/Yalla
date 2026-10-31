@@ -1548,6 +1548,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
+                    b.Property<Guid?>("OnWayRecordedByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<int>("PartySize")
                         .HasColumnType("int");
 
@@ -1601,6 +1604,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int?>("StayHint")
                         .HasColumnType("int");
 
+                    b.Property<Guid?>("TakenByStaffId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ApprovalExpiresAtUtc")
@@ -1631,6 +1637,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("BranchId", "StartUtc");
 
                     b.HasIndex("DinerUserId", "StartUtc");
+
+                    b.HasIndex("TakenByStaffId", "StartUtc")
+                        .HasDatabaseName("IX_Reservations_TakenByStaffId_StartUtc")
+                        .HasFilter("[TakenByStaffId] IS NOT NULL");
 
                     b.HasIndex("BranchId", "StartUtc", "EndUtc")
                         .HasDatabaseName("IX_Reservations_TimeOnly_BranchId_StartUtc_EndUtc")

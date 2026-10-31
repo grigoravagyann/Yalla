@@ -163,11 +163,10 @@ internal sealed class ReservationViews(
 
             Status = reservation.Status,
 
-            // Where it came from, and - taken by hand from the floor - by whom (2026-10-31; the taker lands with the
-            // column, in the commit after the contract).
+            // Where it came from, and - taken by hand from the floor - by whom (2026-10-31).
             Channel = reservation.Channel,
-            TakenByStaffId = null,
-            TakenByName = takenByName,
+            TakenByStaffId = reservation.TakenByStaffId,
+            TakenByName = reservation.TakenByStaffId is null ? null : takenByName,
             GuestName = reservation.GuestName,
             GuestPhone = reservation.GuestPhone,
             // Made without proof, and - for an account's booking - not proved since: staff see "not verified"
