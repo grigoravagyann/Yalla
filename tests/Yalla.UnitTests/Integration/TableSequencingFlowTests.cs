@@ -874,7 +874,7 @@ public sealed class TableSequencingFlowTests(SqlServerFixture fixture)
 
         return await fixture.CreateReservationService(db, clock, diner).RescheduleAsync(
             new RescheduleReservationCommand(
-                booking.Id, booking.TableId, booking.LocalDate, time, partySize, Guid.CreateVersion7(), acceptsFreeBy));
+                booking.Id, booking.TableId!.Value, booking.LocalDate, time, partySize, Guid.CreateVersion7(), acceptsFreeBy));
     }
 
     private async Task<ReservationView> AnswerAsync(IClock clock, TestActor diner, Guid reservationId, Guid requestId, bool accept)

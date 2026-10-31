@@ -48,7 +48,7 @@ namespace Yalla.Application.Reservations;
 /// </param>
 public sealed record CreateReservationCommand(
     Guid BranchId,
-    Guid TableId,
+    Guid? TableId,
     DateOnly LocalDate,
     TimeOnly LocalTime,
     int PartySize,

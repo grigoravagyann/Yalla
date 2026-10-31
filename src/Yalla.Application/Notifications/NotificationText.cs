@@ -60,14 +60,15 @@ public static class NotificationText
         string locale, string venue, string branch, string tableLabel, TimeOnly at) =>
         Normalise(locale) switch
         {
+            // A booking made by time only has no table yet: the branch alone.
             "ru" => ($"Столик в {venue} в {Time(at)}",
-                     $"{branch}, столик {tableLabel}. Не получается? Отмените — это займёт секунду и "
+                     $"{branch}{(string.IsNullOrWhiteSpace(tableLabel) ? "" : $", столик {tableLabel}")}. Не получается? Отмените — это займёт секунду и "
                      + "освободит столик для других."),
             "en" => ($"Your table at {venue} is at {Time(at)}",
-                     $"{branch}, table {tableLabel}. Cannot make it? Cancel here - it takes a second and "
+                     $"{branch}{(string.IsNullOrWhiteSpace(tableLabel) ? "" : $", table {tableLabel}")}. Cannot make it? Cancel here - it takes a second and "
                      + "frees the table for someone else."),
             _ => ($"Ձեր սեղանը {venue}-ում {Time(at)}-ին է",
-                  $"{branch}, սեղան {tableLabel}։ Չե՞ք հասցնում։ Չեղարկեք այստեղ — վայրկյան է տևում և "
+                  $"{branch}{(string.IsNullOrWhiteSpace(tableLabel) ? "" : $", սեղան {tableLabel}")}։ Չե՞ք հասցնում։ Չեղարկեք այստեղ — վայրկյան է տևում և "
                   + "սեղանը կազատվի ուրիշի համար։"),
         };
 
@@ -79,13 +80,13 @@ public static class NotificationText
         Normalise(locale) switch
         {
             "ru" => ("Всё ещё в пути?",
-                     $"{venue} держит столик {tableLabel}. Нажмите, чтобы продлить бронь на "
+                     $"{venue} {(string.IsNullOrWhiteSpace(tableLabel) ? "держит вашу бронь" : $"держит столик {tableLabel}")}. Нажмите, чтобы продлить бронь на "
                      + $"{extensionMinutes} минут."),
             "en" => ("Still coming?",
-                     $"{venue} is holding table {tableLabel}. Tap to keep it for another "
+                     $"{venue} is holding {(string.IsNullOrWhiteSpace(tableLabel) ? "your booking" : $"table {tableLabel}")}. Tap to keep it for another "
                      + $"{extensionMinutes} minutes."),
             _ => ("Դեռ ճանապարհի՞ն եք",
-                  $"{venue}-ը պահում է {tableLabel} սեղանը։ Սեղմեք՝ ևս {extensionMinutes} րոպեով "
+                  $"{venue}-ը պահում է {(string.IsNullOrWhiteSpace(tableLabel) ? "ձեր ամրագրումը" : $"{tableLabel} սեղանը")}։ Սեղմեք՝ ևս {extensionMinutes} րոպեով "
                   + "պահելու համար։"),
         };
 

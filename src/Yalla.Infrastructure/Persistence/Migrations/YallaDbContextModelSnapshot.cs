@@ -1436,6 +1436,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<int?>("ApprovalTrigger")
                         .HasColumnType("int");
 
+                    b.Property<bool>("BookedWithoutTable")
+                        .HasColumnType("bit");
+
                     b.Property<string>("BookerPhoneE164")
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
@@ -1481,7 +1484,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("DinerUserId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<Guid>("DiningTableId")
+                    b.Property<Guid?>("DiningTableId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("EndUtc")
@@ -1628,6 +1631,10 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasIndex("BranchId", "StartUtc");
 
                     b.HasIndex("DinerUserId", "StartUtc");
+
+                    b.HasIndex("BranchId", "StartUtc", "EndUtc")
+                        .HasDatabaseName("IX_Reservations_TimeOnly_BranchId_StartUtc_EndUtc")
+                        .HasFilter("[BookedWithoutTable] = 1");
 
                     b.HasIndex("BranchId", "StartUtc", "Status")
                         .HasDatabaseName("IX_Reservations_BranchId_StartUtc_Status");
@@ -3487,8 +3494,7 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                     b.HasOne("Yalla.Domain.Venues.DiningTable", "DiningTable")
                         .WithMany()
                         .HasForeignKey("DiningTableId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Branch");
 
@@ -3916,6 +3922,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                             b1.Property<bool>("AutoConfirmGuestsWithGoodRecord")
                                 .HasColumnType("bit");
 
+                            b1.Property<int>("BookingMode")
+                                .HasColumnType("int");
+
                             b1.Property<int>("BookingWindowDays")
                                 .HasColumnType("int");
 
@@ -3929,6 +3938,9 @@ namespace Yalla.Infrastructure.Persistence.Migrations
                                 .HasColumnType("int");
 
                             b1.Property<int>("GraceMinutes")
+                                .HasColumnType("int");
+
+                            b1.Property<int?>("GuestsAtOnce")
                                 .HasColumnType("int");
 
                             b1.Property<int>("LateNudgeAfterMinutes")

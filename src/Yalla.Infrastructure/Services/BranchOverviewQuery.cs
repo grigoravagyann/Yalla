@@ -117,13 +117,16 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 LocalStartTime = r.LocalStartTime,
                 PartySize = r.PartySize,
                 GuestName = r.GuestName,
-                Table = new TableFacts
-                {
-                    Id = r.DiningTableId,
-                    Label = r.DiningTable.Label,
-                    Status = r.DiningTable.Status,
-                    RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
-                },
+                // None yet for a booking made by time only: staff choose its table as they seat it.
+                Table = r.DiningTable == null
+                    ? null
+                    : new TableFacts
+                    {
+                        Id = r.DiningTable.Id,
+                        Label = r.DiningTable.Label,
+                        Status = r.DiningTable.Status,
+                        RoomName = r.DiningTable.FloorArea == null ? null : r.DiningTable.FloorArea.Name,
+                    },
                 Channel = r.Channel,
                 HoldExpiresAtUtc = r.HoldExpiresAtUtc,
                 HasAccount = r.DinerUserId != null,
@@ -136,6 +139,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                     : r.DinerUserId,
                 CancelledBecause = r.CancelledBecause,
                 PreviousStartUtc = r.PreviousStartUtc,
+                BookedWithoutTable = r.BookedWithoutTable,
                 PreviousEndUtc = r.PreviousEndUtc,
                 PreviousLocalDate = r.PreviousLocalDate,
                 PreviousLocalStartTime = r.PreviousLocalStartTime,
@@ -196,10 +200,10 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                         e.LocalStartTime,
                         e.PartySize,
                         e.GuestName,
-                        e.Table.Id,
-                        e.Table.Label,
-                        e.Table.Status,
-                        e.Table.RoomName,
+                        e.Table?.Id,
+                        e.Table?.Label,
+                        e.Table?.Status,
+                        e.Table?.RoomName,
                         e.Channel,
                         e.ChangeRequested,
 
@@ -241,7 +245,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
             var asked = InServiceDay(hours, row.LocalDate, row.LocalStartTime, serviceDate);
 
             if (row.Status == ReservationStatus.PendingApproval
-                && row.PreviousTable is { } previousTable
+                && (row.PreviousTable is not null || row.BookedWithoutTable)
                 && row.PreviousStartUtc is { } previousStart
                 && row.PreviousEndUtc is { } previousEnd
                 && row.PreviousLocalDate is { } previousDate
@@ -251,7 +255,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 // Still promised at its confirmed slot today: counted there, with the change it asks for apart.
                 entries.Add(new Entry(
                     row, previousStart, previousEnd, previousDate, previousTime, row.PreviousPartySize ?? row.PartySize,
-                    previousTable, ChangeRequested: true));
+                    row.PreviousTable, ChangeRequested: true));
 
                 if (asked)
                 {
@@ -551,7 +555,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         DateOnly LocalDate,
         TimeOnly LocalStartTime,
         int PartySize,
-        TableFacts Table,
+        TableFacts? Table,
         bool ChangeRequested)
     {
         public Guid Id => Row.Id;
@@ -627,7 +631,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
 
         public string GuestName { get; init; } = null!;
 
-        public TableFacts Table { get; init; } = null!;
+        public TableFacts? Table { get; init; }
 
         public ReservationChannel Channel { get; init; }
 
@@ -652,5 +656,7 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         public int? PreviousPartySize { get; init; }
 
         public TableFacts? PreviousTable { get; init; }
+
+        public bool BookedWithoutTable { get; init; }
     }
 }

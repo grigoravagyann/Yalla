@@ -218,7 +218,12 @@ internal sealed class PublicVenueQuery(
             Features = live.Features,
             AcceptsWebBookings = live.Features.Contains(BranchFeature.WebBookings),
             AcceptsAppBookings = live.Features.Contains(BranchFeature.AppBookings),
-            Policy = plan.Page.Policy with { AcceptsPreOrders = live.Features.Contains(BranchFeature.PreOrders) },
+            // A booking made by time only takes no pre-order: it has no table for the held ticket to wait at.
+            Policy = plan.Page.Policy with
+            {
+                AcceptsPreOrders = live.Features.Contains(BranchFeature.PreOrders) && live.BookingMode != BookingMode.TimeOnly,
+                BookingMode = live.BookingMode,
+            },
             VenueBranchCount = live.VenueBranchCount,
             FloorPlan = plan.Page.FloorPlan with { Tables = tables },
         };
@@ -343,6 +348,7 @@ internal sealed class PublicVenueQuery(
                     b.TakeawayEnabled,
                     b.GuestsCanMessage),
                 b.FloorPlanVersion,
+                b.ReservationPolicy.BookingMode,
 
                 // The venue's branches the chooser lists - switched on, the venue being live, which
                 // the filter above has just established. A correlated count on the same statement.
@@ -355,7 +361,8 @@ internal sealed class PublicVenueQuery(
             live.PhoneE164,
             BranchFeatures.Effective(live.AllowedFeatureBits, live.Switches),
             live.FloorPlanVersion,
-            live.VenueBranchCount);
+            live.VenueBranchCount,
+            live.BookingMode);
     }
 
     /// <summary>The half of the branch page that is read per request rather than cached.</summary>
@@ -363,8 +370,13 @@ internal sealed class PublicVenueQuery(
     /// <param name="Features">The effective set: allowed by the platform, narrowed by the venue's switches.</param>
     /// <param name="FloorPlanVersion">The plan revision now: a cached plan from another one is redrawn.</param>
     /// <param name="VenueBranchCount">The venue's switched-on branches, as the chooser lists them.</param>
+    /// <param name="BookingMode">Whether diners pick a table or only a time - read live, as the booking refuses on it live.</param>
     private sealed record LiveBranch(
-        string? PhoneE164, IReadOnlyList<BranchFeature> Features, int FloorPlanVersion, int VenueBranchCount);
+        string? PhoneE164,
+        IReadOnlyList<BranchFeature> Features,
+        int FloorPlanVersion,
+        int VenueBranchCount,
+        BookingMode BookingMode);
 
     /// <summary>
     /// Every branch that may be addressed publicly right now. Cached for seconds.

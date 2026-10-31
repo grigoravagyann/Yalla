@@ -76,7 +76,20 @@ internal static class LaterColumns
     /// The <c>ReplaceSubscriptionTierWithBranchFeatures</c> migration's column: the features the platform allows, every
     /// one here (1023). The older <c>SubscriptionTier</c> keeps its database default, so a builder never names it.
     /// </summary>
-    public static Task AddBranchFeatureColumnsAsync(YallaDbContext db) =>
-        db.Database.ExecuteSqlRawAsync(
+    public static async Task AddBranchFeatureColumnsAsync(YallaDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE dbo.Branches ADD AllowedFeatures int NOT NULL CONSTRAINT DF_Test_AllowedFeatures DEFAULT 1023;");
+        await AddTimeOnlyColumnsAsync(db);
+    }
+
+    /// <summary>
+    /// The <c>BookByTimeOnly</c> migration's columns: a branch's booking mode (choose a table, 1) and guests at once, and
+    /// whether a booking was made without a table. The table stays required here, as every builder names one.
+    /// </summary>
+    public static Task AddTimeOnlyColumnsAsync(YallaDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE dbo.Branches ADD ReservationPolicy_BookingMode int NOT NULL CONSTRAINT DF_Test_BookingMode DEFAULT 1, "
+            + "ReservationPolicy_GuestsAtOnce int NULL; "
+            + "ALTER TABLE dbo.Reservations ADD BookedWithoutTable bit NOT NULL CONSTRAINT DF_Test_BookedWithoutTable DEFAULT 0;");
 }

@@ -98,14 +98,15 @@ internal sealed class BookingChangeStream(YallaDbContext db, IClock clock) :
     {
         var tables = new List<Guid>();
 
-        if (before is null || answered || Moved(before, reservation))
+        // A booking by time only that nobody has seated has no table to tell.
+        if ((before is null || answered || Moved(before, reservation)) && reservation.DiningTableId is { } now)
         {
-            tables.Add(reservation.DiningTableId);
+            tables.Add(now);
         }
 
-        if (before is { } left && left.DiningTableId != reservation.DiningTableId)
+        if (before is { DiningTableId: { } left } && left != reservation.DiningTableId)
         {
-            tables.Add(left.DiningTableId);
+            tables.Add(left);
         }
 
         tables.RemoveAll(table => AlreadyOnTheStream(table, reservation.Id));
@@ -144,6 +145,11 @@ internal sealed class BookingChangeStream(YallaDbContext db, IClock clock) :
     /// </summary>
     private async Task SignalBlockCancellationAsync(Reservation booking, DateTime nowUtc, CancellationToken cancellationToken)
     {
+        if (booking.DiningTableId is not { } tableId)
+        {
+            return;
+        }
+
         var status = await db.DiningTables
             .AsNoTracking()
             .Where(t => t.Id == booking.DiningTableId)
@@ -153,7 +159,7 @@ internal sealed class BookingChangeStream(YallaDbContext db, IClock clock) :
         db.TableStateChanges.Add(
             new TableStateChange(
                 booking.BranchId,
-                booking.DiningTableId,
+                tableId,
                 status,
                 status,
                 NoShowBlockRules.CancellationReason,

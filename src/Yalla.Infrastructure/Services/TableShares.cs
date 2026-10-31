@@ -241,14 +241,15 @@ internal static class TableShares
                 continue;
             }
 
-            if (later.ApprovalHasLapsedAt(nowUtc) || later.StartUtc <= nowUtc)
+            // A table share is between two bookings of one table; a booking by time only never asks one.
+            if (later.ApprovalHasLapsedAt(nowUtc) || later.StartUtc <= nowUtc || later.DiningTableId is not { } laterTable)
             {
                 continue;
             }
 
             var (verdict, _) = await TableEvening.JudgeAsync(
                 db,
-                later.DiningTableId,
+                laterTable,
                 later.StartUtc,
                 branch.ReservationPolicy,
                 excludingReservationId: later.Id,

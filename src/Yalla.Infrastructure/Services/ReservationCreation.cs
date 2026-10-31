@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Yalla.Application.Abstractions;
 using Yalla.Application.Reservations;
+using Yalla.Domain;
+using Yalla.Domain.Enums;
 using Yalla.Domain.Occupancy;
 using Yalla.Domain.Venues;
 using Yalla.Infrastructure.Identity;
@@ -116,7 +118,29 @@ internal sealed class ReservationCreation(
         // say - is not taking guests at all (DinerVisibility).
         await DinerVisibility.RequireTakingGuestsAsync(db, branch.Id, cancellationToken);
 
-        var table = await lookups.LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
+        // The branch's way of booking decides whether a table is named at all (2026-10-29).
+        if (branch.ReservationPolicy.BookingMode == BookingMode.TimeOnly)
+        {
+            if (command.TableId is not null)
+            {
+                throw new FieldValidationException(
+                [
+                    new FieldViolation("tableId", "This branch books by time only: leave the table out; the venue chooses it when you arrive."),
+                ]);
+            }
+
+            return await CreateWithoutTableAsync(command, note, booker, branch, cancellationToken);
+        }
+
+        if (command.TableId is not { } tableId)
+        {
+            throw new FieldValidationException(
+            [
+                new FieldViolation("tableId", "Pick a table: this branch books a table on its room photos.", FieldBounds.Required),
+            ]);
+        }
+
+        var table = await lookups.LoadTableAsync(command.BranchId, tableId, cancellationToken);
         var policy = branch.ReservationPolicy;
         var zone = BranchZone.For(branch.TimeZoneId);
         var nowUtc = clock.UtcNow;
@@ -258,6 +282,110 @@ internal sealed class ReservationCreation(
     /// booking on their phone and a waiter seating a walk-in need different words and different
     /// error codes for the same underlying wait. The retryable-503 shape is identical either way.
     /// </remarks>
+    /// <summary>
+    /// A booking at a branch that books by time only: the slot's rules, the branch's guests at once under
+    /// its own lock, and no table - staff choose it when the party arrives.
+    /// </summary>
+    private async Task<ReservationView> CreateWithoutTableAsync(
+        CreateReservationCommand command,
+        string? note,
+        BookerKey booker,
+        Branch branch,
+        CancellationToken cancellationToken)
+    {
+        var policy = branch.ReservationPolicy;
+        var zone = BranchZone.For(branch.TimeZoneId);
+        var nowUtc = clock.UtcNow;
+
+        var startUtc = zone.ToUtc(command.LocalDate, command.LocalTime);
+        var proposed = new BookedInterval(startUtc, startUtc.AddMinutes(policy.TurnTimeMinutes));
+
+        var hours = await lookups.HoursAroundAsync(branch.Id, command.LocalDate, cancellationToken);
+        ReservationSlotRules.ValidateTime(command.LocalDate, command.LocalTime, hours, policy, zone, proposed, nowUtc);
+
+        var capacity = policy.GuestsAtOnce!.Value;
+
+        // Bigger than the room is never going to fit, whatever else is booked: said before the lock.
+        if (command.PartySize > capacity)
+        {
+            throw new TimeFullException(branch.Id, command.PartySize, capacity);
+        }
+
+        var shortNotice = ShortNoticeRule.Applies(startUtc, command.LocalDate, nowUtc, zone.LocalDateAt(nowUtc));
+        var status = await slots.DecideStatusAsync(
+            command.PartySize, approvedPartySize: null, policy, booker.DinerUserId, startUtc, shortNotice, nowUtc, cancellationToken);
+
+        var manageToken = Secrets.NewOpaqueToken();
+        var manageTokenHash = Secrets.Hash(manageToken);
+
+        InsertWithoutTableOutcome outcome;
+
+        try
+        {
+            outcome = await reservations.InsertWithoutTableAsync(
+                command.ClientCommandId,
+                branch.Id,
+                proposed,
+                command.PartySize,
+                capacity,
+                booker,
+                _ =>
+                {
+                    var booking = Reservation.Create(
+                        branchId: branch.Id,
+                        diningTableId: null,
+                        startUtc: startUtc,
+                        localDate: command.LocalDate,
+                        localStartTime: command.LocalTime,
+                        partySize: command.PartySize,
+                        guestName: command.GuestName,
+                        guestPhone: command.GuestPhone,
+                        code: ReservationCode.Generate(),
+                        policy: policy,
+                        initialStatus: status.Status,
+                        dinerUserId: booker.DinerUserId,
+                        stayHint: command.StayHint,
+                        clientCommandId: command.ClientCommandId,
+                        channel: command.Channel,
+                        note: note,
+                        approvalTrigger: status.Trigger,
+                        approvalExpiresAtUtc: status.ApprovalExpiresAtUtc,
+                        bookerPhoneE164: booker.PhoneE164);
+
+                    booking.AttachManageToken(manageTokenHash);
+                    booking.Book(nowUtc);
+
+                    return Task.FromResult(booking);
+                },
+                cancellationToken);
+        }
+        catch (TableLockTimeoutException ex) when (ex is not ReservationLockTimeoutException)
+        {
+            throw new ReservationLockTimeoutException(ex.TableId, ex.TableLabel, ex.TimeoutMilliseconds);
+        }
+
+        if (outcome.Replay is { } winner)
+        {
+            return await views.ToViewAsync(winner, branch, table: null, wasReplay: true, trigger: null, cancellationToken);
+        }
+
+        if (outcome.GuestsLeft is { } left)
+        {
+            throw new TimeFullException(branch.Id, command.PartySize, left);
+        }
+
+        var reservation = outcome.Booking!;
+
+        await reminders.ScheduleRemindersAsync(reservation, branch, string.Empty, manageToken, cancellationToken);
+
+        logger.LogInformation(
+            "Booked by time only at branch {BranchId} for {PartySize} as {Code} ({Status}).",
+            branch.Id, command.PartySize, reservation.Code, reservation.Status);
+
+        return await views.ToViewAsync(
+            reservation, branch, table: null, wasReplay: false, status.Trigger, cancellationToken, manageToken);
+    }
+
     private async Task<InsertOutcome> InsertUnderTheTableLockAsync(
         Guid clientCommandId,
         DiningTable table,

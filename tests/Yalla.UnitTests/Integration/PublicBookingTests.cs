@@ -127,7 +127,7 @@ public class PublicBookingTests(SqlServerFixture fixture)
         // Exactly four fields, and they are these - whether a booking can carry a pre-order published deliberately
         // (2026-10-21): it is an offer to the diner, like the turn time.
         Assert.Equal(
-            new[] { "acceptsPreOrders", "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes" },
+            new[] { "acceptsPreOrders", "bookingMode", "cancellationDeadlineMinutes", "minLeadMinutes", "turnTimeMinutes" },
             policy.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
         // Named individually as well, so a failure says which one leaked rather than only that the

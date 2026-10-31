@@ -378,8 +378,11 @@ public sealed class YallaDbContext : DbContext
 
         // The table the booking is on as this save leaves it: a move in the same save has the tracked value.
         var tracked = ChangeTracker.Entries<Reservation>().ToDictionary(e => e.Entity.Id, e => e.Entity.DiningTableId);
+        // A booking by time only that nobody has seated has no table to tell.
         var targets = rows
             .Select(r => (r.Id, r.BranchId, TableId: tracked.TryGetValue(r.Id, out var moved) ? moved : r.DiningTableId))
+            .Where(t => t.TableId is not null)
+            .Select(t => (t.Id, t.BranchId, TableId: t.TableId!.Value))
             .ToList();
 
         var tableIds = targets.Select(t => t.TableId).Distinct().ToList();

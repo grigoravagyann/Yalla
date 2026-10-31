@@ -386,7 +386,7 @@ public sealed class ConsoleBookingActionsTests(SqlServerFixture fixture)
             await db.SaveChangesAsync();
         }
 
-        return new Booking(booking.Id, booking.DiningTableId);
+        return new Booking(booking.Id, booking.DiningTableId!.Value);
     }
 
     private async Task<ReservationStatus> StatusOfAsync(World w, Guid reservationId)

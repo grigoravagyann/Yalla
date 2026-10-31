@@ -24,9 +24,20 @@ public sealed record ReservationView
 
     public required string TimeZoneId { get; init; }
 
-    public required Guid TableId { get; init; }
+    /// <summary>
+    /// The table. Absent, with <see cref="TableLabel"/>, for a booking made by time only that nobody has
+    /// seated yet (<see cref="BookedWithoutTable"/>): the venue chooses its table when the party arrives.
+    /// </summary>
+    public Guid? TableId { get; init; }
 
-    public required string TableLabel { get; init; }
+    /// <summary>The table's label, as printed on the floor; absent with <see cref="TableId"/>.</summary>
+    public string? TableLabel { get; init; }
+
+    /// <summary>
+    /// Made at a branch that books by time only: the diner chose a time and how many, not a table. Such a
+    /// booking is moved by cancelling it and booking again, and takes no pre-order.
+    /// </summary>
+    public bool BookedWithoutTable { get; init; }
 
     /// <summary>
     /// The room the table is in - its <c>FloorArea</c>, the room a diner picked it from - or absent for

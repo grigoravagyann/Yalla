@@ -156,7 +156,26 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
                 "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
+
+        floor.MapGet("/reservations/without-table", ListWithoutTableAsync)
+            .WithName("listBookingsWithoutTable")
+            .WithSummary("The bookings made by time only that nobody has seated yet")
+            .WithDescription(
+                "What the staff tablet polls at a branch that books by time only (`bookingMode` 2): its confirmed "
+                + "bookings with no table yet that have not ended, soonest first, each with the guest's wish in "
+                + "`note`. At most 200; no paging. Seat one with `POST /tables/{tableId}/seat-reservation` on the "
+                + "table the waiter chooses - the booking has that table from then on. Waiter or above at the branch.")
+            .Produces<IReadOnlyList<ReservationView>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
     }
+
+    private static async Task<IResult> ListWithoutTableAsync(
+        Guid branchId,
+        IReservationService reservations,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await reservations.ListWithoutTableAsync(branchId, cancellationToken));
 
     private static async Task<IResult> ListAwaitingApprovalAsync(
         Guid branchId,
@@ -337,7 +356,9 @@ public static class ReservationEndpoints
                 "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
                 + " `reservation-overlaps-own`: the diner already has a booking then, here or too close to it at "
                 + "another venue - `context.reservationId`, `code`, `localDate`, `localStartTime`, `tableLabel`, "
-                + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already.")
+                + "`venueName`, `branchName` name it. `phone-has-active-booking`: three active bookings already. "
+                + "`time-full`: at a branch that books by time only (`bookingMode` 2, no `tableId`), no room for that "
+                + "many then - `context.guestsLeft` says how many it could still take.")
             .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, RejectedDescription)
             .ProducesProblem<LockTimeoutProblem>(
                 StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);

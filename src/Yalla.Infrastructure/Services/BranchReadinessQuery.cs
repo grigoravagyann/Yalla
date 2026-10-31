@@ -60,7 +60,14 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         var branches = await db.Branches
             .AsNoTracking()
             .Where(b => ids.Contains(b.Id))
-            .Select(b => new { b.Id, b.VenueId, b.ReservationPolicyReviewedAtUtc, b.AcceptsWebBookings })
+            .Select(b => new
+            {
+                b.Id,
+                b.VenueId,
+                b.ReservationPolicyReviewedAtUtc,
+                b.AcceptsWebBookings,
+                TimeOnly = b.ReservationPolicy.BookingMode == BookingMode.TimeOnly && b.ReservationPolicy.GuestsAtOnce > 0,
+            })
             .ToListAsync(cancellationToken);
 
         if (branches.Count == 0)
@@ -146,7 +153,8 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
                 branch.ReservationPolicyReviewedAtUtc is not null,
                 staffCount,
                 deviceCounts.GetValueOrDefault(branch.Id),
-                branch.AcceptsWebBookings);
+                branch.AcceptsWebBookings,
+                branch.TimeOnly);
         }
 
         return views;
@@ -170,7 +178,8 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         bool policyReviewed,
         int staffCount,
         int deviceCount,
-        bool acceptsWebBookings)
+        bool acceptsWebBookings,
+        bool booksByTimeOnly)
     {
         var floorPlanDrawn = tables.Count > 0;
         var tablesLabelled = floorPlanDrawn && tables.TrueForAll(t => !string.IsNullOrWhiteSpace(t.Label));
@@ -242,7 +251,11 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
         // same four DinerVisibility filters every diner surface by; the rest above are advice.
         var missingForGuests = new List<string>();
 
-        if (!floorPlanDrawn)
+        // A branch that books by time only needs no table a diner can tap: its guests at once stand in for it.
+        if (booksByTimeOnly)
+        {
+        }
+        else if (!floorPlanDrawn)
         {
             missingForGuests.Add(ReadinessIssueCodes.NoTables);
         }
@@ -286,6 +299,7 @@ internal sealed class BranchReadinessQuery(YallaDbContext db) : IBranchReadiness
             DeviceEnrolled: deviceEnrolled,
             DeviceCount: deviceCount,
             BookableTableCount: bookableTableCount,
+            BooksByTimeOnly: booksByTimeOnly,
             TakingGuests: missingForGuests.Count == 0,
             MissingForGuests: missingForGuests,
 

@@ -311,7 +311,7 @@ internal static class StaffPushSubjects
             {
                 r.BranchId,
                 r.Branch.TimeZoneId,
-                Table = r.DiningTable.Label,
+                Table = r.DiningTable!.Label,
                 r.LocalDate,
                 r.LocalStartTime,
                 r.PartySize,
@@ -377,7 +377,7 @@ internal static class StaffPushSubjects
             var booking = await db.Reservations
                 .AsNoTracking()
                 .Where(r => r.Id == reservationId)
-                .Select(r => new { r.GuestName, r.LocalStartTime, Table = r.DiningTable.Label })
+                .Select(r => new { r.GuestName, r.LocalStartTime, Table = r.DiningTable!.Label })
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (booking is null)

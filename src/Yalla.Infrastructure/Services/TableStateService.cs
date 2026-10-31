@@ -159,7 +159,7 @@ internal sealed class TableStateService(
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
-        var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken);
+        var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken, assignIfBookedWithoutTable: true);
 
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
@@ -223,7 +223,7 @@ internal sealed class TableStateService(
 
         var table = await LoadTableAsync(command.BranchId, command.TableId, cancellationToken);
         RequirePrecondition(command, table);
-        var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken);
+        var reservation = await LoadReservationAsync(command.ReservationId, table, cancellationToken, assignIfBookedWithoutTable: true);
 
         var nowUtc = clock.UtcNow;
         var fromStatus = table.Status;
@@ -922,7 +922,8 @@ internal sealed class TableStateService(
     private async Task<Reservation> LoadReservationAsync(
         Guid reservationId,
         DiningTable table,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool assignIfBookedWithoutTable = false)
     {
         var reservation = await db.Reservations
             .FirstOrDefaultAsync(r => r.Id == reservationId, cancellationToken);
@@ -930,6 +931,12 @@ internal sealed class TableStateService(
         if (reservation is null)
         {
             throw new KeyNotFoundException($"Reservation {reservationId} was not found.");
+        }
+
+        // A booking made by time only gets its table as the party is seated: the one the waiter chose, at its branch.
+        if (assignIfBookedWithoutTable && reservation.DiningTableId is null && reservation.BranchId == table.BranchId)
+        {
+            reservation.AssignTable(table.Id);
         }
 
         if (reservation.DiningTableId != table.Id)

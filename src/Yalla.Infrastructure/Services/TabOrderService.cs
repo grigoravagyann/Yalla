@@ -668,7 +668,7 @@ internal sealed class TabOrderService(
                 p.Id,
                 SentAtUtc = p.SentAtUtc!.Value,
                 Status = p.KitchenStatus!.Value,
-                TableLabel = p.Reservation.DiningTable.Label,
+                TableLabel = p.Reservation.DiningTable!.Label,
                 PlacedByName = db.StaffMembers.Where(s => s.Id == p.SentByStaffId).Select(s => s.FullName).FirstOrDefault(),
                 Marker = new KitchenPreOrder(
                     p.ReservationId, p.Reservation.StartUtc, p.Reservation.LocalStartTime, p.Reservation.PartySize, p.Reservation.GuestName),

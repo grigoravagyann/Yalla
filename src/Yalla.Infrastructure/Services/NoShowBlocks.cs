@@ -129,15 +129,21 @@ internal sealed class NoShowBlocks(
         {
             try
             {
+                // A booking by time only nobody seated holds no table.
+                if (booking.DiningTableId is not { } tableId)
+                {
+                    continue;
+                }
+
                 var held = await db.DiningTables
                     .AsNoTracking()
-                    .AnyAsync(t => t.Id == booking.DiningTableId && t.Status == TableStatus.Held, cancellationToken);
+                    .AnyAsync(t => t.Id == tableId && t.Status == TableStatus.Held, cancellationToken);
 
-                if (held && await HoldIsForAsync(db, booking.DiningTableId, booking.Id, cancellationToken))
+                if (held && await HoldIsForAsync(db, tableId, booking.Id, cancellationToken))
                 {
                     await tableState.ReleaseHoldAsync(
                         new TableStateCommand(
-                            booking.BranchId, booking.DiningTableId, Guid.CreateVersion7(), NoShowBlockRules.CancellationReason),
+                            booking.BranchId, tableId, Guid.CreateVersion7(), NoShowBlockRules.CancellationReason),
                         cancellationToken);
                 }
             }

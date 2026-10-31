@@ -112,6 +112,19 @@ public sealed class ReservationPolicy
     /// </remarks>
     public bool AutoConfirmGuestsWithGoodRecord { get; private set; }
 
+    /// <summary>
+    /// Whether diners pick a table on a room photo, or only a time and how many people
+    /// (<see cref="BookingMode.TimeOnly"/>, 2026-10-29).
+    /// </summary>
+    public BookingMode BookingMode { get; private set; } = BookingMode.ChooseTable;
+
+    /// <summary>
+    /// For <see cref="BookingMode.TimeOnly"/>: the most booked guests the branch takes at the same
+    /// moment - counted over each booking's sitting, so two parties who never overlap do not add up.
+    /// Required in that mode and ignored in the other.
+    /// </summary>
+    public int? GuestsAtOnce { get; private set; }
+
     private ReservationPolicy()
     {
     }
@@ -133,8 +146,26 @@ public sealed class ReservationPolicy
         int walkInHoldbackMinutes = 30,
         int reminderHoursBefore = 3,
         bool unverifiedScansNeedAdmission = true,
-        bool autoConfirmGuestsWithGoodRecord = false)
+        bool autoConfirmGuestsWithGoodRecord = false,
+        BookingMode bookingMode = BookingMode.ChooseTable,
+        int? guestsAtOnce = null)
     {
+        if (!Enum.IsDefined(bookingMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(bookingMode), bookingMode, "Unknown booking mode.");
+        }
+
+        if (bookingMode == BookingMode.TimeOnly && guestsAtOnce is not (>= ReservationPolicyLimits.MinGuestsAtOnce and <= ReservationPolicyLimits.MaxGuestsAtOnce))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(guestsAtOnce),
+                guestsAtOnce,
+                $"Booking by time only needs how many guests the branch takes at once, {ReservationPolicyLimits.MinGuestsAtOnce} to {ReservationPolicyLimits.MaxGuestsAtOnce}.");
+        }
+
+        BookingMode = bookingMode;
+        GuestsAtOnce = bookingMode == BookingMode.TimeOnly ? guestsAtOnce : null;
+
         UnverifiedScansNeedAdmission = unverifiedScansNeedAdmission;
         AutoConfirmGuestsWithGoodRecord = autoConfirmGuestsWithGoodRecord;
 

@@ -41,7 +41,10 @@ namespace Yalla.Application.Public;
 /// The branch's IANA zone. Every time here is wall-clock in it, and a diner reading this on a
 /// phone set to another zone must not be shown a converted time.
 /// </param>
-/// <param name="TableLabel">The table, as printed on the floor.</param>
+/// <param name="TableLabel">
+/// The table, as printed on the floor. Absent, with <paramref name="TableId"/>, for a booking made by time only
+/// that nobody has seated: the venue chooses its table when the party arrives.
+/// </param>
 /// <param name="LocalDate">The booked date, as the diner reads it off the confirmation.</param>
 /// <param name="LocalStartTime">The booked wall-clock start.</param>
 /// <param name="PartySize">How many people.</param>
@@ -127,14 +130,14 @@ public sealed record PublicBookingView(
     string BranchSlug,
     string BranchAddress,
     string TimeZoneId,
-    string TableLabel,
+    string? TableLabel,
     DateOnly LocalDate,
     TimeOnly LocalStartTime,
     int PartySize,
     ReservationStatus Status,
     string Code,
     Guid ReservationId,
-    Guid TableId,
+    Guid? TableId,
     DateTime CancellationDeadlineUtc,
     bool CanCancel,
     bool CancelledAfterDeadline,

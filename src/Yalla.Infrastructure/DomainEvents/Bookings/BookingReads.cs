@@ -33,9 +33,14 @@ internal static class BookingReads
         return branch;
     }
 
-    /// <summary>A table's label as the messages name it, or empty when there is no such table.</summary>
-    public static async Task<string> TableLabelAsync(YallaDbContext db, Guid tableId, CancellationToken cancellationToken) =>
-        db.DiningTables.Local.FirstOrDefault(t => t.Id == tableId)?.Label
+    /// <summary>
+    /// A table's label as the messages name it, or empty when there is no such table - or none yet,
+    /// for a booking made by time only.
+    /// </summary>
+    public static async Task<string> TableLabelAsync(YallaDbContext db, Guid? tableId, CancellationToken cancellationToken) =>
+        tableId is null
+            ? string.Empty
+            : db.DiningTables.Local.FirstOrDefault(t => t.Id == tableId)?.Label
         ?? await db.DiningTables
             .AsNoTracking()
             .Where(t => t.Id == tableId)

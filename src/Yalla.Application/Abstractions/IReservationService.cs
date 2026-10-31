@@ -202,6 +202,16 @@ public interface IReservationService
         Guid branchId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The branch's confirmed bookings made by time only that nobody has seated yet and that have not ended,
+    /// soonest first: what the floor seats at a table it chooses. At most <see cref="BranchReservationList.MaxRows"/>.
+    /// </summary>
+    /// <remarks>The floor's read: a waiter or above at the branch, as <see cref="ListAwaitingApprovalAsync"/>.</remarks>
+    /// <exception cref="Domain.Staff.StaffPermissionException">Not a waiter or above at this branch.</exception>
+    Task<IReadOnlyList<ReservationView>> ListWithoutTableAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>The calling diner's own bookings, upcoming and past.</summary>
     Task<MyReservations> GetMineAsync(CancellationToken cancellationToken = default);
 

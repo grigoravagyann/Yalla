@@ -204,6 +204,85 @@ internal sealed class ReservationWriter(
     }
 
     /// <summary>
+    /// Inserts a booking made by time only (BookingMode.TimeOnly) under the branch's own lock: the account,
+    /// the replay, the guest's block, their own overlapping booking, the branch's guests at once and the
+    /// three-active-bookings limit, in that order - the table insert's protocol with the room's capacity
+    /// where the table's evening would be.
+    /// </summary>
+    /// <returns>
+    /// The booking written, the original on a replay, or - nothing written - how many guests are left at the
+    /// busiest moment of the sitting (<see cref="InsertWithoutTableOutcome.GuestsLeft"/>).
+    /// </returns>
+    public async Task<InsertWithoutTableOutcome> InsertWithoutTableAsync(
+        Guid clientCommandId,
+        Guid branchId,
+        BookedInterval sitting,
+        int partySize,
+        int guestsAtOnce,
+        BookerKey booker,
+        Func<CancellationToken, Task<Reservation>> stageAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stageAsync);
+
+        try
+        {
+            await using var locked = await tableLock.AcquireBranchAsync(branchId, cancellationToken);
+
+            await DinerAccountLock.RequireLiveAsync(db, booker.DinerUserId, cancellationToken);
+
+            if (await FindReplayAsync(clientCommandId, booker.DinerUserId, cancellationToken) is { } original)
+            {
+                return new InsertWithoutTableOutcome(original, null, null);
+            }
+
+            await GuestRecords.RequireNotBlockedAsync(
+                db, booker.DinerUserId, booker.PhoneE164, clock.UtcNow, cancellationToken);
+
+            await RefuseOverlapWithOwnAsync(booker, branchId, sitting, excludingReservationId: Guid.Empty, cancellationToken);
+
+            // The room, read inside the lock: every booking by time only that holds a place during this sitting.
+            var holding = await db.Reservations
+                .AsNoTracking()
+                .Where(r => r.BranchId == branchId
+                            && r.BookedWithoutTable
+                            && GuestsAtOnce.Holding.Contains(r.Status)
+                            && r.StartUtc < sitting.EndUtc
+                            && r.EndUtc > sitting.StartUtc)
+                .Select(r => new { r.StartUtc, r.EndUtc, r.PartySize })
+                .ToListAsync(cancellationToken);
+
+            var left = GuestsAtOnce.LeftWithin(
+                holding.Select(r => (new BookedInterval(r.StartUtc, r.EndUtc), r.PartySize)), sitting, guestsAtOnce);
+
+            if (partySize > left)
+            {
+                return new InsertWithoutTableOutcome(null, null, left);
+            }
+
+            await RefuseBeyondActiveLimitAsync(booker, cancellationToken);
+
+            var reservation = await stageAsync(cancellationToken);
+
+            db.Reservations.Add(reservation);
+
+            if (await SaveWithFreshCodeAsync(reservation, booker, cancellationToken) is { } winner)
+            {
+                return new InsertWithoutTableOutcome(winner, null, null);
+            }
+
+            await locked.CommitAsync(cancellationToken);
+
+            return new InsertWithoutTableOutcome(null, reservation, null);
+        }
+        catch
+        {
+            DetachStaged();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Takes the target table's lock, re-checks the new slot inside it, and moves the booking there.
     /// </summary>
     /// <remarks>
@@ -582,7 +661,7 @@ internal sealed class ReservationWriter(
                             || (r.BranchId != branchId && r.StartUtc < awayEndUtc && r.EndUtc > awayStartUtc)))
             .OrderBy(r => r.StartUtc)
             .Select(r => new OwnBooking(
-                r.Id, r.Code, r.LocalDate, r.LocalStartTime, r.DiningTable.Label, r.Branch.Venue.Name, r.Branch.Name))
+                r.Id, r.Code, r.LocalDate, r.LocalStartTime, r.DiningTable!.Label, r.Branch.Venue.Name, r.Branch.Name))
             .FirstOrDefaultAsync(cancellationToken);
     }
 
@@ -672,12 +751,16 @@ internal sealed class ReservationWriter(
     /// </summary>
     /// <exception cref="TableLockTimeoutException">Either lock could not be had in time. Nothing was written.</exception>
     public async Task<TableLockScope> LockForNoShowAsync(
-        Guid tableId,
+        Guid? tableId,
+        Guid branchId,
         string tableLabel,
         Guid? account,
         CancellationToken cancellationToken)
     {
-        var scope = await tableLock.AcquireAsync(tableId, tableLabel, cancellationToken);
+        // A booking by time only nobody seated has no table: the branch's lock, which its bookings are made under.
+        var scope = tableId is { } table
+            ? await tableLock.AcquireAsync(table, tableLabel, cancellationToken)
+            : await tableLock.AcquireBranchAsync(branchId, cancellationToken);
 
         try
         {
@@ -692,7 +775,7 @@ internal sealed class ReservationWriter(
         {
             await scope.DisposeAsync();
 
-            throw new TableLockTimeoutException(tableId, tableLabel, tableLock.TimeoutMilliseconds);
+            throw new TableLockTimeoutException(tableId ?? branchId, tableLabel, tableLock.TimeoutMilliseconds);
         }
         catch
         {
@@ -855,6 +938,12 @@ internal readonly record struct MoveOutcome(
 
     public static MoveOutcome FreeByRequired(FreeByRequirement requirement) => new(null, null, false, requirement);
 }
+
+/// <summary>
+/// What the locked insert of a booking by time only decided: the original on a replay, the booking written, or
+/// how many guests are left when the party did not fit. Exactly one is set.
+/// </summary>
+internal readonly record struct InsertWithoutTableOutcome(Reservation? Replay, Reservation? Booking, int? GuestsLeft);
 
 /// <summary>
 /// What the locked insert decided. Exactly one of these is set, and only <see cref="Booking"/> means a

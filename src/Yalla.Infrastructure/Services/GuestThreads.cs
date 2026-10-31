@@ -198,7 +198,7 @@ internal static class GuestThreads
                 r.LocalDate,
                 r.LocalStartTime,
                 r.PartySize,
-                TableLabel = r.DiningTable.Label,
+                TableLabel = r.DiningTable!.Label,
                 r.CancelledAtUtc,
                 Declined = r.DeclineReason != null,
 

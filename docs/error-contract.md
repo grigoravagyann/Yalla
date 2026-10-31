@@ -500,6 +500,7 @@ refusing a missing token answers a bare 401 with no body.
 | `takeaway-slot-unavailable` | 409 | Pickup time unavailable | The pickup time asked for is not one on offer; context lists the slots on offer now. | `branchId` uuid, `at` string, `slots` string[] |
 | `takeaway-status-conflict` | 409 | Order has moved on | The takeaway order is not in the state for that move; context says where it is now. | `orderId` uuid, `status` TakeawayStatus |
 | `telegram-verification-expired` | 410 | Telegram verification no longer available | A Telegram verification challenge that can no longer be claimed; start again. | - |
+| `time-full` | 409 | Time full | There is no room for that many guests at that time. | `branchId` uuid, `partySize` int32, `guestsLeft` int32 |
 | `too-many-attempts` | 429 | Too many attempts | A one-time credential is out of attempts, or a per-identity limit is spent; ask for a new code. | `retryAfterSeconds` int32 |
 | `transfer-target-ineligible` | 422 | Cannot take this table | The waiter named cannot take the table. | `staffMemberId` uuid, `reason` string |
 | `unauthenticated` | 401 | Not authenticated | No usable credential was presented (declared for clients; a bare 401 carries no body). | - |

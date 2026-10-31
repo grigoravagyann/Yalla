@@ -16,9 +16,11 @@ internal static class PreOrderEventReads
         db.Reservations.Local.FirstOrDefault(r => r.Id == reservationId)
         ?? await db.Reservations.FirstAsync(r => r.Id == reservationId, cancellationToken);
 
-    /// <summary>A table's label, as the History names it.</summary>
-    public static async Task<string> TableLabelAsync(YallaDbContext db, Guid diningTableId, CancellationToken cancellationToken) =>
-        db.DiningTables.Local.FirstOrDefault(t => t.Id == diningTableId)?.Label
+    /// <summary>A table's label, as the History names it; none for a booking by time only not yet seated.</summary>
+    public static async Task<string?> TableLabelAsync(YallaDbContext db, Guid? diningTableId, CancellationToken cancellationToken) =>
+        diningTableId is null
+            ? null
+            : db.DiningTables.Local.FirstOrDefault(t => t.Id == diningTableId)?.Label
         ?? await db.DiningTables
             .AsNoTracking()
             .Where(t => t.Id == diningTableId)

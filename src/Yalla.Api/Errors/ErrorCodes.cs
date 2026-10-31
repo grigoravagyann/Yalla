@@ -569,6 +569,17 @@ public static class ErrorCodes
     public const string PreOrdersNotAccepted = "pre-orders-not-accepted";
 
     /// <summary>
+    /// A branch that books by time only has no room for the party then. HTTP 409, <c>context</c> <c>branchId</c>,
+    /// <c>partySize</c>, <c>guestsLeft</c> (how many it could still take at the busiest moment of the sitting). Minted
+    /// by <c>TimeFullException</c>.
+    /// </summary>
+    [Problem(409, "There is no room for that many guests at that time.", Title = "Time full")]
+    [ProblemContext("branchId", typeof(Guid))]
+    [ProblemContext("partySize", typeof(int))]
+    [ProblemContext("guestsLeft", typeof(int))]
+    public const string TimeFull = "time-full";
+
+    /// <summary>
     /// Not the time or the state to send a pre-order to the kitchen, or mark the party not coming. HTTP 409,
     /// <c>context</c> <c>reservationId</c>, <c>status</c>, <c>sendableFromUtc</c>, <c>endUtc</c>. Minted by
     /// <c>PreOrderNotSendableException</c>.

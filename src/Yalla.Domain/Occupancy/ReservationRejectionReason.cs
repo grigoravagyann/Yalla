@@ -81,4 +81,10 @@ public enum ReservationRejectionReason
 
     // 14 (UnverifiedPartyTooLarge) and 15 (VerifiedPhoneRequired) belonged to booking without a verified number
     // (Yalla#54), withdrawn the same day. Retired: clients may still know them, so never reuse either.
+
+    /// <summary>
+    /// A branch that books by time only has no room for this many guests then: the busiest moment of the sitting
+    /// already holds its guests at once (2026-10-29).
+    /// </summary>
+    TimeFull = 16,
 }

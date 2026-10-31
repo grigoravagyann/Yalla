@@ -573,7 +573,7 @@ public sealed class TableSequencingReviewTests(SqlServerFixture fixture)
 
         return await fixture.CreateReservationService(db, clock, diner).RescheduleAsync(
             new RescheduleReservationCommand(
-                booking.Id, tableId ?? booking.TableId, date ?? booking.LocalDate, time, partySize, Guid.CreateVersion7()));
+                booking.Id, tableId ?? booking.TableId!.Value, date ?? booking.LocalDate, time, partySize, Guid.CreateVersion7()));
     }
 
     private async Task<ReservationView> AnswerAsync(IClock clock, TestActor diner, Guid reservationId, Guid requestId, bool accept)

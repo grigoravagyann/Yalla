@@ -20,7 +20,7 @@ namespace Yalla.Domain.Occupancy;
 /// <param name="ApprovalExpiresAtUtc">Until when the venue could answer.</param>
 public sealed record ReservationStanding(
     ReservationStatus Status,
-    Guid DiningTableId,
+    Guid? DiningTableId,
     DateTime StartUtc,
     DateTime EndUtc,
     int PartySize,

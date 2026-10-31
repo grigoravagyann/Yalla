@@ -36,7 +36,9 @@ internal sealed class ReservationViews(
         CancellationToken cancellationToken,
         string? manageToken = null)
     {
-        var facts = table is not null
+        var facts = reservation.DiningTableId is null
+            ? new TableFacts(null, null, null)
+            : table is not null
             ? new TableFacts(table.Label, table.FloorAreaId, table.FloorArea?.Name)
             : await db.DiningTables
                   .AsNoTracking()
@@ -141,7 +143,8 @@ internal sealed class ReservationViews(
             BranchName = branchName,
             TimeZoneId = timeZoneId,
             TableId = reservation.DiningTableId,
-            TableLabel = table.Label,
+            TableLabel = reservation.DiningTableId is null ? null : table.Label,
+            BookedWithoutTable = reservation.BookedWithoutTable,
             RoomId = table.RoomId,
             RoomName = table.RoomName,
             PartySize = reservation.PartySize,
@@ -324,7 +327,7 @@ internal sealed class ReservationViews(
     }
 
     /// <summary>What a booking's view says about its table: the label, and the room it is in.</summary>
-    internal sealed record TableFacts(string Label, Guid? RoomId, string? RoomName);
+    internal sealed record TableFacts(string? Label, Guid? RoomId, string? RoomName);
 
     internal sealed class MineRow
     {
@@ -334,7 +337,7 @@ internal sealed class ReservationViews(
 
         public string TimeZoneId { get; init; } = null!;
 
-        public string TableLabel { get; init; } = null!;
+        public string? TableLabel { get; init; }
 
         public Guid? RoomId { get; init; }
 

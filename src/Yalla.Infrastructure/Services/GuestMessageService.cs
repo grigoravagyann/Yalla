@@ -346,7 +346,7 @@ internal sealed class GuestMessageService(
                 (c.ReservationId != null
                  && db.Reservations.Any(r => r.Id == c.ReservationId
                                              && (r.GuestName.ToLower().Contains(lowered)
-                                                 || r.DiningTable.Label.ToLower() == lowered)))
+                                                 || r.DiningTable!.Label.ToLower() == lowered)))
                 || (c.TakeawayOrderId != null
                     && db.TakeawayOrders.Any(o => o.Id == c.TakeawayOrderId
                                                   && (o.GuestName.ToLower().Contains(lowered) || o.Code == code))));

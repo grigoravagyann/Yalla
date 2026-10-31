@@ -192,6 +192,11 @@ internal sealed class ReservationService : IReservationService
         CancellationToken cancellationToken = default) =>
         reads.ListAwaitingApprovalAsync(branchId, cancellationToken);
 
+    public Task<IReadOnlyList<ReservationView>> ListWithoutTableAsync(
+        Guid branchId,
+        CancellationToken cancellationToken = default) =>
+        reads.ListWithoutTableAsync(branchId, cancellationToken);
+
     // ---------------------------------------------------------------- a late booking
 
     public Task<ExtendHoldResult> ExtendHoldAsync(

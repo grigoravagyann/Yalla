@@ -135,6 +135,13 @@ internal sealed class TabOpener(
                 // both rather than try to seat the party a second time.
                 var booking = await db.Reservations.FirstAsync(r => r.Id == reservationId, token);
 
+                // A booking made by time only has no table until a waiter seats the party at one.
+                if (booking.DiningTableId is null)
+                {
+                    throw new Yalla.Domain.DomainStateException(
+                        $"Booking {booking.Code} has no table yet: a waiter will seat you and choose it.");
+                }
+
                 var table = await db.DiningTables
                     .Include(t => t.Branch)
                         .ThenInclude(b => b.Venue)

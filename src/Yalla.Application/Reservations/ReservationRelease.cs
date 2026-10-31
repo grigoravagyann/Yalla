@@ -73,7 +73,10 @@ public sealed record ReleaseReservationCommand(
 /// True when the table was held for this booking and has been freed. False when somebody else is
 /// sitting there - the release still stands, and the floor is left telling the truth.
 /// </param>
-/// <param name="TableId">The table this booking was for.</param>
+/// <param name="TableId">
+/// The table this booking was for. Absent, with the label and status, for a booking made by time only that nobody
+/// seated: there was no table to free.
+/// </param>
 /// <param name="TableLabel">Its label, for the confirmation the waiter sees.</param>
 /// <param name="TableStatus">What the table is now.</param>
 /// <param name="CountsTowardNoShowThreshold">
@@ -89,9 +92,9 @@ public sealed record ReservationReleaseResult(
     ReservationView Reservation,
     ReleaseOutcome Outcome,
     bool TableFreed,
-    Guid TableId,
-    string TableLabel,
-    Domain.Enums.TableStatus TableStatus,
+    Guid? TableId,
+    string? TableLabel,
+    Domain.Enums.TableStatus? TableStatus,
     bool CountsTowardNoShowThreshold,
     bool WasReplay,
     DateTime? GuestBlockedUntilUtc = null);

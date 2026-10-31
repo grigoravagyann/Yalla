@@ -131,6 +131,7 @@ internal sealed class PublicListingQuery(
                 b.PhoneE164,
                 b.AmenityKeys,
                 b.TakeawayPrepMinutes,
+                b.ReservationPolicy.BookingMode,
             })
             .FirstAsync(cancellationToken);
 
@@ -183,7 +184,8 @@ internal sealed class PublicListingQuery(
             summary.RatingCounts,
             rooms,
             new PublicTakeawayInfo(features.Contains(BranchFeature.Takeaway), extra.TakeawayPrepMinutes),
-            clock.UtcNow);
+            clock.UtcNow,
+            extra.BookingMode);
     }
 
     public async Task<PublicReviewPage> GetReviewsAsync(Guid branchId, int page, CancellationToken cancellationToken = default)

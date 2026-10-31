@@ -31,9 +31,20 @@ public sealed class Reservation : Entity
 
     public Branch Branch { get; private set; } = null!;
 
-    public Guid DiningTableId { get; private set; }
+    /// <summary>
+    /// The table. Null only for a booking made <see cref="BookedWithoutTable"/> that nobody has
+    /// seated yet: staff choose its table when the party arrives (<see cref="AssignTable"/>).
+    /// </summary>
+    public Guid? DiningTableId { get; private set; }
 
-    public DiningTable DiningTable { get; private set; } = null!;
+    public DiningTable? DiningTable { get; private set; }
+
+    /// <summary>
+    /// Made at a branch that books by time only (<see cref="BookingMode.TimeOnly"/>): the diner
+    /// chose a time and a party size, not a table. Stays true once a table is assigned, because it
+    /// is what the branch's guests-at-once limit counts.
+    /// </summary>
+    public bool BookedWithoutTable { get; private set; }
 
     /// <summary>
     /// The diner's account, when they booked from the app. Null for a phone booking taken by
@@ -178,7 +189,7 @@ public sealed class Reservation : Entity
 
     /// <summary>Whether a change is waiting with a confirmed slot behind it to go back to.</summary>
     public bool HasConfirmedSlotToReturnTo =>
-        PreviousDiningTableId is not null && PreviousStartUtc is not null && PreviousEndUtc is not null;
+        (PreviousDiningTableId is not null || BookedWithoutTable) && PreviousStartUtc is not null && PreviousEndUtc is not null;
 
     public DateTime? CancelledAtUtc { get; private set; }
 
@@ -428,7 +439,7 @@ public sealed class Reservation : Entity
 
     private Reservation(
         Guid branchId,
-        Guid diningTableId,
+        Guid? diningTableId,
         DateTime startUtc,
         DateTime endUtc,
         DateOnly localDate,
@@ -447,7 +458,8 @@ public sealed class Reservation : Entity
     {
         ClientCommandId = Guard.NotEmpty(clientCommandId, nameof(clientCommandId));
         BranchId = Guard.NotEmpty(branchId, nameof(branchId));
-        DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
+        DiningTableId = diningTableId is { } tableId ? Guard.NotEmpty(tableId, nameof(diningTableId)) : null;
+        BookedWithoutTable = diningTableId is null;
         StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
         EndUtc = Guard.NotLocalTime(endUtc, nameof(endUtc));
 
@@ -491,7 +503,7 @@ public sealed class Reservation : Entity
     /// </remarks>
     public static Reservation Create(
         Guid branchId,
-        Guid diningTableId,
+        Guid? diningTableId,
         DateTime startUtc,
         DateOnly localDate,
         TimeOnly localStartTime,
@@ -835,6 +847,27 @@ public sealed class Reservation : Entity
     /// The party arrived and was seated. Called in the same transaction as the table transition
     /// and the session insert, so a seated table and an unseated booking cannot coexist.
     /// </summary>
+    /// <summary>
+    /// Gives a booking made by time only its table, as staff seat the party. Once only: a table
+    /// already chosen is moved the way any booking's is.
+    /// </summary>
+    /// <exception cref="DomainStateException">The booking already has a table, or is not confirmed.</exception>
+    public void AssignTable(Guid tableId)
+    {
+        if (DiningTableId is not null)
+        {
+            throw new DomainStateException($"Booking {Code} already has a table.");
+        }
+
+        if (Status != ReservationStatus.Confirmed)
+        {
+            throw new DomainStateException(
+                $"Only a confirmed booking can be given a table to sit at; {Code} is {Status}.");
+        }
+
+        DiningTableId = Guard.NotEmpty(tableId, nameof(tableId));
+    }
+
     public void MarkSeated()
     {
         if (Status != ReservationStatus.Confirmed)
@@ -944,7 +977,7 @@ public sealed class Reservation : Entity
 
         var before = Standing();
 
-        DiningTableId = PreviousDiningTableId!.Value;
+        DiningTableId = PreviousDiningTableId;
         ForgetOnMyWayUnlessStartingAt(PreviousStartUtc!.Value, atUtc);
         StartUtc = PreviousStartUtc!.Value;
         EndUtc = PreviousEndUtc!.Value;
@@ -1260,7 +1293,7 @@ public sealed class Reservation : Entity
     /// fresh answer window when the caller gives one - the old one was for a different request.
     /// </para>
     /// </remarks>
-    /// <param name="diningTableId">The table it moves to - the same one, or another at the branch.</param>
+    /// <param name="diningTableId">The table it moves to - the same one, or another at the branch; null for a booking by time only.</param>
     /// <param name="startUtc">The new start.</param>
     /// <param name="localDate">The new local date, as the diner picked it.</param>
     /// <param name="localStartTime">The new local start time, as the diner picked it.</param>
@@ -1277,7 +1310,7 @@ public sealed class Reservation : Entity
     /// <param name="viaManageLink">Whoever holds the booking's link moved it, not the app: its account is told.</param>
     /// <exception cref="ReservationNotChangeableException">The booking is finished with, or has started.</exception>
     public void Reschedule(
-        Guid diningTableId,
+        Guid? diningTableId,
         DateTime startUtc,
         DateOnly localDate,
         TimeOnly localStartTime,
@@ -1337,7 +1370,10 @@ public sealed class Reservation : Entity
             ForgetConfirmedSlot();
         }
 
-        DiningTableId = Guard.NotEmpty(diningTableId, nameof(diningTableId));
+        // A booking by time only moves with no table, as it was made; one with a table names its new one.
+        DiningTableId = BookedWithoutTable && diningTableId is null
+            ? null
+            : Guard.NotEmpty(diningTableId ?? Guid.Empty, nameof(diningTableId));
         ForgetOnMyWayUnlessStartingAt(startUtc, nowUtc);
         StartUtc = Guard.NotLocalTime(startUtc, nameof(startUtc));
         EndUtc = promisedFreeByUtc ?? naturalEnd;

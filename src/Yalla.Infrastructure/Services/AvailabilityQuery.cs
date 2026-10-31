@@ -111,6 +111,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         await WithSpecialDaysAsync(row, RelevantDates(request.LocalDate, request.LocalDate.ToDateTime(TimeOnly.MinValue)), cancellationToken);
 
+        // A branch that books by time only answers in guests, from its own bookings that hold a place on the day.
+        if (row.Policy.BookingMode == BookingMode.TimeOnly)
+        {
+            row.TimeOnlyBookings = await TimeOnlyBookingsAsync(row.BranchId, request, cancellationToken);
+        }
+
         return ProjectDay(row, request, nowUtc);
     }
 
@@ -572,6 +578,34 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// Everything else is <see cref="Answer"/> over the very rows the single-slot read judges.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The bookings by time only that may share a sitting with a time on the requested day: from the evening before
+    /// to the morning after, wide enough for any turn time.
+    /// </summary>
+    private async Task<List<(BookedInterval Sitting, int Guests)>> TimeOnlyBookingsAsync(
+        Guid branchId,
+        DaySlotsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var dayUtc = DateTime.SpecifyKind(request.LocalDate.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
+        var fromUtc = dayUtc - GuardWindow;
+        var toUtc = dayUtc + GuardWindow;
+        var excludedId = request.ExcludeReservationId ?? Guid.Empty;
+
+        var rows = await db.Reservations
+            .AsNoTracking()
+            .Where(r => r.BranchId == branchId
+                        && r.BookedWithoutTable
+                        && r.Id != excludedId
+                        && GuestsAtOnce.Holding.Contains(r.Status)
+                        && r.EndUtc > fromUtc
+                        && r.StartUtc < toUtc)
+            .Select(r => new { r.StartUtc, r.EndUtc, r.PartySize })
+            .ToListAsync(cancellationToken);
+
+        return [.. rows.Select(r => (new BookedInterval(r.StartUtc, r.EndUtc), r.PartySize))];
+    }
+
     private static BranchDaySlots ProjectDay(AvailabilityRow row, DaySlotsRequest request, DateTime nowUtc)
     {
         var zone = BranchZone.For(row.TimeZoneId);
@@ -615,6 +649,26 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                     RequiresApproval = needsApproval,
                     FreeTableCount = 0,
                     UnavailableReason = timing,
+                });
+
+                continue;
+            }
+
+            if (policy.BookingMode == BookingMode.TimeOnly)
+            {
+                var left = GuestsAtOnce.LeftWithin(
+                    row.TimeOnlyBookings, new BookedInterval(startUtc, endUtc), policy.GuestsAtOnce ?? 0);
+                var fits = left >= request.PartySize;
+
+                slots.Add(new DaySlot
+                {
+                    Time = time,
+                    StartUtc = startUtc,
+                    IsAvailable = fits,
+                    RequiresApproval = needsApproval,
+                    FreeTableCount = 0,
+                    GuestsLeft = left,
+                    UnavailableReason = fits ? null : ReservationRejectionReason.TimeFull,
                 });
 
                 continue;
@@ -796,6 +850,9 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         public IReadOnlyList<SpecialDay> SpecialDays { get; set; } = [];
 
         public List<AvailabilityTableRow> Tables { get; init; } = [];
+
+        /// <summary>For a branch that books by time only: its bookings around the day, read beside the statement.</summary>
+        public List<(BookedInterval Sitting, int Guests)> TimeOnlyBookings { get; set; } = [];
 
         /// <summary>The week and the special days read beside it, as the one calendar every rule asks.</summary>
         public OpeningCalendar Hours => new(
