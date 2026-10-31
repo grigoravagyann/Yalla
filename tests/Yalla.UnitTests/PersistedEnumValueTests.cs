@@ -556,7 +556,9 @@ public class PersistedEnumValueTests
         Assert.Equal(4, (int)StaffPushKinds.TableCalls);
         Assert.Equal(8, (int)StaffPushKinds.Takeaway);
         Assert.Equal(16, (int)StaffPushKinds.KitchenReady);
-        Assert.Equal(15, (int)StaffPushKinds.Defaults);
+        Assert.Equal(32, (int)StaffPushKinds.BookingToCall);
+        Assert.Equal(47, (int)StaffPushKinds.Defaults);
+        Assert.Equal(63, (int)StaffPushKinds.All);
     }
 
     /// <summary>Asserts a retired number was left vacant rather than handed to somebody else.</summary>

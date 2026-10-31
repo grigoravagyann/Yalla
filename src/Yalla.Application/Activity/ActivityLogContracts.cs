@@ -131,6 +131,7 @@ public static class ActivityActions
     public const string BookingReleased = "booking.released";
     public const string BookingHoldExtended = "booking.hold-extended";
     public const string BookingGuestAnswered = "booking.guest-answered";
+    public const string BookingGuestComing = "booking.guest-coming";
 
     // Tables and their tabs.
     public const string TableSeated = "table.seated";

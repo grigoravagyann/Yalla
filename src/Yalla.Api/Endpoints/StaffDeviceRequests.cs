@@ -27,6 +27,10 @@ public sealed record StaffPushSubscriptionKeys(
 /// Optional: the language pushes are written in - <c>hy</c>, <c>ru</c> or <c>en</c> - sent when the person changes the
 /// app's language. Absent leaves it as it was.
 /// </param>
+/// <param name="BookingToCall">
+/// A booking the person took by hand starts in thirty minutes: call the guest (2026-10-31). Optional, unlike the six
+/// switches before it, so a client from before the switch keeps saving; absent means on, its default.
+/// </param>
 public sealed record SaveStaffNotificationPreferencesRequest(
     [Required] bool? Approvals,
     [Required] bool? GuestMessages,
@@ -34,4 +38,5 @@ public sealed record SaveStaffNotificationPreferencesRequest(
     [Required] bool? Takeaway,
     [Required] bool? KitchenReady,
     [Required] bool? OnlyDuringShift,
-    [StringLength(16)] string? Locale = null);
+    [StringLength(16)] string? Locale = null,
+    bool? BookingToCall = null);

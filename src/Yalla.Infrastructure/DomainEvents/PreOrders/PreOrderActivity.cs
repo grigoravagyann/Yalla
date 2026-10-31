@@ -66,10 +66,16 @@ internal sealed class PreOrderActivity(YallaDbContext db, IActivityLog activity)
             cancellationToken,
             extra: new { answer = "not-coming", recordedByStaff = true });
 
+    // "Coming" recorded by a member of staff for the guest, over the phone (2026-10-31), is the staff member's line -
+    // `booking.guest-coming`, "նշեց՝ հյուրը գալիս է" - on their device; the guest's own answer stays theirs.
     public Task HandleAsync(GuestOnTheirWay domainEvent, CancellationToken cancellationToken) =>
-        BookingActivity.RecordAsync(
-            activity, db, domainEvent.Reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
-            extra: new { answer = "coming" }, byGuest: true);
+        domainEvent.RecordedByStaffId is { } recorder
+            ? BookingActivity.RecordAsync(
+                activity, db, domainEvent.Reservation, ActivityActions.BookingGuestComing, cancellationToken,
+                extra: new { answer = "coming", recordedByStaff = true, recordedByStaffId = recorder })
+            : BookingActivity.RecordAsync(
+                activity, db, domainEvent.Reservation, ActivityActions.BookingGuestAnswered, cancellationToken,
+                extra: new { answer = "coming" }, byGuest: true);
 
     public Task HandleAsync(GuestRunningLate domainEvent, CancellationToken cancellationToken) =>
         BookingActivity.RecordAsync(

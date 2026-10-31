@@ -437,17 +437,21 @@ Everything above is a diner's. The staff app - `/staff`, on a personal phone ([a
 or a floor tablet - is pushed too, by **Web Push** rather than Expo: it is a PWA in a browser, and the browser's push
 service is the only thing that wakes a phone in a pocket.
 
-### The five kinds
+### The six kinds
 
 One outbox type, **`staff.push`**, written by the save that causes it, staged through `StaffPushSignals.StageOne` by a
 handler of the domain event the floor is told about ([domain-events.md](domain-events.md)): each of these happens on
 several paths, and a rule every path had to remember is a rule one of them forgets. `kitchenReady` is staged by
 `KitchenReadyStaffPush`, a handler of the order's `TabOrderMoved`, `tableCalls` by `TableCallStaffPush`, a handler of
 `ServiceRequestRaised`, `takeaway` by `TakeawayStaffPush`, a handler of `TakeawayPlaced`, `guestMessages` by
-`GuestMessageStaffPush`, a handler of `GuestMessageWritten` and `GuestAnswered`, and `approvals` by `ApprovalStaffPush`, a
+`GuestMessageStaffPush`, a handler of `GuestMessageWritten` and `GuestAnswered`, `approvals` by `ApprovalStaffPush`, a
 handler of `ReservationMade`, `ReservationRescheduled` and `ReservationWaitingInstead` - the last kind detected from the
-change tracker, until 2026-10-25. The payload is only `{ kind, subjectId, occurredAtUtc }`; who is told, in which words
-and whether it is still true are decided at send time, seconds later.
+change tracker, until 2026-10-25 - and `bookingToCall` (2026-10-31) by `BookingToCallStaffPush`, a handler of
+`ReservationMade` for a booking staff took by hand, **staged ahead**: the `StageOne` overload with a due time writes the
+row for thirty minutes before the start and stamps the notice with that instant, so the handler's "too old to send" rule
+reads the wait as the outbox's rather than as a push that went stale. The payload is only
+`{ kind, subjectId, occurredAtUtc }`; who is told, in which words and whether it is still true are decided at send time,
+seconds later.
 
 | Switch (`kind`) | Written when | Key | Still true at send time when | Deep link (`url`) | Collapse (`tag`) |
 |---|---|---|---|---|---|
@@ -456,6 +460,7 @@ and whether it is still true are decided at send time, seconds later.
 | `tableCalls` | A service request is raised - a waiter, water, napkins, the bill: what the floor shows as calling | `staff-push:call:{serviceRequestId}` | Nobody said "I'm on it" - neither claimed nor acknowledged - and no newer request replaced it. A claimed call stays open on the floor's list until acknowledged, but is not pushed | `/staff/now?call={serviceRequestId}` | `call:{tableId}` |
 | `takeaway` | A takeaway order is placed and waits to be accepted (one a branch accepts automatically needs nobody) | `staff-push:takeaway:{orderId}` | Still `Sent` | `/staff/takeaway/{orderId}` | `takeaway:{orderId}` |
 | `kitchenReady` | A tab order moves to `Ready` | `staff-push:ready:{orderId}:{fresh id}` | Still `Ready` - not served, not voided | `/staff/floor?table={tableId}` | `ready:{orderId}` |
+| `bookingToCall` | A booking a member of staff took by hand is made, for thirty minutes before its start (none when it starts inside the half hour - the card is already on the floor) | `staff-push:to-call:{reservationId}` | Still confirmed, the guest has not said they are coming, and its grace (or extended hold) has not run out - the to-call list's own rule ([reservations.md](reservations.md#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31)) | `/staff/floor?toCall={reservationId}` | `to-call:{reservationId}` |
 
 There is no "on the way to pick up" for takeaway: the guest has no such answer today, so nothing writes it.
 
@@ -470,6 +475,9 @@ The live devices of the event's branch with a push subscription whose switches i
   general manager or owner.
 - **An order up** goes to the table's own waiter - who seated the party, else who placed the order - on their
   phones, and to the branch's tablets that want it. With no such person, every phone **on shift** that wants it.
+- **Call the guest** goes to the booking's taker (`TakenByStaffId`) on their phones - subject to their own "only during
+  my shift" - and to the branch's tablets that want it; never to a colleague's phone. On by default. Never the guest's
+  number: that is on the card, behind the tap.
 
 ### What is sent
 
@@ -525,8 +533,8 @@ subscription was made with and subscribes again when they differ. Generate a dep
 | `GET /api/staff/push-config` | `{ enabled, publicKey }` - device token or PIN session |
 | `PUT /api/staff/device/push-subscription` | `{ endpoint, keys: { p256dh, auth } }` - one per device; one browser's subscription belongs to one device |
 | `DELETE /api/staff/device/push-subscription` | Forget it |
-| `GET /api/staff/device/notification-preferences` | `{ approvals, guestMessages, tableCalls, takeaway, kitchenReady, onlyDuringShift, locale, subscribed, isDefault }` |
-| `PUT /api/staff/device/notification-preferences` | The six switches, and optionally `locale` |
+| `GET /api/staff/device/notification-preferences` | `{ approvals, guestMessages, tableCalls, takeaway, kitchenReady, onlyDuringShift, locale, subscribed, isDefault, bookingToCall }` |
+| `PUT /api/staff/device/notification-preferences` | The six switches, optionally `locale`, and optionally `bookingToCall` (2026-10-31; absent means on, so a client from before the switch keeps saving) |
 
 All but the first need the person's PIN session on the device and act on that device only.
 

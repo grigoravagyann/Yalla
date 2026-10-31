@@ -224,6 +224,10 @@ public class SwaggerExposureTests
                      ("Yalla.Api.Endpoints.RescheduleReservationRequest", "date"),
                      ("Yalla.Api.Endpoints.RescheduleReservationRequest", "time"),
                      ("Yalla.Api.Endpoints.RescheduleReservationRequest", "diningTableId"),
+
+                     // A booking staff take by hand states its day and time as a diner's does (2026-10-31).
+                     ("Yalla.Api.Endpoints.StaffCreateReservationRequest", "date"),
+                     ("Yalla.Api.Endpoints.StaffCreateReservationRequest", "time"),
                  })
         {
             var schema = schemas.GetProperty(schemaId);

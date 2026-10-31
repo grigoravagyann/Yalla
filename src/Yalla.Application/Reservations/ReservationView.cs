@@ -91,6 +91,21 @@ public sealed record ReservationView
 
     public required ReservationStatus Status { get; init; }
 
+    /// <summary>
+    /// Where the booking was made from: 1 the diner app, 2 the public page, 3 taken by staff (<see cref="TakenByStaffId"/>),
+    /// 0 before the channel was recorded.
+    /// </summary>
+    public ReservationChannel Channel { get; init; }
+
+    /// <summary>
+    /// The member of staff who took the booking by hand, for a <see cref="ReservationChannel.Staff"/> booking made from the
+    /// floor (2026-10-31); absent for every other booking. They follow whether the guest comes.
+    /// </summary>
+    public Guid? TakenByStaffId { get; init; }
+
+    /// <summary>The taker's name now - "Ընդունեց՝ {name}" on the floor's cards; absent with <see cref="TakenByStaffId"/>.</summary>
+    public string? TakenByName { get; init; }
+
     public required string GuestName { get; init; }
 
     public required string GuestPhone { get; init; }

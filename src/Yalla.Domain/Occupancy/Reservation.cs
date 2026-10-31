@@ -284,6 +284,14 @@ public sealed class Reservation : Entity
     public ReservationChannel Channel { get; private set; }
 
     /// <summary>
+    /// The member of staff who took the booking by hand - over the phone, or at the door - for a booking made from the
+    /// floor (<see cref="ReservationChannel.Staff"/>, 2026-10-31); null for every other booking. An opaque id like
+    /// <see cref="NoShowMarkedByStaffId"/>: no navigation, no foreign key. They follow whether the guest comes - the
+    /// "call the guest" push and card are theirs, and the booking counts in their results.
+    /// </summary>
+    public Guid? TakenByStaffId { get; private set; }
+
+    /// <summary>
     /// What the diner asked the venue for when booking - "window table", "a high chair" - or null.
     /// </summary>
     /// <remarks>
@@ -410,6 +418,13 @@ public sealed class Reservation : Entity
     public DateTime? GuestConfirmedOnWayAtUtc { get; private set; }
 
     /// <summary>
+    /// The member of staff who recorded "on my way" for the guest - the guest said so over the phone (2026-10-31) - or
+    /// null when the guest answered in the app or from the link, and until anybody answers. Forgotten with the answer
+    /// when the booking moves to another start.
+    /// </summary>
+    public Guid? OnWayRecordedByStaffId { get; private set; }
+
+    /// <summary>
     /// "I'm running late": 10, 15 or 30 minutes, the guest's latest answer. Null until they say it, and again once they
     /// say "on my way" after it. Like "on my way", an answer about one start - a move forgets it.
     /// </summary>
@@ -500,6 +515,10 @@ public sealed class Reservation : Entity
     /// the table's next booking would cut a full sitting short (<see cref="TableSequencing"/>): the
     /// booking ends then rather than a turn time after its start.
     /// </para>
+    /// <para>
+    /// <paramref name="takenByStaffId"/> names the member of staff who took the booking by hand, for a
+    /// <see cref="ReservationChannel.Staff"/> booking made from the floor; null for a diner's.
+    /// </para>
     /// </remarks>
     public static Reservation Create(
         Guid branchId,
@@ -523,7 +542,8 @@ public sealed class Reservation : Entity
         DateTime? approvalExpiresAtUtc = null,
         DateTime? promisedFreeByUtc = null,
         bool phoneUnverified = false,
-        string? bookerPhoneE164 = null)
+        string? bookerPhoneE164 = null,
+        Guid? takenByStaffId = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
 
@@ -578,6 +598,7 @@ public sealed class Reservation : Entity
         reservation.PromisedFreeByUtc = promisedFreeByUtc;
         reservation.PhoneUnverified = phoneUnverified;
         reservation.BookerPhoneE164 = Guard.OptionalText(bookerPhoneE164, nameof(bookerPhoneE164), FieldLengths.Phone);
+        reservation.TakenByStaffId = takenByStaffId is { } taker ? Guard.NotEmpty(taker, nameof(takenByStaffId)) : null;
         reservation.AwaitDecision(initialStatus, approvalTrigger, approvalExpiresAtUtc);
 
         return reservation;
@@ -1412,6 +1433,7 @@ public sealed class Reservation : Entity
         var said = GuestConfirmedOnWayAtUtc is not null || GuestRunningLateAtUtc is not null || StaffAskedOnMyWayAtUtc is not null;
 
         GuestConfirmedOnWayAtUtc = null;
+        OnWayRecordedByStaffId = null;
         GuestRunningLateMinutes = null;
         GuestRunningLateAtUtc = null;
         StaffAskedOnMyWayAtUtc = null;
@@ -1651,11 +1673,16 @@ public sealed class Reservation : Entity
     /// Open from the pre-order's lock (<see cref="PreOrderRules.LockedAtUtc"/>, two hours before the start) until the
     /// booking's end: an answer given days ahead says nothing about tonight, and the waiter would send food on it.
     /// </remarks>
+    /// <param name="nowUtc">Now.</param>
+    /// <param name="recordedByStaffId">
+    /// The member of staff recording it for the guest, who said so over the phone (2026-10-31); null when the guest
+    /// answers for themselves. Carried on <see cref="GuestOnTheirWay"/> so the History names them rather than the guest.
+    /// </param>
     /// <returns>False when it was already recorded.</returns>
     /// <exception cref="OnMyWayNotOpenException">
     /// The booking is not confirmed or seated, it is more than two hours before the start, or it is over.
     /// </exception>
-    public bool ConfirmOnMyWay(DateTime nowUtc)
+    public bool ConfirmOnMyWay(DateTime nowUtc, Guid? recordedByStaffId = null)
     {
         // Said already, and not overtaken by "running late" since: the first answer stands.
         if (GuestConfirmedOnWayAtUtc is not null && GuestRunningLateAtUtc is null)
@@ -1672,10 +1699,11 @@ public sealed class Reservation : Entity
 
         // A later answer overwrites an earlier one: "running late" and then "on my way" is on time after all.
         GuestConfirmedOnWayAtUtc = Guard.NotLocalTime(nowUtc, nameof(nowUtc));
+        OnWayRecordedByStaffId = recordedByStaffId is { } staff ? Guard.NotEmpty(staff, nameof(recordedByStaffId)) : null;
         GuestRunningLateMinutes = null;
         GuestRunningLateAtUtc = null;
 
-        Raise(new GuestOnTheirWay(this, nowUtc));
+        Raise(new GuestOnTheirWay(this, nowUtc, recordedByStaffId));
 
         return true;
     }

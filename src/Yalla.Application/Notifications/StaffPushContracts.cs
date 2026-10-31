@@ -25,15 +25,20 @@ public sealed record StaffPushSubscriptionInput(string Endpoint, string P256dh, 
 /// A phone's pushes wait for its person's shift at the branch. Defaults on for a waiter, off for a manager and above;
 /// always false on a tablet, which has no person and is pushed whenever it is subscribed.
 /// </param>
+/// <param name="BookingToCall">
+/// A booking the person took by hand starts in thirty minutes: call the guest (2026-10-31). On by default; reaches the
+/// taker's own phone and the branch's tablets.
+/// </param>
 public sealed record StaffNotificationPreferences(
     bool Approvals,
     bool GuestMessages,
     bool TableCalls,
     bool Takeaway,
     bool KitchenReady,
-    bool OnlyDuringShift);
+    bool OnlyDuringShift,
+    bool BookingToCall = true);
 
-/// <summary>A device's notification settings as the staff app's switches show them: the six switches, flat.</summary>
+/// <summary>A device's notification settings as the staff app's switches show them: the seven switches, flat.</summary>
 /// <param name="Approvals">See <see cref="StaffNotificationPreferences"/>.</param>
 /// <param name="GuestMessages">See <see cref="StaffNotificationPreferences"/>.</param>
 /// <param name="TableCalls">See <see cref="StaffNotificationPreferences"/>.</param>
@@ -43,6 +48,7 @@ public sealed record StaffNotificationPreferences(
 /// <param name="Locale">The language pushes are written in (<c>hy</c>, <c>ru</c>, <c>en</c>); absent means Armenian.</param>
 /// <param name="Subscribed">This device has a push subscription on file.</param>
 /// <param name="IsDefault">Nothing was chosen yet: these are the defaults for the device and its person's role.</param>
+/// <param name="BookingToCall">See <see cref="StaffNotificationPreferences"/>.</param>
 public sealed record StaffNotificationSettings(
     bool Approvals,
     bool GuestMessages,
@@ -52,7 +58,8 @@ public sealed record StaffNotificationSettings(
     bool OnlyDuringShift,
     string? Locale,
     bool Subscribed,
-    bool IsDefault);
+    bool IsDefault,
+    bool BookingToCall = true);
 
 /// <summary>A staff device's own Web Push: its subscription and its switches.</summary>
 /// <remarks>

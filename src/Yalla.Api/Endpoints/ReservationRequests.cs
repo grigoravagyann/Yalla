@@ -165,6 +165,57 @@ public sealed record CreatePublicReservationRequest(
     string? Note = null,
     DateTime? AcceptsFreeByUtc = null) : IClientCommandRequest;
 
+/// <summary>
+/// Body of <c>POST /api/branches/{branchId}/reservations/staff</c>: a member of staff books for a guest by hand.
+/// </summary>
+/// <remarks>
+/// The diner's booking body without the parts that are a diner's: no channel (it is <c>Staff</c>), no stay hint, no
+/// <c>acceptsFreeByUtc</c> (a staff booking takes the time to leave by that the table's next booking needs). <see cref="Date"/>
+/// and <see cref="Time"/> are local to the branch, as on <see cref="CreateReservationRequest"/>.
+/// </remarks>
+/// <param name="TableId">
+/// The table, at a branch where tables are chosen - any in-service table, pinned on a photo or not, bookable from the app
+/// or not; required there, refused as <c>validation-failed</c> naming <c>tableId</c> without one. Left out at a branch
+/// that books by time only (<c>bookingMode</c> 2), where the waiter chooses the table when the party arrives.
+/// </param>
+/// <param name="Date">Local calendar date at the branch, e.g. <c>2026-09-12</c>.</param>
+/// <param name="Time">Local wall-clock start at the branch, e.g. <c>19:30</c>.</param>
+/// <param name="PartySize">How many are coming.</param>
+/// <param name="GuestName">Who to ask for at the door.</param>
+/// <param name="GuestPhone">The number the taker calls before the booking. Required.</param>
+/// <param name="ClientCommandId">The device's own id for this booking. <b>Required.</b> A retry answers the booking it made.</param>
+/// <param name="Note">
+/// What the guest asked for - "window table", "a high chair". Optional; trimmed, blank means none, at most 500
+/// characters, refused as <c>validation-failed</c> naming <c>note</c> with bound <c>max</c>.
+/// </param>
+public sealed record StaffCreateReservationRequest(
+    [NotEmpty] Guid? TableId,
+
+    // Nullable so [Required] can tell absent from midnight, exactly as on a diner's booking.
+    [Required] DateOnly? Date,
+    [Required] TimeOnly? Time,
+    [Range(1, 100)] int PartySize,
+    [Required][MaxLength(200)] string GuestName,
+    [Required][MaxLength(32)] string GuestPhone,
+    [Required] Guid ClientCommandId,
+
+    // No [MaxLength], as on a diner's booking: the service trims it and refuses it naming `note` with bound `max`.
+    string? Note = null) : IClientCommandRequest;
+
+/// <summary>Body of <c>POST /api/reservations/{id}/guest-coming</c>: the guest told the staff member they are coming.</summary>
+/// <param name="ClientCommandId">The device's own id for this answer. <b>Required.</b> A retry answers the booking as it stands.</param>
+public sealed record GuestComingRequest([Required] Guid ClientCommandId) : IClientCommandRequest;
+
+/// <summary>Query of <c>GET /api/branches/{branchId}/reservations/slots</c>: the staff booking sheet's day.</summary>
+/// <param name="Date">
+/// The local calendar date at the branch, e.g. <c>2026-09-12</c>. Required; nullable so that <c>[Required]</c> can fire
+/// rather than year one binding silently.
+/// </param>
+/// <param name="Party">How many are coming. Defaults to 2.</param>
+public sealed record StaffDaySlotsQuery(
+    [Required] DateOnly? Date,
+    [Range(1, 100)] int Party = 2);
+
 /// <summary>Body of <c>POST /api/reservations/{reservationId}/reschedule</c>.</summary>
 /// <remarks>
 /// The whole new slot, as a new booking would state it - date, time, party size and table - rather

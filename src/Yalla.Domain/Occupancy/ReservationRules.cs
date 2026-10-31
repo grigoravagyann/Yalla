@@ -58,6 +58,43 @@ public static class ReservationRules
     }
 
     /// <summary>
+    /// The timing rules for a booking a member of staff takes by hand (2026-10-31): no lead time - the person on the
+    /// floor knows the room, and "in twenty minutes" is a booking - so only a start already past is refused, as
+    /// <see cref="ReservationRejectionReason.LeadTimeTooShort"/> with no minutes to it; the booking window holds as for
+    /// anybody.
+    /// </summary>
+    /// <param name="startUtc">The requested start.</param>
+    /// <param name="nowUtc">The current instant.</param>
+    /// <param name="localDate">The branch's calendar date asked for.</param>
+    /// <param name="localToday">Today at the branch, in its own zone.</param>
+    /// <param name="policy">The branch's policy, for the window.</param>
+    public static ReservationRejectionReason? CheckStaffTiming(
+        DateTime startUtc,
+        DateTime nowUtc,
+        DateOnly localDate,
+        DateOnly localToday,
+        ReservationPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        if (startUtc <= nowUtc)
+        {
+            return ReservationRejectionReason.LeadTimeTooShort;
+        }
+
+        return localDate > localToday.AddDays(policy.BookingWindowDays)
+            ? ReservationRejectionReason.OutsideBookingWindow
+            : null;
+    }
+
+    /// <summary>
+    /// The table rules for a booking a member of staff takes by hand: any in-service table - pinned on a photo or not,
+    /// bookable from the app or not - so long as it seats the party within the overhang limit.
+    /// </summary>
+    public static ReservationRejectionReason? CheckStaffTable(TableStatus status, int seats, int partySize, ReservationPolicy policy) =>
+        CheckTable(status, isBookable: true, seats, partySize, policy);
+
+    /// <summary>
     /// Whether the whole interval falls inside one opening block on the branch's calendar - its weekly
     /// hours with its special days laid over them.
     /// </summary>

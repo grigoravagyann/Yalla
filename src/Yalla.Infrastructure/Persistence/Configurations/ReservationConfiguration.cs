@@ -173,6 +173,14 @@ internal sealed class ReservationConfiguration : EntityConfiguration<Reservation
             .HasFilter("[ApprovalExpiresAtUtc] IS NOT NULL")
             .HasDatabaseName("IX_Reservations_ApprovalExpiresAtUtc");
 
+        // Who took a booking by hand (2026-10-31), and who recorded the guest's "coming" for them: opaque staff ids,
+        // like NoShowMarkedByStaffId. The taker's bookings over a window are their results' three booking KPIs and the
+        // floor's "call the guest" list, so the taker is indexed with the start; filtered, because most bookings are a
+        // diner's and carry none.
+        builder.HasIndex(r => new { r.TakenByStaffId, r.StartUtc })
+            .HasFilter("[TakenByStaffId] IS NOT NULL")
+            .HasDatabaseName("IX_Reservations_TakenByStaffId_StartUtc");
+
         // "How many active bookings does this number hold?" - asked inside every new booking's locks.
         // Filtered to the two statuses that can be active, so it holds the city's live bookings and
         // nothing of their history. Not unique: "active" also means "not over yet", which an index

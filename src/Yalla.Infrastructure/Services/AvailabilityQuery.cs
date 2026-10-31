@@ -127,6 +127,36 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         return DayQuery(request).ToQueryString();
     }
 
+    public async Task<StaffDaySlots?> GetStaffDaySlotsAsync(
+        StaffDaySlotsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var nowUtc = clock.UtcNow;
+        var anchorUtc = DateTime.SpecifyKind(request.LocalDate.ToDateTime(new TimeOnly(12, 0)), DateTimeKind.Utc);
+
+        // The day read's statement over every in-service table, with no diner-visibility gate: the floor books at a
+        // branch the app does not show yet, on a table the app does not offer.
+        var row = await BuildQuery(request.BranchId, anchorUtc, RelevantDates(request.LocalDate, anchorUtc), null, forStaff: true)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        await WithSpecialDaysAsync(row, RelevantDates(request.LocalDate, request.LocalDate.ToDateTime(TimeOnly.MinValue)), cancellationToken);
+
+        if (row.Policy.BookingMode == BookingMode.TimeOnly)
+        {
+            row.TimeOnlyBookings = await TimeOnlyBookingsAsync(
+                row.BranchId, new DaySlotsRequest(request.BranchId, request.LocalDate, request.PartySize), cancellationToken);
+        }
+
+        return ProjectStaffDay(row, request, nowUtc);
+    }
+
     /// <summary>
     /// The special days on the dates the rules consult, which replace those dates' weekly blocks - read beside the
     /// main statement rather than in it.
@@ -189,26 +219,33 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
         Guid branchId,
         DateTime anchorUtc,
         DateOnly[] relevantDates,
-        Guid? excludeReservationId)
+        Guid? excludeReservationId,
+        bool forStaff = false)
     {
         var relevantDays = relevantDates.Select(d => d.DayOfWeek).Distinct().ToArray();
         var guardFromUtc = anchorUtc - GuardWindow;
         var guardToUtc = anchorUtc + GuardWindow;
         var excludedId = excludeReservationId ?? Guid.Empty;
 
-        return db.Branches
+        var branches = db.Branches
 
             // Not an optimisation, a requirement: the branch's owned ReservationPolicy is
             // projected whole below, and EF refuses to track an owned entity without its owner.
             // It belongs here rather than at the call site so the SQL-reporting path cannot
             // diverge from the path that actually runs.
             .AsNoTracking()
+            .Where(b => b.Id == branchId);
 
+        if (!forStaff)
+        {
             // Diner browsing. A suspended or deleted venue does not exist here - it keeps every
             // row and stays visible to its owner through the admin surface, but a diner must not
-            // be able to find it or book it - and nor does a branch not taking guests yet.
-            .Where(b => b.Id == branchId)
-            .Where(DinerVisibility.Visible(db))
+            // be able to find it or book it - and nor does a branch not taking guests yet. The
+            // floor's own read (2026-10-31) is not browsing: its branch is the one it stands in.
+            branches = branches.Where(DinerVisibility.Visible(db));
+        }
+
+        return branches
             .Select(b => new AvailabilityRow
             {
                 BranchId = b.Id,
@@ -228,13 +265,15 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                 // it is. Staff still seat it; that is the floor read, not this one. And the pin must
                 // be on a photo of the table's own room: the rooms read draws a table on its room's
                 // photos, so a pin left on another room's picture is a pin nobody can see, and a
-                // table offered here that the room view never shows.
+                // table offered here that the room view never shows. The floor's read takes every
+                // active table: staff book any in-service table, pinned or not (2026-10-31).
                 Tables = b.DiningTables
                     .Where(t => t.IsActive
-                                && t.PhotoId != null
-                                && t.PhotoX != null
-                                && t.PhotoY != null
-                                && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId))
+                                && (forStaff
+                                    || (t.PhotoId != null
+                                        && t.PhotoX != null
+                                        && t.PhotoY != null
+                                        && db.FloorAreaPhotos.Any(p => p.FloorAreaId == t.FloorAreaId && p.PhotoId == t.PhotoId))))
                     .Select(t => new AvailabilityTableRow
                     {
                         TableId = t.Id,
@@ -245,9 +284,9 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                         FloorAreaDisplayOrder = t.FloorArea == null ? null : t.FloorArea.DisplayOrder,
                         IsBookable = t.IsBookable,
                         Status = t.Status,
-                        PhotoId = t.PhotoId!.Value,
-                        PhotoX = t.PhotoX!.Value,
-                        PhotoY = t.PhotoY!.Value,
+                        PhotoId = t.PhotoId,
+                        PhotoX = t.PhotoX,
+                        PhotoY = t.PhotoY,
 
                         // The open sitting, as a second left join beside the bookings one. This is
                         // what used to be missing: TableSession is the authoritative occupancy
@@ -469,9 +508,11 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             FloorAreaDisplayOrder = table.FloorAreaDisplayOrder ?? 0,
             IsBookable = table.IsBookable,
             PhysicalStatus = table.Status,
-            PhotoId = table.PhotoId,
-            PhotoX = table.PhotoX,
-            PhotoY = table.PhotoY,
+
+            // Pinned, by the diner reads' filter: only the floor's read takes an unpinned table, and it never comes here.
+            PhotoId = table.PhotoId!.Value,
+            PhotoX = table.PhotoX!.Value,
+            PhotoY = table.PhotoY!.Value,
 
             // Derived for the requested instant, not for now: a table free this afternoon but
             // booked at 20:00 reads as ReservedSoon when the question is about 20:00 - and a table
@@ -709,10 +750,157 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
             Date = request.LocalDate,
             PartySize = request.PartySize,
             StepMinutes = DaySlotStep.Minutes,
-            UnavailableReason = DayReason(slots),
+            UnavailableReason = DayReason([.. slots.Select(s => s.UnavailableReason)]),
             SpecialDay = hours.SpecialDayOn(request.LocalDate) is { } special ? SpecialOpeningDayView.From(special) : null,
             Slots = slots,
         };
+    }
+
+    /// <summary>
+    /// The staff sheet's day (2026-10-31): the public day read's loop with staff rules - a time already past is struck,
+    /// not one inside a lead time; every in-service table is judged, bookable from the app or not; and each time lists
+    /// the tables that take the party rather than counting them, with a table the guest before may still be at offered
+    /// as such rather than only asked for.
+    /// </summary>
+    private static StaffDaySlots ProjectStaffDay(AvailabilityRow row, StaffDaySlotsRequest request, DateTime nowUtc)
+    {
+        var zone = BranchZone.For(row.TimeZoneId);
+        var policy = row.Policy;
+        var localToday = zone.LocalDateAt(nowUtc);
+        var hours = row.Hours;
+
+        var slots = new List<StaffDaySlot>();
+
+        for (var minutes = 0; minutes < MinutesPerDay; minutes += DaySlotStep.Minutes)
+        {
+            var localTime = new TimeOnly(minutes / 60, minutes % 60);
+
+            if (!zone.TryToUtc(request.LocalDate, localTime, out var startUtc))
+            {
+                continue;
+            }
+
+            var endUtc = startUtc.AddMinutes(policy.TurnTimeMinutes);
+
+            if (ReservationRules.CheckOpeningHours(
+                    hours, request.LocalDate.ToDateTime(localTime), zone.ToLocal(endUtc)) is not null)
+            {
+                continue;
+            }
+
+            var time = localTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+
+            if (ReservationRules.CheckStaffTiming(startUtc, nowUtc, request.LocalDate, localToday, policy) is { } timing)
+            {
+                slots.Add(new StaffDaySlot
+                {
+                    Time = time,
+                    StartUtc = startUtc,
+                    IsAvailable = false,
+                    UnavailableReason = timing,
+                    Tables = [],
+                });
+
+                continue;
+            }
+
+            if (policy.BookingMode == BookingMode.TimeOnly)
+            {
+                var left = GuestsAtOnce.LeftWithin(
+                    row.TimeOnlyBookings, new BookedInterval(startUtc, endUtc), policy.GuestsAtOnce ?? 0);
+                var fits = left >= request.PartySize;
+
+                slots.Add(new StaffDaySlot
+                {
+                    Time = time,
+                    StartUtc = startUtc,
+                    IsAvailable = fits,
+                    GuestsLeft = left,
+                    UnavailableReason = fits ? null : ReservationRejectionReason.TimeFull,
+                    Tables = [],
+                });
+
+                continue;
+            }
+
+            var answers = row.Tables
+                .Select(t => (Table: t, Answer: StaffAnswer(t, startUtc, policy, request.PartySize, nowUtc)))
+                .ToList();
+
+            // The tables the floor may book at this time - free outright, or with the guest before perhaps still there -
+            // by room then label, as the floor draws them.
+            var tables = answers
+                .Where(a => a.Answer.IsAvailable)
+                .OrderBy(a => a.Table.FloorAreaDisplayOrder ?? 0)
+                .ThenBy(a => a.Table.Label.Length)
+                .ThenBy(a => a.Table.Label, StringComparer.OrdinalIgnoreCase)
+                .Select(a => new StaffSlotTable(
+                    a.Table.TableId,
+                    a.Table.Label,
+                    a.Table.Seats,
+                    a.Table.FloorAreaId,
+                    a.Table.FloorAreaName,
+                    a.Answer.Verdict!.NeedsEarlierGuest,
+                    a.Answer.Verdict.MustFreeByUtc,
+                    a.Answer.Verdict.MustFreeByUtc is { } until
+                        ? zone.LocalTimeAt(until).ToString("HH:mm", CultureInfo.InvariantCulture)
+                        : null))
+                .ToList();
+
+            slots.Add(new StaffDaySlot
+            {
+                Time = time,
+                StartUtc = startUtc,
+                IsAvailable = tables.Count > 0,
+                UnavailableReason = tables.Count > 0 ? null : StruckReason(answers.Select(a => a.Answer.Reason).ToList()),
+                Tables = tables,
+            });
+        }
+
+        return new StaffDaySlots
+        {
+            BranchId = row.BranchId,
+            Date = request.LocalDate,
+            PartySize = request.PartySize,
+            BookingMode = policy.BookingMode,
+            StepMinutes = DaySlotStep.Minutes,
+            UnavailableReason = DayReason([.. slots.Select(s => s.UnavailableReason)]),
+            SpecialDay = hours.SpecialDayOn(request.LocalDate) is { } special ? SpecialOpeningDayView.From(special) : null,
+            Slots = slots,
+        };
+    }
+
+    /// <summary>
+    /// <see cref="Answer"/> by staff rules: the table need not take bookings from the app; it must be in service and
+    /// seat the party. The table's evening is judged by the same rule.
+    /// </summary>
+    private static TableAnswer StaffAnswer(
+        AvailabilityTableRow table,
+        DateTime startUtc,
+        ReservationPolicy policy,
+        int partySize,
+        DateTime nowUtc)
+    {
+        var status = TableStateProjection.IsWithinPhysicalHorizon(startUtc, nowUtc)
+            ? table.Status
+            : table.Status == TableStatus.OutOfService ? TableStatus.OutOfService : TableStatus.Free;
+
+        if (ReservationRules.CheckStaffTable(status, table.Seats, partySize, policy) is { } physicalReason)
+        {
+            return new TableAnswer(physicalReason, null);
+        }
+
+        var verdict = TableSequencing.Judge(
+            startUtc,
+            policy.TurnTimeMinutes,
+            policy.BufferMinutes,
+            table.Bookings.Select(b => new SequencedBooking(
+                b.ReservationId, b.StartUtc, b.EndUtc, b.Status, b.PromisedFreeByUtc, b.IsBeingAsked)),
+            table.OpenSessionSeatedAtUtc is { } seatedAtUtc
+                ? new OpenSitting(seatedAtUtc, table.OpenSessionReservationId)
+                : null);
+
+        return new TableAnswer(verdict.Refusal, verdict);
     }
 
     /// <summary>
@@ -754,17 +942,17 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
     /// reason: a day already past, the rest of today inside the lead time, or a date beyond the
     /// booking window.
     /// </remarks>
-    private static ReservationRejectionReason? DayReason(IReadOnlyList<DaySlot> slots)
+    private static ReservationRejectionReason? DayReason(IReadOnlyList<ReservationRejectionReason?> slotReasons)
     {
-        if (slots.Count == 0)
+        if (slotReasons.Count == 0)
         {
             return ReservationRejectionReason.OutsideOpeningHours;
         }
 
-        var first = slots[0].UnavailableReason;
+        var first = slotReasons[0];
 
         return first is ReservationRejectionReason.LeadTimeTooShort or ReservationRejectionReason.OutsideBookingWindow
-               && slots.All(s => s.UnavailableReason == first)
+               && slotReasons.All(s => s == first)
             ? first
             : null;
     }
@@ -811,9 +999,9 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
                     FloorAreaDisplayOrder = t.FloorAreaDisplayOrder ?? 0,
                     IsBookable = t.IsBookable,
                     PhysicalStatus = t.Status,
-                    PhotoId = t.PhotoId,
-                    PhotoX = t.PhotoX,
-                    PhotoY = t.PhotoY,
+                    PhotoId = t.PhotoId!.Value,
+                    PhotoX = t.PhotoX!.Value,
+                    PhotoY = t.PhotoY!.Value,
                     State = TableStateProjection.Derive(t.Status, null, nowUtc, row.Policy.BufferMinutes),
                     IsAvailable = false,
                     UnavailableReason = reason,
@@ -880,11 +1068,12 @@ internal sealed class AvailabilityQuery(YallaDbContext db, IClock clock) : IAvai
 
         public TableStatus Status { get; init; }
 
-        public Guid PhotoId { get; init; }
+        /// <summary>The pin, when the table has one. The diner reads fetch pinned tables only; the floor's read every table.</summary>
+        public Guid? PhotoId { get; init; }
 
-        public double PhotoX { get; init; }
+        public double? PhotoX { get; init; }
 
-        public double PhotoY { get; init; }
+        public double? PhotoY { get; init; }
 
         /// <summary>When the party currently at this table sat down. Null when nobody is at it.</summary>
         public DateTime? OpenSessionSeatedAtUtc { get; init; }

@@ -228,7 +228,10 @@ public static class StaffDeviceEndpoints
             request.TableCalls!.Value,
             request.Takeaway!.Value,
             request.KitchenReady!.Value,
-            request.OnlyDuringShift!.Value);
+            request.OnlyDuringShift!.Value,
+
+            // Left out by a client from before the switch: on, its default.
+            request.BookingToCall ?? true);
 
         return Results.Ok(await service.SaveSettingsAsync(deviceId, staffMemberId, preferences, request.Locale, cancellationToken));
     }

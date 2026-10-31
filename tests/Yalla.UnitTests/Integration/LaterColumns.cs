@@ -85,11 +85,24 @@ internal static class LaterColumns
 
     /// <summary>
     /// The <c>BookByTimeOnly</c> migration's columns: a branch's booking mode (choose a table, 1) and guests at once, and
-    /// whether a booking was made without a table. The table stays required here, as every builder names one.
+    /// whether a booking was made without a table. The table stays required here, as every builder names one - and every
+    /// later migration's.
     /// </summary>
-    public static Task AddTimeOnlyColumnsAsync(YallaDbContext db) =>
-        db.Database.ExecuteSqlRawAsync(
+    public static async Task AddTimeOnlyColumnsAsync(YallaDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE dbo.Branches ADD ReservationPolicy_BookingMode int NOT NULL CONSTRAINT DF_Test_BookingMode DEFAULT 1, "
             + "ReservationPolicy_GuestsAtOnce int NULL; "
             + "ALTER TABLE dbo.Reservations ADD BookedWithoutTable bit NOT NULL CONSTRAINT DF_Test_BookedWithoutTable DEFAULT 0;");
+
+        await AddStaffTakenColumnsAsync(db);
+    }
+
+    /// <summary>
+    /// The <c>StaffTakenBookings</c> migration's columns: who took a booking by hand, and who recorded the guest's
+    /// "coming" for them - both null on every booking a builder makes.
+    /// </summary>
+    public static Task AddStaffTakenColumnsAsync(YallaDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE dbo.Reservations ADD TakenByStaffId uniqueidentifier NULL, OnWayRecordedByStaffId uniqueidentifier NULL;");
 }

@@ -162,8 +162,14 @@ public enum StaffPushKinds
     /// <summary>The kitchen marked an order ready for the person's table.</summary>
     KitchenReady = 16,
 
+    /// <summary>
+    /// A booking the person took by hand starts in thirty minutes: call the guest (2026-10-31). Theirs alone among the
+    /// phones, like an order up for their table.
+    /// </summary>
+    BookingToCall = 32,
+
     /// <summary>What a device that never chose gets: everything but the kitchen.</summary>
-    Defaults = Approvals | GuestMessages | TableCalls | Takeaway,
+    Defaults = Approvals | GuestMessages | TableCalls | Takeaway | BookingToCall,
 
     /// <summary>Every kind there is.</summary>
     All = Defaults | KitchenReady,

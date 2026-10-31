@@ -147,6 +147,20 @@ public static class StaffPushText
                   $"{guestName} · {items} ուտեստ · {Money(totalAmd)} · {(pickupAt is { } hy ? $"{Time(hy)}-ին" : "հնարավորինս շուտ")}"),
         };
 
+    /// <summary>
+    /// "Call the guest" - a booking the person took by hand starts in thirty minutes: who, when, how many, where. Never
+    /// the number: that is on the card, behind the tap.
+    /// </summary>
+    public static (string Title, string Body) BookingToCall(
+        string locale, string guestName, TimeOnly at, int partySize, string? tableLabel) =>
+        NotificationText.Normalise(locale) switch
+        {
+            "ru" => ($"Позвоните гостю · {guestName}", $"{Time(at)} · {partySize} чел. · {TablePart("ru", tableLabel)}"),
+            "en" => ($"Call the guest · {guestName}",
+                     $"{Time(at)} · {partySize} {(partySize == 1 ? "guest" : "guests")} · {TablePart("en", tableLabel)}"),
+            _ => ($"Զանգեք հյուրին · {guestName}", $"{Time(at)} · {partySize} հոգի · {TablePart("hy", tableLabel)}"),
+        };
+
     /// <summary>The kitchen has an order up for a table.</summary>
     public static (string Title, string Body) KitchenReady(string locale, string tableLabel, int dishes) =>
         NotificationText.Normalise(locale) switch

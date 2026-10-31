@@ -131,6 +131,9 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                 HoldExpiresAtUtc = r.HoldExpiresAtUtc,
                 HasAccount = r.DinerUserId != null,
 
+                // Taken by hand from the floor (2026-10-31): the taker's name now, for the channel cell.
+                TakenByName = db.StaffMembers.Where(s => s.Id == r.TakenByStaffId).Select(s => s.FullName).FirstOrDefault(),
+
                 // The account whose record the venue sees beside the booking: one that proved its number.
                 // The same test as the bookings list: an account whose number is proved now (review N2).
                 RecordedAccount = r.PhoneUnverified
@@ -212,7 +215,8 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
                         confirmed ? e.HoldExpiresAtUtc : null,
                         nudge?.AtUtc,
                         nudge?.Sent,
-                        ShowsRecord(e) && records.TryGetValue(e.Row.RecordedAccount!.Value, out var record) ? record : null);
+                        ShowsRecord(e) && records.TryGetValue(e.Row.RecordedAccount!.Value, out var record) ? record : null,
+                        e.Row.TakenByName);
                 })],
             listed.Count > BranchReservationList.MaxRows);
     }
@@ -638,6 +642,9 @@ internal sealed class BranchOverviewQuery(YallaDbContext db, IClock clock, IStaf
         public DateTime? HoldExpiresAtUtc { get; init; }
 
         public bool HasAccount { get; init; }
+
+        /// <summary>The name of the member of staff who took the booking by hand, or null.</summary>
+        public string? TakenByName { get; init; }
 
         /// <summary>The booking's account when it made the booking with a proved number - whose record is shown.</summary>
         public Guid? RecordedAccount { get; init; }

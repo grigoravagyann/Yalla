@@ -70,6 +70,9 @@ public static class DependencyInjection
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
+
+        // Staff-taken bookings (2026-10-31): the floor books for a guest and follows whether they come.
+        services.AddScoped<IStaffBookingService, StaffBookingService>();
         services.AddScoped<NoShowBlocks>();
         services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
         services.AddScoped<Yalla.Application.Takeaway.ITakeawayService, TakeawayService>();
@@ -441,11 +444,13 @@ public static class DependencyInjection
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingBlockNotice>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>();
+        services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.BookingToCallStaffPush>();
         services.AddScoped<Yalla.Infrastructure.DomainEvents.Bookings.EndedBookingPreOrder>();
 
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ReservationActivity>(services);
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.BookingChangeStream>(services);
         Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.ApprovalStaffPush>(services);
+        Add<Yalla.Domain.Occupancy.ReservationMade, Yalla.Infrastructure.DomainEvents.Bookings.BookingToCallStaffPush>(services);
 
         Add<Yalla.Domain.Occupancy.TableShareAsked, Yalla.Infrastructure.DomainEvents.Bookings.EarlierGuestNotice>(services);
 

@@ -169,7 +169,146 @@ public static class ReservationEndpoints
             .ProducesProblemDetails(
                 StatusCodes.Status403Forbidden,
                 "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
+
+        MapStaffBookings(floor);
     }
+
+    /// <summary>
+    /// Staff-taken bookings (2026-10-31, "Ձեռքով ամրագրում"): the sheet's day, the booking itself, and the guests to call
+    /// before their time - on the floor group, so a waiter or above at the branch, scoped by the route's branch.
+    /// </summary>
+    private static void MapStaffBookings(RouteGroupBuilder floor)
+    {
+        floor.MapGet("/reservations/slots", GetStaffDaySlotsAsync)
+            .WithName("getStaffDaySlots")
+            .WithSummary("Which start times on one day have a table for this party - by staff rules")
+            .WithDescription(
+                "The staff booking sheet's time and table chips. Every quarter of an hour on `date` whose whole sitting "
+                + "fits one opening block, earliest first; for each, `tables` - the **in-service tables that seat the party** "
+                + "(within the seat-overhang limit) and whose evening allows the start, pinned on a photo or not, bookable "
+                + "from the app or not - with each table's `mustFreeByUtc`/`mustFreeByLocal` when its next booking cuts a "
+                + "full sitting short, and `earlierGuestMayStillBeThere` when the booking before it may still be at the table "
+                + "(the diner's read would ask that guest; the floor judges it). At a branch that books by time only "
+                + "(`bookingMode` 2) `tables` is empty and `guestsLeft` says how many more fit.\n\n"
+                + "**Staff rules**: no lead time - a time still ahead is offered - and no diner-visibility gate; the booking "
+                + "window and the opening hours hold. A time already past is struck `LeadTimeTooShort` (1); beyond the "
+                + "window `OutsideBookingWindow` (2); by time only with no room `TimeFull`. The top-level "
+                + "`unavailableReason` refuses the whole day as `getBranchDaySlots` does. `party` defaults to 2. A table "
+                + "listed here is one `createStaffReservation` accepts at that time.")
+            .Produces<StaffDaySlots>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch.")
+            .ProducesProblemDetails(StatusCodes.Status422UnprocessableEntity, "`date` is missing, or `party` is out of range.");
+
+        floor.MapPost("/reservations/staff", CreateByStaffAsync)
+            .AddEndpointFilter<ClientCommandIdFilter>()
+            .WithName("createStaffReservation")
+            .WithSummary("Book a table for a guest by hand - over the phone, or at the door")
+            .WithDescription(
+                "**The floor's booking route.** A waiter or above at the branch books for a guest with a name and the "
+                + "number to call; the booking is `Confirmed` at once on the `Staff` channel, with `takenByStaffId` and "
+                + "`takenByName` the acting staff member - who follows whether the guest comes. Idempotent on "
+                + "`clientCommandId`: a retry answers the booking it made, 200 rather than 201.\n\n"
+                + "**Not a diner's booking**, so none of a diner's rules: no account, no approval - not at short notice, "
+                + "not for a large party, not for a branch that approves every booking - no lead time (\"in twenty "
+                + "minutes\" is fine), no channel gate (neither the platform's booking switches nor the venue's online "
+                + "bookings), no limit on bookings per number, any in-service table whether pinned or bookable from the "
+                + "app. No reminders are scheduled - there is no app to push to - and no manage link is issued.\n\n"
+                + "**What holds**: the venue open for business (`409 branch-unavailable`), the booking window and the "
+                + "opening hours (422), a start already past (`422 reservation-lead-time-too-short`), the table's seats and "
+                + "overhang (422), the table out of service (422), and the table's evening - another booking, one just "
+                + "booked, the next one too soon, a party sitting there (`409 table-already-booked` / "
+                + "`table-currently-occupied`, with the fresh floor): pick another time or table. When a full sitting would "
+                + "run into the table's next booking, the booking takes that time to leave by (`promisedFreeByUtc`) "
+                + "without asking. At a branch that books by time only (`bookingMode` 2) `tableId` is left out and the "
+                + "branch's guests at once hold (`409 time-full`, `context.guestsLeft`); the waiter picks the table at "
+                + "seating with `seat-reservation`.\n\n"
+                + "Thirty minutes before the start the taker is pushed to call the guest (`bookingToCall`) and the booking "
+                + "appears on `GET .../reservations/to-call`; the guest's answer is recorded with "
+                + "`POST /api/reservations/{id}/guest-coming`, \"not coming\" with `release` (`outcome` 2), came with "
+                + "`seat-reservation`, nobody came with `no-show` - which never counts toward a block.")
+            .Produces<ReservationView>(StatusCodes.Status201Created)
+            .Produces<ReservationView>(StatusCodes.Status200OK)
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such branch or table.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`table-already-booked` / `table-currently-occupied`: " + ConflictDescription
+                + " `time-full`: by time only, no room for that many then - `context.guestsLeft`. `branch-unavailable`: "
+                + "the venue is not open for business. `client-command-id-in-use`: the id belongs to another booking.")
+            .ProducesProblem<ValidationFailedProblem>(
+                StatusCodes.Status422UnprocessableEntity,
+                RejectedDescription + " `validation-failed` naming `tableId` (required where tables are chosen, refused "
+                + "by time only) or `note`.")
+            .ProducesProblem<LockTimeoutProblem>(StatusCodes.Status503ServiceUnavailable, LockTimeoutDescription);
+
+        floor.MapGet("/reservations/to-call", ListToCallAsync)
+            .WithName("listBookingsToCall")
+            .WithSummary("The staff-taken bookings whose guest should be called now")
+            .WithDescription(
+                "The floor's \"call the guest\" cards. The branch's confirmed `Staff`-channel bookings from **thirty minutes "
+                + "before the start** until the start plus the branch's grace (or the extended hold, when later), whose "
+                + "guest has not said they are coming (`guestConfirmedOnWayAtUtc` null) and that nobody released. The "
+                + "caller's own first (`isMine`), then by start; at most 200.\n\n"
+                + "Each: `reservationId`, `code`, `guestName`, `guestPhone` (to call - empty for a platform admin), "
+                + "`partySize`, `startUtc`, `localDate`, `localStartTime`, `tableId`/`tableLabel` (null for a booking by "
+                + "time only not yet seated), `note`, `takenByStaffId`, `takenByName`, `isMine`. \"Coming\" is "
+                + "`POST /api/reservations/{id}/guest-coming`; \"not coming\" is `release` with `outcome` 2. Waiter or "
+                + "above at the branch.")
+            .Produces<IReadOnlyList<BookingToCall>>()
+            .ProducesProblemDetails(
+                StatusCodes.Status403Forbidden,
+                "Not a waiter or above at this branch - a cook, a diner, another branch's staff.");
+    }
+
+    private static async Task<IResult> GetStaffDaySlotsAsync(
+        Guid branchId,
+        [AsParameters] StaffDaySlotsQuery query,
+        IStaffBookingService staffBookings,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await staffBookings.GetDaySlotsAsync(
+
+            // The validation filter has refused a null date before this runs.
+            new StaffDaySlotsRequest(branchId, query.Date!.Value, query.Party), cancellationToken));
+
+    private static async Task<IResult> CreateByStaffAsync(
+        Guid branchId,
+        StaffCreateReservationRequest request,
+        IStaffBookingService staffBookings,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var view = await staffBookings.CreateAsync(
+            new StaffCreateReservationCommand(
+                branchId,
+                request.TableId,
+
+                // The filter has already refused a null by the time this runs.
+                request.Date!.Value,
+                request.Time!.Value,
+                request.PartySize,
+                request.GuestName,
+                request.GuestPhone,
+                request.ClientCommandId,
+                request.Note),
+            cancellationToken);
+
+        // A replay is 200, as every booking route answers one: the second request created nothing.
+        return view.WasReplay
+            ? Results.Ok(view)
+            : Results.Created($"/api/reservations/{view.Id}", view);
+    }
+
+    private static async Task<IResult> ListToCallAsync(
+        Guid branchId,
+        IStaffBookingService staffBookings,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await staffBookings.ListToCallAsync(branchId, cancellationToken));
 
     private static async Task<IResult> ListWithoutTableAsync(
         Guid branchId,
@@ -671,6 +810,29 @@ public static class ReservationEndpoints
                 + "is not in a state that can be released - it was already seated, completed or cancelled "
                 + "by the diner.");
 
+        floor.MapPost("/{id:guid}/guest-coming", GuestComingAsync)
+            .WithName("markGuestComing")
+            .WithSummary("The guest told the staff member they are coming")
+            .WithDescription(
+                "The taker of a staff booking called the guest - or the guest called back - and they are coming: the "
+                + "booking's \"on my way\" is recorded as the acting staff member's (`guestConfirmedOnWayAtUtc` set), the "
+                + "automatic \"are you on your way?\" question, where there was one, is withdrawn, and the History says "
+                + "`booking.guest-coming` by this person. The booking leaves `GET .../reservations/to-call` and the floor "
+                + "shows the usual \"on their way\" state.\n\n"
+                + "**From two hours before the start**, while the booking is confirmed or seated and not over, like the "
+                + "guest's own answer; otherwise `409 on-my-way-not-open` (`context.reservationId`, `status`, "
+                + "`opensAtUtc`). Any booking at the branch, not only a staff-taken one. Idempotent on `clientCommandId`, "
+                + "and a second answer is answered with the booking as it stands (`wasReplay` true). \"Not coming\" is "
+                + "`release` with `outcome` 2 - told by the guest, never a no-show. Waiter or above at the booking's "
+                + "branch, from the stored row.")
+            .Produces<ReservationView>()
+            .ProducesProblemDetails(StatusCodes.Status403Forbidden, "Not floor staff at this booking's branch.")
+            .ProducesProblemDetails(StatusCodes.Status404NotFound, "No such booking.")
+            .ProducesProblemDetails(
+                StatusCodes.Status409Conflict,
+                "`on-my-way-not-open`: the booking is not confirmed or seated, it is more than two hours before its "
+                + "start, or it is over. `client-command-id-in-use`: the id belongs to another command.");
+
         group.MapPost("/{id:guid}/reject", RejectAsync)
             .WithName("rejectReservation")
             .WithSummary("Decline a booking that is waiting for approval")
@@ -703,6 +865,18 @@ public static class ReservationEndpoints
         return Results.Ok(await reservations.UndoNoShowAsync(
             new UndoNoShowCommand(id, request.ClientCommandId, request.Reason),
             cancellationToken));
+    }
+
+    private static async Task<IResult> GuestComingAsync(
+        Guid id,
+        GuestComingRequest request,
+        IStaffBookingService staffBookings,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Results.Ok(await staffBookings.MarkGuestComingAsync(
+            new MarkGuestComingCommand(id, request.ClientCommandId), cancellationToken));
     }
 
     private static async Task<IResult> MarkNoShowAsync(

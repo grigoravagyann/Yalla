@@ -1430,6 +1430,89 @@ which deliberately carries **no `branchId`** (it publishes no id beyond `reserva
 through the branch page its `venueSlug`/`branchSlug` name); `availableForPreOrder` on menu items; `policy.acceptsPreOrders` on the public
 branch page. Reports do not count pre-orders yet.
 
+## 3i. Staff-taken bookings: the floor books for a guest by hand (2026-10-31)
+
+The owner's words (Armenian): a member of staff must be able to add a booking by hand in the program; it is linked to
+them, and they must follow whether that guest comes or not. "Ձեռքով ամրագրում".
+
+**Who.** Any floor session - a tablet PIN session or a paired phone: waiter, manager, general manager, owner
+(`WaiterOrAbove` + `BranchScoped` on the branch routes, `FloorStaffGuard` from the stored row; a platform admin reads the
+lists with the guests' numbers blank). **What.** A guest name, the guest's phone (required - it is what the taker calls),
+the party, the local date and time, a table or none, an optional note. The booking is `Channel` `Staff`, `DinerUserId`
+null, `BookerPhoneE164` null, `PhoneUnverified` false, and **`TakenByStaffId`** the acting staff member - an opaque staff
+id like `NoShowMarkedByStaffId`, indexed with the start (`IX_Reservations_TakenByStaffId_StartUtc`, filtered).
+
+**Status.** `Confirmed` at once. No approval of any kind - not at short notice, not for a large party, not at a branch
+that approves every booking - and no question to the guest before it on the table: a table the diner's read could only
+ask for (3e) the floor books outright, and when a full sitting runs into the table's next booking the booking takes that
+time to leave by (`promisedFreeByUtc`) without asking. The person on the floor has judged the room.
+
+**Rules skipped**, because they are about the booker and there is none: the diner account and its lock, the no-show
+block, "one table at a time" (`reservation-overlaps-own`), the three-active-bookings limit, both channel gates (the
+platform's `AppBookings`/`WebBookings` switches and the venue's online-bookings switch: [branch-features.md](branch-features.md)),
+the diner-visibility gate, the lead time ("in twenty minutes" is a booking), and the table's bookable and pinned flags
+(staff book any in-service table). **Rules kept**, because they are about the slot: the venue open for business
+(`branch-unavailable`), the booking window, the opening hours, a start already past (`reservation-lead-time-too-short`
+with `minLeadMinutes` 0 - the client's one code covers both), the table's seats and overhang, the table out of service,
+the table's evening (`table-already-booked` / `table-currently-occupied`, with the fresh floor), and at a branch that
+books by time only (`bookingMode` 2, [time-only-booking.md](time-only-booking.md)) the room's guests at once
+(`time-full`) with `tableId` left out - the waiter picks the table at seating with `seat-reservation`, as for a diner's.
+
+A sibling of the diner's creation, not a flag on it: `StaffBookingService` beside `ReservationCreation`, and
+`ReservationWriter.InsertByStaffUnderTableLockAsync` / `InsertByStaffWithoutTableAsync` beside the diner's inserts, under
+the same locks (3). **Replay** on `clientCommandId`, keyed on the floor at the branch (`Channel` `Staff`, the branch): a
+second POST answers 200 with the booking it made; the same id on a diner's booking or at another branch is
+`client-command-id-in-use`. **No diner reminders** (`ReservationNotice.DinerUserId` would have nobody; a null diner would
+dead-letter) and **no manage link** (nobody to give it to).
+
+**The taker follows up.**
+
+- Thirty minutes before the start (`BookingToCallRules.MinutesBefore`) the taker is pushed to **call the guest**: the
+  `bookingToCall` staff push, staged when the booking is made for `StartUtc − 30 min` through the outbox
+  (`BookingToCallStaffPush`, a `ReservationMade` handler; [notifications.md](notifications.md#6a-staff-push---web-push-to-the-staff-app-2026-10-24)).
+  A booking made inside its last half hour gets none - the card is already on the floor. At send time the push is dropped
+  when the booking is no longer confirmed, the guest has said they are coming, or its grace has run out.
+- The floor's read **`GET /api/branches/{branchId}/reservations/to-call`**: the branch's confirmed `Staff`-channel bookings
+  from `StartUtc − 30 min` until `StartUtc + GraceMinutes` (the extended hold when later), `guestConfirmedOnWayAtUtc`
+  null, not released - the caller's own first (`isMine`), then by start. Each row: `reservationId`, `code`, `guestName`,
+  `guestPhone`, `partySize`, `startUtc`, `localDate`, `localStartTime`, `tableId`/`tableLabel` (null by time only until
+  seated), `note`, `takenByStaffId`, `takenByName`, `isMine`.
+- **`POST /api/reservations/{id}/guest-coming`** (`{ clientCommandId }`, floor staff at the booking's branch): the guest
+  told them they are coming. `Reservation.ConfirmOnMyWay(now, recordedByStaffId)` - the same answer as the guest's own
+  (3h), from two hours before the start, `409 on-my-way-not-open` outside it - storing **`OnWayRecordedByStaffId`** and
+  raising `GuestOnTheirWay` with the recorder, so the History's line is the staff member's (`booking.guest-coming`, not
+  the guest's `booking.guest-answered`) and the automatic "are you on your way?" question, where there was one, is
+  withdrawn. The floor then shows the usual "on their way" state. Recorded in `ProcessedCommands`
+  (`reservation.guest-coming`): a retry answers the booking as it stands, and so does a second answer. Any booking at the
+  branch, not only a staff-taken one; a move to another start forgets the recorder with the answer.
+- **Not coming** is the existing `release` with `outcome` 2 - cancelled by the venue, told by the guest, never a no-show.
+  **Came** is the existing `seat-reservation`. **Nobody came** is the existing `no-show` - which never counts toward a
+  block: no account, no proved number (3g).
+
+**Reads that show the taker.** `ReservationView` carries `channel`, `takenByStaffId` and `takenByName` (the taker's name
+now, read from the staff row) on every booking answer and list; `OverviewBooking` carries `takenByName` beside its
+`channel`. The floor's list of the unseated and the next-booking line say "Ընդունեց՝ {name}"; the console's channel
+cell says "Զանգ · {name}".
+
+**The sheet's day: `GET /api/branches/{branchId}/reservations/slots?date=YYYY-MM-DD&party=N`** (`StaffDaySlots`). The
+public day read (5) by staff rules, over every in-service table: for each quarter hour the **tables** that take the party -
+`tableId`, `label`, `seats`, `roomId`/`roomName`, `earlierGuestMayStillBeThere` (the diner's read would ask that guest;
+the floor judges it), `mustFreeByUtc`/`mustFreeByLocal` - or, by time only, `guestsLeft`. A time already past is struck
+`LeadTimeTooShort`; beyond the window `OutsideBookingWindow`; the top-level `unavailableReason` refuses the whole day as
+`getBranchDaySlots` does. The same per-table judgement as the booking (`AvailabilityQuery.GetStaffDaySlotsAsync`,
+`ReservationRules.CheckStaffTiming`, `CheckStaffTable`), so a table listed is one the booking accepts.
+
+**Results.** `StaffPerformanceRow` and `StaffPerformanceTotals` carry `bookingsTaken` (the taker's bookings whose start
+falls in the window, whatever became of them), `bookingsCame` (seated or completed) and `bookingsNoShow` (a no-show that
+stands; one withdrawn is confirmed again and counts as taken, not missed) - on `/api/staff/me/results`, a person's page
+and Staff → Results; the recent `bookings` list carries the taker's `booking.created` lines
+([activity.md](activity.md#8-staff-results)).
+
+**History.** `booking.created` for a staff booking is the staff member's line on their device (`byGuest` false,
+`extra.takenByStaffId`), "ամրագրում ընդունեց՝ {guest}, {party} հոգի, {date} {time}"; `booking.guest-coming` ("նշեց՝
+հյուրը գալիս է") for the staff-recorded answer. Proved by `StaffBookingTests`, `StaffBookingDomainTests` and
+`StaffPushTests`.
+
 ## 4. The rules, and why none of them is a number in code
 
 Every threshold comes from the branch's `ReservationPolicy`. A lunch cafe and a dinner restaurant
@@ -1714,6 +1797,10 @@ GUIDs, and the answer says no more about the booking left out than that its tabl
 | `GET/PUT /api/branches/{branchId}/pre-order-settings` | `ManagerOrAbove` + `BranchScoped` | a branch manager at their own branch only |
 | `POST /api/reservations/{id}/running-late` · `POST /api/public/bookings/{token}/running-late` | `VerifiedDiner` · `AllowAnonymous` | the guest's own booking, or the manage link - see [3h](#3h-pre-orders) |
 | `POST /api/reservations/{id}/ask-on-my-way` | `WaiterOrAbove` | a waiter or above at the booking's **branch**, from the stored row - see [3h](#3h-pre-orders) |
+| `POST /api/branches/{branchId}/reservations/staff` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch, from the stored row - the floor books for a guest by hand, `Confirmed` at once, linked to the taker; the slot's rules only - see [3i](#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31) |
+| `GET /api/branches/{branchId}/reservations/slots?date&party` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch - the staff sheet's day, every in-service table, no lead time - see [3i](#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31) |
+| `GET /api/branches/{branchId}/reservations/to-call` | `WaiterOrAbove` + `BranchScoped` | a waiter or above at the branch - the staff-taken bookings whose guest should be called now, the caller's own first; a platform admin reads them with the numbers blank - see [3i](#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31) |
+| `POST /api/reservations/{id}/guest-coming` | `WaiterOrAbove` | a waiter or above at the booking's **branch**, from the stored row - the guest told them they are coming; from two hours before the start - see [3i](#3i-staff-taken-bookings-the-floor-books-for-a-guest-by-hand-2026-10-31) |
 
 Availability - one slot or one day - is the only anonymous endpoint here outside the sign-in flows
 and the manage link, whose token is its credential. Browsing needs no account: somebody deciding
@@ -1788,6 +1875,10 @@ facts under `context`:
 | "Ask: are you coming?" for a booking not confirmed, or started | 409 | `ask-on-my-way-not-open`, with `context.reservationId`, `status`, `startUtc` |
 | "Ask: are you coming?" once the guest answered | 409 | `guest-already-answered`, with `context.reservationId`, `answeredAtUtc`, `runningLateMinutes` (when late) |
 | "Ask: are you coming?" within 15 minutes of the last | 409 | `ask-on-my-way-asked-recently`, with `context.reservationId`, `askedAtUtc`, `nextAllowedAtUtc` |
+| a staff booking at a start already past (the floor has no lead time) | 422 | `reservation-lead-time-too-short`, with `context.minLeadMinutes` 0 |
+| a staff booking by time only for more than fit | 409 | `time-full`, with `context.guestsLeft` |
+| a staff booking's `clientCommandId` held by a diner's booking or another branch's | 409 | `client-command-id-in-use` |
+| "coming" recorded by staff outside the window (not confirmed or seated, more than two hours before the start, or over) | 409 | `on-my-way-not-open`, as the guest's own |
 
 ---
 
@@ -1801,5 +1892,6 @@ and payments.
 
 Every booking event the venue cares about is an entry in its History: made, moved and cancelled by the guest (app or
 link), approved and declined by staff (with the seconds it waited), declined by the system when nobody answered, seated,
-no-show, released, a no-show withdrawn, the hold extended, the guest's on-my-way answers. See
+no-show, released, a no-show withdrawn, the hold extended, the guest's on-my-way answers - and, since 2026-10-31, a
+booking taken by hand as the taker's line, and "coming" they recorded for the guest (`booking.guest-coming`). See
 [activity.md](activity.md).

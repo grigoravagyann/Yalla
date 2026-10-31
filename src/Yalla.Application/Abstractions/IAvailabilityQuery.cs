@@ -38,4 +38,15 @@ public interface IAvailabilityQuery
 
     /// <summary>The SQL <see cref="GetDaySlotsAsync"/> executes, for diagnostics.</summary>
     string GetDaySlotsQuerySql(DaySlotsRequest request);
+
+    /// <summary>
+    /// Every quarter of an hour on one day for the staff booking sheet (2026-10-31), by staff rules: every in-service
+    /// table whether pinned or bookable from the app, no lead time, no diner-visibility gate - and for each time the
+    /// tables that take the party, or how many guests still fit by time only. Null when the branch does not exist.
+    /// </summary>
+    /// <remarks>
+    /// The same statement as <see cref="GetDaySlotsAsync"/> over the wider set of tables, and the same per-table
+    /// judgement, so a table listed here is one the staff booking accepts at that time.
+    /// </remarks>
+    Task<StaffDaySlots?> GetStaffDaySlotsAsync(StaffDaySlotsRequest request, CancellationToken cancellationToken = default);
 }

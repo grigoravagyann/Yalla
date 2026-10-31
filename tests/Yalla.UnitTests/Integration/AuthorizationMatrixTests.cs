@@ -119,6 +119,16 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
             (w, c) => UploadBranchPhotoAsync(c, w.Branch.BranchId),
             caller => Venue(caller, HttpStatusCode.Created)),
 
+        // The floor's staff-booking reads (2026-10-31): the branch's waiter too, never the kitchen, never the sibling
+        // branch's manager - FloorStaffGuard's rule, from the stored row, behind WaiterOrAbove + BranchScoped.
+        ["GET /api/branches/{branchId}/reservations/slots"] = new(
+            (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/reservations/slots?date={w.Factory.Clock.UtcNow.AddDays(2):yyyy-MM-dd}&party=2"),
+            caller => Floor(caller, HttpStatusCode.OK)),
+
+        ["GET /api/branches/{branchId}/reservations/to-call"] = new(
+            (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/reservations/to-call"),
+            caller => Floor(caller, HttpStatusCode.OK)),
+
         ["GET /api/branches/{branchId}/reviews"] = new(
             (w, c) => c.GetAsync($"/api/branches/{w.Branch.BranchId}/reviews?filter=all"),
             caller => Venue(caller, HttpStatusCode.OK)),
@@ -298,6 +308,14 @@ public sealed class AuthorizationMatrixTests(SqlServerFixture fixture) : IDispos
     {
         Caller.Anonymous => HttpStatusCode.Unauthorized,
         Caller.BranchManager or Caller.GeneralManager or Caller.Owner or Caller.PlatformAdmin => admitted,
+        _ => HttpStatusCode.Forbidden,
+    };
+
+    /// <summary>The floor's routes: the venue's ranks and the branch's own waiter; a cook, a diner and the sibling branch refused.</summary>
+    private static HttpStatusCode Floor(Caller caller, HttpStatusCode admitted) => caller switch
+    {
+        Caller.Anonymous => HttpStatusCode.Unauthorized,
+        Caller.WaiterSession or Caller.BranchManager or Caller.GeneralManager or Caller.Owner or Caller.PlatformAdmin => admitted,
         _ => HttpStatusCode.Forbidden,
     };
 
