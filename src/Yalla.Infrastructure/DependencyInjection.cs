@@ -70,6 +70,9 @@ public static class DependencyInjection
         services.AddScoped<ITableStateService, TableStateService>();
         services.AddScoped<IFloorQuery, FloorQuery>();
         services.AddScoped<IReservationService, ReservationService>();
+
+        // Staff-taken bookings (2026-10-31): the floor books for a guest and follows whether they come.
+        services.AddScoped<IStaffBookingService, StaffBookingService>();
         services.AddScoped<NoShowBlocks>();
         services.AddScoped<Yalla.Application.Reservations.IPreOrderService, PreOrderService>();
         services.AddScoped<Yalla.Application.Takeaway.ITakeawayService, TakeawayService>();

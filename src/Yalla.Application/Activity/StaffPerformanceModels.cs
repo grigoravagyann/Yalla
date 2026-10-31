@@ -66,6 +66,12 @@ public sealed record StaffPerformanceFilter(
 /// <param name="Comps">Comps they gave, still standing.</param>
 /// <param name="AdjustmentsAmd">What those took off, as the bills charged it.</param>
 /// <param name="Voids">Lines they voided.</param>
+/// <param name="BookingsTaken">
+/// Bookings they took by hand (2026-10-31) whose start falls in the window - whatever became of them: came, missed,
+/// cancelled, still to come.
+/// </param>
+/// <param name="BookingsCame">Of those, the parties that sat down (seated or completed).</param>
+/// <param name="BookingsNoShow">Of those, the parties that never came (a no-show that stands; one withdrawn does not count).</param>
 public sealed record StaffPerformanceRow(
     Guid StaffMemberId,
     string Name,
@@ -87,7 +93,10 @@ public sealed record StaffPerformanceRow(
     int Discounts,
     int Comps,
     long AdjustmentsAmd,
-    int Voids);
+    int Voids,
+    int BookingsTaken = 0,
+    int BookingsCame = 0,
+    int BookingsNoShow = 0);
 
 /// <summary>
 /// The branch's totals over the window - counted once, not summed from the rows: a transferred table is one table, and a
@@ -112,6 +121,9 @@ public sealed record StaffPerformanceRow(
 /// <param name="Comps">Comps standing.</param>
 /// <param name="AdjustmentsAmd">The revenue report's <c>adjustmentsTotalAmd</c>.</param>
 /// <param name="Voids">Lines voided.</param>
+/// <param name="BookingsTaken">Bookings staff took by hand whose start falls in the window.</param>
+/// <param name="BookingsCame">Of those, the parties that sat down.</param>
+/// <param name="BookingsNoShow">Of those, the parties that never came.</param>
 public sealed record StaffPerformanceTotals(
     int Tables,
     long Guests,
@@ -131,7 +143,10 @@ public sealed record StaffPerformanceTotals(
     int Discounts,
     int Comps,
     long AdjustmentsAmd,
-    int Voids);
+    int Voids,
+    int BookingsTaken = 0,
+    int BookingsCame = 0,
+    int BookingsNoShow = 0);
 
 /// <summary>Staff → Results: everybody's numbers over the window, and the branch's.</summary>
 /// <param name="BranchId">The branch.</param>

@@ -194,6 +194,10 @@ public sealed record OverviewLoadHour(int Hour, int People, int PendingPeople);
 /// The guest's record over the last twelve months at every venue; absent when no verified account is behind the
 /// booking. See <see cref="Reservations.GuestRecord"/>.
 /// </param>
+/// <param name="TakenByName">
+/// For a booking staff took by hand (<see cref="ReservationChannel.Staff"/>, 2026-10-31): the taker's name now -
+/// "Զանգ · {name}" in the channel cell. Absent for every other booking.
+/// </param>
 public sealed record OverviewBooking(
     Guid Id,
     string Code,
@@ -213,7 +217,8 @@ public sealed record OverviewBooking(
     DateTime? HoldExpiresAtUtc,
     DateTime? LateNudgeAtUtc,
     bool? LateNudgeSent,
-    Reservations.GuestRecord? GuestRecord = null);
+    Reservations.GuestRecord? GuestRecord = null,
+    string? TakenByName = null);
 
 /// <summary>Reads <see cref="BranchOverview"/>.</summary>
 public interface IBranchOverviewQuery

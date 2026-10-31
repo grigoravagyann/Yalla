@@ -131,7 +131,8 @@ internal sealed class ReservationViews(
         string? manageToken = null,
         IncomingRow? incoming = null,
         bool awaitsEarlierGuestAnswer = false,
-        bool? phoneUnverifiedNow = null)
+        bool? phoneUnverifiedNow = null,
+        string? takenByName = null)
     {
         var zone = BranchZone.For(timeZoneId);
 
@@ -161,6 +162,12 @@ internal sealed class ReservationViews(
             CancelledBecause = reservation.CancelledBecause,
 
             Status = reservation.Status,
+
+            // Where it came from, and - taken by hand from the floor - by whom (2026-10-31; the taker lands with the
+            // column, in the commit after the contract).
+            Channel = reservation.Channel,
+            TakenByStaffId = null,
+            TakenByName = takenByName,
             GuestName = reservation.GuestName,
             GuestPhone = reservation.GuestPhone,
             // Made without proof, and - for an account's booking - not proved since: staff see "not verified"
