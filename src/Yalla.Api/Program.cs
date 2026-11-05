@@ -124,6 +124,10 @@ app.UseYallaForwardedHeaders();
 // UnifiedExceptionHandler is the single log point.
 app.UseMiddleware<ErrorContextMiddleware>();
 
+// nosniff on every response and no-store on the sign-in bodies. Before the exception handler, so an
+// error envelope carries them too.
+app.UseMiddleware<ResponseHeadersMiddleware>();
+
 // The unified handler owns every environment. No developer exception page anywhere: it preempts
 // the handler and leaks stack traces in non-local environments.
 app.UseExceptionHandler();

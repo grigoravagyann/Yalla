@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -35,8 +35,9 @@ public static class HealthCheckExtensions
                 status = entry.Value.Status.ToString(),
                 durationMs = entry.Value.Duration.TotalMilliseconds,
 
-                // The exception message from a failed check, never a stack trace.
-                error = entry.Value.Exception?.Message,
+                // No exception message. /health is anonymous and the database check's failure
+                // names the server, the instance and sometimes the login it could not reach;
+                // the message is in the log, where the health-check publisher already writes it.
             }),
         });
 
