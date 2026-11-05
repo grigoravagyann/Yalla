@@ -25,7 +25,8 @@ outbox, pushes, staff push, the diner feed - `activity.md` History, action codes
 `error-contract.md` every named problem code and its context - `openapi.md` the document and the
 frontend's copy - `contract-tests.md` why doubles have contracts - `public-surface.md` anonymous routes -
 `diner-browse.md` diner real-data contract, rate limits, dev seed - `platform-admin.md` - `branch-features.md` what each
-platform feature switch refuses and what runs on - `menu-completeness.md`.
+platform feature switch refuses and what runs on - `menu-completeness.md` - `load-testing.md` `tests/load/load.mjs`, the
+numbers it measured and the two things it changed.
 
 ## Golden rules
 

@@ -55,6 +55,19 @@ public class AuthorizationBoundaryTests(SqlServerFixture fixture)
         var otherFloor = await staff.GetAsync($"/api/branches/{branchB.BranchId}/tables/floor");
         Assert.Equal(HttpStatusCode.Forbidden, otherFloor.StatusCode);
 
+        // And refused the way every other refusal is: a problem document with the `forbidden` code,
+        // not the framework's bare 403 that the app can only render as "something went wrong".
+        Assert.Equal("application/problem+json", otherFloor.Content.Headers.ContentType?.MediaType);
+        using (var problem = JsonDocument.Parse(await otherFloor.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal("forbidden", problem.RootElement.GetProperty("code").GetString());
+            Assert.Equal(403, problem.RootElement.GetProperty("status").GetInt32());
+            Assert.False(string.IsNullOrEmpty(problem.RootElement.GetProperty("traceId").GetString()));
+            Assert.Equal(
+                "BranchScopedRequirement",
+                problem.RootElement.GetProperty("context").GetProperty("requirement").GetString());
+        }
+
         // Not just the read. The transitions from the previous task carry the same policy.
         var seat = await staff.PostAsJsonAsync(
             $"/api/branches/{branchB.BranchId}/tables/{branchB.FirstTableId}/seat-walk-in",
