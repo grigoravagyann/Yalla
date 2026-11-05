@@ -61,10 +61,29 @@ re-runs the migration - a no-op when nothing is pending - and restarts only the 
 image or configuration changed. Expect the API to be away for the ten to thirty seconds between
 the old container stopping and the new one answering `/health`.
 
-Nightly backups: the crontab line is at the top of `deploy.sh`. `KEEP_BACKUPS` (default 14)
-prunes old files on the volume. **The volume is on the same disk as the database.** Copy the
-newest file off the host from the cron job or by hand (`docker compose cp sql:/var/opt/mssql/backups/<file> .`);
-this package does not do that for you.
+Nightly backups: the crontab line is at the top of `deploy.sh`. Each run writes the database
+(`Yalla-<utc>.bak`) and a tarball of the photos volume (`photos-<utc>.tgz`) to the backups
+volume and keeps the newest `KEEP_BACKUPS` (default 14) of each. **The volume is on the same disk
+as the database**, so set `BACKUP_COPY_TO` in `.env` (an scp destination on another machine,
+reachable with root's ssh key) and every run copies both files there as well; a failed copy is
+an error in the cron log, and `deploy.sh watch` below reports a night that produced no backup.
+By hand: `docker compose cp sql:/var/opt/mssql/backups/<file> .`.
+
+## Watching it
+
+`./deploy.sh watch`, from cron every five minutes (the line is at the top of `deploy.sh`),
+checks what an operator would check by hand: `https://<DOMAIN>/health` answers `Healthy` through
+Caddy, the four long-running containers are running, the root disk and Docker's disk are under
+`DISK_ALERT_PERCENT` (default 85), and the newest database backup is under 36 hours old. A
+problem is sent once to `ALERT_TELEGRAM_CHAT_ID` through the verification bot, repeated every six
+hours while it lasts, and followed by an "all clear" when it ends; every run also prints one line
+to `/var/log/yalla-watch.log`. Nothing is installed for this - bash, curl and docker, which the
+host already has.
+
+What it does not see: a slow API (only an unhealthy one), a full SQL Server data file inside its
+10 GB Express cap (watch `deploy.sh logs sql` for that), and the host itself being down - the
+watch runs on the host. For that last one, point an external uptime check (any free one) at
+`https://<DOMAIN>/health` as well.
 
 ## Rollback
 
@@ -120,10 +139,8 @@ proxy".
 
 ## Deliberately not covered
 
-- **Monitoring and alerting.** `/health` (with a database round-trip) is there to be polled by
-  whatever you use; nothing polls it except Docker's own health check.
-- **Off-host backup copies.** `deploy.sh backup` writes to a volume on the same disk. Copy the
-  files somewhere else; the cron job is the obvious place.
+- **Monitoring beyond the watch above.** No metrics, no dashboards, no log shipping. `/health`
+  (with a database round-trip) is there for any external uptime check to poll.
 - **More than one API instance.** Photos are on a local volume and the rate limiter is in-process.
   Moving to object storage for photos is the first step (`docs/notifications.md`, section 10).
 - **An external database.** The compose file assumes the `sql` container. A managed SQL Server
