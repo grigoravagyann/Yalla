@@ -12,7 +12,7 @@ namespace Yalla.Domain.Venues;
 /// </remarks>
 public sealed class FeatureNotEnabledException(BranchFeature feature, Guid branchId)
     : DomainStateException(
-        $"{feature} is not enabled for this branch. The platform switches it on; ask Time to Eat.")
+        $"{feature} is not enabled for this branch. The platform switches it on; ask Time to Meet.")
 {
     /// <summary>What was asked for.</summary>
     public BranchFeature Feature { get; } = feature;
