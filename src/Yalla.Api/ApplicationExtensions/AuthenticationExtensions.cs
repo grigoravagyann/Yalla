@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.IdentityModel.Tokens;
 using Yalla.Api.Authorization;
 using Yalla.Api.Errors;
@@ -278,6 +279,9 @@ public static class AuthenticationExtensions
         services.AddScoped<IAuthorizationHandler, TabParticipantHandler>();
         services.AddScoped<IAuthorizationHandler, BranchScopedHandler>();
         services.AddScoped<IAuthorizationHandler, VenueScopedHandler>();
+
+        // A policy's no is written as the `forbidden` problem, not the framework's bodiless 403.
+        services.AddSingleton<IAuthorizationMiddlewareResultHandler, ForbiddenProblemHandler>();
 
         services.AddAuthorizationBuilder()
             .AddPolicy(YallaPolicies.TabParticipant, policy => policy
